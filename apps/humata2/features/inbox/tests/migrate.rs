@@ -71,6 +71,7 @@ fn migrate(id: &str, thing: MigrateThing, machine: &str, phase: MigratePhase) ->
         undo_note: None,
         choices: Vec::new(),
         on_screen: None,
+        dismiss_only: false,
     }
 }
 

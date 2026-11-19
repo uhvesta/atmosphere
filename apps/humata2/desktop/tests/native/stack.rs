@@ -124,6 +124,10 @@ fn a_stack_draws_whole_stack_then_its_layers_top_down() {
 #[test]
 fn the_next_layer_key_picks_the_bottom_layer_from_whole_stack() {
     let mut app = stack_app();
+    // The layer keys work in the Diff panel (D804): Whole stack is clicked
+    // there first.
+    app.click("stack-row-0");
+    assert!(inside(&mut app, "stack-row-picked", "stack-row-0"));
     press(&mut app, "alt-cmd-]");
     assert!(inside(&mut app, "stack-row-picked", "stack-row-3"));
     press(&mut app, "alt-cmd-[");

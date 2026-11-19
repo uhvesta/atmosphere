@@ -958,10 +958,13 @@ impl Request {
 
     /// Whether Approve all and Deny all answer it. A Migrate item is
     /// answered only with Migrate (D281), and an agent's provider import
-    /// only one by one (MP-23, D792).
+    /// only one by one (MP-23, D792). A card that offers only Dismiss (D798)
+    /// is not answered in bulk either.
     #[must_use]
     pub fn answered_in_bulk(&self) -> bool {
-        self.kind != RequestKind::Migrate && self.operation != PROVIDER_IMPORT_OPERATION
+        self.kind != RequestKind::Migrate
+            && !self.dismiss_only
+            && self.operation != PROVIDER_IMPORT_OPERATION
     }
 }
 
@@ -1034,6 +1037,9 @@ pub struct Request {
     /// index among the session's tabs. The Inbox shows that terminal under
     /// the card while it waits, and offers Dismiss, not Deny (D781).
     pub on_screen: Option<usize>,
+    /// Set when the only answer is Dismiss: an agent waits in its own
+    /// terminal, and nothing an answer does would type into it (D798).
+    pub dismiss_only: bool,
 }
 
 /// The access rule that turned an agent's call into an Inbox request.

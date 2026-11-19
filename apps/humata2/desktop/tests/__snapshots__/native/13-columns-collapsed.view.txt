@@ -1,6 +1,7 @@
 Button "Show sidebar"
 Button "Show side panel"
 Link "Open channel"
+Button "Back" description="Back  ⌘["
 Button "Fork"
 Button "Expand terminal"
 Button "Toggle side panel"

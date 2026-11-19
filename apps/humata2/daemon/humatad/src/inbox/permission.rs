@@ -337,6 +337,7 @@ impl Inbox {
                 },
             );
             card.action_title = format!("{agent_name} is waiting in its terminal");
+            card.dismiss_only = true;
             card
         })
         .await

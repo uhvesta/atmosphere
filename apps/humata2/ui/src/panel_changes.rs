@@ -1041,6 +1041,7 @@ pub(super) fn changes(
             // header or code. DS-15: full screen is the code's colour from
             // top to bottom.
             let view = view
+                .track_focus(&documents.diff_code)
                 .key_context(crate::keys::DIFF)
                 .when(full, |view| view.bg(rgb(look.term)));
             let name = format!("{}/{}", diff.repo, file.path);
@@ -1385,7 +1386,16 @@ pub(super) fn changes(
             },
         })
         // D800, DS-60 to DS-65: the layer list sits above the files.
-        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send))
+        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send).map(|top| {
+            // D804: the layer keys work in the Diff panel, so a click in
+            // the layer list gives it the focus.
+            let handle = documents.diff_stack.clone();
+            div()
+                .flex_shrink_0()
+                .track_focus(&documents.diff_stack)
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| window.focus(&handle, cx))
+                .child(top)
+        }))
         .child(
             div()
                 .flex_1()
@@ -3145,6 +3155,16 @@ fn at(line: &DiffLine, side: Side, number: u32) -> bool {
     }
 }
 
+/// Whether `line` is on `side` and numbered within `first..=last` there.
+fn within_span(line: &DiffLine, side: Side, first: u32, last: u32) -> bool {
+    let number = match side {
+        Side::Old if line.kind != LineKind::Added => line.old,
+        Side::New if line.kind != LineKind::Removed => line.new,
+        _ => None,
+    };
+    number.is_some_and(|n| (first..=last).contains(&n))
+}
+
 /// The index of the line a comment or box ending at `last` on `side` goes
 /// under: that line, or the last code line when it is not in the hunks shown.
 fn under(lines: &[DiffLine], side: Side, last: u32) -> Option<usize> {
@@ -3189,7 +3209,7 @@ impl Target {
         let quoted = lines
             .iter()
             .filter(|line| is_code(line))
-            .filter(|line| (first..=last).any(|n| at(line, side, n)))
+            .filter(|line| within_span(line, side, first, last))
             .map(|line| line.text.clone())
             .collect();
         Anchor {
@@ -3290,6 +3310,8 @@ struct CodeRows {
     /// The agent's focus, and the index of the first line it is on.
     focus: Option<(Side, u32)>,
     focus_index: Option<usize>,
+    /// What a click on a line focuses, outside a review: the code view.
+    code_focus: Option<FocusHandle>,
 }
 
 impl CodeRows {
@@ -3413,6 +3435,7 @@ impl CodeRows {
             lit_color: if look.term == 0xffffff { 0xeaf2ff } else { 0x1c2a3f },
             focus,
             focus_index,
+            code_focus: (!metrics.review).then(|| documents.diff_code.clone()),
         }
     }
 
@@ -3496,7 +3519,11 @@ impl CodeRows {
                 .as_ref()
                 .filter(|_| self.reviewing)
                 .and_then(|target| {
-                    let (side, first, last) = span(hunk_lines(lines, index))?;
+                    // Only this hunk's lines: quoting from the whole file
+                    // made each header scan every line, which froze a
+                    // 40,000-line file.
+                    let hunk = hunk_lines(lines, index);
+                    let (side, first, last) = span(hunk)?;
                     let group = SharedString::from(format!("change-hunk-group-{index}"));
                     Some((
                         group.clone(),
@@ -3506,7 +3533,7 @@ impl CodeRows {
                             SharedString::from(format!("change-ask-hunk-{index}")),
                             group,
                             target.session.clone(),
-                            target.anchor(lines, side, first, last),
+                            target.anchor(hunk, side, first, last),
                         ),
                     ))
                 });
@@ -3663,6 +3690,9 @@ impl CodeRows {
                     .text_color(rgb(look.term_text)),
             )
             .child(code)
+            .when_some(self.code_focus.clone(), |row, handle| {
+                row.on_mouse_down(MouseButton::Left, move |_, window, cx| window.focus(&handle, cx))
+            })
             .test_support();
         let line_row = match self.focus.filter(|_| focused) {
             Some((_, n)) => div()

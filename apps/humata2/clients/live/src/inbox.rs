@@ -550,6 +550,7 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
             _ => Vec::new(),
         },
         on_screen: request.on_screen.as_ref().map(|on_screen| on_screen.tab as usize),
+        dismiss_only: request.dismiss_only,
     }
 }
 

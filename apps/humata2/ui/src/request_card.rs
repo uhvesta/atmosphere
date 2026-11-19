@@ -1056,6 +1056,17 @@ fn decision_card(
                         false,
                     )),
             )
+    } else if request.dismiss_only {
+        // D798: the agent waits in its own terminal; nothing an answer does
+        // would type there, so Dismiss is the only thing offered.
+        col().child(row().gap(px(8.)).child(button(
+            ui,
+            SharedString::from(format!("dismiss {}", request.id)),
+            "Dismiss",
+            vec![AppAction::Inbox(InboxAction::Dismiss(id.clone()))],
+            look,
+            true,
+        )))
     } else if copy.is_some() {
         col().child(
             row()

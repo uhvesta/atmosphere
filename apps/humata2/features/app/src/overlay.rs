@@ -209,7 +209,9 @@ impl App {
             if state.review.repo_picker.is_some() || state.review.push_menu {
                 return Effect::none();
             }
-            return self.child(state, AppAction::Session(SessionAction::ToggleWiden));
+            // Through the app's own toggle, which clears the full-screen
+            // mark; the session's alone only flips the view's flag.
+            return self.handle(state, AppAction::ToggleFullScreen(FullScreen::Panel));
         }
         Effect::none()
     }

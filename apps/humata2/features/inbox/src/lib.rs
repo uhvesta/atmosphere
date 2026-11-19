@@ -300,7 +300,7 @@ impl InboxState {
         let Some(request) = self.find(id).filter(|request| request.answer.is_none()) else {
             return Vec::new();
         };
-        if request.on_screen.is_some() {
+        if request.on_screen.is_some() || request.dismiss_only {
             return vec![Offer::Dismiss];
         }
         if request.kind == RequestKind::Question {
@@ -699,6 +699,7 @@ fn own_request(old: &OldLocalDaemon) -> Request {
         undo_note: None,
         choices: Vec::new(),
         on_screen: None,
+        dismiss_only: false,
     }
 }
 

@@ -1,0 +1,92 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482" selected
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #panel-header
+    text "Diff"
+    #review-pr-line
+      text "PR #482 against main · 2 repos"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  #diff-file-bar
+    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    #diff-file-count
+      text "1 of 1"
+  #review-diff
+    #review-repo-acme/api
+      text "api"
+      text "#482"
+    ListBoxOption "acme/api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs" selected
+      text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
+      text "+1"
+      text "−0"
+    Code "acme/api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
+      #change-hunk-0
+      #change-line-1
+        Button "Comment on line 1"
+          text "1"
+        text "+"
+        #change-code-1-0
+          text "fn main() {}"
+  Button "Submit review…"
+  #review-drafts-0-0
+    text "No drafts"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 1"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Back" description="Back  ⌘["
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

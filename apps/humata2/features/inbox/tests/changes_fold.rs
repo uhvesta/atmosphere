@@ -49,6 +49,7 @@ fn migrate(id: &str, machine: &str, changes: Vec<String>, phase: MigratePhase) -
         undo_note: None,
         choices: Vec::new(),
         on_screen: None,
+        dismiss_only: false,
     }
 }
 

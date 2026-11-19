@@ -296,6 +296,12 @@ pub(crate) struct Documents {
     /// The Diff's file list: while it has this focus its arrows and Enter move
     /// the cursor, open a file or fold a repository (DS-84).
     pub(crate) diff_list: FocusHandle,
+    /// A stack's layer list (D804): a click in it gives the Diff panel the
+    /// focus, so the layer keys step from the layer just picked.
+    pub(crate) diff_stack: FocusHandle,
+    /// The Diff panel's code (DS-40): a click on a line gives it the focus,
+    /// so ⌥Z flips Wrap there and no longer types into a comment box.
+    pub(crate) diff_code: FocusHandle,
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
@@ -583,6 +589,8 @@ impl Documents {
             file_filter_for: None,
             _file_filtering: file_filtering,
             diff_list: cx.focus_handle(),
+            diff_stack: cx.focus_handle(),
+            diff_code: cx.focus_handle(),
         }
     }
 

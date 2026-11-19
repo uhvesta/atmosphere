@@ -1,0 +1,298 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482" selected
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #panel-header
+    text "Diff"
+    #review-pr-line
+      text "PR #482 against main · 2 repos"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  #diff-file-bar
+    text "refund.rs"
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    text "acme/api ·"
+    text "src/"
+    #diff-file-count
+      text "1 of 1"
+  #review-diff
+    #review-repo-acme/api
+      text "api"
+      text "#482"
+    ListBoxOption "acme/api/src/refund.rs" selected
+      text "refund.rs"
+      text "+39200"
+      text "−0"
+    Code "acme/api/src/refund.rs"
+      #change-hunk-0
+      #change-line-1
+        Button "Comment on line 1"
+          text "1"
+        text "+"
+        #change-code-1-0
+          text "let value_1 = 1;"
+      #change-line-2
+        Button "Comment on line 2"
+          text "2"
+        text "+"
+        #change-code-2-0
+          text "let value_2 = 2;"
+      #change-line-3
+        Button "Comment on line 3"
+          text "3"
+        text "+"
+        #change-code-3-0
+          text "let value_3 = 3;"
+      #change-line-4
+        Button "Comment on line 4"
+          text "4"
+        text "+"
+        #change-code-4-0
+          text "let value_4 = 4;"
+      #change-line-5
+        Button "Comment on line 5"
+          text "5"
+        text "+"
+        #change-code-5-0
+          text "let value_5 = 5;"
+      #change-line-6
+        Button "Comment on line 6"
+          text "6"
+        text "+"
+        #change-code-6-0
+          text "let value_6 = 6;"
+      #change-line-7
+        Button "Comment on line 7"
+          text "7"
+        text "+"
+        #change-code-7-0
+          text "let value_7 = 7;"
+      #change-line-8
+        Button "Comment on line 8"
+          text "8"
+        text "+"
+        #change-code-8-0
+          text "let value_8 = 8;"
+      #change-line-9
+        Button "Comment on line 9"
+          text "9"
+        text "+"
+        #change-code-9-0
+          text "let value_9 = 9;"
+      #change-line-10
+        Button "Comment on line 10"
+          text "10"
+        text "+"
+        #change-code-10-0
+          text "let value_10 = 10;"
+      #change-line-11
+        Button "Comment on line 11"
+          text "11"
+        text "+"
+        #change-code-11-0
+          text "let value_11 = 11;"
+      #change-line-12
+        Button "Comment on line 12"
+          text "12"
+        text "+"
+        #change-code-12-0
+          text "let value_12 = 12;"
+      #change-line-13
+        Button "Comment on line 13"
+          text "13"
+        text "+"
+        #change-code-13-0
+          text "let value_13 = 13;"
+      #change-line-14
+        Button "Comment on line 14"
+          text "14"
+        text "+"
+        #change-code-14-0
+          text "let value_14 = 14;"
+      #change-line-15
+        Button "Comment on line 15"
+          text "15"
+        text "+"
+        #change-code-15-0
+          text "let value_15 = 15;"
+      #change-line-16
+        Button "Comment on line 16"
+          text "16"
+        text "+"
+        #change-code-16-0
+          text "let value_16 = 16;"
+      #change-line-17
+        Button "Comment on line 17"
+          text "17"
+        text "+"
+        #change-code-17-0
+          text "let value_17 = 17;"
+      #change-line-18
+        Button "Comment on line 18"
+          text "18"
+        text "+"
+        #change-code-18-0
+          text "let value_18 = 18;"
+      #change-line-19
+        Button "Comment on line 19"
+          text "19"
+        text "+"
+        #change-code-19-0
+          text "let value_19 = 19;"
+      #change-line-20
+        Button "Comment on line 20"
+          text "20"
+        text "+"
+        #change-code-20-0
+          text "let value_20 = 20;"
+      #change-line-21
+        Button "Comment on line 21"
+          text "21"
+        text "+"
+        #change-code-21-0
+          text "let value_21 = 21;"
+      #change-line-22
+        Button "Comment on line 22"
+          text "22"
+        text "+"
+        #change-code-22-0
+          text "let value_22 = 22;"
+      #change-line-23
+        Button "Comment on line 23"
+          text "23"
+        text "+"
+        #change-code-23-0
+          text "let value_23 = 23;"
+      #change-line-24
+        Button "Comment on line 24"
+          text "24"
+        text "+"
+        #change-code-24-0
+          text "let value_24 = 24;"
+      #change-line-25
+        Button "Comment on line 25"
+          text "25"
+        text "+"
+        #change-code-25-0
+          text "let value_25 = 25;"
+      #change-line-26
+        Button "Comment on line 26"
+          text "26"
+        text "+"
+        #change-code-26-0
+          text "let value_26 = 26;"
+      #change-line-27
+        Button "Comment on line 27"
+          text "27"
+        text "+"
+        #change-code-27-0
+          text "let value_27 = 27;"
+      #change-line-28
+        Button "Comment on line 28"
+          text "28"
+        text "+"
+        #change-code-28-0
+          text "let value_28 = 28;"
+      #change-line-29
+        Button "Comment on line 29"
+          text "29"
+        text "+"
+        #change-code-29-0
+          text "let value_29 = 29;"
+      #change-line-30
+        Button "Comment on line 30"
+          text "30"
+        text "+"
+        #change-code-30-0
+          text "let value_30 = 30;"
+      #change-line-31
+        Button "Comment on line 31"
+          text "31"
+        text "+"
+        #change-code-31-0
+          text "let value_31 = 31;"
+      #change-line-32
+        Button "Comment on line 32"
+          text "32"
+        text "+"
+        #change-code-32-0
+          text "let value_32 = 32;"
+      #change-line-33
+        Button "Comment on line 33"
+          text "33"
+        text "+"
+        #change-code-33-0
+          text "let value_33 = 33;"
+      #change-line-34
+        Button "Comment on line 34"
+          text "34"
+        text "+"
+        #change-code-34-0
+          text "let value_34 = 34;"
+      #change-line-35
+        Button "Comment on line 35"
+          text "35"
+        text "+"
+        #change-code-35-0
+          text "let value_35 = 35;"
+  Button "Submit review…"
+  #review-drafts-0-0
+    text "No drafts"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 1"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Back" description="Back  ⌘["
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

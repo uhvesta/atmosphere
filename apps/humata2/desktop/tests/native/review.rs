@@ -288,7 +288,7 @@ fn widening_a_wrapped_diff_keeps_its_top_line_in_place() {
             })
             .unwrap()
     };
-    let (before, _) = top(&mut app);
+    let (before, into) = top(&mut app);
     assert!(before > 5, "the view is scrolled well down: top line {before}");
     let (wrapped_rows, line) = app
         .cx
@@ -305,7 +305,21 @@ fn widening_a_wrapped_diff_keeps_its_top_line_in_place() {
     app.draw();
     let (after, offset) = top(&mut app);
     assert_eq!(after, before, "the same line stays at the top");
-    assert!(offset.abs() < line + 0.5, "it starts at the top of the view: {offset}");
+    // The rewrapped line is shorter now; the view starts the same share
+    // of its height into it as before.
+    let height = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            let b = window.find(gpui_kit::SharedString::from(format!("change-line-{after}"))).bounds();
+            f32::from(b.size.height)
+        })
+        .unwrap();
+    assert!(height < wrapped_rows * line, "the line wraps to fewer rows when wider");
+    let share = |offset: f32, height: f32| -offset / height;
+    assert!(
+        (share(offset, height) - share(into, wrapped_rows * line)).abs() < 0.1,
+        "the view starts as far into the top line as before: {offset} of {height}, was {into}"
+    );
 }
 
 /// RV-1, RV-6: the base chip opens a menu of bases; the fork base shows

@@ -4,38 +4,42 @@ Complementary "Changes"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"
-  text "Diff"
   Button "Against main"
     text "main"
   text "Diff"
   text "against"
-  Button "Show the terminal"
-  Button "Close panel"
   #changes-files
-    text "2 files · 1 repo"
-    Button "Add repo…"
-    text "+6"
-    text "−2"
-    text "acme/api"
-    text "humata/s-auth"
-    text "+6"
-    text "−2"
-    Button "acme/api: against main" description="acme/api: against main · change"
-    Button "Push & PR: acme/api"
+    #repo-row-0
+      Button "Collapse acme/api"
+      text "acme/api"
+      Button "acme/api: against main" description="acme/api: against main · change"
+      #repo-totals-0
+        text "+6"
+        text "−2"
     ListBoxOption "acme/api/src/client.rs" selected
-      text "src/client.rs"
+      #change-file-name acme/api/src/client.rs
+        text "client.rs"
+      text "src/"
       text "1"
       text "+4"
       text "−2"
     ListBoxOption "acme/api/src/retry.rs"
-      text "src/retry.rs"
+      #change-file-name acme/api/src/retry.rs
+        text "retry.rs"
+      text "src/"
       text "+2"
       text "−0"
-  text "acme/api/src/client.rs"
-  text "Open in editor"
+  text "client.rs"
+  Button "Open in editor" description="Open in editor"
+  text "acme/api ·"
+  text "src/"
+  Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "acme/api/src/client.rs"
-    text "@@ -40,7 +40,9 @@ impl Client {"
+    #change-hunk-0
+      text "impl Client {"
     #change-line-1
+      Button "Comment on line 40"
+        text "40"
       Button "Comment on line 40"
         text "40"
       text " "
@@ -44,22 +48,26 @@ Complementary "Changes"
     #change-line-2
       Button "Comment on line 41"
         text "41"
+      #change-gutter-new-2
       text "−"
       #change-code-2-0
         text "        let response = self.http.send(request.clone()).await?;"
     #change-line-3
       Button "Comment on line 42"
         text "42"
+      #change-gutter-new-3
       text "−"
       #change-code-3-0
         text "        if response.status() == 401 { return self.retry(request).await; }"
     #change-line-4
+      #change-gutter-old-4
       Button "Comment on line 41"
         text "41"
       text "+"
       #change-code-4-0
         text "        let response = self.http.send(request.clone()).await?;"
     #change-line-5
+      #change-gutter-old-5
       Button "Comment on line 42"
         text "42"
       text "+"
@@ -68,12 +76,14 @@ Complementary "Changes"
     text "You"
     text "Refresh once only; a second 401 should surface."
     #change-line-6
+      #change-gutter-old-6
       Button "Comment on line 43"
         text "43"
       text "+"
       #change-code-6-0
         text "            self.tokens.refresh().await?;"
     #change-line-7
+      #change-gutter-old-7
       Button "Comment on line 44"
         text "44"
       text "+"
@@ -81,14 +91,19 @@ Complementary "Changes"
         text "            return self.http.send(request).await;"
     #change-line-8
       Button "Comment on line 45"
+        text "43"
+      Button "Comment on line 45"
         text "45"
       text " "
       #change-code-8-0
         text "        }"
     #change-line-9
       Button "Comment on line 46"
+        text "44"
+      Button "Comment on line 46"
         text "46"
       text " "
       #change-code-9-0
         text "        Ok(response)"
-  text "0 draft comments"
+  Button "Push & PR…"
+  Button "Add repo…"

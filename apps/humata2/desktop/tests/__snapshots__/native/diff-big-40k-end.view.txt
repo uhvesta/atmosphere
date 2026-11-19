@@ -34,45 +34,99 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Changes"
-  Button "Against main"
-    text "main"
-  text "Diff"
-  text "against"
-  Button "Expand panel"
-  Button "Close panel"
-  #changes-files
-    text "3 files · 2 repos"
-    Button "Add repo…"
-    text "+20122"
-    text "−20003"
-    text "ledger"
-    text "ledger-schema"
-    text "+41"
-    text "−0"
-    Button "ledger: against main" description="ledger: against main · change"
-    Button "Push & PR: ledger"
-    ListBoxOption "ledger/migrations/0042_accounts.sql"
-      text "migrations/0042_accounts.sql"
-      text "+41"
-      text "−0"
-    text "api"
-    text "ledger-schema"
-    text "+20081"
-    text "−20003"
-    Button "api: against main" description="api: against main · change"
-    Button "Push & PR: api"
-    ListBoxOption "api/src/client.rs" selected
-      text "src/client.rs"
-      text "1"
-      text "+20000"
-      text "−20000"
-    ListBoxOption "api/src/entry.rs"
-      text "src/entry.rs"
-      text "+81"
-      text "−3"
-  text "api/src/client.rs"
-  text "Open in editor"
+  #panel-header
+    Button "Against main"
+      text "main"
+    text "Diff"
+    text "against"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  Button "Files" collapsed
+    text "client.rs"
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    text "api ·"
+    text "src/"
+    #diff-file-count
+      text "2 of 3"
+  text "client.rs"
+  text "api ·"
+  text "src/"
+  Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/client.rs"
+    #change-line-39964
+      Button "Comment on line 19964"
+        text "19964"
+      text "+"
+      #change-code-39964-0
+        text "let new_19964 = 19964;"
+    #change-line-39965
+      Button "Comment on line 19965"
+        text "19965"
+      text "+"
+      #change-code-39965-0
+        text "let new_19965 = 19965;"
+    #change-line-39966
+      Button "Comment on line 19966"
+        text "19966"
+      text "+"
+      #change-code-39966-0
+        text "let new_19966 = 19966;"
+    #change-line-39967
+      Button "Comment on line 19967"
+        text "19967"
+      text "+"
+      #change-code-39967-0
+        text "let new_19967 = 19967;"
+    #change-line-39968
+      Button "Comment on line 19968"
+        text "19968"
+      text "+"
+      #change-code-39968-0
+        text "let new_19968 = 19968;"
+    #change-line-39969
+      Button "Comment on line 19969"
+        text "19969"
+      text "+"
+      #change-code-39969-0
+        text "let new_19969 = 19969;"
+    #change-line-39970
+      Button "Comment on line 19970"
+        text "19970"
+      text "+"
+      #change-code-39970-0
+        text "let new_19970 = 19970;"
+    #change-line-39971
+      Button "Comment on line 19971"
+        text "19971"
+      text "+"
+      #change-code-39971-0
+        text "let new_19971 = 19971;"
+    #change-line-39972
+      Button "Comment on line 19972"
+        text "19972"
+      text "+"
+      #change-code-39972-0
+        text "let new_19972 = 19972;"
+    #change-line-39973
+      Button "Comment on line 19973"
+        text "19973"
+      text "+"
+      #change-code-39973-0
+        text "let new_19973 = 19973;"
+    #change-line-39974
+      Button "Comment on line 19974"
+        text "19974"
+      text "+"
+      #change-code-39974-0
+        text "let new_19974 = 19974;"
+    #change-line-39975
+      Button "Comment on line 19975"
+        text "19975"
+      text "+"
+      #change-code-39975-0
+        text "let new_19975 = 19975;"
     #change-line-39976
       Button "Comment on line 19976"
         text "19976"
@@ -223,7 +277,8 @@ Complementary "Changes"
       text "+"
       #change-code-40000-0
         text "let new_20000 = 20000;"
-  text "0 draft comments"
+  Button "Push & PR…"
+  Button "Add repo…"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 2"
@@ -234,6 +289,7 @@ Toolbar "Session panels"
   Button "Journal"
   Button "Info"
 Link "Open channel"
+Button "Back" description="Back  ⌘["
 Button "Fork"
 Button "Expand terminal"
 Button "Toggle side panel"

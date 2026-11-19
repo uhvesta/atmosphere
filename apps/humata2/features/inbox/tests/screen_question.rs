@@ -98,3 +98,22 @@ fn an_ordinary_request_shows_no_terminal() {
     };
     assert_eq!(state.terminal(), None);
 }
+
+#[test]
+fn a_notice_that_the_agent_waits_in_its_terminal_offers_only_dismiss() {
+    let (_, _, request) = setup();
+    let mut notice = request;
+    notice.kind = RequestKind::Command;
+    notice.choices = Vec::new();
+    notice.on_screen = None;
+    notice.dismiss_only = true;
+    let mut workspace = fixture::design();
+    workspace.requests = vec![notice.clone()];
+    let state = InboxState {
+        workspace: Arc::new(workspace),
+        selected: Some(notice.id.clone()),
+        ..InboxState::default()
+    };
+    assert_eq!(state.offers(&notice.id), vec![Offer::Dismiss]);
+    assert!(!notice.answered_in_bulk());
+}

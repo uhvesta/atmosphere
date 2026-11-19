@@ -567,6 +567,9 @@ fn pr_submit_review_frame_69() {
 #[test]
 fn a_review_session_opens_submit_review_from_its_header() {
     let mut app = review_session();
+    // The header holds Submit review only while the Diff panel is closed;
+    // with it open, the panel's footer has it (RV-1, DS-55).
+    app.send(AppAction::Session(SessionAction::SetPanel(None)));
     assert_eq!(app.ui.read(|s| s.pr_submit.step), Step::Closed);
     app.click("submit-review");
     assert_ne!(app.ui.read(|s| s.pr_submit.step), Step::Closed);

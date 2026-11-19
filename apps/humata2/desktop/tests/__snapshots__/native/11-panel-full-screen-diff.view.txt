@@ -4,48 +4,55 @@ Complementary "Changes"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"
-  text "Diff"
   Button "Against main"
     text "main"
   text "Diff"
   text "against"
-  Button "Show the terminal"
-  Button "Close panel"
   #changes-files
-    text "3 files · 2 repos"
-    Button "Add repo…"
-    text "+184"
-    text "−24"
-    text "ledger"
-    text "ledger-schema"
-    text "+41"
-    text "−0"
-    Button "ledger: against main" description="ledger: against main · change"
-    Button "Push & PR: ledger"
+    #repo-row-0
+      Button "Collapse ledger"
+      text "ledger"
+      Button "ledger: against main" description="ledger: against main · change"
+      #repo-totals-0
+        text "+41"
+        text "−0"
     ListBoxOption "ledger/migrations/0042_accounts.sql"
-      text "migrations/0042_accounts.sql"
+      #change-file-name ledger/migrations/0042_accounts.sql
+        text "0042_accounts.sql"
+      text "migrations/"
       text "+41"
       text "−0"
-    text "api"
-    text "ledger-schema"
-    text "+143"
-    text "−24"
-    Button "api: against main" description="api: against main · change"
-    Button "Push & PR: api"
+    #repo-row-1
+      Button "Collapse api"
+      text "api"
+      Button "api: against main" description="api: against main · change"
+      #repo-totals-1
+        text "+143"
+        text "−24"
     ListBoxOption "api/src/client.rs" selected
-      text "src/client.rs"
+      #change-file-name api/src/client.rs
+        text "client.rs"
+      text "src/"
       text "2"
       text "+62"
       text "−21"
     ListBoxOption "api/src/entry.rs"
-      text "src/entry.rs"
+      #change-file-name api/src/entry.rs
+        text "entry.rs"
+      text "src/"
       text "+81"
       text "−3"
-  text "api/src/client.rs"
-  text "Open in editor"
+  text "client.rs"
+  Button "Open in editor" description="Open in editor"
+  text "api ·"
+  text "src/"
+  Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/client.rs"
-    text "@@ -40,7 +40,12 @@ impl Client {"
+    #change-hunk-0
+      text "impl Client {"
     #change-line-1
+      Button "Comment on line 40"
+        text "40"
       Button "Comment on line 40"
         text "40"
       text " "
@@ -54,10 +61,12 @@ Complementary "Changes"
     #change-line-2
       Button "Comment on line 41"
         text "41"
+      #change-gutter-new-2
       text "−"
       #change-code-2-0
         text "        self.db.insert_legacy(&entry).await?;"
     #change-line-3
+      #change-gutter-old-3
       Button "Comment on line 41"
         text "41"
       text "+"
@@ -66,12 +75,14 @@ Complementary "Changes"
     text "You"
     text "Wrap the two writes in one transaction so a crash can't leave them out of step."
     #change-line-4
+      #change-gutter-old-4
       Button "Comment on line 42"
         text "42"
       text "+"
       #change-code-4-0
         text "        tx.insert_entry(&entry).await?;"
     #change-line-5
+      #change-gutter-old-5
       Button "Comment on line 43"
         text "43"
       text "+"
@@ -83,10 +94,12 @@ Complementary "Changes"
       text "Draft"
       text "Keep insert_legacy until the backfill ends."
     #change-line-6
+      #change-gutter-old-6
       Button "Comment on line 44"
         text "44"
       text "+"
       #change-code-6-0
         text "        tx.commit().await?;"
   Button "Send 1 comment"
-  text "1 draft comment"
+  Button "Push & PR…"
+  Button "Add repo…"

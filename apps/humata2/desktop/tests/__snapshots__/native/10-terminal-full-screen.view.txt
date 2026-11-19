@@ -1,4 +1,5 @@
 Link "Open channel"
+Button "Back" description="Back  ⌘["
 Button "Fork"
 Button "Return to columns"
 Button "Toggle side panel"

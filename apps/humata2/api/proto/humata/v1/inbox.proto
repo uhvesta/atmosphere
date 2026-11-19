@@ -192,6 +192,9 @@ message InboxRequest {
   // terminal under the card and offers Dismiss. Unset on every other item,
   // and on items from a daemon older than D781.
   ScreenAsk on_screen = 22;
+  // D798: set on the card that says an agent waits in its own terminal. The
+  // only thing the app offers on it is Dismiss: nothing is typed anywhere.
+  bool dismiss_only = 23;
 }
 
 // D781: where the dialog an item was read off is.

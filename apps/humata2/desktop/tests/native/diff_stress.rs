@@ -162,7 +162,11 @@ fn stays_inside(app: &mut App) {
                 return;
             };
             let code = format!("change-code {repo}/{path}");
-            let body = if window
+            // A review lists every file's code inline, each as tall as its
+            // lines, inside one scrolling body: that body fills the panel.
+            let body = if window.try_find(gpui_kit::SharedString::from("review-diff")).is_some() {
+                "review-diff".to_owned()
+            } else if window
                 .try_find(gpui_kit::SharedString::from(code.clone()))
                 .is_some()
             {

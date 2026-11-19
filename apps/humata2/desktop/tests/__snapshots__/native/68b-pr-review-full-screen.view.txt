@@ -5,11 +5,17 @@ Complementary "Changes"
   Button "Minimize window"
   Button "Zoom window"
   text "Diff"
-  text "Diff"
   #review-pr-line
     text "PR #482 against main · 2 repos"
-  Button "Show the terminal"
-  Button "Close panel"
+  #diff-file-bar
+    text "refund.rs"
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    text "acme/api ·"
+    text "src/"
+    #diff-file-count
+      text "1 of 2"
   #review-diff
     #review-repo-acme/api
       text "api"
@@ -53,5 +59,6 @@ Complementary "Changes"
     #review-repo-acme/ledger
       text "ledger"
       text "#91"
+  Button "Submit review…"
   #review-drafts-3-1
-    text "Drafts: 4 (3 by agent, 1 by you)"
+    text "4 drafts · 3 by Claude Code, 1 by you"
