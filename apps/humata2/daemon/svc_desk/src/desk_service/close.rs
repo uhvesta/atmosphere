@@ -18,7 +18,7 @@ use crate::ports::holder_end;
 use humata2_daemon_ports::Caller;
 use crate::ports as identity;
 use crate::ports::{Started, Progress};
-use crate::ports::{Loaded, run_resume};
+use crate::ports::Loaded;
 use crate::ports as status;
 
 impl DeskSvc {
@@ -218,14 +218,8 @@ impl DeskSvc {
         .await;
         match prepared {
             Ok(loaded) => {
-                tokio::spawn(run_resume(
-                    self.starter.clone(),
-                    self.tell.clone(),
-                    identity::actor(caller),
-                    self.tokens.clone(),
-                    loaded,
-                    progress,
-                ));
+                let (sessions, by) = (self.sessions.clone(), identity::actor(caller));
+                tokio::spawn(async move { sessions.run_resume(by, loaded, progress).await });
                 Ok(())
             }
             Err(error) => {

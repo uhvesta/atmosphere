@@ -30,7 +30,7 @@ use humata2_daemon_ports::Caller;
 use crate::ports as identity;
 use crate::ports::{Progress, Started};
 use crate::ports::HostOp;
-use crate::ports::{clean_title, watch_agent};
+use crate::ports::clean_title;
 use crate::ports as status;
 
 /// The steps of a start, in order, as the operation shows them.
@@ -154,7 +154,7 @@ impl DeskSvc {
         // is allowed, before anything is made; a missing one is refused as
         // its own error naming the agent, never as UNAVAILABLE, which reads
         // as this machine not answering.
-        crate::ports::agent_gate::ready(&self.starter.agents, &agent).await?;
+        self.sessions.agent_ready(&self.starter.agents, &agent).await?;
         let id = assigned.as_ref().map_or_else(
             || format!("se_{}", uuid::Uuid::new_v4().simple()),
             |assigned| assigned.id.clone(),
@@ -206,7 +206,7 @@ impl DeskSvc {
                 progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
                     value: id.clone(),
                 })));
-                watch_agent(self.tell.clone(), id.clone());
+                self.sessions.watch_agent(id.clone());
                 self.tell
                     .session(&id, pb::Change::Created, Some(identity::actor(caller)))
                     .await;
@@ -531,7 +531,7 @@ impl DeskSvc {
             .filter(|agent| !agent.is_empty())
             .unwrap_or_else(|| self.default_agent.clone());
         // SEAM: AGENTSET: a Desk start of a kind that is off is refused.
-        crate::ports::agent_gate::enabled(&self.starter.agents, &name)?;
+        self.sessions.agent_enabled(&self.starter.agents, &name)?;
         self.starter.agents.get(&name).map(|_| name.clone()).map_err(|error| {
             failed(
                 Code::InvalidArgument,

@@ -106,7 +106,7 @@ fn unsent_question(session: &str, text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use humata2_grpc::humata::v1 as pb;
     use humata2_grpc::humata::v1::inbox_service_server::InboxService;
@@ -173,17 +173,21 @@ mod tests {
         }
     }
 
+    /// How long a test waits for background work before it fails.
+    const PATIENCE: Duration = Duration::from_secs(10);
+    /// How often it looks meanwhile.
+    const POLL: Duration = Duration::from_millis(2);
+
     /// Waits for `inbox` to list a request, and returns what it lists.
     async fn listed(inbox: &Inbox) -> Vec<pb::InboxRequest> {
-        let mut found = Vec::new();
-        for _ in 0..100 {
-            found = requests(inbox).await;
-            if !found.is_empty() {
-                break;
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let found = requests(inbox).await;
+            if !found.is_empty() || Instant::now() >= deadline {
+                return found;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(POLL).await;
         }
-        found
     }
 
     #[tokio::test]
@@ -211,14 +215,14 @@ mod tests {
         host_store.put_session(&session("se_remote", "ma_box")).unwrap();
         let host_guard = Arc::new(Guard::new("ma_host", pb::DaemonRole::Host));
         let host = new_inbox(host_guard, host_store, "ma_host".to_owned(), Arc::new(Feed::default()));
-        let mut sent = Vec::new();
-        for _ in 0..100 {
-            sent = journal(&box_store);
-            if !sent.is_empty() {
-                break;
+        let deadline = Instant::now() + PATIENCE;
+        let sent = loop {
+            let sent = journal(&box_store);
+            if !sent.is_empty() || Instant::now() >= deadline {
+                break sent;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+            tokio::time::sleep(POLL).await;
+        };
         assert!(!sent.is_empty(), "the machine kept nothing for the host to see");
         for entry in &sent {
             host.replay("ma_box", entry).await;
@@ -269,15 +273,13 @@ mod tests {
             }))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), heard)
+        tokio::time::timeout(PATIENCE, heard)
             .await
             .expect("choosing to send it didn't try to send it again")
             .unwrap();
-        for _ in 0..100 {
-            if !turns_asking("se_waits") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        let deadline = Instant::now() + PATIENCE;
+        while turns_asking("se_waits") && Instant::now() < deadline {
+            tokio::time::sleep(POLL).await;
         }
         assert!(!turns_asking("se_waits"), "an answered request no longer needs you");
     }

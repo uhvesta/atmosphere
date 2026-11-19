@@ -56,7 +56,6 @@ use tonic::{Code, Request, Response, Status};
 
 use super::{DeskSvc, failed_precondition, now_ms, session_id};
 use crate::ports::carry_failed;
-use crate::ports::rename_folder::rename_alias as alias;
 use crate::ports::{Gated, answer_gated, blocking, failed, gate};
 use crate::ports::assigned;
 use humata2_daemon_ports::{Caller, UserVia};
@@ -64,7 +63,7 @@ use crate::ports as identity;
 use crate::ports::{Progress, Started};
 use crate::ports::call_failed;
 use crate::ports::OperationState;
-use crate::ports::{Loaded, Moving, run_resume, running_turn, start_error};
+use crate::ports::{Loaded, start_error};
 use crate::ports as status;
 use crate::ports::caller_data;
 
@@ -673,7 +672,7 @@ impl DeskSvc {
                     && !request.confirm_running
                     && !approved
                     && !matches!(caller, Caller::Agent(_))
-                    && running_turn(&id, *holder_pid) != pb::SessionStatus::Idle =>
+                    && self.sessions.running_turn(&id, *holder_pid) != pb::SessionStatus::Idle =>
             {
                 return Err(busy(&id, &record.title));
             }
@@ -740,7 +739,7 @@ impl DeskSvc {
     /// Runs an accepted move, holding the session's lock and showing it as
     /// Moving until it ends.
     async fn run_move(&self, caller: Caller, _held: OwnedMutexGuard<()>, mut job: Job, progress: Progress) {
-        let _moving = Moving::begin(&job.journal.session, &self.machine, &job.journal.operation);
+        let _moving = self.sessions.moving(&job.journal.session, &self.machine, &job.journal.operation);
         if let Err(failure) = self.add_repos(&caller, &job, &progress).await {
             end_failed(progress, failure.step, &failure.status);
             return;
@@ -792,8 +791,7 @@ impl DeskSvc {
         };
         // The agent and the shells come back in the new folder, and the
         // operation ends with the resume.
-        run_resume(self.starter.clone(), self.tell.clone(), identity::actor(&caller), self.tokens.clone(), loaded, progress)
-            .await;
+        self.sessions.run_resume(identity::actor(&caller), loaded, progress).await;
         remove_journal(&self.state, &id);
         self.tell.session(&id, pb::Change::Updated, Some(identity::actor(&caller))).await;
     }
@@ -1109,8 +1107,7 @@ impl DeskSvc {
                 return Err(error);
             }
         };
-        run_resume(self.starter.clone(), self.tell.clone(), identity::actor(caller), self.tokens.clone(), loaded, progress)
-            .await;
+        self.sessions.run_resume(identity::actor(caller), loaded, progress).await;
         Ok(())
     }
 
@@ -1237,7 +1234,7 @@ impl DeskSvc {
         let (svc, who, machine, id) = (self.clone(), caller.clone(), machine.to_owned(), id.to_owned());
         tokio::spawn(async move {
             let _held = held;
-            let _moving = Moving::begin(&id, &machine, &shown);
+            let _moving = svc.sessions.moving(&id, &machine, &shown);
             svc.follow_there(&who, Following { machine, id, plan, there }, operations, progress).await;
         });
         Ok(operation)
@@ -1386,7 +1383,7 @@ pub(super) fn recover_after(svc: DeskSvc, started: Arc<dyn crate::ports::DeskRes
     for read in found {
         match read {
             Ok(journal) => {
-                let moving = Moving::begin(&journal.session, &svc.machine, &journal.operation);
+                let moving = svc.sessions.moving(&journal.session, &svc.machine, &journal.operation);
                 journals.push((journal, moving));
             }
             Err(error) => humata2_rpc_kit::log::say!("humatad2: {}", status::chain(&error)),
@@ -1499,7 +1496,11 @@ fn rename_status(error: &RenameError) -> Status {
 
 /// Writes the note each of the session's agents follows at its next resume,
 /// and answers the holders that started under the old folder and still run.
-fn prepare_rename(starter: &humata2_sessions::Starter, journal: &Journal) -> Result<Vec<humata2_svc_channels::rename_alias::Holder>, RenameError> {
+fn prepare_rename(
+    starter: &humata2_sessions::Starter,
+    sessions: &dyn crate::ports::DeskSessionPort,
+    journal: &Journal,
+) -> Result<Vec<humata2_svc_channels::rename_alias::Holder>, RenameError> {
     let store = starter.store.as_ref();
     let records = |source| RenameError::Records { session: journal.session.clone(), source };
     let mut holders = Vec::new();
@@ -1516,7 +1517,8 @@ fn prepare_rename(starter: &humata2_sessions::Starter, journal: &Journal) -> Res
             },
             known: journal.repos.iter().map(|repo| journal.old_folder.join(&repo.dir)).collect(),
             // Codex's and Copilot's conversations name their folder inside them.
-            follows: crate::ports::rename_folder::session_follows(
+            follows: sessions
+                .session_follows(
                 store,
                 &starter.agents,
                 &starter.home,
@@ -1598,7 +1600,7 @@ impl DeskSvc {
     /// Runs an accepted rename move, holding the session's lock and showing
     /// it as Moving until it ends. Nothing it does stops a terminal.
     async fn run_rename(&self, caller: Caller, _held: OwnedMutexGuard<()>, mut job: Job, progress: Progress) {
-        let _moving = Moving::begin(&job.journal.session, &self.machine, &job.journal.operation);
+        let _moving = self.sessions.moving(&job.journal.session, &self.machine, &job.journal.operation);
         if let Err(failure) = self.add_repos(&caller, &job, &progress).await {
             end_failed(progress, failure.step, &failure.status);
             return;
@@ -1609,8 +1611,9 @@ impl DeskSvc {
         // The notes come first, so a restart that finds the folder moved
         // finds them too; then the journal says the rename is next.
         progress.set_step("pack", pb::StepState::Running, None);
-        let (starter, at_journal) = (self.starter.clone(), job.journal.clone());
-        let prepared = off(move || prepare_rename(&starter, &at_journal).map_err(|error| rename_status(&error))).await;
+        let (starter, sessions, at_journal) = (self.starter.clone(), self.sessions.clone(), job.journal.clone());
+        let prepared =
+            off(move || prepare_rename(&starter, sessions.as_ref(), &at_journal).map_err(|error| rename_status(&error))).await;
         let holders = match prepared {
             Ok(holders) => holders,
             Err(error) => {

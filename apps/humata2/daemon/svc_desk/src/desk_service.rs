@@ -91,6 +91,9 @@ pub struct DeskDeps {
     pub channels: std::sync::Arc<dyn crate::ports::DeskChannelPort>,
     /// This start, after which a Desk move cut short is settled (DK-17).
     pub last_start: Arc<dyn crate::ports::DeskRestartPort>,
+    /// The session service's agent watch, turn, resume and Moving status,
+    /// which a Desk session shares with a channel session.
+    pub sessions: Arc<dyn crate::ports::DeskSessionPort>,
 }
 
 /// The Desk service, served beside the session service.
@@ -123,6 +126,7 @@ pub struct DeskSvc {
     restart: Arc<dyn crate::ports::DeskRestartPort>,
     /// The host's change feed, where a Desk session's changes are told.
     feed: Arc<dyn crate::ports::DeskFeedPort>,
+    sessions: Arc<dyn crate::ports::DeskSessionPort>,
 }
 
 /// One lock per Desk session, held across any change to its row, its agent
@@ -171,6 +175,7 @@ pub fn server(deps: DeskDeps) -> pb::desk_service_server::DeskServiceServer<Desk
         channels: deps.channels,
         restart: deps.last_start.clone(),
         feed: deps.handle.feed(),
+        sessions: deps.sessions,
     };
     // DK-17: a Desk move a restart cut short is finished or undone.
     move_to_channel::recover_after(svc.clone(), deps.last_start.clone());

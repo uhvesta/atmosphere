@@ -16,9 +16,10 @@ use humata2_store::TabRecord;
 use humata2_svc_desk::ports::{
     Awaited, Checked, DeskChannelPort, DeskFeedPort, DeskGuardPort, DeskIdentityPort,
     DeskInboxPort, DeskMigrationsPort, DeskOperationsPort, DeskRemotePort, DeskRestartPort,
-    DeskTellPort, DeskTerminalPort, DeskTokensPort, DeskTrashPort, FolderMigrator, HostOp,
-    LinkState, LinkWatch, OperationState, Origin, Progress, ProgressPort, RelayError,
-    RelayedClients, RemoteError, RestartOperationsPort, Scope, Started, TrashOps,
+    DeskSessionPort, DeskTellPort, DeskTerminalPort, DeskTokensPort, DeskTrashPort,
+    FolderMigrator, HostOp, LinkState, LinkWatch, Loaded, Moving, OperationState, Origin,
+    Progress, ProgressPort, RelayError, RelayedClients, RemoteError, RestartOperationsPort, Scope,
+    Started, TrashOps,
 };
 use humata2_svc_desk::{DeskDeps, DeskSvc, server};
 use tokio::sync::{broadcast, watch};
@@ -113,6 +114,10 @@ impl DeskInboxPort for DeskInboxAdapter {
 
     async fn revoked(&self, id: &str, at: SystemTime) -> Result<(), Status> {
         self.0.revoked(id, at).await
+    }
+
+    async fn defer(&self, caller: &Caller, asked: AccessRequest, key: Option<String>, run: Run) -> Status {
+        self.0.defer(caller, asked, key, run).await
     }
 }
 
@@ -212,6 +217,11 @@ struct ProgressAdapter(std::sync::Mutex<Option<crate::operations::Progress>>);
 impl ProgressAdapter {
     fn new(p: crate::operations::Progress) -> Self {
         Self(std::sync::Mutex::new(Some(p)))
+    }
+
+    /// Takes the operation's own handle out, for work that ends it itself.
+    fn take(&self) -> Option<crate::operations::Progress> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 }
 
@@ -342,9 +352,20 @@ impl DeskOperationsPort for DeskOperationsAdapter {
     }
 }
 
-struct NoopRestartOps;
-impl RestartOperationsPort for NoopRestartOps {
-    fn record(&self, _session: &str, _kind: &str, _step: &str, _state: OperationState) {}
+/// The restart's record of the operations it found cut short (D241).
+struct RestartOpsAdapter(crate::restart::Operations);
+
+impl RestartOperationsPort for RestartOpsAdapter {
+    fn record(&self, session: &str, kind: &str, step: &str, state: OperationState) {
+        use crate::restart::OperationState as Kept;
+        let state = match state {
+            OperationState::Pending { waits_for } => Kept::Pending { waits_for },
+            OperationState::Running | OperationState::Succeeded | OperationState::Finished => Kept::Finished,
+            OperationState::Failed(reason) | OperationState::Stuck { reason } => Kept::Stuck { reason },
+            OperationState::Undone { reason } => Kept::Undone { reason },
+        };
+        self.0.record(session, kind, step, state);
+    }
 }
 
 pub(crate) struct DeskRestartAdapter(pub(crate) Arc<RestartStarted>);
@@ -359,16 +380,16 @@ impl DeskRestartPort for DeskRestartAdapter {
     }
 
     async fn wait(&self) -> pb::LastStart {
-        let _ = self.0.wait().await;
-        pb::LastStart::default()
+        self.0.wait().await;
+        self.0.get().cloned().unwrap_or_default()
     }
 
     fn get(&self) -> Option<pb::LastStart> {
-        None
+        self.0.get().cloned()
     }
 
     fn operations(&self) -> Arc<dyn RestartOperationsPort> {
-        Arc::new(NoopRestartOps)
+        Arc::new(RestartOpsAdapter(self.0.operations().clone()))
     }
 
     async fn operation_state(&self, _id: &str) -> Option<OperationState> {
@@ -410,6 +431,98 @@ impl DeskMigrationsPort for DeskMigrationsAdapter {
     }
 }
 
+/// The session service's work a Desk session shares with a channel session.
+pub(crate) struct DeskSessionAdapter {
+    pub(crate) starter: Starter,
+    pub(crate) tell: Tell,
+    pub(crate) tokens: Arc<Tokens>,
+}
+
+#[tonic::async_trait]
+impl DeskSessionPort for DeskSessionAdapter {
+    async fn agent_ready(&self, agents: &humata2_sessions::Agents, agent: &str) -> Result<(), Status> {
+        crate::agent_gate::ready(agents, agent).await.map_err(Status::from)
+    }
+
+    fn agent_enabled(&self, agents: &humata2_sessions::Agents, agent: &str) -> Result<(), Status> {
+        crate::agent_gate::enabled(agents, agent).map_err(Status::from)
+    }
+
+    fn watch_agent(&self, session: String) {
+        crate::session_service::watch_agent(self.tell.clone(), session);
+    }
+
+    fn running_turn(&self, session: &str, holder_pid: u32) -> pb::SessionStatus {
+        crate::session_service::running_turn(session, holder_pid)
+    }
+
+    fn moving(&self, session: &str, to: &str, operation: &str) -> Moving {
+        Moving::new(Box::new(crate::session_service::Moving::begin(session, to, operation)))
+    }
+
+    fn session_follows(
+        &self,
+        store: &humata2_store::Store,
+        agents: &humata2_sessions::Agents,
+        home: &Path,
+        channels: &Path,
+        session: &str,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<humata2_revive::FollowStep>, humata2_store::StoreError> {
+        crate::channel_service::rename_folder::session_follows(store, agents, home, channels, session, from, to)
+    }
+
+    async fn run_resume(&self, by: pb::Actor, loaded: Loaded, progress: Progress) {
+        let Some(own) = progress
+            .port()
+            .downcast_ref::<ProgressAdapter>()
+            .and_then(ProgressAdapter::take)
+        else {
+            progress.fail(resume_error(
+                "the Desk session's resume was handed an operation this daemon didn't start",
+                "resume the session again",
+            ));
+            return;
+        };
+        let (store, key) = (self.starter.store.clone(), loaded.session.id.clone());
+        let read = crate::channel_service::blocking(move || crate::session_service::Loaded::read(&store, &key)).await;
+        let full = match read {
+            Ok(Ok(Some(full))) => full,
+            Ok(Ok(None)) => {
+                own.fail(resume_error(
+                    format!("Desk session {} is gone from this machine", loaded.session.id),
+                    "list the Desk's sessions to see which are here",
+                ));
+                return;
+            }
+            Ok(Err(error)) => {
+                own.fail(resume_error(
+                    format!("couldn't read Desk session {} to resume it: {error}", loaded.session.id),
+                    "check the data folder's disk, then resume the session again",
+                ));
+                return;
+            }
+            Err(error) => {
+                own.fail(resume_error(error.message(), "resume the session again"));
+                return;
+            }
+        };
+        crate::session_service::run_resume(self.starter.clone(), self.tell.clone(), by, self.tokens.clone(), full, own)
+            .await;
+    }
+}
+
+/// A Desk resume that couldn't begin: what failed and how to fix it.
+fn resume_error(message: impl Into<String>, fix: impl Into<String>) -> pb::Error {
+    pb::Error {
+        message: message.into(),
+        fix: fix.into(),
+        retry: None,
+        kind: None,
+    }
+}
+
 /// Construct `humata2_svc_desk::server` wired to `humatad`'s concrete services.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn desk_server(
@@ -432,6 +545,11 @@ pub(crate) fn desk_server(
     channels: ChannelSvc,
     last_start: Arc<RestartStarted>,
 ) -> pb::desk_service_server::DeskServiceServer<DeskSvc> {
+    let sessions = Arc::new(DeskSessionAdapter {
+        starter: starter.clone(),
+        tell: tell.clone(),
+        tokens: tokens.clone(),
+    });
     server(DeskDeps {
         guard: Arc::new(DeskGuardAdapter(guard)),
         operations: Arc::new(DeskOperationsAdapter(operations)),
@@ -451,5 +569,6 @@ pub(crate) fn desk_server(
         migrations: Arc::new(DeskMigrationsAdapter(migrations)),
         channels: Arc::new(DeskChannelAdapter(channels)),
         last_start: Arc::new(DeskRestartAdapter(last_start)),
+        sessions,
     })
 }
