@@ -124,6 +124,12 @@ pub struct SessionView {
     /// Where the Conversation tab is aimed, while it is open (D186).
     #[serde(default)]
     pub conversation: Option<ConversationTarget>,
+    /// How many shells the tab row has placed. A shell listed later, such
+    /// as one the page was opened before it knew of, is added to the row;
+    /// one already placed and then hidden stays hidden. `None` until the
+    /// row is built or brought up to date.
+    #[serde(default)]
+    pub shells_placed: Option<usize>,
 }
 
 /// A choice in the Fork dialog that lists its options under the row.
@@ -1066,6 +1072,18 @@ impl Reducer for Sessions {
                 // The app's workspace knows New agent tab's tabs only as shells.
                 if !state.agent_tabs.is_empty() {
                     keep_agent_tabs(&state.agent_tabs, Arc::make_mut(&mut state.workspace));
+                }
+                // A row built before the session's shells were known, or
+                // before another shell was opened, gets the new ones.
+                for (id, view) in &mut state.views {
+                    // A row not built yet, or not placed since it was restored, is
+                    // left as it is.
+                    if let (false, Some(placed), Some(session)) =
+                        (view.groups.is_empty(), view.shells_placed, state.workspace.session(id))
+                        && placed != session.shells.len()
+                    {
+                        view.ensure_groups(session.shells.len());
+                    }
                 }
                 let waiting: Vec<_> = state
                     .views

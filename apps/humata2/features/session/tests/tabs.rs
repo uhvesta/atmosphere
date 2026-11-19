@@ -26,6 +26,7 @@ fn store() -> (TestStore<Sessions>, Clients) {
                 tabs: vec![Tab::Terminal(0), Tab::Terminal(1)],
                 selected: 0,
             }],
+            shells_placed: Some(1),
             ..Default::default()
         },
     );
@@ -120,6 +121,7 @@ fn split_is_limited_to_two_groups_and_attaches_an_existing_agent() {
         });
         v.focused_group = 1;
         v.tab = 2;
+        v.shells_placed = Some(2);
     });
     store.send(
         A::OpenTerminal {
@@ -317,4 +319,67 @@ fn new_terminal_tab_does_nothing_without_an_open_session() {
     let mut store = TestStore::new(state, Sessions::new(clients));
     store.send(A::NewTerminalTab, |_| {});
     store.finish();
+}
+
+/// A store on the design workspace with "ledger" holding `shells` shells
+/// and open, with no tab row built yet.
+fn ledger_with_shells(shells: usize) -> (TestStore<Sessions>, humata2_clients::model::Workspace) {
+    let mut workspace = fixture::design();
+    let id = SessionId::new("ledger");
+    let session = workspace.sessions.iter_mut().find(|s| s.id == id).unwrap();
+    session.shells = (0..shells).map(|n| format!("sh{n}")).collect();
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
+    let state = SessionState {
+        workspace: Arc::new(workspace.clone()),
+        ..Default::default()
+    };
+    (TestStore::new(state, Sessions::new(clients)).non_exhaustive(), workspace)
+}
+
+fn with_shells(workspace: &humata2_clients::model::Workspace, shells: usize) -> Arc<humata2_clients::model::Workspace> {
+    let mut workspace = workspace.clone();
+    let id = SessionId::new("ledger");
+    let session = workspace.sessions.iter_mut().find(|s| s.id == id).unwrap();
+    session.shells = (0..shells).map(|n| format!("sh{n}")).collect();
+    Arc::new(workspace)
+}
+
+fn row(store: &TestStore<Sessions>) -> Vec<Tab> {
+    store.state().view().map_or_else(Vec::new, |view| view.groups[0].tabs.clone())
+}
+
+#[test]
+fn a_page_opened_before_its_shells_were_known_lists_them_once_they_are() {
+    let (mut store, workspace) = ledger_with_shells(1);
+    let id = SessionId::new("ledger");
+    // Opened while the workspace doesn't list the session yet.
+    let mut empty = workspace.clone();
+    empty.sessions.retain(|s| s.id != id);
+    store.send(A::Show(Arc::new(empty)), |_| {});
+    store.send(A::Open(id.clone()), |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0)]);
+    store.send(A::Show(with_shells(&workspace, 1)), |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0), Tab::Terminal(1)]);
+    assert_eq!(store.state().view().unwrap().groups[0].selected, 0, "the new tab isn't selected");
+}
+
+#[test]
+fn a_shell_hidden_with_keep_running_stays_hidden_when_the_workspace_reloads() {
+    let (mut store, workspace) = ledger_with_shells(1);
+    let id = SessionId::new("ledger");
+    store.send(A::Open(id), |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0), Tab::Terminal(1)]);
+    store.send(A::CloseTab { group: 0, index: 1 }, |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0)]);
+    store.send(A::Show(with_shells(&workspace, 1)), |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0)]);
+}
+
+#[test]
+fn a_shell_opened_elsewhere_joins_an_open_page() {
+    let (mut store, workspace) = ledger_with_shells(1);
+    let id = SessionId::new("ledger");
+    store.send(A::Open(id), |_| {});
+    store.send(A::Show(with_shells(&workspace, 2)), |_| {});
+    assert_eq!(row(&store), [Tab::Terminal(0), Tab::Terminal(1), Tab::Terminal(2)]);
 }

@@ -82,13 +82,24 @@ impl super::SessionView {
         }
     }
 
+    /// Builds the tab row for `shells` shells, or, once built, adds the
+    /// shells listed since it last placed them, unselected. A tab hidden
+    /// with Keep running was placed already, so it stays hidden.
     pub(super) fn ensure_groups(&mut self, shells: usize) {
         if self.groups.is_empty() {
             self.groups.push(TabGroup {
                 tabs: (0..=shells).map(Tab::Terminal).collect(),
                 selected: self.tab.min(shells),
             });
+        } else if let Some(placed) = self.shells_placed.filter(|placed| shells > *placed) {
+            for index in placed + 1..=shells {
+                let tab = Tab::Terminal(index);
+                if !self.groups.iter().any(|group| group.tabs.contains(&tab)) {
+                    self.groups[0].tabs.push(tab);
+                }
+            }
         }
+        self.shells_placed = Some(shells);
         self.focused_group = self.focused_group.min(self.groups.len() - 1);
     }
 

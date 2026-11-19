@@ -184,6 +184,7 @@ fn one_group() -> TestStore<Sessions> {
                 tabs: vec![Tab::Terminal(0), Tab::Terminal(1), doc_tab()],
                 selected: 2,
             }],
+            shells_placed: Some(1),
             ..Default::default()
         },
     );
