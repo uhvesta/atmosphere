@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(with_tools_first(tools, None).unwrap(), "/opt/humata/bin");
         assert_eq!(with_tools_first(Path::new("/a:b"), None), None, "a folder with a colon can't be on PATH");
     }
-    use crate::terminal_session::tests::Fake;
+    use crate::test_support::Fake;
 
     #[test]
     fn a_method_path_names_its_dotted_operation() {
@@ -1268,8 +1268,7 @@ mod tests {
         rig.store.put_session(&fork).unwrap();
         put_origin(&rig, "se_fork", "se_parent", pb::ForkKind::ContextOnly);
 
-        let caller = AgentCaller::of(&fork, "ma_here")
-            .resolve_fork(&rig.store)
+        let caller = resolve_fork(agent_caller_of(&fork, "ma_here"), &rig.store)
             .unwrap();
 
         assert_eq!(
@@ -1299,8 +1298,7 @@ mod tests {
         rig.store.put_session(&plain).unwrap();
 
         for session in [copied, own_code, plain] {
-            let caller = AgentCaller::of(&session, "ma_here")
-                .resolve_fork(&rig.store)
+            let caller = resolve_fork(agent_caller_of(&session, "ma_here"), &rig.store)
                 .unwrap();
             assert_eq!(caller.session_kind(), SessionKind::Ordinary, "{}", session.id);
         }

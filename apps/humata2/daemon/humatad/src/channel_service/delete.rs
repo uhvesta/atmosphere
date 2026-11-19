@@ -1820,7 +1820,8 @@ fn finish_restores(restores: &Restores, root: &Path) {
 #[cfg(test)]
 mod restore_owed_tests {
     use super::*;
-    use crate::restart::{Operations, pending_in};
+    use crate::restart::Operations;
+    use crate::test_support::pending_in;
 
     fn record(id: &str, folder: &str) -> ChannelRecord {
         ChannelRecord {
@@ -1936,6 +1937,6 @@ mod owed_tests {
         let owed = owed_deletes(root.path(), &operations);
 
         assert_eq!(owed.len(), 2, "both notes are kept for the recovery");
-        assert_eq!(crate::restart::pending_in(report.path()), vec!["delete_channel:ch_1".to_owned()]);
+        assert_eq!(crate::test_support::pending_in(report.path()), vec!["delete_channel:ch_1".to_owned()]);
     }
 }

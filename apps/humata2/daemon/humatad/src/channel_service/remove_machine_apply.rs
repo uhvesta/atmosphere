@@ -791,7 +791,7 @@ mod tests {
         let owed = owed_removals(root.path(), &operations);
 
         assert_eq!(owed.len(), 1);
-        assert_eq!(crate::restart::pending_in(report.path()), vec![format!("remove_machine:ch_1:{GONE}")]);
+        assert_eq!(crate::test_support::pending_in(report.path()), vec![format!("remove_machine:ch_1:{GONE}")]);
     }
 
     fn channel(machines: &[&str]) -> ChannelRecord {

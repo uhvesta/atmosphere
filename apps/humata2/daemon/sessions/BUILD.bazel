@@ -6,8 +6,10 @@ rust_library(
     name = "sessions",
     srcs = ["src/lib.rs"],
     crate_name = "humata2_sessions",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__",
-        "//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+    ],
     deps = [
         "//apps/humata2/daemon/revive",
         "//apps/humata2/daemon/sessions_carry",
@@ -24,8 +26,10 @@ rust_library(
     testonly = True,
     srcs = ["src/lib.rs"],
     crate_name = "humata2_sessions",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__",
-        "//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+    ],
     deps = [
         "//apps/humata2/daemon/revive:revive_faults",
         "//apps/humata2/daemon/sessions_carry:sessions_carry_faults",

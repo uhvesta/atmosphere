@@ -149,7 +149,6 @@ mod tests {
 
     use super::*;
     use std::path::PathBuf;
-    use crate::identity::AgentCaller;
     use crate::script_tokens::ScriptCaller;
 
     fn agent() -> Caller {
@@ -162,7 +161,7 @@ mod tests {
             folder: PathBuf::new(),
             created_unix_ms: 0,
         };
-        Caller::Agent(AgentCaller::of(&record, "ma_here"))
+        Caller::Agent(crate::identity::agent_caller_of(&record, "ma_here"))
     }
 
     fn script() -> Caller {

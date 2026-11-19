@@ -1420,7 +1420,7 @@ mod tests {
             staged: None,
         };
         rebuild.note(&operations);
-        assert_eq!(crate::restart::pending_in(report.path()), vec!["rebuild:se_1".to_owned()]);
+        assert_eq!(crate::test_support::pending_in(report.path()), vec!["rebuild:se_1".to_owned()]);
     }
 
     #[test]

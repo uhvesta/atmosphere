@@ -409,7 +409,7 @@ mod tests {
         let restart = std::sync::Arc::new(crate::ports::TestRestart::default());
         let asked = tokio::spawn({
             let restart = restart.clone();
-            async move { stuck_after_restart(&restart, "se_1").await }
+            async move { stuck_after_restart(restart.as_ref(), "se_1").await }
         });
         for _ in 0..10 {
             tokio::task::yield_now().await;
@@ -426,7 +426,7 @@ mod tests {
         });
 
         assert_eq!(asked.await.unwrap().as_deref(), Some("delete its folder by hand"));
-        assert_eq!(stuck_after_restart(&restart, "se_2").await, None, "a start the restart didn't name is not stuck");
+        assert_eq!(stuck_after_restart(restart.as_ref(), "se_2").await, None, "a start the restart didn't name is not stuck");
     }
 
     /// A start the restart named stuck is failed, with its words, so the

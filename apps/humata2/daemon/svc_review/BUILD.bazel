@@ -1,5 +1,23 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
+# What svc_review is built on that has no fault-point build.
+SVC_REVIEW_SHARED_DEPS = [
+    "//apps/humata2/api/proto:humata2_store_rust",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/review_diff",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:prost",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
 # DiffService, ReviewChatService, CommentService, ViewService, and
 # PullRequestReviewService (RV-28..RV-34, PR-1..PR-26, SM-7..SM-21).
 rust_library(
@@ -7,23 +25,23 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_name = "humata2_svc_review",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = [
-        "//apps/humata2/api/proto:humata2_store_rust",
-        "//apps/humata2/daemon/access",
-        "//apps/humata2/daemon/humatad:grpc",
-        "//apps/humata2/daemon/ports",
-        "//apps/humata2/daemon/review_diff",
-        "//apps/humata2/daemon/rpc_kit",
+    deps = SVC_REVIEW_SHARED_DEPS + [
         "//apps/humata2/daemon/runtime",
         "//apps/humata2/daemon/store",
-        "@crates//:prost",
-        "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tokio-stream",
-        "@crates//:tonic",
-        "@crates//:uuid",
+    ],
+)
+
+# The same crate on the fault-point builds of its parts, for the faults
+# daemons: one graph, so their fault points stay live.
+rust_library(
+    name = "svc_review_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_review",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SVC_REVIEW_SHARED_DEPS + [
+        "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/store:store_faults",
     ],
 )
 

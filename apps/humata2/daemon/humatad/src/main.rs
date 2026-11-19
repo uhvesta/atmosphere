@@ -87,6 +87,8 @@ mod status;
 mod storage;
 pub(crate) use humata2_rpc_kit::sync;
 mod terminal;
+#[cfg(test)]
+mod test_support;
 pub(crate) use humata2_daemon_runtime::terminal_uuid;
 pub(crate) use humata2_daemon_runtime::tool_path;
 mod trash_service;

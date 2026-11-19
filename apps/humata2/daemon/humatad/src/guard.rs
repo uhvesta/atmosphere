@@ -545,7 +545,6 @@ mod tests {
     use humata2_store::SessionRecord;
 
     use super::*;
-    use crate::identity::AgentCaller;
 
     /// The machine this daemon is on, where the agent's session runs.
     const MACHINE: &str = "m1";
@@ -566,7 +565,7 @@ mod tests {
 
     /// The agent of a session on this machine, in channel `ch_a`.
     fn agent() -> Caller {
-        Caller::Agent(AgentCaller::of(&record(), MACHINE))
+        Caller::Agent(crate::identity::agent_caller_of(&record(), MACHINE))
     }
 
     /// A session of the same channel on the other machine.

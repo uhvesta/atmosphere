@@ -676,7 +676,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal_session::tests::{Fake, terminal};
+    use crate::test_support::{Fake, terminal};
 
     fn logins(fake: Fake, lifetime: Option<Duration>) -> CliLogins {
         CliLogins::new(Box::new(fake), lifetime)

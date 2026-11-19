@@ -53,8 +53,11 @@ FAULT_SWAPPED = [
     "//apps/humata2/daemon/runtime",
     "//apps/humata2/daemon/sessions",
     "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/svc_away",
     "//apps/humata2/daemon/svc_channels",
     "//apps/humata2/daemon/svc_desk",
+    "//apps/humata2/daemon/svc_files",
+    "//apps/humata2/daemon/svc_inbox",
     "//apps/humata2/daemon/svc_machines",
     "//apps/humata2/daemon/svc_peer",
     "//apps/humata2/daemon/svc_stop_restart",
@@ -82,9 +85,6 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/rpc_kit",
-    "//apps/humata2/daemon/svc_away",
-    "//apps/humata2/daemon/svc_files",
-    "//apps/humata2/daemon/svc_inbox",
     "//apps/humata2/daemon/vt_authority",
     "//apps/humata2/terminal/vt:ghostty_vt",
     "@crates//:clap",
@@ -117,8 +117,11 @@ FAULTS_DEPS = SHARED_DEPS + [
     "//apps/humata2/daemon/runtime:runtime_faults",
     "//apps/humata2/daemon/sessions:sessions_faults",
     "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/svc_away:svc_away_faults",
     "//apps/humata2/daemon/svc_channels:svc_channels_faults",
     "//apps/humata2/daemon/svc_desk:svc_desk_faults",
+    "//apps/humata2/daemon/svc_files:svc_files_faults",
+    "//apps/humata2/daemon/svc_inbox:svc_inbox_faults",
     "//apps/humata2/daemon/svc_machines:svc_machines_faults",
     "//apps/humata2/daemon/svc_peer:svc_peer_faults",
     "//apps/humata2/daemon/svc_stop_restart:svc_stop_restart_faults",
@@ -275,9 +278,9 @@ rust_binary(
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
     deps = FULL_FAULTS_DEPS + [
-        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_board:svc_board_faults",
         "//apps/humata2/daemon/svc_mcp",
-        "//apps/humata2/daemon/svc_review",
+        "//apps/humata2/daemon/svc_review:svc_review_faults",
     ],
 )
 
@@ -392,7 +395,7 @@ rust_binary(
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FAULTS_DEPS + ["//apps/humata2/daemon/svc_review"],
+    deps = FAULTS_DEPS + ["//apps/humata2/daemon/svc_review:svc_review_faults"],
 )
 
 rust_binary(
@@ -500,6 +503,7 @@ filegroup(
 rust_test(
     name = "humatad2_unit_test",
     crate = ":humatad2",
+    crate_features = ALL_SVC_FEATURES,
     rustc_env = APP_IDENTITY,
     deps = [
         "//apps/humata2/daemon/conversation",
@@ -1365,7 +1369,6 @@ POWER_CUT_SCOPED_TESTS = [
     "gh_repos",
     "holder_gone",
     "holder_swap_identity",
-    "hooks",
     "hooks_remote",
     "host_variables_move",
     "inbox",
@@ -1405,7 +1408,6 @@ POWER_CUT_SCOPED_TESTS = [
     "resume_exits_at_once_remote",
     "running_holders",
     "running_holders_remote",
-    "screen_questions",
     "screen_questions_remote",
     "session_add_repo",
     "session_events",
@@ -1456,7 +1458,6 @@ REVIEW_SCOPED_TESTS = [
     "comment_tools",
     "comments",
     "pr_base",
-    "pr_commits",
     "pr_diff_stress",
     "pr_refresh",
     "pr_review",
@@ -1482,6 +1483,7 @@ CATALOG_SCOPED_TESTS = [
     "codex_trust",
     "history",
     "history_tools",
+    "hooks",
     "login",
     "marks",
     "provider_import",
@@ -1492,6 +1494,7 @@ CATALOG_SCOPED_TESTS = [
     "repo_owners",
     "repo_tools",
     "repos",
+    "screen_questions",
     "skills",
     "trash",
 ]
@@ -1531,6 +1534,67 @@ TRANSFERS_SCOPED_TESTS = [
     "transfer_end",
     "transfers",
 ]
+
+# The NEED_DATA / NEED_ENV key a scoped test uses for a need, keyed by
+# "<test>/<need>": its profile's binaries in place of the full daemon's. A
+# test in more than one profile takes the first that covers the need, in
+# the order power cut, machines, review, catalog, away board, transfers
+# (a later profile here overrides an earlier one).
+SCOPED_PROFILES = [
+    (
+        "TR_",
+        TRANSFERS_SCOPED_TESTS,
+        [
+            "BASE",
+            "FAULTS",
+        ],
+    ),
+    (
+        "AB_",
+        AWAY_BOARD_SCOPED_TESTS,
+        [
+            "BASE",
+            "RELEASE",
+        ],
+    ),
+    (
+        "CAT_",
+        CATALOG_SCOPED_TESTS,
+        ["BASE"],
+    ),
+    (
+        "REV_",
+        REVIEW_SCOPED_TESTS,
+        [
+            "BASE",
+            "FAULTS",
+        ],
+    ),
+    (
+        "MACH_",
+        MACHINES_SCOPED_TESTS,
+        [
+            "BASE",
+            "RELEASE",
+        ],
+    ),
+    (
+        "PC_",
+        POWER_CUT_SCOPED_TESTS,
+        [
+            "BASE",
+            "FAULTS",
+            "RELEASE",
+        ],
+    ),
+]
+
+SCOPED_NEED = {
+    test + "/" + need: prefix + need
+    for prefix, tests, needs in SCOPED_PROFILES
+    for test in tests
+    for need in needs
+}
 
 NEED_DATA = {
     "AB_BASE": [
@@ -1662,27 +1726,10 @@ NEED_ENV = {
                 src.removeprefix("tests/").removesuffix(".rs"),
                 [],
             )
-            for label in NEED_DATA[
-                ("PC_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS", "RELEASE"]
-                ) else ("MACH_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in MACHINES_SCOPED_TESTS and
-                    need in ["BASE", "RELEASE"]
-                ) else ("REV_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in REVIEW_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS"]
-                ) else ("CAT_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in CATALOG_SCOPED_TESTS and
-                    need == "BASE"
-                ) else ("AB_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in AWAY_BOARD_SCOPED_TESTS and
-                    need in ["BASE", "RELEASE"]
-                ) else ("TR_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in TRANSFERS_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS"]
-                ) else need
-            ]
+            for label in NEED_DATA[SCOPED_NEED.get(
+                src.removeprefix("tests/").removesuffix(".rs") + "/" + need,
+                need,
+            )]
         ],
         env = {
             variable: path
@@ -1690,27 +1737,10 @@ NEED_ENV = {
                 src.removeprefix("tests/").removesuffix(".rs"),
                 [],
             )
-            for variable, path in NEED_ENV[
-                ("PC_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS", "RELEASE"]
-                ) else ("MACH_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in MACHINES_SCOPED_TESTS and
-                    need in ["BASE", "RELEASE"]
-                ) else ("REV_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in REVIEW_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS"]
-                ) else ("CAT_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in CATALOG_SCOPED_TESTS and
-                    need == "BASE"
-                ) else ("AB_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in AWAY_BOARD_SCOPED_TESTS and
-                    need in ["BASE", "RELEASE"]
-                ) else ("TR_" + need) if (
-                    src.removeprefix("tests/").removesuffix(".rs") in TRANSFERS_SCOPED_TESTS and
-                    need in ["BASE", "FAULTS"]
-                ) else need
-            ].items()
+            for variable, path in NEED_ENV[SCOPED_NEED.get(
+                src.removeprefix("tests/").removesuffix(".rs") + "/" + need,
+                need,
+            )].items()
         },
         # A shard of a power-cut suite traces its operations and cuts each
         # at all of its points: long, but each wait in it has a deadline.

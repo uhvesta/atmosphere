@@ -3033,9 +3033,14 @@ daemon and, as far as physically possible, the machine.
 
 - **PER-5** A `humatad` crash or upgrade leaves holders untouched. A new
   daemon finds the running holders and reattaches to them.
-- **PER-6** No running holder is replaced; new holder versions apply to new
-  sessions and to sessions after their next restart ("Migrate holders"
-  restarts idle agent sessions, D281).
+- **PER-6** A running terminal's program is never restarted to change its
+  holder's build. A new holder build takes each running holder over in place:
+  same process, same program, same screen and scrollback, and viewers
+  reconnect by themselves. A take-over that can't be proven safe is refused
+  before it starts and the terminal carries on as it was. A holder that can't
+  hand itself over keeps running on its own build; its agent restarts once, at
+  an idle moment, only after the owner clicks Migrate, and its shell is never
+  restarted (D801).
 - **PER-7** One daemon runs per machine, enforced by a lock file. A second
   daemon exits with a message naming the running one.
 
@@ -3145,6 +3150,10 @@ daemon and, as far as physically possible, the machine.
   snapshot, kept until a newer one checks out), so a damaged database is
   restored, not lost; what changed after that copy is listed in the restart
   report.
+- **PER-32** Humata ends a running terminal only when the owner ends it (End,
+  End for good, Stop, the End choice in a confirm, removing its machine) or to
+  undo a start Humata itself never finished. Rename, move, archive, close and
+  upgrade keep it running, or say why they can't before acting (D801).
 
 ## 20. Async: working while the host is away
 

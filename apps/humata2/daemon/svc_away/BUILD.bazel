@@ -1,26 +1,43 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
+# What svc_away is built on that has no fault-point build.
+SVC_AWAY_SHARED_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
+    "//apps/humata2/api/grpc:review",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/passphrase",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:prost",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+]
+
 rust_library(
     name = "svc_away",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_svc_away",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = [
-        "//apps/humata2/api/grpc:core",
-        "//apps/humata2/api/grpc:events",
-        "//apps/humata2/api/grpc:inbox",
-        "//apps/humata2/api/grpc:peer",
-        "//apps/humata2/api/grpc:review",
-        "//apps/humata2/daemon/access",
-        "//apps/humata2/daemon/passphrase",
-        "//apps/humata2/daemon/ports",
-        "//apps/humata2/daemon/rpc_kit",
+    deps = SVC_AWAY_SHARED_DEPS + [
         "//apps/humata2/daemon/store",
-        "@crates//:prost",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tokio-stream",
-        "@crates//:tonic",
+    ],
+)
+
+# The same crate on the fault-point builds of its parts, for the faults
+# daemons: one graph, so their fault points stay live.
+rust_library(
+    name = "svc_away_faults",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_svc_away",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SVC_AWAY_SHARED_DEPS + [
+        "//apps/humata2/daemon/store:store_faults",
     ],
 )
 

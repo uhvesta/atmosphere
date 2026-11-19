@@ -625,9 +625,14 @@ pub fn running_turn(_session_id: &str, _holder_pid: u32) -> pb::SessionStatus {
     pb::SessionStatus::Unspecified
 }
 
-/// Placeholder for `session_service::stuck_start`.
-pub fn stuck_start<'a>(_last: &'a pb::LastStart, _id: &str) -> Option<&'a str> {
-    None
+/// The start the restart's report names as one it couldn't finish or remove:
+/// what it says about `id`, which is what the person has to do. Only the
+/// session's own line counts, not a shell tab of it.
+pub fn stuck_start<'a>(last: &'a pb::LastStart, id: &str) -> Option<&'a str> {
+    last.not_brought_back
+        .iter()
+        .find(|line| line.session == id && line.tab.is_empty())
+        .map(|line| line.problem.as_str())
 }
 
 /// Placeholder for `channel_service::carry_conversations`.

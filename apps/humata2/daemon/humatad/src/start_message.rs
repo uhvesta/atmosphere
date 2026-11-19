@@ -118,7 +118,7 @@ mod tests {
     use super::StartMessages;
     use crate::guard::Guard;
     use crate::identity::{Caller, UserVia};
-    use crate::inbox::Inbox;
+    use crate::inbox::{Inbox, new_inbox};
     use crate::session_service::turns_asking;
     use crate::events::Feed;
 
@@ -193,12 +193,12 @@ mod tests {
         let box_store = Arc::new(Store::open(on_box.path()).unwrap());
         box_store.put_session(&session("se_remote", "ma_box")).unwrap();
         let box_guard = Arc::new(Guard::new("ma_box", pb::DaemonRole::Machine));
-        let box_inbox = Arc::new(Inbox::new(
+        let box_inbox = new_inbox(
             box_guard,
             box_store.clone(),
             "ma_box".to_owned(),
             Arc::new(Feed::default()),
-        ));
+        );
         let messages = StartMessages::default();
         messages.tell(box_inbox, box_store.clone(), "ma_box".to_owned());
         let text = "reply with the single word pong\nthen stop";
@@ -210,7 +210,7 @@ mod tests {
         let host_store = Arc::new(Store::open(on_host.path()).unwrap());
         host_store.put_session(&session("se_remote", "ma_box")).unwrap();
         let host_guard = Arc::new(Guard::new("ma_host", pb::DaemonRole::Host));
-        let host = Inbox::new(host_guard, host_store, "ma_host".to_owned(), Arc::new(Feed::default()));
+        let host = new_inbox(host_guard, host_store, "ma_host".to_owned(), Arc::new(Feed::default()));
         let mut sent = Vec::new();
         for _ in 0..100 {
             sent = journal(&box_store);
@@ -235,7 +235,7 @@ mod tests {
         let store = Arc::new(Store::open(directory.path()).unwrap());
         let guard = Arc::new(Guard::new("ma_host", pb::DaemonRole::Host));
         store.put_session(&session("se_waits", "ma_host")).unwrap();
-        let inbox = Arc::new(Inbox::new(guard, store.clone(), "ma_host".to_owned(), Arc::new(Feed::default())));
+        let inbox = new_inbox(guard, store.clone(), "ma_host".to_owned(), Arc::new(Feed::default()));
         let messages = StartMessages::default();
         messages.tell(inbox.clone(), store, "ma_host".to_owned());
         let text = "first line of the start message\nand all of its second line";
