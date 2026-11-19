@@ -6,6 +6,12 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **2026-11-19 — Claude Code (Opus 5.5) to Gemini: I'm resuming the feature work now that the crate split is done.** I'm Claude Code, running `/dag-walk resume`, and I'm starting the `RESUME.md` › Release plan from step 1 (Diff panel layout fix → 0.3.7). Gemini keeps test optimization. To avoid stepping on each other:
+  - **Gemini owns** (I won't edit these until you hand them back here): `daemon/humatad/tests/common/**`, `daemon/humatad/tests/*.rs` timing/sharding, `clients/live_test_support/**`, `tools/tests/slow.txt`, `tools/tests/presubmit.sh`, and the uncommitted edits in `svc_board/src/lib.rs`, `svc_files/src/ops.rs`, `svc_stop_restart/src/restart.rs`.
+  - **Claude Code owns:** `ui/**`, `features/**`, `desktop/**` (goldens), `clients/src/**` outside `live_test_support`, and the milestone files for release-plan steps 1–11.
+  - **One bazel:** we share this worktree's bazel server. Neither of us runs `bazel clean` or `bazel shutdown`. Batch builds where you can.
+  - **Git:** I commit only my own paths with `git add -- <paths>`. I won't stage, commit, revert or stash your work. Please do the same for mine.
+  - If you need a file I own, or I need one of yours, write a line here under this entry.
 - **Start with `RESUME.md` › Release plan (owner, 2026-11-19).** It is the order of work and releases: patches are a release build plus the cheap tests (`presubmit.sh`), a launch check every 3rd patch, and the full suite for each minor (0.4.0, 0.5.0, 0.6.0). It replaces the release policy below.
 - **Release policy (owner, 2026-11-18 ~20:00):** a green `bazel build //apps/humata2/...` plus the daemon unit tests is enough for a patch release. Red tests and pending goldens go into the next patch. A minor version waits until the lanes are done.
 - **SPLIT (owner, after the whole backlog):** split the big crates so Bazel caches more tests. Sizes: daemon/humatad ~148k lines, ui ~44k, clients ~21k, clients/live ~17k, daemon/sessions ~16k. panel_changes.rs ~3.8k lines is shared by three lanes. Goal: a change rebuilds and retests only what depends on it.
@@ -459,3 +465,4 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
     4. `clients/src/fakes/clipboard.rs` → **1 action, 3.2s** (0 rebuild of `clients:api`, `features/*`, `ui/*`, or `clients/live_*`).
     5. `api/proto/humata/v1/review.proto` → **1.57s, 5 cache hits** (0 rebuild of `rpc_kit`, `runtime`, `svc_board`, `svc_files`, `live_machines`).
   - **C1–C3 (`daemon/svc_*`):** All 19 `daemon/svc_*` crates extracted (with mandatory ≤12k LOC splits `svc_upgrade` + `svc_stop_restart`, `svc_channels` + `svc_desk`, and 3-way `svc_sessions_{common,local,archive,transfer}`); 18/19 compiling green, 17/19 unit tests passing (`humatad2`, `humatad2_admin`, `humatad2_test_power_cut`, `desktop:humata2`, `cli:humata` all green). Stopping cleanly after Part 1 + Part 2 per owner directive; Part 3 feature lanes (`GOLDENFIX`, `0.4`, `NORMALREL`, `FASTREL`) untouched.
+- 2026-11-19 main (Claude Code, Opus 5.5): resuming feature work after the crate split. Starting RESUME.md › Release plan step 1. Gemini keeps test optimization; ownership split in Resume here.
