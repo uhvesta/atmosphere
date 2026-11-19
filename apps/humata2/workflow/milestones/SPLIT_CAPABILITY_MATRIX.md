@@ -34,7 +34,7 @@
 | `clients/live_daemon/tests/inbox.rs` | `inbox`, `channels`, `sessions` | `admin` | — | **`humatad2_test_power_cut`** |
 | `clients/live_daemon/tests/marks.rs` | `catalog`, `channels`, `sessions` | `admin` | — | **`humatad2_test_catalog_remote`** |
 | `clients/live_daemon/tests/parity_daemon.rs` | full workspace parity (`channels`, `sessions`, `board`, `inbox`, `files`, `machines`, `catalog`) | `admin` | `holder` | **Tier C (`:humatad2_admin`)** |
-| `clients/live_daemon/tests/term_restart.rs` | `terminal`, `sessions`, `channels`, `lifecycle` | `admin` | `holder` | **`humatad2_test_power_cut`** |
+| `clients/live_daemon/tests/term_restart.rs` | `terminal`, `sessions`, `channels`, `lifecycle` | `admin` | `holder` | **`humatad2_test_away_board`** (the workspace load reads board items) |
 | `clients/live_desk/tests/desk.rs` | `desk`, `channels`, `sessions` | `admin` | `holder` | **`humatad2_test_power_cut`** |
 | `clients/live_diff/tests/diffs.rs` | `review`, `sessions`, `channels` | `admin` | — | **`humatad2_test_review_remote`** |
 | `clients/live_files/tests/file_manager.rs` | `files`, `transfers`, `desk`, `channels` | `admin` | — | **`humatad2_test_transfers`** |
