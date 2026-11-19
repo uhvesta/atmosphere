@@ -174,3 +174,4 @@ Order: T0, T1, T2, T3 in parallel → T4, T5, T8, T9 → T10; T6 and T7 when the
 - **P8 A turn's elapsed time comes from a new `Session.status_since`, shown only in the session tab header and only while Working.** Reason: `last_output_at` is not a turn start; the sidebar stays still (no per-second redraws across the list).
 - **P9 A stalled operation shows nothing new.** Elapsed keeps counting and the existing Cancel stays; no "seems stuck" label. Reason: no unfixable detection.
 - **P10 The diff indicator waits for DIFFVIEW; the holder count waits for LIVEHOLDER T6.** PROGRESS can close and release without T6/T7 if either owner is still open, carrying them as follow-ups in those milestones.
+- 2026-11-19 (DIFFUI2): frames 122–124 are recorded and Fable-approved (WORKLOG, committed in 192f210c), so T10's frames are done. Still open: 125 (waits for LIVEHOLDER T6) and 126 (T7's Diff loading sweep, not drawn yet).

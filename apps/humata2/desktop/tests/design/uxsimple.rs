@@ -10,6 +10,14 @@ use gpui_kit::{prelude::*, *};
 
 use crate::kit::*;
 
+// The mockups' light-mode tones: dark text colours, bright status dots.
+const GREEN: u32 = 0x28a745;
+const ORANGE: u32 = 0xd98200;
+const RED: u32 = 0xe0393e;
+const GREY: u32 = 0xb0b0b6;
+const DOT_GREEN: u32 = 0x28c840;
+const DOT_ORANGE: u32 = 0xf5a623;
+
 // ---------- small parts
 
 fn dim(look: Look) -> u32 {
@@ -143,7 +151,7 @@ fn sidebar(look: Look, state: u32, badge: Option<&'static str>) -> Div {
         .when_some(badge, |r, b| r.child(grow()).child(div().text_size(px(12.)).font_weight(FontWeight::NORMAL).child(b)));
     let leaf = |hex: u32, text: &'static str| row().h(px(29.)).px(px(10.)).ml(px(6.)).gap(px(10.)).child(dot(hex)).child(text);
     let folded = |text: &'static str| row().h(px(29.)).px(px(10.)).gap(px(10.)).child(small_icon(IconName::ChevronRight, dim(look))).child(text);
-    let host = |text: &'static str| row().h(px(29.)).px(px(10.)).gap(px(10.)).child(dot(GREEN)).child(text);
+    let host = |text: &'static str| row().h(px(29.)).px(px(10.)).gap(px(10.)).child(dot(DOT_GREEN)).child(text);
     div()
         .w(px(280.))
         .h_full()
@@ -183,7 +191,7 @@ fn sidebar(look: Look, state: u32, badge: Option<&'static str>) -> Div {
                 .child(bold("payments-rewrite")),
         )
         .child(selected_row)
-        .child(leaf(GREEN, "Refund retries"))
+        .child(leaf(DOT_GREEN, "Refund retries"))
         .child(leaf(GREY, "API rate limiter"))
         .child(folded("infra"))
         .child(folded("pr-reviews"))
@@ -428,9 +436,8 @@ fn layer(look: Look, n: Option<&'static str>, title: &'static str, prs: &'static
             .justify_center()
             .text_size(px(12.))
             .border_1()
-            .border_dashed()
-            .border_color(c(look.tertiary))
-            .bg(c(look.card))
+            .when(!sel, |d| d.border_dashed().border_color(c(look.tertiary)).bg(c(look.card)))
+            .when(sel, |d| d.border_color(c(look.accent)).bg(c(look.accent)).text_color(c(0xffffff)))
             .child("≡"),
     };
     row()
@@ -470,7 +477,7 @@ fn stack(look: Look, sel: usize, whole: Option<Div>, prs: [&'static str; 3], sta
         .child(layer(look, Some("3"), "reads", prs[2], pp[2], sel == 3, s3))
 }
 
-const REPOS: [&str; 3] = ["api · ledger · sdk", "ledger · infra", "api · web · sdk"];
+const REPOS: [&str; 3] = ["ledger · infra", "api · ledger · sdk", "api · web · sdk"];
 const _: [&str; 3] = REPOS;
 
 fn repo(look: Look, name: &'static str, base: &'static str, add: &'static str, del: &'static str) -> Div {
@@ -494,13 +501,11 @@ enum Ck {
     No,
     Done,
     Changed,
-    None,
 }
 
 fn check(look: Look, ck: Ck) -> Option<Div> {
     let base = div().size(px(15.)).rounded_full().flex_shrink_0().flex().items_center().justify_center();
     match ck {
-        Ck::None => Option::None,
         Ck::No => Some(base.border_1().border_color(c(look.tertiary))),
         Ck::Done => Some(base.bg(c(GREEN)).child(Icon::new(IconName::Check).size(px(10.)).text_color(c(0xffffff)))),
         Ck::Changed => Some(base.border_1().border_color(c(ORANGE)).bg(c(look.attention_bg))),
@@ -541,6 +546,10 @@ fn done_count(n: &'static str) -> Div {
 }
 
 fn file_bar(look: Look, path: &'static str, name: &'static str, key_tag: bool, right: Div) -> Div {
+    file_bar_note(look, path, name, key_tag, None, right)
+}
+
+fn file_bar_note(look: Look, path: &'static str, name: &'static str, key_tag: bool, note: Option<&'static str>, right: Div) -> Div {
     row()
         .h(px(38.))
         .px(px(14.))
@@ -553,6 +562,7 @@ fn file_bar(look: Look, path: &'static str, name: &'static str, key_tag: bool, r
         .child(path)
         .child(div().text_color(c(look.text)).child(name))
         .when(key_tag, |r| r.child(key(look)))
+        .when_some(note, |r, n| r.child(t(look.secondary, n)))
         .child(grow())
         .child(right)
 }
@@ -737,10 +747,10 @@ fn files1(look: Look, sel: bool) -> Div {
         .flex()
         .flex_col()
         .child(repo(look, "ledger", "", "+79", "−0"))
-        .child(file(look, "0042_accounts.sql", "migrations/", "+41", "−0", Ck::None, sel, vec![key(look)]))
-        .child(file(look, "0043_entries.sql", "migrations/", "+38", "−0", Ck::None, false, vec![]))
+        .child(file(look, "0042_accounts.sql", "migrations/", "+41", "−0", Ck::No, sel, vec![key(look)]))
+        .child(file(look, "0043_entries.sql", "migrations/", "+38", "−0", Ck::No, false, vec![]))
         .child(repo(look, "infra", "", "+18", "−0"))
-        .child(file(look, "ledger.tf", "db/", "+18", "−0", Ck::None, false, vec![]))
+        .child(file(look, "ledger.tf", "db/", "+18", "−0", Ck::No, false, vec![]))
 }
 
 fn sql_rows() -> Rows {
@@ -827,7 +837,7 @@ fn all_files(look: Look, api_client: (Ck, Vec<Div>, &'static str, &'static str),
 }
 
 fn tabs2() -> Vec<Tab> {
-    vec![Tab { name: "claude", dot: Some(GREEN), on: true }, Tab { name: "zsh", dot: None, on: false }]
+    vec![Tab { name: "claude", dot: Some(DOT_GREEN), on: true }, Tab { name: "zsh", dot: None, on: false }]
 }
 
 // ---------- 1-1
@@ -860,8 +870,8 @@ pub fn start_working(look: Look) -> Div {
         look,
         row()
             .items_stretch()
-            .child(sidebar(look, GREEN, None))
-            .child(session_main(look, GREEN, &tabs2(), Some("5 repos · devbox-1"), out, ""))
+            .child(sidebar(look, DOT_GREEN, None))
+            .child(session_main(look, DOT_GREEN, &tabs2(), Some("5 repos · devbox-1"), out, ""))
             .child(rail(look, false, "Diff · 9")),
     )
 }
@@ -888,28 +898,28 @@ pub fn stack_made(look: Look) -> Div {
         .child(stack(look, 0, None, ["2 PRs", "3 PRs", "3 PRs"], [None, None, None], ["", "", ""]))
         .child(sep(look))
         .child(repo(look, "api", "against main", "+205", "−45"))
-        .child(file(look, "client.rs", "src/", "+62", "−21", Ck::None, false, vec![]))
-        .child(file(look, "entry.rs", "src/", "+81", "−3", Ck::None, false, vec![]))
-        .child(file(look, "reads.rs", "src/ledger/", "+62", "−21", Ck::None, false, vec![]))
+        .child(file(look, "client.rs", "src/", "+62", "−21", Ck::No, false, vec![]))
+        .child(file(look, "entry.rs", "src/", "+81", "−3", Ck::No, false, vec![]))
+        .child(file(look, "reads.rs", "src/ledger/", "+62", "−21", Ck::No, false, vec![]))
         .child(repo(look, "infra", "against main", "+18", "−0"))
-        .child(file(look, "ledger.tf", "db/", "+18", "−0", Ck::None, false, vec![]))
+        .child(file(look, "ledger.tf", "db/", "+18", "−0", Ck::No, false, vec![]))
         .child(repo(look, "ledger", "against release/2.4", "+142", "−18"))
-        .child(file(look, "0042_accounts.sql", "migrations/", "+41", "−0", Ck::None, false, vec![]))
-        .child(file(look, "0043_entries.sql", "migrations/", "+38", "−0", Ck::None, false, vec![]))
-        .child(file(look, "posting.rs", "src/", "+63", "−18", Ck::None, false, vec![]))
+        .child(file(look, "0042_accounts.sql", "migrations/", "+41", "−0", Ck::No, false, vec![]))
+        .child(file(look, "0043_entries.sql", "migrations/", "+38", "−0", Ck::No, false, vec![]))
+        .child(file(look, "posting.rs", "src/", "+63", "−18", Ck::No, false, vec![]))
         .child(repo(look, "sdk", "against main", "+96", "−12"))
-        .child(file(look, "entry.ts", "src/", "+44", "−8", Ck::None, false, vec![]))
-        .child(file(look, "client.ts", "src/", "+52", "−4", Ck::None, false, vec![]))
+        .child(file(look, "entry.ts", "src/", "+44", "−8", Ck::No, false, vec![]))
+        .child(file(look, "client.ts", "src/", "+52", "−4", Ck::No, false, vec![]))
         .child(repo(look, "web", "against main", "+71", "−30"))
-        .child(file(look, "LedgerTable.tsx", "src/ledger/", "+71", "−30", Ck::None, false, vec![]))
+        .child(file(look, "LedgerTable.tsx", "src/ledger/", "+71", "−30", Ck::No, false, vec![]))
         .child(more(look, "11 more files…"));
     let bottom = foot().child(link(look, "8 pull requests open")).child(grow()).child(button14(look, "Send to claude").opacity(0.5));
     frame(
         look,
         row()
             .items_stretch()
-            .child(sidebar(look, GREEN, None))
-            .child(session_main(look, GREEN, &tabs2(), None, out, "show me the stack"))
+            .child(sidebar(look, DOT_GREEN, None))
+            .child(session_main(look, DOT_GREEN, &tabs2(), None, out, "show me the stack"))
             .child(panel(look, 500., "5 repos", None, body, bottom))
             .child(rail(look, true, "Diff · 23")),
     )
@@ -951,8 +961,8 @@ pub fn ask_agent_to_show(look: Look) -> Div {
         look,
         row()
             .items_stretch()
-            .child(sidebar(look, GREEN, None))
-            .child(session_main(look, GREEN, &tabs2(), None, out, ""))
+            .child(sidebar(look, DOT_GREEN, None))
+            .child(session_main(look, DOT_GREEN, &tabs2(), None, out, ""))
             .child(panel(look, 500., "Layer 1 of 3", Some(strip(look, "claude arranged the stack and moved you to layer 1")), body, bottom))
             .child(rail(look, true, "Diff · 23")),
     )
@@ -1065,7 +1075,7 @@ pub fn looks_good_per_layer(look: Look) -> Div {
         .child(lines(look, "@@ -18,6 +18,8 @@ impl Reads {", rows));
     let bottom = foot()
         .child(link(look, "‹ Previous layer"))
-        .child(t(dim(look), "Next layer ›"))
+        .child(link(look, "Next layer ›"))
         .child(grow())
         .child(good_button(look, "✓ Looks good"))
         .child(primary(look, "Send to claude ▴"));
@@ -1099,18 +1109,17 @@ pub fn new_agent_tab_menu(look: Look) -> Div {
     let bottom = foot()
         .children(nav_links(look))
         .child(grow())
-        .child(t(dim(look), "2 drafts · 1 layer looks good"))
+        .child(button14(look, "Looks good"))
         .child(primary(look, "Send to claude"));
     let popup_menu = menu(look)
         .right(px(150.))
         .top(px(54.))
         .w(px(340.))
-        .child(menu_caption(look, "Opens a new tab in this session, beside the diff.").pb(px(0.)))
-        .child(menu_caption(look, "It starts with no history. Pick the model inside the agent."))
+        .child(menu_caption(look, "Opens a new tab in this session, beside the diff. It starts with no history. Pick the model inside the agent."))
         .child(menu_item(look, false, t(dim(look), ">_"), "Terminal", Some(t(dim(look), "⌘T"))))
         .child(sep(look))
-        .child(menu_item(look, false, dot(GREEN), "claude", None))
-        .child(menu_item(look, true, dot(GREEN), "copilot", Some(t(dim(look), "last used"))))
+        .child(menu_item(look, false, dot(DOT_GREEN), "claude", None))
+        .child(menu_item(look, true, dot(DOT_GREEN), "copilot", Some(t(dim(look), "last used"))))
         .child(menu_item(look, false, dot(GREY), "codex · not installed", None).text_color(c(dim(look))));
     let buttons = vec![new_agent_tab(look, true), button14(look, "Exit full screen")];
     frame(look, full(look, full_title(look, "Layer 2 of 3 · dual write"), buttons, left, code, bottom).child(popup_menu))
@@ -1143,9 +1152,9 @@ pub fn fresh_agent_beside_diff(look: Look) -> Div {
         mono_line(vec![t(ORANGE, "✱ Checking the sdk types… (38s · esc to interrupt)")]),
     ];
     let tabs = vec![
-        Tab { name: "claude", dot: Some(ORANGE), on: false },
+        Tab { name: "claude", dot: Some(DOT_ORANGE), on: false },
         Tab { name: "zsh", dot: None, on: false },
-        Tab { name: "copilot", dot: Some(GREEN), on: true },
+        Tab { name: "copilot", dot: Some(DOT_GREEN), on: true },
     ];
     let rows: Rows = vec![
         (' ', 86, "    let tx = db.begin().await?;"),
@@ -1183,8 +1192,8 @@ pub fn fresh_agent_beside_diff(look: Look) -> Div {
         look,
         row()
             .items_stretch()
-            .child(sidebar(look, ORANGE, None))
-            .child(session_main(look, GREEN, &tabs, Some("2 agents"), out, ""))
+            .child(sidebar(look, DOT_ORANGE, None))
+            .child(session_main(look, DOT_GREEN, &tabs, Some("2 agents"), out, ""))
             .child(panel(look, 520., "Layer 2 of 3", None, body, bottom))
             .child(rail(look, true, "Diff · 23")),
     )
@@ -1217,7 +1226,7 @@ pub fn agent_applies_comments(look: Look) -> Div {
         mono_line(vec![plain("Layers 1 and 3 didn't change.")]),
     ];
     let tabs = vec![
-        Tab { name: "claude", dot: Some(GREEN), on: true },
+        Tab { name: "claude", dot: Some(DOT_ORANGE), on: true },
         Tab { name: "zsh", dot: None, on: false },
         Tab { name: "copilot", dot: Some(GREY), on: false },
     ];
@@ -1225,7 +1234,7 @@ pub fn agent_applies_comments(look: Look) -> Div {
     let body = list_box(look)
         .flex_1()
         .child(cap(look, "STACK · 3 LAYERS"))
-        .child(stack(look, 0, ok(look), ["ledger · infra", "3 repos", "api · web · sdk"], [ok(look), changed, ok(look)], ["", "", ""]))
+        .child(stack(look, 0, None, ["ledger · infra", "3 repos", "api · web · sdk"], [ok(look), changed, ok(look)], ["", "", ""]))
         .child(sep(look))
         .child(all_files(look, (Ck::Changed, vec![done_count("✓ 3 done")], "+73", "−21"), (Ck::Changed, vec![done_count("✓ 1 done")]), true, None));
     let bottom = foot().child(t(dim(look), "4 comments done · 2 files changed")).child(grow()).child(link(look, "Show what changed"));
@@ -1233,8 +1242,8 @@ pub fn agent_applies_comments(look: Look) -> Div {
         look,
         row()
             .items_stretch()
-            .child(sidebar(look, GREEN, Some("2 changed")))
-            .child(session_main(look, GREEN, &tabs, None, out, ""))
+            .child(sidebar(look, DOT_GREEN, Some("2 changed")))
+            .child(session_main(look, DOT_GREEN, &tabs, None, out, ""))
             .child(panel(look, 500., "", None, body, bottom))
             .child(rail(look, true, "Diff · 2")),
     )
@@ -1263,11 +1272,10 @@ pub fn manual_diff_since_last_look(look: Look) -> Div {
         .child(file(look, "client.rs", "src/", "+11", "−3", Ck::Changed, true, vec![done_count("✓ 3 done")]))
         .child(repo(look, "ledger", "against release/2.4", "+2", "−2"))
         .child(file(look, "posting.rs", "src/", "+2", "−2", Ck::Changed, false, vec![done_count("✓ 1 done")]))
-        .child(sep(look))
         .child(row().px(px(10.)).py(px(5.)).text_color(c(dim(look))).child("infra, sdk, web · nothing changed since you looked"))
         .child(sep(look))
         .child(cap(look, "STACK · 3 LAYERS"))
-        .child(stack(look, 0, ok(look), ["ledger · infra", "3 repos", "api · web · sdk"], [ok(look), changed, ok(look)], ["", "", ""]).child(div()));
+        .child(stack(look, 9, None, ["ledger · infra", "3 repos", "api · web · sdk"], [ok(look), changed, ok(look)], ["", "", ""]));
     let first: Rows = vec![
         (' ', 41, "        let tx = self.db.begin().await?;"),
         (' ', 42, "        tx.insert_entry(&entry).await?;"),
@@ -1301,7 +1309,7 @@ pub fn manual_diff_since_last_look(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(
-            file_bar(look, "api · src/", "client.rs", false, open_in_editor(look)),
+            file_bar_note(look, "api · src/", "client.rs", false, Some("· changes since you looked, 12 min ago"), open_in_editor(look)),
         )
         .child(lines(look, "@@ -41,4 +41,4 @@ impl Client {", first))
         .child(done("line 43", "Make the legacy insert an upsert on entry.id.", "upsert_legacy keys on entry.id, so a retried commit writes the row once."))

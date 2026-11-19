@@ -318,20 +318,39 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("122-new-session-cloning", LIGHT, |look| overlays::new_session_cloning(look, board::kanban(look))),
     ("123-session-moving-unmeasured-step", LIGHT, fork_move::moving_unmeasured),
     ("124-session-working-elapsed", LIGHT, session::working_elapsed),
+    ("119-diff-stack-whole", LIGHT, stack::whole),
+    ("120-diff-stack-layer", LIGHT, stack::layer),
+    ("121-diff-stack-skim-drift", DARK, stack::skim_drift),
 ];
 
 /// Frames not yet approved: drawn into the test's undeclared outputs
 /// (`candidates/<name>.png`) for review, never checked against a golden.
 /// Move one into [`FRAMES`] and record it once it is approved.
 const CANDIDATES: &[(&str, Look, Draw)] = &[
-    ("119-diff-stack-whole", LIGHT, stack::whole),
-    ("120-diff-stack-layer", LIGHT, stack::layer),
-    ("121-diff-stack-skim-drift", DARK, stack::skim_drift),
 ];
 
 /// Frames drawn at the signed-off mockups' size, 1600 by 950 (the
 /// `milestones/mockups/*` frames). Same rules as [`FRAMES`].
-const WIDE: &[(&str, Look, Draw)] = &[];
+const WIDE: &[(&str, Look, Draw)] = &[
+    // INBOXHOOKS: the Agent inbox (boardsimple mockups b2-1..b3-2), approved by Fable 2026-11-19.
+    ("200-agent-inbox-empty", LIGHT, agent_inbox::empty),
+    ("201-agent-inbox-file-move", LIGHT, agent_inbox::file_move),
+    ("202-agent-inbox-session-move", LIGHT, agent_inbox::session_move),
+    ("203-agent-inbox-copy-ask-why", LIGHT, agent_inbox::copy_ask_why),
+    ("204-agent-inbox-question", LIGHT, agent_inbox::question),
+    // UXSIMPLE: the simpler review loop (uxsimple mockups).
+    ("uxs-1-1-start-working", LIGHT, uxsimple::start_working),
+    ("uxs-1-2-stack-made", LIGHT, uxsimple::stack_made),
+    ("uxs-2-1-ask-agent-to-show", LIGHT, uxsimple::ask_agent_to_show),
+    ("uxs-2-2-stack-full-screen", LIGHT, uxsimple::stack_full_screen),
+    ("uxs-3-1-comment-on-a-line", LIGHT, uxsimple::comment_on_a_line),
+    ("uxs-3-2-looks-good-per-layer", LIGHT, uxsimple::looks_good_per_layer),
+    ("uxs-3-3-new-agent-tab-menu", LIGHT, uxsimple::new_agent_tab_menu),
+    ("uxs-3-4-fresh-agent-beside-diff", LIGHT, uxsimple::fresh_agent_beside_diff),
+    ("uxs-4-1-agent-applies-comments", LIGHT, uxsimple::agent_applies_comments),
+    ("uxs-4-2-manual-diff-since-last-look", LIGHT, uxsimple::manual_diff_since_last_look),
+    ("uxs-4-3-everything-looks-good", LIGHT, uxsimple::everything_looks_good),
+];
 
 /// Wide frames not yet approved, drawn like [`CANDIDATES`] at 1600 by 950.
 const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
@@ -352,29 +371,12 @@ const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
     ("190-todo-pr-review-session", LIGHT, todo_more::pr_review_session),
     ("191-todo-session-ask", LIGHT, todo_more::session_todo_ask),
     // INBOXHOOKS: the Agent inbox (boardsimple mockups b2, b3, b4-1, b5-1, b6, b9-2).
-    ("200-agent-inbox-empty", LIGHT, agent_inbox::empty),
-    ("201-agent-inbox-file-move", LIGHT, agent_inbox::file_move),
-    ("202-agent-inbox-session-move", LIGHT, agent_inbox::session_move),
-    ("203-agent-inbox-copy-ask-why", LIGHT, agent_inbox::copy_ask_why),
-    ("204-agent-inbox-question", LIGHT, agent_inbox::question),
     ("205-session-agent-inbox-panel", LIGHT, agent_inbox_more::session_panel),
     ("206-session-after-yes", LIGHT, agent_inbox_more::after_yes),
     ("207-home-across", LIGHT, agent_inbox_more::home),
     ("208-settings-agent-access", LIGHT, agent_inbox_more::agent_access),
     ("209-agent-inbox-notification-dark", DARK, agent_inbox_more::notification),
     ("210-session-inbox-after-no", LIGHT, agent_inbox_more::after_no),
-    // UXSIMPLE: the simpler review loop (uxsimple mockups).
-    ("uxs-1-1-start-working", LIGHT, uxsimple::start_working),
-    ("uxs-1-2-stack-made", LIGHT, uxsimple::stack_made),
-    ("uxs-2-1-ask-agent-to-show", LIGHT, uxsimple::ask_agent_to_show),
-    ("uxs-2-2-stack-full-screen", LIGHT, uxsimple::stack_full_screen),
-    ("uxs-3-1-comment-on-a-line", LIGHT, uxsimple::comment_on_a_line),
-    ("uxs-3-2-looks-good-per-layer", LIGHT, uxsimple::looks_good_per_layer),
-    ("uxs-3-3-new-agent-tab-menu", LIGHT, uxsimple::new_agent_tab_menu),
-    ("uxs-3-4-fresh-agent-beside-diff", LIGHT, uxsimple::fresh_agent_beside_diff),
-    ("uxs-4-1-agent-applies-comments", LIGHT, uxsimple::agent_applies_comments),
-    ("uxs-4-2-manual-diff-since-last-look", LIGHT, uxsimple::manual_diff_since_last_look),
-    ("uxs-4-3-everything-looks-good", LIGHT, uxsimple::everything_looks_good),
 ];
 
 
