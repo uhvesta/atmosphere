@@ -2,6 +2,7 @@
 use super::*;
 use crate::comment_cards::{self, StartReattach};
 use crate::document_tab::{Documents, LineFacts};
+use crate::full_text::full_text;
 use humata2_clients::comments::{Anchor, CommentId, Side};
 use humata2_clients::model::{DiffBase, DiffLine, RepoBase};
 use humata2_review::order::{OrderFile, bottom_up};
@@ -314,6 +315,71 @@ fn file_row(
         })
 }
 
+/// The box round the file list's rows (DS-84). A click in it gives the list the
+/// focus, and while it has it the arrows and Enter move the list's cursor, open
+/// the file there or fold its repository.
+fn list_rows(ui: &Rc<Ui>, documents: &Documents, gap: f32) -> Div {
+    let handle = documents.diff_list.clone();
+    let key = |action: ReviewAction| {
+        let ui = ui.clone();
+        move |cx: &mut App| ui.send(AppAction::Review(action.clone()), cx)
+    };
+    let (down, up, open, collapse, expand) = (
+        key(ReviewAction::ListDown),
+        key(ReviewAction::ListUp),
+        key(ReviewAction::ListOpen),
+        key(ReviewAction::ListCollapse),
+        key(ReviewAction::ListExpand),
+    );
+    col()
+        .gap(px(gap))
+        .track_focus(&handle)
+        .key_context(crate::keys::DIFF_LIST)
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| window.focus(&handle, cx))
+        .on_action(move |_: &crate::keys::FileListDown, _, cx| down(cx))
+        .on_action(move |_: &crate::keys::FileListUp, _, cx| up(cx))
+        .on_action(move |_: &crate::keys::FileListOpen, _, cx| open(cx))
+        .on_action(move |_: &crate::keys::FileListCollapse, _, cx| collapse(cx))
+        .on_action(move |_: &crate::keys::FileListExpand, _, cx| expand(cx))
+}
+
+/// Whether the file list's cursor is on `repo`'s row (DS-84).
+fn at_repo(cursor: Option<&humata2_review::ListCursor>, repo: &str) -> bool {
+    matches!(cursor, Some(humata2_review::ListCursor::Repo(at)) if at == repo)
+}
+
+/// Whether the file list's cursor is on `path` of `repo` (DS-84).
+fn at_file(cursor: Option<&humata2_review::ListCursor>, repo: &str, path: &str) -> bool {
+    matches!(
+        cursor,
+        Some(humata2_review::ListCursor::File { repo: at, path: of }) if at == repo && of == path
+    )
+}
+
+/// `row`, with the focus ring over it when the file list's cursor is `on` it
+/// (DS-84). The ring is laid over the row, so nothing around it moves.
+fn ringed(row: impl IntoElement, on: bool, look: Look) -> AnyElement {
+    if !on {
+        return row.into_any_element();
+    }
+    div()
+        .relative()
+        .child(row)
+        .child(
+            div()
+                .id("diff-list-cursor")
+                .test_support()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(px(5.))
+                .border_2()
+                .border_color(rgb(look.accent)),
+        )
+        .into_any_element()
+}
+
 /// A plan note as it reads: "L12–14 · text", or "L12 · text" on one line, or
 /// just the text for a note on the whole file.
 fn plan_note_label(note: &PlanRowNote) -> String {
@@ -326,6 +392,7 @@ fn plan_note_label(note: &PlanRowNote) -> String {
 
 /// A plan's rows (RV-32): a header and note for each group, then its files in
 /// the plan's order with the agent's notes under them.
+#[allow(clippy::too_many_arguments)]
 fn plan_list(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -333,6 +400,7 @@ fn plan_list(
     documents: &Documents,
     diffs: &[&RepoDiff],
     picked: Option<(&RepoDiff, &humata2_clients::model::FileDiff)>,
+    cursor: Option<&humata2_review::ListCursor>,
     plan: humata2_review::PlanLayout,
 ) -> Vec<AnyElement> {
     let mut groups = 0_usize;
@@ -353,7 +421,11 @@ fn plan_list(
                     .filter_map(|path| diff.files.iter().find(|file| &file.path == path))
                     .map(|file| {
                         let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == file.path);
-                        file_row(ui, state, look, diff, file, on, false).into_any_element()
+                        ringed(
+                            file_row(ui, state, look, diff, file, on, false),
+                            at_file(cursor, &diff.repo, &file.path),
+                            look,
+                        )
                     }),
             );
         }
@@ -365,7 +437,13 @@ fn plan_list(
         diffs
             .iter()
             .enumerate()
-            .map(|(index, diff)| plan_repo_line(ui, state, look, documents, index, diff).into_any_element()),
+            .map(|(index, diff)| {
+                ringed(
+                    plan_repo_line(ui, state, look, documents, index, diff),
+                    at_repo(cursor, &diff.repo),
+                    look,
+                )
+            }),
     );
     for (at, entry) in plan.into_iter().enumerate() {
         while let Some(skim) = skims.next_if(|skim| skim.after == at) {
@@ -426,7 +504,11 @@ fn plan_list(
                     .collect();
                 out.push(
                     col()
-                        .child(file_row(ui, state, look, diff, file, on, false))
+                        .child(ringed(
+                            file_row(ui, state, look, diff, file, on, false),
+                            at_file(cursor, &repo, &path),
+                            look,
+                        ))
                         .children(rows)
                         .into_any_element(),
                 );
@@ -568,14 +650,17 @@ fn change_stepper(ui: &Rc<Ui>, look: Look, change: usize, changes: usize) -> Div
 
 /// The one-row file bar that stands in for the narrow list while a file is
 /// open (DS-2, DS-3): chevron, `repo · name` and its folder, "N of M", the
-/// step buttons and Open in editor. A click on it opens the list.
+/// step buttons and Open in editor. With `fold` it is the fold button: a click
+/// on it opens the list, and `Some(true)` says the list is open. The inline
+/// pull request review, whose list never folds, passes `None`: no chevron, no
+/// click, and the bar only steps files across every pull request (DS-53).
 fn file_bar(
     ui: &Rc<Ui>,
     look: Look,
     diffs: &[&RepoDiff],
     diff: &RepoDiff,
     file: &humata2_clients::model::FileDiff,
-    open: bool,
+    fold: Option<bool>,
 ) -> AnyElement {
     let order: Vec<(&str, &str)> = diffs
         .iter()
@@ -589,9 +674,6 @@ fn file_bar(
     let toggle = ui.clone();
     row()
         .id("diff-file-bar")
-        .role(Role::Button)
-        .aria_label("Files")
-        .aria_expanded(open)
         .h(px(30.))
         .px(px(8.))
         .gap(px(6.))
@@ -599,15 +681,20 @@ fn file_bar(
         .border_b_1()
         .border_color(rgb(look.line))
         .text_size(px(12.))
-        .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            toggle.send(AppAction::Review(ReviewAction::ToggleFileList), cx)
+        .when_some(fold, |bar, open| {
+            bar.role(Role::Button)
+                .aria_label("Files")
+                .aria_expanded(open)
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    toggle.send(AppAction::Review(ReviewAction::ToggleFileList), cx)
+                })
+                .child(div().flex_shrink_0().child(icon(
+                    if open { IconName::ChevronDown } else { IconName::ChevronRight },
+                    look.secondary,
+                    12.,
+                )))
         })
-        .child(div().flex_shrink_0().child(icon(
-            if open { IconName::ChevronDown } else { IconName::ChevronRight },
-            look.secondary,
-            12.,
-        )))
         .child(
             // The folder gives way first, then the repo; the name keeps its room.
             row()
@@ -615,28 +702,32 @@ fn file_bar(
                 .min_w_0()
                 .overflow_hidden()
                 .gap(px(4.))
-                .child(secondary(look, format!("{} ·", repo_label(&diff.repo)))
+                .child(full_text(
+                    secondary(look, format!("{} ·", repo_label(&diff.repo)))
                         .id("diff-file-bar-repo")
                         .min_w_0()
                         .flex_shrink(4.)
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_ellipsis())
+                        .text_ellipsis(),
+                    repo_label(&diff.repo),
+                ))
                 .child(
                     text(file_name.to_owned())
                         .flex_shrink_0()
                         .whitespace_nowrap()
                         .font_weight(FontWeight::MEDIUM),
                 )
-                .child(
+                .child(full_text(
                     secondary(look, dir.to_owned())
-                            .id("diff-file-bar-dir")
-                            .min_w_0()
-                            .flex_shrink(8.)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis(),
-                ),
+                        .id("diff-file-bar-dir")
+                        .min_w_0()
+                        .flex_shrink(8.)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis(),
+                    dir,
+                )),
         )
         .child(
             secondary(look, format!("{at} of {}", order.len()))
@@ -714,7 +805,7 @@ pub(super) fn changes(
     if let Some(body) = crate::doc_history::compare_body(ui, state, look) {
         return col()
             .size_full()
-            .child(header(ui, Panel::Changes, full, None, look))
+            .child(panel_header(ui, state, Panel::Changes, full, None, look))
             .child(body);
     }
     let font_size = f32::from(state.settings.preferences.font_size) - 0.5;
@@ -774,8 +865,8 @@ pub(super) fn changes(
         .and_then(|id| state.review.fetch.get(id));
     // A missing default branch (frame 98) always takes the body: the last
     // diff was against another base.
-    // DS-35: a repo whose read failed would show its message and Try again
-    // under its own row here; a read is all-or-nothing today, so no state says which.
+    // DS-35: a repo whose read failed shows its message and Try again in a row
+    // of its own after the repositories that were read (`repo_error_row`).
     let read_error = fetch.and_then(|fetch| {
         fetch
             .error
@@ -788,7 +879,8 @@ pub(super) fn changes(
             .clone()
             .filter(|_| fetch.diffs.is_some() && fetch.no_default.is_none())
     });
-    let failed = fetch.is_some_and(|fetch| fetch.error.is_some());
+    let failed =
+        fetch.is_some_and(|fetch| fetch.error.is_some() || !fetch.repo_errors.is_empty());
     let shown = if read_error.is_some() { None } else { picked };
     // A review without a plan draws each repository's file and its code
     // inline under its row (frame 68); everything else keeps the list above
@@ -819,9 +911,14 @@ pub(super) fn changes(
             .is_some_and(|id| state.review.file_list_open.contains(id));
     // D800: the stack's rows send through this.
     let stack_send = crate::panel_stack::sender(ui);
+    // DS-84: while the file list has focus, the row at the keyboard cursor wears a ring.
+    let cursor = session_id
+        .as_ref()
+        .filter(|_| documents.diff_list.is_focused(window))
+        .and_then(|id| state.review.list_cursor(id));
     let has_plan = plan.is_some();
-    let rows: Vec<AnyElement> = match plan {
-        Some(plan) => plan_list(ui, state, look, documents, &diffs, picked, plan),
+    let mut rows: Vec<AnyElement> = match plan {
+        Some(plan) => plan_list(ui, state, look, documents, &diffs, picked, cursor, plan),
         None => diffs
             .iter()
             .enumerate()
@@ -845,15 +942,20 @@ pub(super) fn changes(
                         session,
                         diff,
                         picked,
+                        cursor,
                         (font_size, line_height, cell_width),
                         width,
                     );
                 }
                 col()
-                    .child(match review {
-                        Some(session) => review_repo_head(state, look, session, diff, true),
-                        None => repo_head(ui, state, look, documents, index, diff, branch, folded),
-                    })
+                    .child(ringed(
+                        match review {
+                            Some(session) => review_repo_head(state, look, session, diff, true),
+                            None => repo_head(ui, state, look, documents, index, diff, branch, folded),
+                        },
+                        at_repo(cursor, &diff.repo),
+                        look,
+                    ))
                     .children({
                         // DS-67: skim files fold into one row at the end.
                         let split = humata2_review::stack::fold_skims(&diff.files, |file| {
@@ -868,7 +970,11 @@ pub(super) fn changes(
                         let skim_paths: Vec<&str> = split.skims.iter().filter(|file| visible(file)).map(|file| file.path.as_str()).collect();
                         let row_of = |file: &humata2_clients::model::FileDiff| {
                             let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == file.path);
-                            file_row(ui, state, look, diff, file, on, false).into_any_element()
+                            ringed(
+                                file_row(ui, state, look, diff, file, on, false),
+                                at_file(cursor, &diff.repo, &file.path),
+                                look,
+                            )
                         };
                         let mut files: Vec<AnyElement> = Vec::new();
                         if !folded {
@@ -890,6 +996,13 @@ pub(super) fn changes(
             })
             .collect(),
     };
+    // DS-35: the repositories that couldn't be read, each with its own Try again.
+    rows.extend(
+        fetch
+            .into_iter()
+            .flat_map(|fetch| fetch.repo_errors.iter())
+            .map(|(repo, message)| repo_error_row(ui, look, repo, message)),
+    );
     // DS-28, DS-34: the files stay, dimmed, until the new diff arrives.
     let loading = fetch.is_some_and(|fetch| fetch.loading);
     // RV-6: above 20 changed files a field filters the list.
@@ -905,7 +1018,7 @@ pub(super) fn changes(
         .gap(px(if inline { 4. } else { 1. }))
         .text_size(px(12.5))
         .children(filter_field)
-        .children(rows);
+        .child(list_rows(ui, documents, if inline { 4. } else { 1. }).children(rows));
     let sendable = session_id
         .as_ref()
         .map_or(0, |session| state.comments.sendable(session).len());
@@ -1108,12 +1221,15 @@ pub(super) fn changes(
                             .overflow_hidden()
                             .gap(px(4.))
                             .child(secondary(look, format!("{} ·", repo_label(&diff.repo))).flex_shrink_0())
-                            .child(secondary(look, dir.to_owned())
+                            .child(full_text(
+                                secondary(look, dir.to_owned())
                                     .id("diff-file-header-dir")
                                     .min_w_0()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_ellipsis())
+                                    .text_ellipsis(),
+                                dir,
+                            ))
                             .child(
                                 text(file_name.to_owned())
                                     .flex_shrink_0()
@@ -1151,7 +1267,7 @@ pub(super) fn changes(
                         .test_support(),
                 )
             } else {
-                view.child(nothing_against(ui, look, &current_base))
+                view.child(nothing_against(ui, state, look, &current_base))
             }
         });
     // Before the first diff arrives the chip names the picked base, never
@@ -1170,8 +1286,9 @@ pub(super) fn changes(
         .as_ref()
         .is_some_and(|id| state.review.compares_per_repo(id));
     let toggle = ui.clone();
-    let head = header(
+    let head = panel_header(
             ui,
+            state,
             Panel::Changes,
             full,
             Some(
@@ -1245,16 +1362,18 @@ pub(super) fn changes(
         // of a base to pick (a pull request's base is GitHub's); Full screen
         // and Close stay, as on every panel.
         .child(match review {
-            Some(session) => header(
+            Some(session) => panel_header(
                 ui,
+                state,
                 Panel::Changes,
                 full,
                 Some(review_line(state, look, session, &review_base, diffs.len())),
                 look,
             ),
             None => match crate::panel_stack::header_line(&state.review) {
-                Some(line) => header(
+                Some(line) => panel_header(
                     ui,
+                    state,
                     Panel::Changes,
                     full,
                     Some(row().min_w_0().child(
@@ -1274,11 +1393,17 @@ pub(super) fn changes(
                 .flex()
                 // D807: the loading sweep lies over the body's top edge.
                 .relative()
-                .when(!full, |body| body.flex_col())
+                // The inline review keeps one column, bar above list, in full screen too.
+                .when(!full || inline, |body| body.flex_col())
+                .children(shown.filter(|_| bar).map(|(diff, file)| {
+                    file_bar(ui, look, &diffs, diff, file, Some(list_open))
+                }))
+                // DS-53: the inline review's list doesn't fold, so its bar is no fold
+                // button; it steps files across every pull request of the review.
                 .children(
                     shown
-                        .filter(|_| bar)
-                        .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, list_open)),
+                        .filter(|_| inline)
+                        .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, None)),
                 )
                 .children(match inline_handle {
                     Some(handle) => Some(
@@ -1508,12 +1633,15 @@ fn review_line(state: &AppState, look: Look, session: &Session, base: &str, repo
                 "{name} against {base} · {repos} repo{}",
                 if repos == 1 { "" } else { "s" }
             );
-            secondary(look, line.clone())
+            full_text(
+                secondary(look, line.clone())
                     .id("review-pr-line-text")
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
+                    .text_ellipsis(),
+                line,
+            )
         }))
 }
 
@@ -1567,12 +1695,17 @@ fn review_repo(
     session: &Session,
     diff: &RepoDiff,
     picked: Option<(&RepoDiff, &humata2_clients::model::FileDiff)>,
+    cursor: Option<&humata2_review::ListCursor>,
     (font_size, line_height, cell_width): (f32, f32, f32),
     width: f32,
 ) -> AnyElement {
     let open = picked.is_some_and(|(held, _)| held.repo == diff.repo);
     // Frame 68: the repo row, its file and the file's code, 4 apart.
-    let mut group = col().gap(px(4.)).child(review_repo_head(state, look, session, diff, open));
+    let mut group = col().gap(px(4.)).child(ringed(
+        review_repo_head(state, look, session, diff, open),
+        at_repo(cursor, &diff.repo),
+        look,
+    ));
     if !open {
         return group.into_any_element();
     }
@@ -1601,13 +1734,14 @@ fn review_repo(
     for index in bottom_up(&ordered) {
         let file = &diff.files[index];
         let on = picked.is_some_and(|(held, f)| held.repo == diff.repo && f.path == file.path);
+        let ring = at_file(cursor, &diff.repo, &file.path);
         if on {
             let name = format!("{}/{}", diff.repo, file.path);
             let handle = documents.session_diff_view(&diff.session, &name).handle;
             let shift = pinned_shift(&name, &handle);
             let head = div()
                 .when(shift > 0., |head| head.relative().top(px(shift)).bg(rgb(look.panel)))
-                .child(file_row(ui, state, look, diff, file, on, true));
+                .child(ringed(file_row(ui, state, look, diff, file, on, true), ring, look));
             group = group.child(if shift > 0. {
                 deferred(head).into_any_element()
             } else {
@@ -1615,7 +1749,7 @@ fn review_repo(
             });
             pinned = Some((children, children + 1, (name, handle, shift)));
         } else {
-            group = group.child(file_row(ui, state, look, diff, file, on, true));
+            group = group.child(ringed(file_row(ui, state, look, diff, file, on, true), ring, look));
         }
         children += 1;
         if on {
@@ -1825,8 +1959,8 @@ fn review_repo_head(
         .child(icon(IconName::FolderGit2, look.secondary, 12.))
         .child(text(name.to_owned()).font_weight(FontWeight::SEMIBOLD))
         .children(number.map(|number| text(format!("#{number}")).text_color(rgb(look.accent))))
-        .child(
-            div()
+        .child({
+            let shown = div()
                 .id(SharedString::from(format!("review-repo-branch-{}", diff.repo)))
                 .flex_1()
                 .min_w_0()
@@ -1835,8 +1969,15 @@ fn review_repo_head(
                 .text_ellipsis()
                 .text_size(px(11.))
                 .text_color(rgb(look.tertiary))
-                .child(branch.to_owned()),
-        )
+                .child(branch.to_owned());
+            // No branch means nothing to name: an empty tooltip would only
+            // cover the free space beside the repo.
+            if branch.is_empty() {
+                shown
+            } else {
+                full_text(shown, branch.to_owned())
+            }
+        })
         .into_any_element()
 }
 
@@ -1844,6 +1985,10 @@ fn review_repo_head(
 /// base decides the words.
 /// The base the chip names while no diff has said which branch it is.
 fn picked_base_name(state: &AppState, base: &DiffBase) -> String {
+    // D800: a stack layer or the whole stack comes before every plain base.
+    if let Some(scope) = stack_scope(state, base) {
+        return scope.name().to_owned();
+    }
     match base {
         DiffBase::OriginMain => "origin/main".to_owned(),
         DiffBase::UncommittedOnly => "uncommitted only".to_owned(),
@@ -1858,7 +2003,53 @@ fn picked_base_name(state: &AppState, base: &DiffBase) -> String {
     }
 }
 
-fn nothing_against(ui: &Rc<Ui>, look: Look, base: &DiffBase) -> impl IntoElement {
+/// What a stack shows in the Diff (D800): one layer, or the whole stack.
+#[derive(Clone, Copy)]
+enum StackScope {
+    Layer,
+    Whole,
+}
+
+impl StackScope {
+    /// What the base chip names.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Layer => "this layer",
+            Self::Whole => "the whole stack",
+        }
+    }
+
+    /// What the panel says when nothing changed there.
+    fn nothing(self) -> &'static str {
+        match self {
+            Self::Layer => "No changes in this layer",
+            Self::Whole => "No changes in the stack",
+        }
+    }
+}
+
+/// Which part of a stack the open session's Diff shows, when it shows one: the
+/// base is a stack's own (a spec whose bases are a range or an overlay), or the
+/// session's plan carries a stack, which picks its bases itself (DS-62).
+fn stack_scope(state: &AppState, base: &DiffBase) -> Option<StackScope> {
+    let own = matches!(
+        base,
+        DiffBase::Spec(specs) if specs.iter().any(|spec| {
+            matches!(spec.base, RepoBase::Range { .. } | RepoBase::Overlay { .. })
+        })
+    );
+    if !own && !crate::panel_stack::hides_base_picker(&state.review) {
+        return None;
+    }
+    let layer = state
+        .session
+        .open
+        .as_ref()
+        .and_then(|id| state.review.layer_of(id));
+    Some(if layer.is_some() { StackScope::Layer } else { StackScope::Whole })
+}
+
+fn nothing_against(ui: &Rc<Ui>, state: &AppState, look: Look, base: &DiffBase) -> impl IntoElement {
     let (id, message) = match base {
         DiffBase::OriginMain => ("diff-no-changes-yet", "No changes yet"),
         DiffBase::UncommittedOnly => ("diff-none-against-base", "Nothing uncommitted"),
@@ -1872,6 +2063,7 @@ fn nothing_against(ui: &Rc<Ui>, look: Look, base: &DiffBase) -> impl IntoElement
         }
         DiffBase::Spec(_) => ("diff-none-against-base", "No changes against each repository's base"),
     };
+    let message = stack_scope(state, base).map_or(message, StackScope::nothing);
     // DS-32: centred, with the one way out: pick another base.
     col()
         .flex_1()
@@ -1969,6 +2161,49 @@ fn read_failed_block(
         .test_support()
 }
 
+/// A repository whose read failed while the others were read (DS-35): its
+/// name, why it failed, and Try again, which reads the session again.
+fn repo_error_row(ui: &Rc<Ui>, look: Look, repo: &str, message: &str) -> AnyElement {
+    let retry = ui.clone();
+    col()
+        .id(SharedString::from(format!("repo-error-{repo}")))
+        .gap(px(2.))
+        .px(px(4.))
+        .pb(px(4.))
+        .child(
+            row()
+                .gap(px(6.))
+                .h(px(26.))
+                .child(icon(IconName::FolderGit2, look.secondary, 12.))
+                .child(
+                    text(repo_label(repo).to_owned())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis(),
+                )
+                .child(div().flex_1())
+                .child(Quiet {
+                    button: Button::new(SharedString::from(format!("repo-retry-{repo}")))
+                        .small()
+                        .h(px(18.))
+                        .text_size(px(11.5))
+                        .label("Try again")
+                        .accessibility_label("Try again")
+                        .flex_shrink_0()
+                        .on_click(move |_, _, cx| {
+                            retry.send(AppAction::Review(ReviewAction::Retry), cx)
+                        }),
+                    color: look.secondary,
+                    fill: look.fill,
+                }),
+        )
+        .child(secondary(look, message.to_owned()).pl(px(18.)))
+        .test_support()
+        .into_any_element()
+}
+
 /// A refresh that failed while the last diff read still shows below it
 /// (D179): what failed, and Try again.
 fn refresh_failed_row(ui: &Rc<Ui>, error: String, look: Look) -> impl IntoElement {
@@ -2057,12 +2292,15 @@ fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&RepoDiff]) -> 
                 .gap(px(8.))
                 .h(px(28.))
                 .px(px(8.))
-                .child(text(repo_label(&diff.repo).to_owned())
+                .child(full_text(
+                    text(repo_label(&diff.repo).to_owned())
                         .id(SharedString::from(format!("push-list-repo-{}", diff.repo)))
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_ellipsis())
+                        .text_ellipsis(),
+                    repo_label(&diff.repo).to_owned(),
+                ))
                 .child(div().flex_1())
                 .child(push_control(ui, state, look, &diff.repo))
         }))
@@ -2306,15 +2544,19 @@ fn repo_head(
                     )
                 }),
         )
-        .child(text(repo_label(&diff.repo).to_owned())
+        .child(full_text(
+            text(repo_label(&diff.repo).to_owned())
                 .id(SharedString::from(format!("repo-name-{index}")))
                 .font_weight(FontWeight::SEMIBOLD)
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .text_ellipsis())
+                .text_ellipsis(),
+            repo_label(&diff.repo).to_owned(),
+        ))
         .children(own.map(|own| {
-            secondary(look, own.clone())
+            full_text(
+                secondary(look, own.clone())
                     .id(SharedString::from(format!("repo-branch-{index}")))
                     .test_support()
                     .text_color(rgb(look.tertiary))
@@ -2322,7 +2564,9 @@ fn repo_head(
                     .flex_shrink(8.)
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
+                    .text_ellipsis(),
+                own,
+            )
         }))
         .child(repo_base(ui, state, look, documents, index, diff))
         .child(div().flex_1())

@@ -293,6 +293,9 @@ pub(crate) struct Documents {
     file_filter: Entity<InputState>,
     file_filter_for: Option<SessionId>,
     _file_filtering: Subscription,
+    /// The Diff's file list: while it has this focus its arrows and Enter move
+    /// the cursor, open a file or fold a repository (DS-84).
+    pub(crate) diff_list: FocusHandle,
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
@@ -579,6 +582,7 @@ impl Documents {
             file_filter,
             file_filter_for: None,
             _file_filtering: file_filtering,
+            diff_list: cx.focus_handle(),
         }
     }
 

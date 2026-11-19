@@ -382,3 +382,256 @@ fn a_filter_shows_above_twenty_files() {
     assert!(with_files(21).contains("changes-file-filter"));
     assert!(!with_files(20).contains("changes-file-filter"));
 }
+
+/// A name the Diff panel draws shortened still carries all of it: a repo
+/// whose clone sits on a long branch exposes the whole branch as the label of
+/// its shortened chip, which is also what its hover shows (DS-80).
+#[test]
+fn a_shortened_path_shows_in_full_on_hover() {
+    const BRANCH: &str = "avesta/a-branch-name-long-enough-to-be-cut-short-in-a-narrow-panel";
+    let mut workspace = fixture::design();
+    let ledger = SessionId::new("ledger");
+    let repo = workspace
+        .diffs
+        .iter()
+        .find(|diff| diff.session == ledger)
+        .map(|diff| diff.repo.clone())
+        .expect("ledger has a diff");
+    let session = workspace
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == ledger)
+        .expect("the fixture has ledger");
+    session.clones = vec![humata2_clients::model::SessionClone {
+        repo,
+        branch: BRANCH.into(),
+        path: "/work/a".into(),
+    }];
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    let label = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            window.find("repo-branch-0").label().map(str::to_owned)
+        })
+        .expect("window stays open");
+    assert_eq!(label.as_deref(), Some(BRANCH));
+}
+
+/// RV-8: the Diff panel's own cost, measured headless, for spec §5 P-1 to P-6.
+/// Not part of the normal run (`#[ignore]`) and with no timing asserts,
+/// because times vary by machine; each test prints its number beside the
+/// proposed budget. The daemon's side of P-5 and P-7 (git, the wire) is
+/// measured live in DV-14's rerun. Run on a release build:
+///
+/// `bazel test -c opt //apps/humata2/desktop:native_test --test_output=streamed
+/// --test_arg=--ignored --test_arg=--nocapture --test_arg=review_ui::budgets::
+/// --test_arg=--test-threads=1`
+mod budgets {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Prints one measurement: its spec id, what was measured, the number and
+    /// the proposed budget it is read against.
+    fn report(id: &str, what: &str, took: Duration, budget: Duration) {
+        let verdict = if took <= budget { "within" } else { "OVER" };
+        println!(
+            "RV-8 {id}: {what}: {:.1} ms (proposed budget {:.0} ms, {verdict})",
+            took.as_secs_f64() * 1000.,
+            budget.as_secs_f64() * 1000.
+        );
+    }
+
+    /// This process's resident memory in MB, read with `ps`; `None` when
+    /// `ps` can't be run.
+    fn rss_mb() -> Option<f64> {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        let kb: f64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
+        Some(kb / 1024.)
+    }
+
+    /// The 40,000-line file of P-1: one hunk, 20,000 lines removed and
+    /// 20,000 added.
+    fn forty_thousand() -> Vec<DiffLine> {
+        let mut lines = vec![DiffLine {
+            kind: LineKind::Hunk,
+            old: None,
+            new: None,
+            text: "@@ -1,20000 +1,20000 @@".into(),
+        }];
+        lines.extend((1..=20_000).map(|n| DiffLine {
+            kind: LineKind::Removed,
+            old: Some(n),
+            new: None,
+            text: format!("let old_{n} = compute({n}, \"some text to wrap\");"),
+        }));
+        lines.extend((1..=20_000).map(|n| DiffLine {
+            kind: LineKind::Added,
+            old: None,
+            new: Some(n),
+            text: format!("let new_{n} = compute({n}, \"some other text\");"),
+        }));
+        lines
+    }
+
+    /// The design fixture with `api/src/client.rs` of "ledger" replaced by
+    /// `lines`, and the Diff panel open with nothing picked.
+    fn app_with(lines: Vec<DiffLine>) -> App {
+        let mut workspace = fixture::design();
+        for diff in workspace
+            .diffs
+            .iter_mut()
+            .filter(|d| d.repo == "api" && d.session == SessionId::new("ledger"))
+        {
+            if let Some(file) = diff.files.iter_mut().find(|f| f.path == FILE) {
+                *file = FileDiff {
+                    added: lines.iter().filter(|l| l.kind == LineKind::Added).count() as u32,
+                    removed: lines.iter().filter(|l| l.kind == LineKind::Removed).count() as u32,
+                    lines: lines.clone(),
+                    ..file.clone()
+                };
+            }
+        }
+        let mut app = App::new(workspace);
+        app.open("ledger", Panel::Changes);
+        app.draw();
+        app
+    }
+
+    fn select(app: &mut App, path: &str) {
+        app.send(AppAction::Review(R::SelectFile {
+            repo: "api".into(),
+            path: path.into(),
+        }));
+        app.draw();
+    }
+
+    /// Another file of "ledger"'s `api`, to step away to and back from.
+    fn other_file(app: &App) -> String {
+        app.ui
+            .read(|state| {
+                state
+                    .workspace
+                    .diffs
+                    .iter()
+                    .filter(|d| d.repo == "api" && d.session == SessionId::new("ledger"))
+                    .flat_map(|d| d.files.iter())
+                    .map(|f| f.path.clone())
+                    .find(|path| path != FILE)
+            })
+            .expect("ledger's api has a second file")
+    }
+
+    /// P-1, P-2 and P-4: the first open of the 40,000-line file, reselecting
+    /// it, and the memory it holds while open.
+    #[test]
+    #[ignore = "RV-8 measurement; run by hand on a release build"]
+    fn a_forty_thousand_line_file() {
+        let mut app = app_with(forty_thousand());
+        let other = other_file(&app);
+        let before = rss_mb();
+        let start = Instant::now();
+        select(&mut app, FILE);
+        let took = start.elapsed();
+        report("P-1", "first open of a 40,000-line file", took, Duration::from_millis(300));
+        let after = rss_mb();
+        select(&mut app, &other);
+        let start = Instant::now();
+        select(&mut app, FILE);
+        report("P-2", "reselecting that file", start.elapsed(), Duration::from_millis(100));
+        match (before, after) {
+            (Some(before), Some(after)) => println!(
+                "RV-8 P-4: memory with that file open: {:.0} MB above the panel \
+                 before it (proposed budget 300 MB)",
+                after - before
+            ),
+            _ => println!("RV-8 P-4: memory not read: /bin/ps could not run here"),
+        }
+    }
+
+    /// P-3: scrolling that file, timed per frame against a 60 Hz frame
+    /// (16.7 ms); the share of the frame spent is the CPU it takes.
+    #[test]
+    #[ignore = "RV-8 measurement; run by hand on a release build"]
+    fn scrolling_a_forty_thousand_line_file() {
+        let mut app = app_with(forty_thousand());
+        select(&mut app, FILE);
+        let frames = 120;
+        let mut slowest = Duration::ZERO;
+        let start = Instant::now();
+        for _ in 0..frames {
+            let frame = Instant::now();
+            app.cx
+                .update_window(app.window, |_, window, cx| {
+                    window.scroll(
+                        VIEW,
+                        gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                })
+                .expect("window stays open");
+            slowest = slowest.max(frame.elapsed());
+        }
+        let mean = start.elapsed() / frames;
+        report("P-3", "mean frame while scrolling", mean, Duration::from_micros(16_667 * 30 / 100));
+        report("P-3", "slowest frame while scrolling", slowest, Duration::from_micros(16_667));
+    }
+
+    /// P-5, the panel's side: drawing "ledger" once its diff holds 586 files
+    /// over 4 repositories.
+    #[test]
+    #[ignore = "RV-8 measurement; run by hand on a release build"]
+    fn five_hundred_eighty_six_files_over_four_repos() {
+        let mut workspace = fixture::design();
+        let ledger = SessionId::new("ledger");
+        let template = workspace
+            .diffs
+            .iter()
+            .find(|d| d.session == ledger)
+            .cloned()
+            .expect("ledger has a diff");
+        let file = template.files.first().cloned().expect("the diff has a file");
+        workspace.diffs.retain(|d| d.session != ledger);
+        for repo in 0..4 {
+            let count = if repo == 0 { 586 - 3 * 146 } else { 146 };
+            workspace.diffs.push(humata2_clients::model::RepoDiff {
+                repo: format!("repo-{repo}"),
+                files: (0..count)
+                    .map(|n| FileDiff {
+                        path: format!("src/dir_{}/file_{n}.rs", n % 12),
+                        ..file.clone()
+                    })
+                    .collect(),
+                ..template.clone()
+            });
+        }
+        let mut app = App::new(workspace);
+        app.send(AppAction::Navigate(Route::Session(ledger)));
+        let start = Instant::now();
+        app.send(AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))));
+        app.draw();
+        let took = start.elapsed();
+        report("P-5", "opening the panel on 586 files (panel only)", took, Duration::from_secs(5));
+    }
+
+    /// P-6: drawing a 194,000-character line with Wrap on.
+    #[test]
+    #[ignore = "RV-8 measurement; run by hand on a release build"]
+    fn wrapping_a_194_000_character_line() {
+        let mut lines = forty_thousand();
+        lines.truncate(1_500);
+        lines[1].text = "x".repeat(194_000);
+        let mut app = app_with(lines);
+        if !wrap(&app) {
+            app.send(AppAction::Review(R::ToggleWrap));
+        }
+        let start = Instant::now();
+        select(&mut app, FILE);
+        let took = start.elapsed();
+        report("P-6", "wrapping a 194,000-character line", took, Duration::from_millis(500));
+    }
+}

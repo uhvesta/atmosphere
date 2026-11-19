@@ -175,3 +175,5 @@ Order, each TDD with its failing test written first (manager), code by Haiku wor
 | 2f | ⌥Z context check | `keys.rs:276` binds in DIFF; check text box and terminal | `option_z_in_the_comment_box_types_and_does_not_flip_wrap` |
 | 2g | DS-83 focus back after Show the terminal | features/app overlay/full-screen + pages focus | `show_the_terminal_returns_focus_to_the_terminal` |
 | 2h | RV-8 budgets with DV-14 (main tracks DV-14) | bench rig via Bazel, numbers "proposed" until accepted | P-1..P-9 recorded |
+
+- 2026-11-18 21:00: after 0.3.4, 2e (DS-80) re-applied and its test restored against `repo-branch-0`'s label; 2h (RV-8) written as `review_ui::budgets::` ignored measurement tests, run by main with `-c opt --test_arg=--ignored --test_arg=--nocapture --test_arg=review_ui::budgets:: --test_arg=--test-threads=1`; numbers stay "proposed" until Fable or main accepts them. P-5/P-7 (daemon) and P-8 come from DV-14's live rerun.

@@ -120,33 +120,6 @@ fn title(panel: Panel) -> &'static str {
     }
 }
 
-thread_local! {
-    /// "# place › session" for the full-screen title bar. `panel()` sets it
-    /// from the state it already holds before it builds the body, so
-    /// `header()` need not read the store again from inside that read.
-    static SESSION_LINE: std::cell::RefCell<Option<SharedString>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Kept until panel_changes.rs moves to `panel_header` (seam_header.py), then removed with SESSION_LINE.
-/// A panel's header, its full-screen line read from `SESSION_LINE`. See `panel_header`.
-pub(crate) fn header(
-    ui: &Rc<Ui>,
-    panel: Panel,
-    full: bool,
-    extra: Option<Div>,
-    look: Look,
-) -> Div {
-    header_with(
-        ui,
-        panel,
-        full,
-        extra,
-        look,
-        SESSION_LINE.with(|line| line.borrow().clone()),
-    )
-}
-
 /// A panel's header. Beside the terminal it is a 36 pt row: the title, what
 /// the panel puts beside it, and the Full screen and Close buttons; a
 /// double-click on it goes full screen. In full screen it is the one 52 pt
@@ -381,7 +354,6 @@ pub(crate) fn panel(
         .open
         .as_ref()
         .and_then(|id| state.workspace.session(id));
-    SESSION_LINE.with(|held| *held.borrow_mut() = session_line(state));
     let body = match (panel, session) {
         (Panel::Changes, _) => changes(ui, state, full, look, width, window, documents),
         (Panel::Inbox, _) => inbox(ui, state, full, look),

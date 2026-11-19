@@ -256,6 +256,8 @@ mod diff_big;
 mod diff_full_screen;
 #[path = "native/diff_stress.rs"]
 mod diff_stress;
+#[path = "native/diff_keys.rs"]
+mod diff_keys;
 #[path = "native/stack.rs"]
 mod stack;
 #[path = "native/review_ui.rs"]

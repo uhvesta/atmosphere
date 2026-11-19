@@ -6,6 +6,8 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **Release policy (owner, 2026-11-18 ~20:00):** a green `bazel build //apps/humata2/...` plus the daemon unit tests is enough for a patch release. Red tests and pending goldens go into the next patch. A minor version waits until the lanes are done.
+- **SPLIT (owner, after the whole backlog):** split the big crates so Bazel caches more tests. Sizes: daemon/humatad ~148k lines, ui ~44k, clients ~21k, clients/live ~17k, daemon/sessions ~16k. panel_changes.rs ~3.8k lines is shared by three lanes. Goal: a change rebuilds and retests only what depends on it.
 - **Final releases (owner, 2026-11-18 evening):** "I want a normal release when normal works and then a fast mode one." After the current milestones (0.3.4, then 0.3.5 with DIFFVIEW):
   1. **NORMALREL:** the flow review, audit and fixes run with fast mode off. Then the full postsubmit runs with fast mode off, and the build is released and installed.
   2. **FASTREL:** only after NORMALREL ships, fast mode is benchmarked against that release, tuned, and passes every test with fast mode on. Then it is released and installed as its own version.
@@ -404,3 +406,5 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
     - The humatad2_unit follow_tests failure is with LIVEHOLDER.
     - panels_test waits for the batched re-record.
 - 2026-11-18 20:40 minion REVIEWUI (freeze): DS-80 call sites (8 `full_text` wraps in panel_changes.rs) and its test `a_shortened_path_shows_in_full_on_hover` moved out of the build to scratchpad `reviewui/ds80/` (full pre-revert copies of panel_changes.rs and review_ui.rs there); never seen green. In the tree: RV-2 (review head pinned, Scroll in reviews), RV-6 (file filter >20), RV-7 (repo base menu right-anchored), DS-15 card inset at the code column, ⌥Z masked in `Input`, review_ui/pr_session tests.
+- 2026-11-18 ~20:10 main: humata2-v0.3.4 released and installed (beae5a35), under the green-build patch policy. Lanes resume: DIFFVIEW seams (header, ds35, ds53, layer, ds84), REVIEWUI's DS-80 restore and RV-8, TESTSPEED's 16 stty files, then goldens for Fable.
+- 2026-11-18 21:00 minion REVIEWUI: DS-80 re-applied by hand over the post-seam panel_changes.rs (8 `full_text` sites, ids unchanged; scratchpad `reviewui/reapply_ds80.py`). `a_shortened_path_shows_in_full_on_hover` restored in a new form: a long clone branch must come back whole as `repo-branch-0`'s label (the old "api" label lookup hit an unobserved element and is ambiguous with the file bar). RV-8: `review_ui::budgets::` adds 4 `#[ignore]` measurement tests (P-1..P-6 panel side, printed against the proposed budgets, no timing asserts); P-5/P-7 daemon side and P-8 stay with DV-14 live. D-REVIEWUI-1 was already in DECISIONS.md. Not built yet: waits for train 6.
