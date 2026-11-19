@@ -17,6 +17,10 @@ pub mod ports;
 mod rank;
 mod replay;
 mod scope;
+mod todo;
+mod todo_fields;
+#[cfg(test)]
+mod test_support;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -79,6 +83,7 @@ pub struct BoardSvc {
     machine: String,
     writes: Arc<Mutex<()>>,
     finished: Arc<Answers<pb::WriteItemResponse>>,
+    finished_todo: Arc<Answers<pb::WriteTodoResponse>>,
     /// On a machine: where its agents' board calls go while the host is linked (D227).
     forwarder: Option<Arc<dyn BoardForwarder>>,
     /// On the host: tells the feed a session changed, merged as the app
@@ -264,6 +269,7 @@ impl BoardSvc {
             machine,
             writes: Arc::new(Mutex::new(())),
             finished: Arc::new(Answers::new()),
+            finished_todo: Arc::new(Answers::new()),
             forwarder: None,
             told: None,
             repos: None,
@@ -1414,102 +1420,10 @@ impl pb::board_service_server::BoardService for BoardSvc {
 
 #[cfg(test)]
 mod tests {
-    use humata2_daemon_ports::UserVia;
     use pb::board_service_server::BoardService;
 
+    use super::test_support::{test_svc, user_req};
     use super::*;
-
-    struct AllowAllGuard;
-
-    impl BoardGuard for AllowAllGuard {
-        fn check(&self, _caller: &Caller, _call: &Call) -> Result<Checked, Status> {
-            Ok(Checked::Allowed)
-        }
-        fn check_away(&self, _caller: &Caller, _call: &Call) -> Result<AwayCall, Status> {
-            Ok(AwayCall::Reachable)
-        }
-        fn lists_low_risk(&self, _asked: &AccessRequest) -> bool {
-            false
-        }
-        fn policy_changed(&self) {}
-        fn host_link(&self) -> String {
-            String::new()
-        }
-    }
-
-    struct NoopFeed;
-
-    impl BoardFeed for NoopFeed {
-        fn publish_in(
-            &self,
-            _change: pb::Change,
-            _payload: pb::event::Payload,
-            _scope: Scope,
-            _by: Option<pb::Actor>,
-        ) {
-        }
-    }
-
-    struct NoopInbox;
-
-    #[tonic::async_trait]
-    impl BoardInbox for NoopInbox {
-        async fn withdraw_about_item(&self, _key: &str) -> Result<(), Status> {
-            Ok(())
-        }
-        async fn defer_board(
-            &self,
-            _caller: &Caller,
-            _asked: AccessRequest,
-            _idempotency: Option<String>,
-            _board: BoardAsk,
-            _run: Run,
-        ) -> Status {
-            Status::permission_denied("deferred")
-        }
-        async fn pending_board_asks(&self) -> Vec<pb::InboxRequest> {
-            Vec::new()
-        }
-        async fn wait_final(
-            &self,
-            _caller: Caller,
-            _request: pb::WaitForAnswerRequest,
-        ) -> Result<pb::WaitResponse, Status> {
-            Err(Status::unimplemented("noop"))
-        }
-        async fn withdraw_as(
-            &self,
-            _caller: Caller,
-            _request: pb::WithdrawRequestRequest,
-        ) -> Result<pb::InboxRequest, Status> {
-            Err(Status::unimplemented("noop"))
-        }
-        async fn approved_on(
-            &self,
-            _machine: &str,
-            _id: &str,
-            _session: &str,
-        ) -> Option<pb::InboxRequest> {
-            None
-        }
-    }
-
-    fn user_req<T>(msg: T) -> Request<T> {
-        let mut req = Request::new(msg);
-        req.extensions_mut().insert(Caller::User(UserVia::App));
-        req
-    }
-
-    fn test_svc(dir: &tempfile::TempDir) -> BoardSvc {
-        let store = Arc::new(Store::open(dir.path().join("state")).expect("open store"));
-        BoardSvc::new(
-            Arc::new(AllowAllGuard),
-            store,
-            Arc::new(NoopFeed),
-            Arc::new(NoopInbox),
-            "local".to_owned(),
-        )
-    }
 
     fn list(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()

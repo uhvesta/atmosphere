@@ -219,3 +219,219 @@ message GetItemHistoryResponse {
   repeated ItemHistoryEntry entries = 1;
   PageResponse page = 2;
 }
+
+// ---------------------------------------------------------------------
+// To-do (BOARDSIMPLE, D830): one ranked list replaces the boards. Channel
+// and session are filters. A separate service so BoardService and every
+// caller of it stay unchanged until the boards are retired; the daemon
+// serves both from the same items during the move.
+service TodoService {
+  // The one list, filtered. The app ranks it with the shared rules.
+  rpc ListTodo(ListTodoRequest) returns (ListTodoResponse);
+  rpc CreateTodo(CreateTodoRequest) returns (WriteTodoResponse);
+  // Changes only the fields set in the patch.
+  rpc UpdateTodo(UpdateTodoRequest) returns (WriteTodoResponse);
+  // The top-ranked open item among those the filter shows (Do next).
+  rpc NextTodo(NextTodoRequest) returns (NextTodoResponse);
+  // The move from boards: counts, and whether the banner was dismissed.
+  rpc GetTodoMigration(GetTodoMigrationRequest) returns (TodoMigration);
+  rpc DismissTodoMigration(DismissTodoMigrationRequest) returns (TodoMigration);
+}
+
+// An item as the list shows it: the board item it is stored as, with the
+// to-do fields.
+message TodoItem {
+  BoardItem item = 1;
+  TodoFields fields = 2;
+}
+
+message TodoFields {
+  // The item's key as shown, such as "PAY-3".
+  string key = 1;
+  TodoState state = 2;
+  // Optional fields that feed the rank. Unset: not given.
+  CivilDay due = 3;
+  TodoEffort effort = 4;
+  TodoImpact impact = 5;
+  repeated string tags = 6;
+  repeated TodoStep steps = 7;
+  // Out of the list until this day; an overdue item is never hidden.
+  CivilDay hide_until = 8;
+  // Pinned items, smaller first; 0 is unpinned. Replaces VIP.
+  uint32 pin_order = 9;
+  // Made by an agent; not in the ranked list until the user says yes.
+  bool suggested = 10;
+  // Where a migrated item stood on the boards: the starting order.
+  TodoStart start = 11;
+  // Set on a pull request review request item.
+  TodoReview review = 12;
+  // When it was closed; Reopen is offered for 7 days.
+  google.protobuf.Timestamp closed_at = 13;
+}
+
+// A calendar day in the user's time zone, without a time.
+message CivilDay {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+}
+
+// Three states. Waiting and Hidden until are derived, not states.
+enum TodoState {
+  TODO_STATE_UNSPECIFIED = 0;
+  TODO_STATE_OPEN = 1;
+  TODO_STATE_IN_PROGRESS = 2;
+  TODO_STATE_CLOSED = 3;
+}
+
+enum TodoEffort {
+  TODO_EFFORT_UNSPECIFIED = 0;
+  TODO_EFFORT_S = 1;
+  TODO_EFFORT_M = 2;
+  TODO_EFFORT_L = 3;
+}
+
+enum TodoImpact {
+  TODO_IMPACT_UNSPECIFIED = 0;
+  TODO_IMPACT_LOW = 1;
+  TODO_IMPACT_MEDIUM = 2;
+  TODO_IMPACT_HIGH = 3;
+}
+
+// A numbered step inside an item.
+message TodoStep {
+  string text = 1;
+  bool done = 2;
+  // The session that ticked it, when an agent did.
+  SessionId ticked_by = 3;
+}
+
+// Where a migrated item stood. The list keeps this order as its
+// tie-break, so nothing is invented by the move. `BoardColumn` keeps its
+// numbers; it is only read here.
+message TodoStart {
+  BoardColumn column = 1;
+  // 1-based within its board and column.
+  uint32 position = 2;
+  // Unset: the global board.
+  ChannelId board_channel = 3;
+  bool was_vip = 4;
+}
+
+// A pull request where someone asked for this user's review. Several PRs
+// of one stack are one item. It closes itself when the review is
+// submitted, the request is removed, or the PRs close.
+message TodoReview {
+  repeated PullRequestRef pull_requests = 1;
+  string author = 2;
+  google.protobuf.Timestamp requested_at = 3;
+}
+
+// Channel and session are filters on the one list.
+message TodoFilter {
+  // Unset with no_channel false: every channel.
+  ChannelId channel = 1;
+  bool no_channel = 2;
+  SessionId session = 3;
+  // Closed items from the last 7 days too.
+  bool show_closed = 4;
+}
+
+message ListTodoRequest {
+  TodoFilter filter = 1;
+  PageRequest page = 2;
+}
+
+message ListTodoResponse {
+  repeated TodoItem items = 1;
+  PageResponse page = 2;
+}
+
+message CreateTodoRequest {
+  IdempotencyKey idempotency_key = 1;
+  string title = 2;
+  // Unset: no channel.
+  ChannelId channel = 3;
+  string description = 4;
+  repeated SessionId sessions = 5;
+  repeated BoardItemId depends_on = 6;
+  CivilDay due = 7;
+  TodoEffort effort = 8;
+  TodoImpact impact = 9;
+  repeated string tags = 10;
+  repeated TodoStep steps = 11;
+  // An agent's new item is created suggested, with this reason and
+  // evidence shown when the user opens it.
+  string reason = 12;
+  repeated string evidence = 13;
+}
+
+message TodoPatch {
+  optional string title = 1;
+  optional string description = 2;
+  optional TodoState state = 3;
+  CivilDay due = 4;
+  bool clear_due = 5;
+  optional TodoEffort effort = 6;
+  optional TodoImpact impact = 7;
+  repeated string tags_add = 8;
+  repeated string tags_remove = 9;
+  // Replaces the steps whole; unset leaves them.
+  TodoSteps steps = 10;
+  CivilDay hide_until = 11;
+  bool clear_hide_until = 12;
+  // 0 unpins.
+  optional uint32 pin_order = 13;
+  ChannelId channel = 14;
+  bool clear_channel = 15;
+  repeated SessionId sessions_add = 16;
+  repeated SessionId sessions_remove = 17;
+  repeated BoardItemId depends_on_add = 18;
+  repeated BoardItemId depends_on_remove = 19;
+  // The user said yes to a suggested item.
+  bool accept_suggestion = 20;
+}
+
+message TodoSteps { repeated TodoStep steps = 1; }
+
+message UpdateTodoRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  TodoPatch patch = 3;
+  Revision expected_revision = 4;
+  // An agent's change becomes a Needs attention ask with this reason and
+  // evidence; the agent never waits on it.
+  string reason = 5;
+  repeated string evidence = 6;
+}
+
+message WriteTodoResponse {
+  Delivery delivery = 1;
+  // Set when applied.
+  TodoItem item = 2;
+  // Set when journaled; the id is provisional until replay.
+  JournalPosition journal = 3;
+  BoardItemId provisional_id = 4;
+}
+
+message NextTodoRequest { TodoFilter filter = 1; }
+
+message NextTodoResponse {
+  // Unset when nothing is open.
+  TodoItem item = 1;
+}
+
+message GetTodoMigrationRequest {}
+message DismissTodoMigrationRequest {}
+
+// What the boards became (the migrate message and the day-after banner).
+message TodoMigration {
+  // Unset until the move ran.
+  google.protobuf.Timestamp migrated_at = 1;
+  uint32 items = 2;
+  uint32 open = 3;
+  uint32 in_progress = 4;
+  uint32 closed = 5;
+  uint32 boards = 6;
+  bool banner_dismissed = 7;
+}

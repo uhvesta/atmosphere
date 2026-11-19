@@ -86,3 +86,43 @@ The owner likes the reference to-do app's UI and wants ours to look like it: a c
 ## Pointers
 - SPEC BD-1–BD-16 (`grep -n '\*\*BD-' apps/humata2/SPEC.md`), frames 07, 12, 21–24 and 37.
 - Code: `features/board`, `ui/src/board.rs` (or its split parts), `daemon/store/src/boards.rs`, `daemon/humatad/src/board_service.rs`, `cli/src/commands/boards.rs`, `api/MCP.md`.
+
+## Lane (BOARDSIMPLE manager, Opus 5.5, 2026-11-19)
+
+**Goal (release-plan step 10, 0.3.16):** one ranked To-do list replaces the boards. **Exit:** the To-do page and the session To-do panel draw from one list (channel and session are filters), with three states, a computed rank with reasons and Pin, optional due/effort/impact/tags/steps/Hide until, quick add, Needs attention items with Yes/No, PR review items and Do next; today's boards migrate keeping the owner's order; kanban, table, dashboard, the Scope picker and VIP are gone; the design goldens are redrawn from the signed-off frames and passed by Fable; focused targets green.
+
+### Design notes
+- **Domain crate `//apps/humata2/todo` (`humata2_todo`, new, pure, serde only).** The one place the to-do rules live, so the daemon (rank for MCP "do next"), the clients and the features agree:
+  - `Day` (civil date, no clock), `Effort {S,M,L}`, `Impact {Low,Medium,High}`, `State {Open, InProgress, Closed}`, `Todo` (key, title, channel, sessions, state, due, effort, impact, tags, steps, hide_until, pinned + pin order, depends_on, blocks, suggested, pending ask, PR review, start rank from migration, created/closed days).
+  - `rank(items, today) -> Ranked`: groups (Needs attention, In progress, Next, Waiting, Hidden until a date, Closed this week), the order within Next with each row's reasons, and Do next.
+  - `quick_add::parse(line, today, channels)`, `filter` (channel, session, due Overdue/Next 7 days, tags, search), `migrate` (old columns and order to start ranks and "Was 1st in To do" reasons), `due_chip` wording.
+- **Rank rule (D830):** pinned first in pin order; then score = due urgency + value per effort (impact ÷ effort); ties by the migrated start order, then age (older first). Age never adds score. PR reviews score by days waiting. Reasons appear only when the row doesn't already say it.
+- **Overdue never folds** into Waiting or Hidden until (owner rule, sign-off log).
+- **Proto (`boards.proto` only, D832):** a new `TodoService` (ListTodo, CreateTodo, UpdateTodo, NextTodo, Get/DismissTodoMigration) with `TodoItem` = `BoardItem` + `TodoFields` (key, state, due, effort, impact, tags, steps, hide_until, pin_order, suggested, start, review, closed_at). Adding fields to `BoardItem` broke ~60 struct literals in other lanes' files, so it was reverted for this additive shape. `BoardColumn` stays in `common.proto`, unrenumbered; migration reads it into `TodoStart`.
+- **Daemon (`svc_board`), held until Gemini's edit there is committed:** store the new fields; derive `state` from `column` for old rows (Backlog/To do → Open, In progress/In review → In progress, Done → Closed); migration writes start_rank from (column, board, rank); VIP → pinned; archived sessions' items migrate closed; MCP `todo_next`, `todo_close` (an ask), `todo_add` (suggested until Yes).
+- **Features `features/todo` (new, TCA):** state = items + filters + selection + folds + quick-add draft; actions for Yes/No, Pin, Close/Reopen, Hide until, Do next, quick add. Replaces `features/board`'s Mode/Filter/ChannelView once wired (seam lines for main).
+- **UI:** `ui/workspace/src/todo.rs` (page) and `todo_panel.rs` (session panel), replacing `board.rs`/`panel_board.rs` when main wires them.
+- **Goldens:** `desktop/tests/design/todo.rs` (+ `todo_more.rs`) drawn from the frames; 21–24 replaced, new frames numbered 180+. The global sidebar rename (Board → To-do, Inbox → Agent inbox) touches every frame's sidebar, so it is batched with lane INBOX's rename in one re-record (D831).
+
+### Tasks
+| # | Task | Files | Tests | Worker | Status |
+|---|---|---|---|---|---|
+| T1 | Proto fields | `api/proto/humata/v1/boards.proto` | build `//apps/humata2/api/...` boards targets | manager | — |
+| T2 | Domain crate | `apps/humata2/todo/**` (new) | `//apps/humata2/todo:todo_test` | Sonnet medium | — |
+| T3 | Goldens: list frames (b1-1/2/3, b4-2, b5-2, b5-3, b8-1/2/3, b9-1) | `desktop/tests/design/todo.rs` (new) | design_test candidates | Sonnet medium | — |
+| T4 | Goldens: other frames (b4-3, b6-3, b7-1/2/3, b9-3) | `desktop/tests/design/todo_more.rs` (new) | design_test candidates | Sonnet medium | after T3 |
+| T5 | Features reducer | `features/todo/**` (new) | TestStore tests | Sonnet medium | after T2 |
+| T6 | UI page + panel | `ui/workspace/src/todo*.rs` (new) | native frames | Sonnet medium | after T5 |
+| T7 | Daemon + migration + MCP | `daemon/svc_board/**` | away_board profile | — | held for Gemini |
+
+### Claims
+`api/proto/humata/v1/boards.proto`; `apps/humata2/todo/**` (new); `features/todo/**` (new); `features/board/**`; `ui/workspace/src/{board,panel_board,todo,todo_panel}.rs`; `desktop/tests/design/{board,todo,todo_more}.rs`; additive lines in `desktop/tests/design.rs`; goldens 07, 12, 21–24, 31, 37, 122 and 180+; `daemon/svc_board/**` after hand-over.
+
+### Log
+- 2026-11-19: plan written. Main: Gemini's `svc_board` edit not yet handed over; T7 held.
+- 2026-11-19: T1 first tried new fields on BoardItem; dependents failed (missing field in literals); reverted by hand and redone as TodoService (D832). Workers: T2 (Sonnet, domain crate), T3 (Sonnet, list goldens), T4 (Sonnet, session/migrate goldens) started. Main: draw frames in INBOX's WIDE registry at 1600x950; forwarded to T3/T4. Decisions D830–D834 logged.
+- 2026-11-19: T1 green: `board_rust`, `grpc:all`, `svc_board`, `humatad2`, `clients/live`, `cli`, `svc_mcp` build. T2 green: `//apps/humata2/todo:all` (6 test targets). INBOX (D846): To-do asks stay out of the Agent inbox via `ListRequestsRequest.agent_inbox = 4`; Needs attention reads `BoardItem.pending`; Yes/No answers with `InboxService.AnswerRequest`. T5 (features/todo + TodoClient + FakeTodo) started.
+- 2026-11-19: T5 green: `clients/src/todo.rs` (TodoClient, Entry with revision and ask id), `clients/src/todo/fake.rs` (FakeTodo, frame b1-1 fixture), `features/todo` (reducer, 13 TestStore tests). Clients seam (api.rs module, lib.rs block, FAKE_SRCS) approved by main. `Clients.todo` field and features/app wiring left as seam lines. T4 rendered 188–191 as WIDE_CANDIDATES; their sidebar waits on T3's to-do flag. design_test build break from todo.rs fixed. The CLI break was INBOX's `agent_inbox` field, reported to main. T6 (ui/workspace todo.rs, todo_panel.rs) started.
+- 2026-11-19: Main: Gemini's svc_board edit is committed (b765f4a0), so svc_board is ours. T7 started (TodoService impl, journaled fields, migration, unit tests; serve.rs, MCP and tools.rs as seam lines). Fable ruled that wide mockup frames use INBOX's `design/mock_sidebar.rs`, so T3 is switching todo.rs and todo_more.rs to it and dropping the `Side.todo` flag. The ui/changes break (DIFFUI) is fixed. T6's todo.rs compiles.
+- 2026-11-19: Fable 5.2, round 1 on the 16 To-do candidates. 184 (empty) APPROVED; 185 (bare list) APPROVED, to be re-rendered after the shared fixes. 21–24, 180–183 and 186–191 REJECTED, mostly for row and chip density, the missing Suggested second line, a solid Show closed chip, hairlines under headers, missing row keys with the drawer open, and session-view chrome. Wording and order matched. T3 is applying the fix lists (kept in scratchpad/verdicts) for round 2.
+- 2026-11-19: T7 green: TodoService in `daemon/svc_board` (`src/todo.rs`, `src/todo_fields.rs`, `src/test_support.rs`, lib.rs wiring), 53 unit tests in `svc_board_unit_test`; `humatad2`, `cli`, `svc_mcp` build. Fields in a journaled sidecar, migration runs once (D835–D838). Seam lines to main: serve.rs `TodoServiceServer` registration and the start-up `migrate_boards` call. Next: MCP todo tools and a live TodoClient (T8).

@@ -4763,6 +4763,33 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - "Board" → "To-do" and "Inbox" → "Agent inbox" change the sidebar of nearly every design golden. The To-do frames show the new names through an opt-in sidebar flag; the global rename is one batched re-record with INBOX's frames, judged once by Fable.
 - **Reverse:** drop the flag.
 
+## D835: How the To-do list keeps what the board store cannot (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- Due date, effort, impact, tags, steps, Hide until, pin order, list state and channel moves live in a journaled sidecar (store `settings`, key `todo.fields`) next to the board items, so the store schema is unchanged.
+- An item's revision is the store revision plus its sidecar edits, so two clients editing a due date conflict like any other edit. Sidecar-only edits bump the revision but are not in the item's History yet.
+- A list state holds while the item stays in the column it was set in; Close writes Done and Reopen moves it back, so the old boards agree until they are retired.
+- `pin_order` is 1-based on the wire; 0 means unpinned.
+- **Reverse:** move the fields into store columns in a schema milestone and drop the sidecar.
+
+## D836: Days, closed items and suggestions (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- "Today" is the UTC day on the daemon and the local day in the app; the daemon has no time zone for the owner yet.
+- Show closed lists items closed in the last 7 days.
+- An item an agent adds is always Suggested and never in Do next until the owner says Yes; Dismiss closes it. Agents cannot accept suggestions.
+- An agent's close is an ask governed by its Edit rule; when the rule asks, the item shows Needs attention.
+- **Reverse:** change the window or the agent rule in svc_board.
+
+## D837: Migration runs once, VIP becomes pins (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- `migrate_boards(vip, now)` runs at daemon start-up and lazily on first To-do use; after the first run it is a no-op. The daemon does not store VIP marks, so a start-up call without marks migrates with no pins, keeping the owner's board order as the starting rank (D833).
+- Session-board items migrate by view: their channel and session are derived when listing, and nothing is rewritten.
+- **Reverse:** clear `todo.migration` to run it again.
+
+## D838: TodoService is host-only for now (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- An agent on an away machine gets `not_built` for TodoService calls; forwarding needs new `Method` rows in svc_peer's ports and lands later.
+- **Reverse:** add the Method rows and an away-board test.
+
 ## D845: Screen dialogs never reach the Agent inbox; the session shows "needs you" instead (INBOX manager, picks by Fable 5.2, 2026-11-19; INBOXHOOKS). Decided
 - **Cut (superseded by INBOXHOOKS):**
   - D767: a screen question raises an Inbox card;
