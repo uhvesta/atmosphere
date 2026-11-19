@@ -1,5 +1,7 @@
 # NATIVEFIX
 
+**Status:** done 2026-11-19, shipped in 0.3.7 (499061fc). Exit run at HEAD: native_test, design_test, look_test, panels_test and holder_swap_identity_test pass (bq logs 20261119-113039-5589ba, 20261119-105507-dbc8b1).
+
 **Outcome:** The desktop UI test suite is green apart from real golden changes, which go to main for Fable.
 
 **Why:** Train 6 (2026-11-18 20:18) failed on native_test (timed out on `diff_stress::a_pull_request_huge_file_stays_inside_the_panel`, about 45 failed cases), design_test and panels_test (golden-only), and holder_swap_identity_test.

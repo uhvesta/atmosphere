@@ -43,8 +43,8 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 
 | # | Step | Release | Checks |
 |---|------|---------|--------|
-| 1 | The redesigned Diff panel fits every width (GOLDENFIX) | 0.3.7 | patch |
-| 2 | The UI test suite passes, only intended screenshots re-recorded (NATIVEFIX) | 0.3.8 | patch |
+| 1 | The redesigned Diff panel fits every width (GOLDENFIX) | 0.3.7 (released 11:30, 499061fc) | patch |
+| 2 | The UI test suite passes, only intended screenshots re-recorded (NATIVEFIX) | shipped in 0.3.7 (exit run 11:30: native, design, look, panels green) | — |
 | 3 | Reviews show full names on hover, with speed budgets (REVIEWUI) | 0.3.9 | patch + launch check |
 | 4 | Progress and stack views match design (PROGRESS, STACKVIEW) | 0.3.10 | patch |
 | 5 | Owner's UI marks (chevron, Exit full screen + Close, stack rows name repos) | 0.3.11 | patch |
