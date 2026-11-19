@@ -125,6 +125,50 @@ The owner's approval to copy agent logins into scratch homes ended at 08:20, so 
 - **O4, Codex under the wrapper.** Do `codex app-server --listen unix://S -c k=v` take the session's `-c` overrides (the Humata MCP server), and does `codex --remote unix://S resume <id>` resume the thread in the TUI?
   - Switches nothing if both pass. If `-c` is refused by `app-server`, drop `config_pairs` in `daemon/codex/src/wrapper.rs` (the TUI still gets them). If `resume` refuses `--remote`, the wrapper's resume falls back to plain `codex resume <id>` with the hooks.
 
+### O1–O4 runbook (slow tier before 0.4.0; main runs it, 2026-11-19)
+
+Every check runs in an isolated scratch home. Never touch `~/.claude`, `~/.codex` or `~/.copilot`. Tokens are set in the environment only and never written to a file.
+
+**Setup.** Copy the logins into the scratch home only as the owner approved before (the same scratch homes as VERIFY), then run:
+```sh
+export S=$(mktemp -d)                         # scratch home, deleted at the end
+export HOME=$S CLAUDE_CONFIG_DIR=$S/.claude CODEX_HOME=$S/.codex
+mkdir -p $S/work && cd $S/work && git init -q
+```
+
+**O1: Claude AskUserQuestion answered by the hook.**
+1. Start a Humata 2 test daemon with a Claude session on `$S/work` (`humata session start --agent claude`), or run `claude` there with the hooks humatad writes.
+2. Prompt: `Use AskUserQuestion to ask me which colour I like, red or blue, then write my answer to colour.txt`.
+3. Answer "blue" on the Agent inbox card.
+
+Pass: no dialog appears in Claude's terminal, and colour.txt says blue. Fail: flip `ClaudeAnswer` to `DenyWithReason` in `daemon/agent_hooks/src/question.rs`, then rerun `bazel test //apps/humata2/daemon/agent_hooks:questions_test`.
+
+**O2: Codex `thread/started` as the ready signal.**
+1. Run `humata codex` on a fresh `$S/work`, with no trust yet.
+2. Watch the daemon log for the ready mark (`HUMATA2_LOG=debug`), and type `/new` once.
+
+Pass: ready comes after the trust and first-run screens are answered, and again with a new thread id after `/new`. Fail: mark codex `ReadySignal::Screen` in `agents.rs`, then rerun `bazel test //apps/humata2/daemon/humatad:ready_gate_test`.
+
+**O3: Claude `/clear` carries the new conversation id.**
+1. In the O1 session, type `/clear`.
+2. Check the session's conversation id in `humata session show <id> --json`, or look in the hook log.
+
+Pass: the id and transcript path change at the SessionStart (source=clear). Fail: drop `clear` from the SessionStart matcher in `agent_hooks` config, then rerun `bazel test //apps/humata2/daemon/agent_hooks:config_test //apps/humata2/daemon/humatad:conversation_follows_test`.
+
+**O4: Codex under the wrapper.**
+- Part 1 needs no login:
+  ```sh
+  codex app-server --listen unix://$S/s.sock -c 'mcp_servers.humata={ command = "humata" }' & sleep 3; ls -l $S/s.sock; kill %1
+  ```
+  Pass: the socket exists and the run has no "unknown argument" error. Fail: drop `config_pairs` from the app-server command in `daemon/codex/src/wrapper.rs`, then rerun `bazel test //apps/humata2/daemon/codex:wrapper_test`.
+- Part 2:
+  1. Run `humata codex` and prompt once.
+  2. Quit, then resume the session from Humata.
+
+  Pass: the TUI reopens the same thread through `--remote unix://… resume <id>`. Fail: the wrapper's resume falls back to plain `codex resume <id>`.
+
+**Cleanup.** Run `rm -rf "$S"` at the end. Kill only the processes this run started.
+
 ### Tasks (workers write code; only main runs bazel and git)
 
 | # | Task | Files (claim) | Worker | Tests first |

@@ -43,6 +43,7 @@ Older rosters (2026-11-15 to 11-18) are in git history.
 | main (Claude Code) | Opus 5.5 | main agent | git, gates, releases | 2026-11-19 | active |
 | DIFFUI manager | Opus 5.5 | manager | release-plan steps 1–5, 8, 9 (GOLDENFIX, NATIVEFIX, REVIEWUI, PROGRESS/STACKVIEW frames, owner marks, UXSIMPLE, REVIEWER) | 2026-11-19 | running |
 | LIVEHOLDER manager | Opus 5.5 | manager | step 6 (LIVEHOLDER) | 2026-11-19 | running |
+| BUILDFIX | Opus 5.5 | fixer | baseline red: faults builds link two store crates, svc_desk/svc_files/svc_board unit tests, buildifier ×7, Vale | 2026-11-19 | running |
 | INBOX manager | Opus 5.5 | manager | steps 7, 11 (AGENTS2, INBOXHOOKS) | 2026-11-19 | running |
 | BOARDSIMPLE manager | Opus 5.5 | manager | step 10 (BOARDSIMPLE) | 2026-11-19 | running |
 | Gemini | Gemini | test optimization (outside dag-walk) | see Resume here, 2026-11-19 entry | 2026-11-19 | active |
@@ -420,3 +421,6 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
     5. `api/proto/humata/v1/review.proto` → **1.57s, 5 cache hits** (0 rebuild of `rpc_kit`, `runtime`, `svc_board`, `svc_files`, `live_machines`).
   - **C1–C3 (`daemon/svc_*`):** All 19 `daemon/svc_*` crates extracted (with mandatory ≤12k LOC splits `svc_upgrade` + `svc_stop_restart`, `svc_channels` + `svc_desk`, and 3-way `svc_sessions_{common,local,archive,transfer}`); 18/19 compiling green, 17/19 unit tests passing (`humatad2`, `humatad2_admin`, `humatad2_test_power_cut`, `desktop:humata2`, `cli:humata` all green). Stopping cleanly after Part 1 + Part 2 per owner directive; Part 3 feature lanes (`GOLDENFIX`, `0.4`, `NORMALREL`, `FASTREL`) untouched.
 - 2026-11-19 main (Claude Code, Opus 5.5): resuming feature work after the crate split. Starting RESUME.md › Release plan step 1. Gemini keeps test optimization; ownership split in Resume here.
+- 2026-11-19 main (Claude Code): baseline `bazel build //apps/humata2/...` red, 1190/1243 (faults binaries + humatad2_unit_test link two `humata2_store` copies; svc_desk/files/board unit tests; buildifier on 7 daemon packages; Vale on //apps/humata2:markdown). BUILDFIX fixer started; avoids Gemini's and the lanes' files.
+- 2026-11-19 main: desktop/tests/design.rs has a WIDE + WIDE_CANDIDATES registry at 1600x950 for signed-off mockup frames (INBOX added it; BOARDSIMPLE 21–24/180–191, INBOX 200–210). To record a candidate, move its line into WIDE. Its in_this_shard edit was already uncommitted before the lanes started (Gemini's), so commit design.rs only after Gemini hands that edit over or commits it.
+- 2026-11-19 main: AGENTS2 code green after split (hooks/screen_questions → CATALOG_SCOPED_TESTS, BUILD.bazel commit waits on BUILDFIX; wrapper wait committed). O1–O4 live checks deferred to main's slow tier before 0.4.0 (token from gh auth token in env, isolated homes). INBOXHOOKS: D845 screen-read cut, D846 Needs-attention API, D847 undo windows provisional.
