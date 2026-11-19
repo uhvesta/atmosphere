@@ -344,7 +344,8 @@ impl DeskData {
     /// What changed from `before` to this Desk, as the changes a daemon
     /// would have told: the sessions that left first, then those added or
     /// changed.
-    pub(crate) fn changes_since(&self, before: &Self) -> Vec<DeskChange> {
+    #[doc(hidden)]
+    pub fn changes_since(&self, before: &Self) -> Vec<DeskChange> {
         let mut changes: Vec<DeskChange> = before
             .sessions
             .keys()

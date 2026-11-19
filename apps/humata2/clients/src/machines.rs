@@ -10,10 +10,8 @@ use tokio::sync::mpsc;
 use crate::daemon::{DaemonError, Reply};
 use crate::model::{Agent, Capability, ChannelId, MachineId, MachineStop, RootPlan, RuleSetting, SessionId};
 
-pub mod fake;
 mod providers;
 
-pub use fake::{Call, FakeMachines};
 pub use providers::{ProviderCommand, ProviderEntry, ProviderImportPlan, ProviderProblem, ProviderVariable};
 
 /// An add in progress on a daemon. Asking again with it retries the same add.

@@ -3,60 +3,86 @@
 //! clipboard, the file system, the keychain, and where the app's own state
 //! is saved between launches ([`Storage`], PER-25).
 //!
-//! Only fakes exist so far, holding the dummy data in [`fixture`]. The real
-//! daemon client will implement the same traits over `api/proto`, and the
-//! desktop app will pick it in one place ([`Clients`]); features and views
-//! don't change (see README.md).
+//! The traits and the model are `humata2_client_api`, re-exported here
+//! whole; this crate adds the fakes, holding the dummy data in [`fixture`],
+//! and [`Clients`], which every feature takes. The real daemon client
+//! (`clients/live`) depends on the api crate only, so a change to a fake or
+//! a fixture doesn't rebuild it (SPLIT). See README.md.
 
-mod clipboard;
-pub mod comments;
-mod daemon;
-pub mod desk;
-pub mod docs;
-mod file_manager;
-mod files;
+pub use humata2_client_api::*;
+
+pub mod comments {
+    //! A session's review comments.
+    pub use humata2_client_api::comments::*;
+    pub mod fake;
+    pub use fake::{Call, FakeComments, Typing};
+}
+#[doc(hidden)]
+pub mod daemon {
+    pub use humata2_client_api::daemon::*;
+    mod fake;
+    pub use fake::{FakeDaemon, FakeViews};
+}
+mod fakes {
+    pub mod clipboard;
+    pub mod file_manager;
+    pub mod files;
+    pub mod keychain;
+    pub mod local_daemon;
+    pub mod reveal;
+}
 pub mod fixture;
-pub mod github;
-pub mod history;
-mod keychain;
-mod local_daemon;
-pub mod marks;
-pub mod model;
-// PROGRESS: the one model of a running operation's progress.
-pub mod progress;
-// REPOS (RL-1): the repo library and the one repo search.
-pub mod repos;
-pub mod machines;
-pub mod machine_names;
-mod reveal;
-pub mod views;
-pub mod pull_requests;
-pub mod review_chat;
-mod workspace;
+pub mod history {
+    //! Search over every session's conversation.
+    pub use humata2_client_api::history::*;
+    pub mod fake;
+    pub use fake::{Call, FakeHistory, IndexedSession};
+}
+pub mod machines {
+    //! Adding machines and a machine's page.
+    pub use humata2_client_api::machines::*;
+    pub mod fake;
+    pub use fake::{Call, FakeMachines};
+}
+pub mod marks {
+    //! Pins and VIP marks.
+    pub use humata2_client_api::marks::*;
+    pub mod fake;
+    pub use fake::{Call, FakeMarks};
+}
+pub mod pull_requests {
+    //! Pull request reviews.
+    pub use humata2_client_api::pull_requests::*;
+    pub mod fake;
+    pub use fake::{Call, FakePullRequests};
+}
+pub mod review_chat {
+    //! The review chat.
+    pub use humata2_client_api::review_chat::*;
+    pub mod fake;
+    pub use fake::FakeReviewChat;
+}
+pub mod views {
+    //! The views an agent offers.
+    pub use humata2_client_api::views::*;
+    pub use crate::daemon::FakeViews;
+}
+mod workspace {
+    pub use humata2_client_api::Workspace;
+}
+
+pub use comments::FakeComments;
+pub use daemon::FakeDaemon;
+pub use fakes::clipboard::FakeClipboard;
+pub use fakes::file_manager::FakeFileManager;
+pub use fakes::files::FakeFileSystem;
+pub use fakes::keychain::FakeKeychain;
+pub use fakes::local_daemon::FakeLocalDaemon;
+pub use fakes::reveal::FakeReveal;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use clipboard::{Clipboard, FakeClipboard};
-pub use daemon::{
-    AgentSwitch, ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, FileChange,
-    ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError, fair_share,
-    RunningHolder, SwitchChange, TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork,
-};
-pub use comments::{CommentsClient, FakeComments};
-pub use desk::DeskClient;
-pub use file_manager::{
-    EmptyPlan, Entry, EntryKind, FakeFileManager, FileManager, FileManagerError, FileReply, FileRoot, Folder,
-    ItemLanding, Landing, Listing, RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode,
-    TransferPhase,
-    TransferRow, TrashEntry, TrashListing,
-};
-pub use files::{FakeFileSystem, FileError, FileSystem};
-pub use keychain::{FakeKeychain, Keychain, KeychainError};
-pub use local_daemon::{FakeLocalDaemon, LocalDaemon};
-pub use reveal::{FakeReveal, FinderReveal, Reveal, RevealError, is_this_mac};
-pub use tca::{Clock, MemoryStorage, Storage};
-pub use workspace::Workspace;
 
 /// Every client a feature may use. Cheap to clone.
 #[derive(Clone)]

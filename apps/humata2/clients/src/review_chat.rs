@@ -14,9 +14,7 @@ use crate::daemon::Reply;
 use crate::model::{RepoDiffSpec, SessionId};
 use crate::views::{PlanGroup, PlanView, StackView};
 
-pub mod fake;
 
-pub use fake::FakeReviewChat;
 
 /// Inclusive, 1-based lines of a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -14,9 +14,7 @@ use tokio::sync::mpsc;
 use crate::daemon::Reply;
 use crate::model::SessionId;
 
-pub mod fake;
 
-pub use fake::{Call, FakeComments, Typing};
 
 /// A comment's id, `<session>/c-<n>`. Never reused, even after a drop.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

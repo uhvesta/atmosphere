@@ -1,28 +1,63 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-# The clients Humata 2's features depend on: a trait for each outside
-# service and, for now, only fakes with deterministic dummy data, so the
-# desktop app can be clicked through before the real daemon is wired in.
+# What is fakes or dummy data, kept out of :api.
+FAKE_SRCS = [
+    "src/lib.rs",
+    "src/fixture.rs",
+    "src/daemon/fake.rs",
+    "src/comments/fake.rs",
+    "src/history/fake.rs",
+    "src/machines/fake.rs",
+    "src/marks/fake.rs",
+    "src/pull_requests/fake.rs",
+    "src/review_chat/fake.rs",
+] + glob([
+    "src/daemon/fake/**/*.rs",
+    "src/fakes/**/*.rs",
+    "src/fixture/**/*.rs",
+])
+
+CLIENT_DEPS = [
+    # SEAM (MACHINESCRIPTS): the Edit rules starter.
+    "//apps/humata2/daemon/machines/sample",
+    "//apps/humata2/terminal/vt:ghostty_vt",
+    "//apps/humata2/terminal/wire",
+    "//libs/tca-rust:tca",
+    "@crates//:serde",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+]
+
+# SPLIT: the traits for each outside service and the domain model, with no
+# fakes and no dummy data, so a change to those leaves this crate and the
+# live clients, which depend on it alone, cached.
+rust_library(
+    name = "api",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = FAKE_SRCS,
+    ),
+    crate_name = "humata2_client_api",
+    crate_root = "src/api.rs",
+    visibility = ["//apps/humata2/clients/live:__pkg__"],
+    deps = CLIENT_DEPS,
+)
+
+# The clients Humata 2's features depend on: :api, re-exported whole, and
+# fakes with deterministic dummy data, so the desktop app can be clicked
+# through without the real daemon, and the features' tests run on them.
 rust_library(
     name = "clients",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = FAKE_SRCS,
     crate_name = "humata2_clients",
+    crate_root = "src/lib.rs",
     visibility = [
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
         "//apps/humata2/features:__subpackages__",
         "//apps/humata2/ui:__pkg__",
     ],
-    deps = [
-        # SEAM (MACHINESCRIPTS): the Edit rules starter.
-        "//apps/humata2/daemon/machines/sample",
-        "//apps/humata2/terminal/vt:ghostty_vt",
-        "//apps/humata2/terminal/wire",
-        "//libs/tca-rust:tca",
-        "@crates//:serde",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-    ],
+    deps = CLIENT_DEPS + [":api"],
 )
 
 [

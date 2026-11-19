@@ -10,8 +10,6 @@ use tokio::sync::mpsc;
 use crate::daemon::Reply;
 use crate::model::{FileTier, PreparedView, RepoDiffSpec, Scope, SessionId, ViewId, ViewState};
 
-pub use crate::daemon::FakeViews;
-
 /// A prepared view with its id and where it stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewRecord {

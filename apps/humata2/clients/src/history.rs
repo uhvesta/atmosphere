@@ -9,9 +9,7 @@
 use crate::daemon::Reply;
 use crate::model::{ChannelId, MachineId, SessionId};
 
-pub mod fake;
 
-pub use fake::{Call, FakeHistory, IndexedSession};
 
 /// A turn that matched a search, and where it is (LD-24).
 #[derive(Clone, Debug, PartialEq, Eq)]

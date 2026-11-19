@@ -11,9 +11,7 @@ use tokio::sync::mpsc;
 use crate::daemon::Reply;
 use crate::model::{ChannelId, MachineId, SessionId};
 
-pub mod fake;
 
-pub use fake::{Call, FakeMarks};
 
 /// Something that can be pinned or marked VIP (NV-20).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -19,9 +19,7 @@ use crate::comments::{Anchor, Author, CommentId};
 use crate::daemon::DaemonError;
 use crate::model::{Agent, MachineId, SessionId};
 
-pub mod fake;
 
-pub use fake::{Call, FakePullRequests};
 
 /// A pull request, by its repository (`owner/name`) and number.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

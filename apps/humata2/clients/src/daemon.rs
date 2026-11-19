@@ -848,9 +848,7 @@ pub enum ImageKind {
 }
 
 mod agent_switches;
-mod fake;
 mod running;
 
 pub use agent_switches::{AgentSwitch, SwitchChange};
 pub use running::{HolderTab, RunningHolder, agent_of_kind};
-pub use fake::{FakeDaemon, FakeViews};

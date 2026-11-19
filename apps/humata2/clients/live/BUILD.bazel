@@ -5,10 +5,13 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 rust_library(
     name = "live",
     srcs = glob(["src/**/*.rs"]),
+    # SPLIT: the traits and the model only, under the name the code uses, so
+    # a change to a fake or a fixture doesn't rebuild the live clients.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_name = "humata2_clients_live",
     visibility = ["//apps/humata2/desktop:__subpackages__"],
     deps = [
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "//apps/humata2/clients/terminal_link",
         "//apps/humata2/daemon/humatad:grpc",
         "//apps/humata2/terminal/wire",
@@ -144,6 +147,8 @@ filegroup(
 rust_test(
     name = "inbox_test",
     srcs = ["tests/inbox.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/inbox.rs",
     data = [
         "//apps/humata2/cli:humata",
@@ -157,7 +162,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",
@@ -169,6 +174,8 @@ rust_test(
 rust_test(
     name = "github_repos_live_test",
     srcs = ["tests/github_repos.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/github_repos.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -180,7 +187,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:tempfile",
         "@crates//:tokio",
     ],
@@ -191,6 +198,8 @@ rust_test(
 rust_test(
     name = "boards_test",
     srcs = ["tests/boards.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/boards.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -202,7 +211,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",
@@ -214,6 +223,8 @@ rust_test(
 rust_test(
     name = "diffs_live_test",
     srcs = ["tests/diffs.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/diffs.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -225,7 +236,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",
@@ -237,6 +248,8 @@ rust_test(
 rust_test(
     name = "marks_live_test",
     srcs = ["tests/marks.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/marks.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -248,7 +261,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",
@@ -260,6 +273,8 @@ rust_test(
 rust_test(
     name = "term_restart_live_test",
     srcs = ["tests/term_restart.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/term_restart.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -271,7 +286,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "//apps/humata2/terminal/vt:ghostty_vt",
         "//apps/humata2/terminal/wire",
         "@crates//:serde_json",
@@ -284,6 +299,8 @@ rust_test(
 rust_test(
     name = "history_live_test",
     srcs = ["tests/history.rs"],
+    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_root = "tests/history.rs",
     data = [
         "//apps/humata2/daemon/humatad:holder_for_clients",
@@ -295,7 +312,7 @@ rust_test(
     },
     deps = [
         ":live",
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",

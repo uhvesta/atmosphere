@@ -433,11 +433,613 @@ LINUX_VM_TESTS = [
 
 RIG_TESTS.extend(LINUX_VM_TESTS)
 
+# Phase 0 of SPLIT: what each test starts besides the admin daemon and the
+# holder (tests/common/mod.rs), so a change to a binary a test never runs
+# leaves its result cached. RELEASE: the release daemon (HUMATAD2_RELEASE).
+# FAULTS: the fault-point daemon and holder. SETSID, HUMATA, STACK: those
+# binaries. A test that asks for one it isn't given panics with
+# "set X to the binary's path": add its need here.
+TEST_NEEDS = {
+    "access": ["HUMATA"],
+    "agent_send_machine": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "archive": ["FAULTS"],
+    "archive_live": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "auth": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_approved_board": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "away_board_journal": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_boundary": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_contain_copy": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_forward": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_inbox": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_left_out": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "away_link": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_login": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_login_pipe": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_policy_copy": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "away_replay": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "board_tools": ["HUMATA"],
+    "boards": ["HUMATA"],
+    "branch_names": ["HUMATA"],
+    "branch_settings": ["HUMATA"],
+    "bridge": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "change_root": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "channel_add": ["HUMATA"],
+    "channel_delete_live": ["HUMATA"],
+    "channel_delete_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "channel_desk": ["HUMATA"],
+    "channel_folder_follows": ["HUMATA"],
+    "channel_grid": ["HUMATA"],
+    "channel_rename_live": ["HUMATA"],
+    "channel_rename_roam": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "channel_repo_propose": ["HUMATA"],
+    "channels": ["HUMATA"],
+    "checkpoint": ["HUMATA"],
+    "cli_actor": ["HUMATA"],
+    "cli_files": ["HUMATA"],
+    "cli_login": [
+        "HUMATA",
+        "SETSID",
+    ],
+    "cli_waiting": ["HUMATA"],
+    "codex_trust": ["HUMATA"],
+    "comments": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "context_fork": ["FAULTS"],
+    "continue_in": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "continue_in_journal": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "continue_in_remote": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "conversation_follows": ["HUMATA"],
+    "daemon": ["HUMATA"],
+    "delete_channel": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "desk": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "desk_agent_missing": ["HUMATA"],
+    "desk_close_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_events_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_folder_files": ["HUMATA"],
+    "desk_hide_live": ["HUMATA"],
+    "desk_into_channel": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "desk_into_channel_roam": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_migrate_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_move": ["HUMATA"],
+    "desk_move_live": ["FAULTS"],
+    "desk_picked_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_roam": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_roam_upgrade": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "desk_start_host_cut": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_stuck_remote": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "desk_versions_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "destroy_holders": ["HUMATA"],
+    "detach_live": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "doc_version_diff": ["HUMATA"],
+    "faults": ["FAULTS"],
+    "file_ops": ["HUMATA"],
+    "find_files": ["HUMATA"],
+    "flow_26_10": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "forget_machine": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "fork": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "fork_channel": ["HUMATA"],
+    "fork_remote": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "history": ["HUMATA"],
+    "history_tools": ["HUMATA"],
+    "holder_swap_identity": ["HUMATA"],
+    "hooks": ["HUMATA"],
+    "hooks_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "host_variables": ["HUMATA"],
+    "host_variables_move": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "host_variables_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "inbox": ["HUMATA"],
+    "inbox_copy": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "login": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "machine_shell_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "machine_shell_remote_linux": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "machines": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "marks": ["HUMATA"],
+    "matrix": ["HUMATA"],
+    "mcp": ["HUMATA"],
+    "move_cheap": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "move_session": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "move_session_freeze": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "move_typing": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "own_copy_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "paste": ["HUMATA"],
+    "peer_stdio": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "pointers": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "power_cut_both": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "power_cut_focus": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "power_cut_host": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "power_cut_machine": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "power_cut_start_box": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "pr_base": ["HUMATA"],
+    "pr_commits": ["HUMATA"],
+    "pr_review": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "pr_review_move": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "pr_review_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "pr_stopped": ["FAULTS"],
+    "provider_import": ["HUMATA"],
+    "provider_remove": ["HUMATA"],
+    "providers": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "push_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "push_remote_restart": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "read_marks": ["HUMATA"],
+    "read_marks_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "ready_gate": ["HUMATA"],
+    "rebuild_session": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "received_root": ["HUMATA"],
+    "relay": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "remote": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "remote_archive": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "remote_files": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "remote_history": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "remote_rename": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "remote_stack": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "remote_transfers": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "remove_machine_cut": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "remove_machine_live": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "repo_library_adds": ["HUMATA"],
+    "repo_tools": ["HUMATA"],
+    "repos": ["HUMATA"],
+    "restart_operations": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "restore_channel_cut": ["FAULTS"],
+    "resume_exits_at_once_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "review": ["HUMATA"],
+    "review_per_repo": ["HUMATA"],
+    "review_stack": ["HUMATA"],
+    "running_holders_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "screen_questions": ["HUMATA"],
+    "screen_questions_remote": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "session_add_repo": ["HUMATA"],
+    "session_delete_other": ["HUMATA"],
+    "session_events": ["HUMATA"],
+    "session_notes": ["HUMATA"],
+    "sessions": ["HUMATA"],
+    "settings_sections": ["HUMATA"],
+    "skills": [
+        "HUMATA",
+        "RELEASE",
+    ],
+    "start_fresh": ["FAULTS"],
+    "start_resume_failed_remote": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "start_stuck_remote": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "stop_access": ["HUMATA"],
+    "stop_box": [
+        "FAULTS",
+        "RELEASE",
+        "SETSID",
+    ],
+    "stop_launching": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "stop_sessions": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "storage_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+    "tab_tools": ["HUMATA"],
+    "terminal": [
+        "FAULTS",
+        "HUMATA",
+    ],
+    "transfer_end": ["HUMATA"],
+    "transfers": ["HUMATA"],
+    "trash": ["HUMATA"],
+    "turns": ["HUMATA"],
+    "two_machines": [
+        "RELEASE",
+        "SETSID",
+    ],
+    "upgrade_box": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "upgrade_cut": [
+        "FAULTS",
+        "HUMATA",
+        "STACK",
+    ],
+    "upgrade_holders": [
+        "FAULTS",
+        "HUMATA",
+        "STACK",
+    ],
+    "upgrade_holders_move": [
+        "FAULTS",
+        "HUMATA",
+        "STACK",
+    ],
+    "upgrade_identity": [
+        "HUMATA",
+        "RELEASE",
+        "STACK",
+    ],
+    "upgrade_inbox": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "upgrade_kinds": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "upgrade_local": [
+        "HUMATA",
+        "STACK",
+    ],
+    "upgrade_refusals": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "upgrade_remote_holders": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+        "STACK",
+    ],
+    "views_forks": ["HUMATA"],
+    "views_plan_notes": ["HUMATA"],
+    "views_remote": [
+        "FAULTS",
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
+    ],
+}
+
+NEED_DATA = {
+    "BASE": [
+        ":humatad2_admin",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "FAULTS": [
+        ":humatad2_faults",
+        "//apps/humata2/daemon/holder:humata2_holder_faults",
+    ],
+    "HUMATA": ["//apps/humata2/cli:humata"],
+    "RELEASE": [":humatad2"],
+    "SETSID": [":setsid"],
+    "STACK": ["//tools/stack"],
+}
+
+NEED_ENV = {
+    "BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_admin)",
+    },
+    "FAULTS": {
+        "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
+        "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
+    },
+    "HUMATA": {"HUMATA": "$(rootpath //apps/humata2/cli:humata)"},
+    "RELEASE": {"HUMATAD2_RELEASE": "$(rootpath :humatad2)"},
+    "SETSID": {"HUMATA2_SETSID": "$(rootpath :setsid)"},
+    "STACK": {"STACK": "$(rootpath //tools/stack:stack)"},
+}
+
 # Each test starts humatad2 and humata2_holder as the real binaries and
 # talks to them over gRPC on a socket of its own: the admin daemon with
 # --admin as HUMATAD2, and the release one as HUMATAD2_RELEASE for the
 # checks that a call with no credential is refused. The CLI login tests
-# also run `humata` (HUMATA) in a terminal of their own.
+# also run `humata` (HUMATA) in a terminal of their own. Each gets only
+# the binaries TEST_NEEDS lists for it.
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
@@ -449,24 +1051,20 @@ RIG_TESTS.extend(LINUX_VM_TESTS)
         srcs = [src] + glob(["tests/common/*.rs"]),
         crate_root = src,
         data = [
-            ":humatad2",
-            ":humatad2_admin",
-            ":humatad2_faults",
-            ":setsid",
-            "//apps/humata2/cli:humata",
-            "//apps/humata2/daemon/holder:humata2_holder",
-            "//apps/humata2/daemon/holder:humata2_holder_faults",
-            "//tools/stack",
+            label
+            for need in ["BASE"] + TEST_NEEDS.get(
+                src.removeprefix("tests/").removesuffix(".rs"),
+                [],
+            )
+            for label in NEED_DATA[need]
         ],
         env = {
-            "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
-            "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
-            "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
-            "HUMATA2_SETSID": "$(rootpath :setsid)",
-            "HUMATAD2": "$(rootpath :humatad2_admin)",
-            "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
-            "HUMATAD2_RELEASE": "$(rootpath :humatad2)",
-            "STACK": "$(rootpath //tools/stack:stack)",
+            variable: path
+            for need in ["BASE"] + TEST_NEEDS.get(
+                src.removeprefix("tests/").removesuffix(".rs"),
+                [],
+            )
+            for variable, path in NEED_ENV[need].items()
         },
         # A shard of a power-cut suite traces its operations and cuts each
         # at all of its points: long, but each wait in it has a deadline.

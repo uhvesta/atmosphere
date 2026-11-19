@@ -14,14 +14,15 @@ Packages built "once per engine" (D49, D57) have a plain target on ordinary GPUI
 | `chunk` | `humata2_chunk` | 1 MiB chunks on a link, compressed with lz4 or zstd (or not), the codec policy, and the self-describing frame for data at rest (TR-11, TR-13, D60, D65). |
 | `report` | `humata2_report` | Bug reports without a GUI (I9): recordings of interactions, actions, view trees and daemon calls, scrubbed, saved as text, and replayed as flow scripts against fakes. |
 
-There is no separate model package: the domain types the app shows live in `clients/src/model.rs` (`humata2_clients::model`).
+There is no separate model package: the domain types the app shows live in `clients/src/model.rs`, in the `clients:api` crate (`humata2_client_api::model`, re-exported as `humata2_clients::model`).
 
 ## Desktop app (on fake clients until the real daemon client exists)
 | Package | Crate | What it holds |
 |---|---|---|
 | `features/app` | `humata2_app` | The root feature: routes and Back, overlays, the New session and New channel sheets, toasts, loading, the daemon's event stream, layout sizes, and saving where the person was across restarts. One file per area under `src/`. |
 | `features/<name>` | `humata2_<name>` | One reducer per feature: `board`, `files`, `hosts`, `inbox`, `palette`, `review`, `session`, `settings`, `sidebar`, `views`. State, actions and effects only, no GUI. Tested with TestStore in `tests/*.rs`, one target per file. |
-| `clients` | `humata2_clients` | The clients features use (daemon and terminals, clock, clipboard, file system, keychain, storage), each a trait; only fakes so far. `src/model.rs` holds the domain types, `src/daemon/` the fake daemon by area, `src/fixture/` the dummy data by area. |
+| `clients:api` | `humata2_client_api` | SPLIT: the client traits (daemon and terminals, clock, clipboard, file system, keychain, storage, file manager, machines, reviews) and the domain model in `src/model.rs`, with no fakes and no dummy data. Built from `clients/src` minus the fake files (`FAKE_SRCS` in the BUILD), crate root `src/api.rs`. Visible to `clients/live` only, which takes it under the name `humata2_clients` (`aliases`), so a fake or fixture edit doesn't rebuild the live clients. |
+| `clients` | `humata2_clients` | Re-exports `:api` whole and adds the fakes (`src/fakes/`, `src/daemon/fake*`, `src/*/fake.rs`), the dummy data (`src/fixture/`) and `Clients`/`Fakes`. What features, `ui` and `desktop` depend on. |
 | `ui` | `humata2_ui` | GPUI views for each feature (sidebar, session tabs, panels, board, channel, hosts, settings, overlays, lists) and the one store bridge between tca and GPUI's executor. One crate. |
 | `terminal/grid` | `terminal_grid` | The cell types and the `Grid` trait a renderer reads, with no dependencies, so the view needs no engine (D22). `:terminal_grid_fake` adds `FakeGrid` for tests. |
 | `terminal/vt` | `ghostty_vt` | Safe Rust over libghostty-vt, built from pinned source with Zig inside Bazel (D10). |
