@@ -349,6 +349,13 @@ impl Overlays {
                         .disabled(blocker.is_some()),
                     ),
             )
+            .children(
+                state
+                    .progress
+                    .as_ref()
+                    .filter(|_| starting)
+                    .map(|p| widgets::progress_line(look, p, Some(ui.now()))),
+            )
             .focus_trap("pr-review-dialog", &self.pr.paste.focus_handle(cx));
         // The strip sits above the dialog, 56 pt up (the dialog is drawn 96
         // pt below the window's top edge and the strip 40).

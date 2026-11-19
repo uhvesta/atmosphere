@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use humata2_clients::model::{Agent, MachineId, SessionId};
+use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
 use humata2_clients::pull_requests::{
     PullRequestError, PullRequestInfo, PullRequestRef, PullRequestsClient, ReviewStart,
 };
@@ -93,6 +94,10 @@ pub struct DialogState {
     pub push_allowed: bool,
     /// Where Start stands.
     pub start: Start,
+    /// The running step of the start operation while Start waits.
+    pub progress: Option<OpProgress>,
+    /// The operation id `progress` follows; latched by the first update.
+    pub op: Option<String>,
 }
 
 impl Default for DialogState {
@@ -108,6 +113,8 @@ impl Default for DialogState {
             context: String::new(),
             push_allowed: false,
             start: Start::Idle,
+            progress: None,
+            op: None,
         }
     }
 }
@@ -197,6 +204,8 @@ pub enum DialogAction {
     Start,
     /// The daemon answered Start.
     Started(Result<SessionId, PullRequestError>),
+    /// A watched operation moved on; the review's start shows its step.
+    OperationMoved(OpUpdate),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -206,6 +215,16 @@ pub enum DialogAction {
 pub enum Delegate {
     /// The review's session exists: open it.
     Opened(SessionId),
+}
+
+/// Latches `state.op` onto the first update's id and keeps that operation's
+/// progress; updates of another id change nothing.
+fn follow_start(state: &mut DialogState, update: OpUpdate) {
+    if state.op.as_ref().is_some_and(|id| *id != update.id) {
+        return;
+    }
+    state.op = Some(update.id);
+    state.progress = update.progress;
 }
 
 /// The dialog's reducer.
@@ -319,6 +338,8 @@ impl Reducer for Dialog {
                     push_allowed: state.push_allowed,
                 };
                 state.start = Start::Starting;
+                state.progress = None;
+                state.op = None;
                 let client = self.client.clone();
                 return Effect::future(async move {
                     DialogAction::Started(client.start_review(start).await)
@@ -329,8 +350,19 @@ impl Reducer for Dialog {
                     *state = DialogState::default();
                     return Effect::send(DialogAction::Delegate(Delegate::Opened(session)));
                 }
-                Err(error) => state.start = Start::Failed(error),
+                Err(error) => {
+                    state.start = Start::Failed(error);
+                    state.progress = None;
+                    state.op = None;
+                }
             },
+            DialogAction::OperationMoved(update) => {
+                let starts_review =
+                    matches!(update.kind, OpKind::StartPrReview | OpKind::StartSession);
+                if state.start == Start::Starting && starts_review {
+                    follow_start(state, update);
+                }
+            }
             DialogAction::Delegate(_) => {}
         }
         Effect::none()

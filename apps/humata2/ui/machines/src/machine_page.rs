@@ -935,6 +935,24 @@ fn scripts_section(
             .on_click(move |_, _, cx| ui_toggle.send(toggle.clone(), cx))
             .test_support();
         let mut block = col().border_b_1().border_color(rgb(look.line)).child(header);
+        // PROGRESS T9: a running rule has no honest total, so it sweeps.
+        if line.running {
+            block = block.child(
+                div()
+                    .id(("machine-script-progress", index))
+                    .role(Role::ProgressIndicator)
+                    .aria_label("Running")
+                    .test_support()
+                    .px(px(12.))
+                    .pb(px(8.))
+                    .child(widgets::progress_bar(
+                        look,
+                        None,
+                        widgets::BarMetrics::line(look),
+                        SharedString::from(format!("machine-script-sweep-{name}")),
+                    )),
+            );
+        }
         if let Some(run) = line.last.filter(|run| run.outcome.is_problem())
             && let Some((step, tail)) = run.failure_tail()
         {

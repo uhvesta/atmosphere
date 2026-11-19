@@ -94,10 +94,17 @@ impl App {
             Event::Operation(update) => {
                 self.new_session_operation(state, update.clone());
                 self.add_repo_operation(state, update.clone());
-                return self.child(
+                let pr_dialog = self.child(
+                    state,
+                    AppAction::PrDialog(humata2_pr_review::dialog::DialogAction::OperationMoved(
+                        update.clone(),
+                    )),
+                );
+                let session = self.child(
                     state,
                     AppAction::Session(SessionAction::OperationMoved(update)),
                 );
+                return Effect::merge([pr_dialog, session]);
             }
             Event::Resync => return self.load(),
         }

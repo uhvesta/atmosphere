@@ -321,6 +321,8 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("119-diff-stack-whole", LIGHT, stack::whole),
     ("120-diff-stack-layer", LIGHT, stack::layer),
     ("121-diff-stack-skim-drift", DARK, stack::skim_drift),
+    // PROGRESS T7: the Diff panel's loading sweep (Fable approved 2026-11-19).
+    ("126-diff-loading", LIGHT, session::diff_loading),
 ];
 
 /// Frames not yet approved: drawn into the test's undeclared outputs

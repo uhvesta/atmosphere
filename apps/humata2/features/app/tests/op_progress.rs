@@ -9,7 +9,7 @@ use humata2_app::{
 };
 use humata2_clients::model::{ChannelId, ForkKind, SessionId};
 use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
-use humata2_clients::{Clients, DaemonError, Event, fixture};
+use humata2_clients::{DaemonError, Event, fixture};
 use humata2_session::{ContinueDraft, ForkDraft, SessionAction, SessionView};
 use tca::{TestClock, TestStore};
 

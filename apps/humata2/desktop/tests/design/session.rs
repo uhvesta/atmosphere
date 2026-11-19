@@ -1280,3 +1280,36 @@ pub fn working_elapsed(look: Look) -> Div {
     // Working, as in frame 01: green, and only the fork's request in the Inbox.
     shell(look, Side { asking: false, ..Side::at("Ledger schema migration") }, middle, None)
 }
+
+/// Frame 126: the Diff panel while a big diff is read. The sweep runs
+/// along the top edge of the panel's body, full width and without a label,
+/// until the rows draw (PROGRESS T7, D807 P1). A still frame draws the
+/// sweep's segment, a quarter of the track, at 37%.
+pub fn diff_loading(look: Look) -> Div {
+    let sweep = div()
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .right(px(0.))
+        .h(px(2.))
+        .overflow_hidden()
+        .bg(c(look.line))
+        .child(
+            div()
+                .absolute()
+                .top(px(0.))
+                .h_full()
+                .w(relative(0.25))
+                .left(relative(0.37))
+                .rounded(px(1.))
+                .bg(c(look.accent)),
+        );
+    let body = div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Diff", false, Some(base_chip(look))))
+        .child(div().relative().flex_1().min_h_0().child(sweep));
+    session_with(look, Screen::new(Some(Panel::Diff), Term::Working), Panel::Diff, "Diff", body)
+}

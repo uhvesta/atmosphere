@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{Agent, MachineId};
+use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
 use humata2_clients::pull_requests::{
     Call, FakePullRequests, PullRequestError, PullRequestInfo, PullRequestRef, PullRequestState,
 };
@@ -318,4 +319,122 @@ fn closing_forgets_what_was_pasted() {
     read(&mut store);
     store.send(A::Close, |_| {});
     assert_eq!(store.state(), &DialogState::default());
+}
+
+fn step(title: &str) -> OpProgress {
+    OpProgress {
+        title: title.to_owned(),
+        fraction: None,
+        label: String::new(),
+        started_ms: 0,
+    }
+}
+
+fn moved(id: &str, kind: OpKind, title: &str) -> A {
+    A::OperationMoved(OpUpdate {
+        id: id.to_owned(),
+        kind,
+        progress: Some(step(title)),
+    })
+}
+
+/// The dialog open with a pull request read and This Mac picked, ready to start.
+fn ready_to_start(fake: &FakePullRequests) -> TestStore<Dialog> {
+    let mut store = opened(fake);
+    store.send(A::Paste(API_482.to_owned()), |_| {});
+    read(&mut store);
+    store
+}
+
+fn receive_started_ok(store: &mut TestStore<Dialog>) {
+    store.receive_matching("started", |action| matches!(action, A::Started(Ok(_))), |_| {});
+    store.receive_matching(
+        "the parent is told to open it",
+        |action| matches!(action, A::Delegate(Delegate::Opened(_))),
+        |_| {},
+    );
+}
+
+#[test]
+fn the_running_step_of_the_start_shows_and_follows_its_operation() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-7", OpKind::StartSession, "Cloning acme/api"), |_| {});
+    assert_eq!(store.state().progress, Some(step("Cloning acme/api")));
+    assert_eq!(store.state().op.as_deref(), Some("op-7"));
+
+    store.send(moved("op-7", OpKind::StartSession, "Starting the agent"), |_| {});
+    assert_eq!(store.state().progress, Some(step("Starting the agent")));
+    assert_eq!(store.state().op.as_deref(), Some("op-7"));
+    receive_started_ok(&mut store);
+}
+
+#[test]
+fn a_review_start_operation_is_followed_too() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-9", OpKind::StartPrReview, "Reviewing acme/api"), |_| {});
+    assert_eq!(store.state().progress, Some(step("Reviewing acme/api")));
+    receive_started_ok(&mut store);
+}
+
+#[test]
+fn a_later_operation_does_not_replace_the_one_being_followed() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-7", OpKind::StartSession, "Cloning acme/api"), |_| {});
+    store.send(moved("op-8", OpKind::StartSession, "Some other step"), |_| {});
+    assert_eq!(store.state().progress, Some(step("Cloning acme/api")));
+    assert_eq!(store.state().op.as_deref(), Some("op-7"));
+    receive_started_ok(&mut store);
+}
+
+#[test]
+fn an_operation_of_another_kind_is_ignored() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-7", OpKind::Fork, "Forking"), |_| {});
+    assert_eq!(store.state().progress, None);
+    assert_eq!(store.state().op, None);
+    receive_started_ok(&mut store);
+}
+
+#[test]
+fn an_update_while_the_dialog_is_idle_changes_nothing() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(moved("op-7", OpKind::StartSession, "Cloning acme/api"), |_| {});
+    assert_eq!(store.state().start, Start::Idle);
+    assert_eq!(store.state().progress, None);
+    assert_eq!(store.state().op, None);
+}
+
+#[test]
+fn a_failed_start_keeps_its_error_and_drops_the_step() {
+    let fake = github();
+    let offline = PullRequestError::Daemon(DaemonError::Offline { machine: mac() });
+    fake.fail("start_review", offline.clone());
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-7", OpKind::StartSession, "Cloning acme/api"), |_| {});
+    store.receive_matching("start failed", |action| matches!(action, A::Started(Err(_))), |_| {});
+    assert_eq!(store.state().start, Start::Failed(offline));
+    assert_eq!(store.state().progress, None);
+    assert_eq!(store.state().op, None);
+}
+
+#[test]
+fn a_started_session_drops_the_step_as_the_dialog_closes() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::Start, |_| {});
+    store.send(moved("op-7", OpKind::StartSession, "Cloning acme/api"), |_| {});
+    receive_started_ok(&mut store);
+    assert_eq!(store.state().progress, None);
+    assert_eq!(store.state().op, None);
+    assert!(!store.state().open);
 }
