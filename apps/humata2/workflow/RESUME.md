@@ -34,6 +34,31 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 
 ---
 
+## Release plan (owner, 2026-11-19): walk this in order
+
+- **Patch:** release build only, no tests (`tools/release/release.sh <ver>` then `install.sh`).
+- **Launch check:** `apps/humata2/tools/release/check.sh humata2-v<ver>` (signature, notarization, the app starts and reports its version; opens no windows).
+- **Full suite:** `presubmit.sh --full` (slow tier included), every failure fixed, plus the launch check.
+- Each step: finish it, commit, push, release, install. Start after the CI speed-up (TESTSPEED). Steps may run in parallel lanes, but releases go out in this order. If two steps land together, ship one patch for both. Keep launch checks on every 3rd patch and every minor version.
+
+| # | Step | Release | Checks |
+|---|------|---------|--------|
+| 1 | The redesigned Diff panel fits every width (GOLDENFIX) | 0.3.7 | patch |
+| 2 | The UI test suite passes, only intended screenshots re-recorded (NATIVEFIX) | 0.3.8 | patch |
+| 3 | Reviews show full names on hover, with speed budgets (REVIEWUI) | 0.3.9 | patch + launch check |
+| 4 | Progress and stack views match design (PROGRESS, STACKVIEW) | 0.3.10 | patch |
+| 5 | Owner's UI marks (chevron, Exit full screen + Close, stack rows name repos) | 0.3.11 | patch |
+| 6 | Live terminals survive moves, renames and upgrades (LIVEHOLDER) | 0.3.12 | patch + launch check |
+| 7 | Agents' questions and waits show in the inbox and clear (AGENTS2) | 0.3.13 | patch |
+| 8 | Iterating on work stays simple (UXSIMPLE) | 0.3.14 | patch |
+| 9 | Fresh review terminals beside any diff (REVIEWER) | 0.3.15 | patch + launch check |
+| 10 | One ranked To-do list (BOARDSIMPLE) | 0.3.16 | patch |
+| 11 | Two quiet inboxes (INBOXHOOKS) | 0.3.17 | patch |
+| 12 | Fix every failure | **0.4.0** | full suite + launch check |
+| 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
+| 14 | Walk every flow, audit, fix (NORMALREL; flow fixes ship as 0.4.x patches first) | **0.5.0** | full suite + launch check |
+| 15 | Fast mode benchmarked and tuned (FASTREL) | **0.6.0** | full suite with fast mode on + launch check |
+
 ## 1. Finish the open feature lanes
 
 - [ ] **The redesigned Diff panel fits every width, with no doubled or clipped labels (GOLDENFIX).** Fable's rejects from 2026-11-18 21:20 (full verdict in `scratchpad/nativefix/FABLE_VERDICT.md` / `milestones/NATIVEFIX.md`):
@@ -72,9 +97,12 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
   - The per-repo base chevron (⌃⌄ beside each repo) says what it does, or stays hidden until the bases differ (revisits D739).
   - The full-screen Diff header says "Exit full screen" instead of "Show the terminal" and offers Close.
   - Stack view: each layer row names the repos it touches; Whole stack marks layer boundaries; frames 119–121 are rendered for the owner.
-- After each closed lane: gate, commit, push, patch release, install.
+- After each closed lane: commit, push, then a patch release (release build only, no tests) and install. Patch releases go out often. Every 3rd patch and every minor release also runs the launch check `apps/humata2/tools/release/check.sh humata2-v<ver>` (notarization, signature, the app starts and reports its version; opens no windows).
+- **Order (owner, 2026-11-19):** release 0.4 after INBOXHOOKS and before AGY; AGY lands as a patch on 0.4.
 
-## 2. Minor release (0.4)
+## 2. Minor release (0.4) — before AGY
+
+A minor (0.x) release bumps the version and needs the full suite green; a patch needs only a release build.
 
 1. Full postsubmit (`presubmit.sh --full`, slow tier included).
 2. Fix every failure.
