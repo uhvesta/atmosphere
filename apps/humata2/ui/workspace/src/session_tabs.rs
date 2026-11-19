@@ -202,6 +202,23 @@ fn tab_row(
         )
         .child(div().flex_1())
         .children(humata2_ui_changes::document_tab::mode_switch(ui, state, look, group, tabs))
+        .when(!split, |bar| {
+            // uxsimple 3-4: with more than one agent at work, how many.
+            let agents = state.session.agent_count(session);
+            bar.when(agents > 1, |bar| {
+                let label = format!("{agents} agents");
+                bar.child(
+                    div()
+                        .id("session-agent-count")
+                        .mr(px(14.))
+                        .text_size(px(12.))
+                        .text_color(rgb(look.term_dim))
+                        .child(label.clone())
+                        .test_text(label)
+                        .test_support(),
+                )
+            })
+        })
         .when(session.status != Status::Offline, |bar| {
             let peers = tabs
                 .tabs

@@ -137,6 +137,14 @@ fn a_reviewer_tab_opens_hides_shows_comes_back_after_a_reboot_and_ends_on_its_cr
     assert_eq!(tab_count(&app), before + 1);
     let listed = daemon_shells(&app, &id);
     assert!(listed >= 1, "the daemon still lists the reviewer's shell");
+    let agents = app.ui.read(|state| {
+        state
+            .session
+            .workspace
+            .session(&id)
+            .map(|session| state.session.agent_count(session))
+    });
+    assert_eq!(agents, Some(2), "the session's agent and the reviewer's");
 
     // 3. Show: the same live shell answers a typed command.
     select(&mut app, reviewer);
@@ -181,6 +189,10 @@ fn a_reviewer_tab_opens_hides_shows_comes_back_after_a_reboot_and_ends_on_its_cr
     });
     app.wait_until("the daemon to list one shell less", |app| {
         daemon_shells(app, &id) == shells - 1
+    });
+    // The daemon tells the app too, so its copy of the session drops it.
+    app.wait_until("the app to list one shell less", |app| {
+        typing::shells_of(app, &id) == Some(shells - 1)
     });
     assert!(
         app.ui.read(|state| matches!(

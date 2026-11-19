@@ -634,7 +634,8 @@ pub async fn resume(
 
 /// "End for good" for a shell tab (D784): its holder and the program's
 /// whole process group end, and the tab, its saved output and any stopped
-/// mark are gone. A stopped shell has no holder left to end.
+/// mark are gone, and its session's followers are told. A stopped shell
+/// has no holder left to end.
 pub async fn end(
     store: &Arc<Store>,
     lifecycle: &dyn TerminalLifecycle,
@@ -668,7 +669,11 @@ pub async fn end(
         .map_err(|source| RunningError::Store {
             doing: "remove the ended tab",
             source,
-        })
+        })?;
+    if let Some(session) = &record.session {
+        lifecycle.shells_changed(session);
+    }
+    Ok(())
 }
 
 fn unix_ms(at: SystemTime) -> i64 {
@@ -766,5 +771,59 @@ mod tests {
         assert_eq!(parse_etime("00:07"), Some(Duration::from_secs(7)));
         assert_eq!(parse_etime("2-00:00:01"), Some(Duration::from_secs(2 * 86_400 + 1)));
         assert_eq!(parse_etime("x"), None);
+    }
+
+    /// Records which sessions it was told changed shells.
+    #[derive(Default)]
+    struct Told(std::sync::Mutex<Vec<String>>);
+
+    impl TerminalLifecycle for Told {
+        fn is_viewed(&self, _session: &str) -> bool {
+            false
+        }
+
+        fn tab_typed(&self, _tab: &str) {}
+
+        fn end_holder_at(&self, _socket: &Path, _owner: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn shells_changed(&self, session: &str) {
+            self.0.lock().unwrap().push(session.to_owned());
+        }
+    }
+
+    fn shell(store: &Store, dir: &Path, id: &str, session: Option<&str>) {
+        store
+            .put_tab(&TabRecord {
+                id: id.to_owned(),
+                session: session.map(str::to_owned),
+                kind: TabKind::Shell,
+                title: "zsh".to_owned(),
+                holder_socket: dir.join(format!("{id}.sock")),
+                holder_pid: 0,
+                created_unix_ms: 1,
+                holder_generation: 0,
+            })
+            .unwrap();
+    }
+
+    /// D784: "End for good" on a session's shell tab removes the tab and
+    /// tells that session's followers, so their shells list drops it; a
+    /// machine shell, in no session, tells no session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ending_a_session_shell_tells_that_session_its_shells_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        session_with_agent(&store, "se_1", "copilot1", AgentState::Stopped);
+        shell(&store, dir.path(), "tb_shell", Some("se_1"));
+        shell(&store, dir.path(), "tb_machine", None);
+        let told = Told::default();
+
+        end(&store, &told, "tb_shell").await.unwrap();
+        end(&store, &told, "tb_machine").await.unwrap();
+
+        assert_eq!(store.tab("tb_shell").unwrap(), None);
+        assert_eq!(*told.0.lock().unwrap(), vec!["se_1".to_owned()]);
     }
 }

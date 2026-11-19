@@ -370,6 +370,7 @@ impl SessionSvc {
         let tokens = Arc::new(Tokens::new(starter.store.clone(), identities, socket));
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(tell_read_marks(tell.clone(), crate::read_marks::changes()));
+            runtime.spawn(tell_read_marks(tell.clone(), SHELLS_CHANGED.subscribe()));
         }
         Self {
             tell,
@@ -1720,9 +1721,22 @@ fn session_pb(
     }
 }
 
+/// Sessions whose shells changed outside this service, as "End for good"
+/// on a shell tab from the running holders list (D784) removes one.
+static SHELLS_CHANGED: std::sync::LazyLock<broadcast::Sender<String>> =
+    std::sync::LazyLock::new(|| broadcast::channel(64).0);
+
+/// Tells `session`'s feed its shells changed, so clients drop a shell
+/// removed outside this service.
+pub(crate) fn shells_changed(session: &str) {
+    // Nobody may be following yet; the store is right all the same.
+    let _ = SHELLS_CHANGED.send(session.to_owned());
+}
+
 /// CH-16, CH-17 (D392): tells the feed each session whose read mark
 /// changed, so every client shows it bold or not without asking. When some
 /// changes are lost, every client reloads now (D395).
+/// Also tells it each session whose shells changed elsewhere.
 async fn tell_read_marks(tell: Tell, mut changes: broadcast::Receiver<String>) {
     use tokio::sync::broadcast::error::RecvError;
     loop {

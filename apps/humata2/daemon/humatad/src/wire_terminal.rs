@@ -116,6 +116,10 @@ impl TerminalLifecycle for LifecycleAdapter {
         })
         .map_err(|error| error.to_string())
     }
+
+    fn shells_changed(&self, session: &str) {
+        crate::session_service::shells_changed(session);
+    }
 }
 
 /// Adapts a late-bound `OnceLock<SessionSvc>` to [`TerminalSessions`].

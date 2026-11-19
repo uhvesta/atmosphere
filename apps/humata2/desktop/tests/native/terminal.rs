@@ -495,3 +495,19 @@ fn a_press_on_the_terminal_margin_gives_it_the_keys() {
     press(&mut app, &["p", "w", "d", "enter"]);
     assert_ne!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
 }
+
+/// uxsimple 3-4: an agent opened from New agent tab beside the session's
+/// own makes the tab row say how many agents are at work.
+#[test]
+fn an_agent_tab_beside_the_sessions_agent_shows_the_agent_count() {
+    use humata2_clients::model::Agent;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    assert!(!app.contains("session-agent-count"), "one agent needs no count");
+    app.send(AppAction::Session(SessionAction::OpenTerminal {
+        agent: Agent::Copilot,
+        split: false,
+    }));
+    app.settle();
+    assert!(app.contains("session-agent-count"));
+}

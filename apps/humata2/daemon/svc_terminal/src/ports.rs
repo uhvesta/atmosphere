@@ -83,4 +83,7 @@ pub trait TerminalLifecycle: Send + Sync {
     fn is_viewed(&self, session: &str) -> bool;
     fn tab_typed(&self, tab: &str);
     fn end_holder_at(&self, socket: &std::path::Path, owner: &str) -> Result<(), String>;
+    /// Tells `session`'s followers its shells changed, so a shell tab
+    /// removed here leaves their copy of the session too.
+    fn shells_changed(&self, session: &str);
 }

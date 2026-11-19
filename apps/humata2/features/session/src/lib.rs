@@ -334,6 +334,19 @@ impl SessionState {
         keep_agent_tabs(&self.agent_tabs, workspace);
     }
 
+    /// How many agents `session` runs, as its tab row's "N agents" reads
+    /// (uxsimple 3-4): its own agent, unless it is a plain shell, and each
+    /// tab running one, whether the daemon lists it or it was opened from
+    /// New agent tab, counted once.
+    #[must_use]
+    pub fn agent_count(&self, session: &Session) -> usize {
+        let opened = self
+            .agent_tabs
+            .keys()
+            .filter(|(id, tab)| *id == session.id && !session.terminal_agents.contains_key(tab));
+        usize::from(session.agent != Agent::Shell) + session.terminal_agents.len() + opened.count()
+    }
+
     /// Whether a prompt still waits to be typed into tab `tab` of
     /// `session`: the tab's view uses it to notice the person typing first.
     #[must_use]
