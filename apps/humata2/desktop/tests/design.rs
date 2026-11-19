@@ -318,6 +318,7 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("122-new-session-cloning", LIGHT, |look| overlays::new_session_cloning(look, board::kanban(look))),
     ("123-session-moving-unmeasured-step", LIGHT, fork_move::moving_unmeasured),
     ("124-session-working-elapsed", LIGHT, session::working_elapsed),
+    ("125-migrate-holders-count", DARK, upgrade::holders_moving),
     ("119-diff-stack-whole", LIGHT, stack::whole),
     ("120-diff-stack-layer", LIGHT, stack::layer),
     ("121-diff-stack-skim-drift", DARK, stack::skim_drift),

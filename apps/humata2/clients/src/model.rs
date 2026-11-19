@@ -885,6 +885,34 @@ pub struct MigrateCard {
     pub steps: Vec<MigrateStep>,
     /// The sessions and shells whose holders a Holders item restarts.
     pub holders: Vec<HolderSession>,
+    /// This round of Migrate's moves of a Holders item; `None` before one.
+    pub moved: Option<HoldersMoved>,
+}
+
+/// How many terminals this round of a Holders Migrate has moved so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldersMoved {
+    /// Terminals moved onto the current holder so far.
+    pub done: u32,
+    /// Terminals this round moves.
+    pub total: u32,
+    /// When the round started, unix ms.
+    pub started_ms: i64,
+}
+
+impl HoldersMoved {
+    /// The progress line for the round: measured when `total` is known.
+    #[must_use]
+    pub fn progress(&self) -> crate::progress::OpProgress {
+        let fraction = (self.total > 0).then(|| self.done.min(self.total) as f32 / self.total as f32);
+        let noun = if self.total == 1 { "terminal" } else { "terminals" };
+        crate::progress::OpProgress {
+            title: "Moving terminals".into(),
+            fraction,
+            label: format!("{} of {} {noun} moved", self.done.min(self.total), self.total),
+            started_ms: self.started_ms,
+        }
+    }
 }
 
 /// One step of a running migrate.

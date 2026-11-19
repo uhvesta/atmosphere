@@ -8,9 +8,10 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route, channel};
+use humata2_clients::progress::OpProgress;
 use humata2_clients::model::{
-    Agent, Answer, CopyCard, HolderNote, HolderSession, LineKind, MigrateCard, MigrateStep,
-    MigrateStepState, Preview, Release, Request, RequestKind, Status,
+    Agent, Answer, CopyCard, HolderNote, HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateStep,
+    MigrateStepState, Preview, Request, RequestKind, Status,
 };
 use humata2_inbox::{InboxAction, MigrateStatus, Offer};
 use gpui_kit::assets::IconName;
@@ -406,8 +407,16 @@ const fn holder_note(note: HolderNote) -> &'static str {
 }
 
 /// The sessions and shells whose holders a Holders item restarts: those that
-/// restart first, then "Stays until closed" (frame 83).
-fn holders_list(ui: &Rc<Ui>, state: &AppState, request: &Request, holders: &[HolderSession], look: Look) -> Div {
+/// restart first, then "Stays until closed" (frame 83). While Migrate moves
+/// them (`moving`), the first group is what is still to move (frame 125).
+fn holders_list(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    request: &Request,
+    holders: &[HolderSession],
+    moving: bool,
+    look: Look,
+) -> Div {
     let (stays, waiting): (Vec<&HolderSession>, Vec<&HolderSession>) =
         holders.iter().partition(|holder| holder.note == HolderNote::StaysUntilClosed);
     let open_link = |holder: &HolderSession| {
@@ -437,8 +446,7 @@ fn holders_list(ui: &Rc<Ui>, state: &AppState, request: &Request, holders: &[Hol
                 .test_support()
                 .gap(px(5.))
                 .child(
-                    secondary(look, format!("Sessions waiting · {}", waiting.len()))
-                        .font_weight(FontWeight::SEMIBOLD),
+                    secondary(look, waiting_header(waiting.len(), moving)).font_weight(FontWeight::SEMIBOLD),
                 )
                 .children(waiting.iter().map(|holder| {
                     let status = holder
@@ -450,7 +458,7 @@ fn holders_list(ui: &Rc<Ui>, state: &AppState, request: &Request, holders: &[Hol
                         .gap(px(8.))
                         .child(dot(status))
                         .child(text(holder.title.clone()).font_weight(FontWeight::MEDIUM))
-                        .child(secondary(look, holder_note(holder.note)))
+                        .child(secondary(look, moving_note(holder.note, moving)))
                         .child(div().flex_1())
                         .children(open_link(holder))
                 })),
@@ -478,6 +486,36 @@ fn holders_list(ui: &Rc<Ui>, state: &AppState, request: &Request, holders: &[Hol
         );
     }
     list
+}
+
+/// The header over a Holders item's waiting rows: "Still to move · 3
+/// sessions" while Migrate moves them (frame 125), else "Sessions waiting · 3".
+fn waiting_header(count: usize, moving: bool) -> String {
+    if moving {
+        format!("Still to move · {count} session{}", if count == 1 { "" } else { "s" })
+    } else {
+        format!("Sessions waiting · {count}")
+    }
+}
+
+/// A row's note; while Migrate moves terminals, one queued to move reads
+/// "next" and the one moving "moving now" (frame 125).
+const fn moving_note(note: HolderNote, moving: bool) -> &'static str {
+    match note {
+        HolderNote::Moves if moving => "next",
+        HolderNote::Moving if moving => "moving now",
+        _ => holder_note(note),
+    }
+}
+
+/// The progress line of a Holders item's move round: names the terminal
+/// moving now, with the count on the right (frame 125).
+fn moved_progress(moved: &HoldersMoved, holders: &[HolderSession]) -> OpProgress {
+    let mut progress = moved.progress();
+    if let Some(holder) = holders.iter().find(|holder| holder.note == HolderNote::Moving && !holder.title.is_empty()) {
+        progress.title = format!("Moving {}", holder.title);
+    }
+    progress
 }
 
 /// A Migrate item (UP-1, D281): what changes and what keeps running, with
@@ -592,8 +630,14 @@ fn migrate_card(
     } else {
         body = body.children(changes_fold(ui, state, request, look));
     }
+    // A Holders item that has begun to move terminals shows the count as a
+    // progress line in place of the generic line.
+    let moved = match (&status, &migrate.moved) {
+        (Some(MigrateStatus::Migrating), Some(moved)) => Some(*moved),
+        _ => None,
+    };
     match &status {
-        Some(MigrateStatus::Migrating) if migrate.steps.is_empty() => {
+        Some(MigrateStatus::Migrating) if migrate.steps.is_empty() && moved.is_none() => {
             body = body.child(glyph_line(
                 look,
                 IconName::Info,
@@ -644,7 +688,7 @@ fn migrate_card(
         );
     }
     if !migrate.holders.is_empty() {
-        body = body.child(holders_list(ui, state, request, &migrate.holders, look));
+        body = body.child(holders_list(ui, state, request, &migrate.holders, moved.is_some(), look));
     } else if !migrate.waiting_sessions.is_empty() {
         body = body.child(
             col()
@@ -674,6 +718,19 @@ fn migrate_card(
                 .items_start()
                 .child(secondary(look, "Asks you because:").flex_shrink_0())
                 .child(text(request.why_you.clone()).text_size(px(11.5)).flex_1().min_w_0()),
+        );
+    }
+    // The count sits where the Migrate button was (frame 125).
+    if let Some(moved) = moved {
+        body = body.child(
+            div()
+                .id(SharedString::from(format!("migrate-moved-{}", request.id)))
+                .test_support()
+                .child(humata2_ui_core::widgets::progress_line(
+                    look,
+                    &moved_progress(&moved, &migrate.holders),
+                    Some(ui.now()),
+                )),
         );
     }
     let offers = state.inbox.offers(&request.id);

@@ -255,6 +255,9 @@ pub struct Detail {
     /// Why the machine's last restart of an agent failed, as it reported it
     /// (a machine's daemon only); the item shows Failed with it.
     pub failed: Option<pb::Error>,
+    /// How far Migrate's current or last round of moves got (PROGRESS T6):
+    /// "3 of 7 terminals moved". None before the first round.
+    pub moved: Option<pb::HoldersMoved>,
 }
 
 struct Inner {
@@ -1094,6 +1097,7 @@ impl Watch {
             keeps_running: shell_line(shells).into_iter().collect(),
             rows: report.holders,
             failed: report.failed,
+            moved: report.moved,
         };
         if let Err(error) = migrations.observe_holders(&id, build.clone(), detail).await {
             humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
@@ -1231,6 +1235,7 @@ fn show(
             waiting_sessions: Vec::new(),
             steps,
             holders: Vec::new(),
+            moved: None,
         })),
     });
 }
@@ -1386,6 +1391,7 @@ fn show_holders(
                 .collect(),
             steps: Vec::new(),
             holders: detail.rows.clone(),
+            moved: detail.moved,
         })),
     });
 }
@@ -2202,6 +2208,7 @@ mod tests {
                 })
                 .collect(),
             failed: None,
+            moved: None,
         }
     }
 

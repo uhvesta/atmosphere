@@ -220,7 +220,7 @@ impl Host {
                 return machine;
             }
             assert!(Instant::now() < deadline, "the peer link to box-1 never came up");
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 

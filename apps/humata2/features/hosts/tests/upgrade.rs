@@ -14,7 +14,7 @@ use std::sync::Arc;
 use humata2_clients::DaemonError;
 use humata2_clients::machines::{FakeMachines, GhLogin, MachineDetail, MachineHealth, Reach};
 use humata2_clients::model::{
-    Answer, ChannelId, MachineId, MigrateCard, MigrateFailure, MigratePhase, MigrateThing,
+    Answer, ChannelId, HoldersMoved, MachineId, MigrateCard, MigrateFailure, MigratePhase, MigrateThing,
     Preview, Release, Request, RequestId, RequestKind, SessionId,
 };
 use humata2_hosts::page::{Delegate, Refused, Upgrade};
@@ -76,6 +76,7 @@ fn migrate(request: &str, thing: MigrateThing, machine: &str, phase: MigratePhas
             migrated: None,
             steps: Vec::new(),
             holders: Vec::new(),
+            moved: None,
         }),
         doing: String::new(),
         rule: String::new(),
@@ -342,4 +343,28 @@ fn a_failed_load_on_a_current_machine_still_shows_its_error() {
     store.send(A::Reload, |_| {});
     store.receive_matching("load failed", |a| matches!(a, A::Loaded(_, Err(_))), |_| {});
     assert!(store.state().shown_load_error().is_some());
+}
+
+// The Holders Migrate's count of moved terminals (frame 125).
+
+fn holders_item(machine: &str, phase: MigratePhase, done: u32) -> Request {
+    let mut request = migrate("m-holders", MigrateThing::Holders, machine, phase);
+    if let Preview::Migrate(card) = &mut request.preview {
+        card.moved = Some(HoldersMoved { done, total: 7, started_ms: 5 });
+    }
+    request
+}
+
+#[test]
+fn a_migrating_holders_item_shows_how_many_terminals_moved() {
+    let (store, _fake) = page(DEVBOX, vec![holders_item(DEVBOX, MigratePhase::Migrating, 3)]);
+    assert_eq!(store.state().holders_moving(), Some(HoldersMoved { done: 3, total: 7, started_ms: 5 }));
+}
+
+#[test]
+fn a_waiting_or_other_machines_holders_item_shows_no_count() {
+    let (store, _fake) = page(DEVBOX, vec![holders_item(DEVBOX, MigratePhase::Waiting, 3)]);
+    assert_eq!(store.state().holders_moving(), None);
+    let (store, _fake) = page(DEVBOX, vec![holders_item("gpu-box", MigratePhase::Migrating, 3)]);
+    assert_eq!(store.state().holders_moving(), None);
 }

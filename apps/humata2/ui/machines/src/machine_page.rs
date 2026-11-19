@@ -576,6 +576,7 @@ fn overview(
     let upgrade = state.upgrade();
     page = page
         .children(upgrade_banner(ui, wrap, &upgrade, look))
+        .children(holders_moving_row(ui, wrap, state, look))
         .children(migration_refusal(ui, wrap, state, context, look));
     if let Some(stop) = state.stop() {
         page = page.child(stop_banner(ui, wrap, state, stop, context, look));
@@ -1664,6 +1665,35 @@ fn upgrade_banner(
             .bg(rgb(bg))
             .child(div().flex_shrink_0().child(chrome::icon(glyph, hex, 12.)))
             .child(div().flex_1().min_w_0().child(text))
+            .child(open_in_inbox(ui, wrap, look))
+            .test_support(),
+    )
+}
+
+/// While a Holders Migrate moves this machine's terminals: how many moved so
+/// far (frame 125), under the banner, with the way to the item.
+fn holders_moving_row(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    state: &MachinePageState,
+    look: Look,
+) -> Option<ObservedElement<Stateful<Div>>> {
+    let moved = state.holders_moving()?;
+    Some(
+        row()
+            .id("machine-holders-moving")
+            .role(Role::Status)
+            .aria_label("Moving terminals")
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .bg(rgb(look.fill))
+            .child(div().flex_1().min_w_0().child(widgets::progress_line(
+                look,
+                &moved.progress(),
+                Some(ui.now()),
+            )))
             .child(open_in_inbox(ui, wrap, look))
             .test_support(),
     )

@@ -344,3 +344,11 @@ D801 (Fable 5.2, 2026-11-18) rules A–K. Plan changes from it:
 - First runs of both rig tests failed to build, not to pass. Since the split, the `svc_upgrade` and `svc_stop_restart` `_faults` twins swapped only `runtime`, so the faults daemons linked two copies of `humata2_store`/`humata2_sessions`. Fixed in both BUILD files: `durable`/`holder`/`revive`/`sessions`/`store` are now per variant. The rest of the faults graph (`svc_away`/`svc_files`/`svc_inbox` twins, humatad FAULTS_DEPS) is BUILDFIX's. Reruns wait on main's green.
 - New `holder/tests/take_over_ssh.rs` + `take_over_ssh_test` (manual, external): on h2-terminal-c1, a holder running a shell moves onto a second copy of the Linux holder. Same holder and program pid, the parent is unchanged, no HUP, the screen carries over, typing works, and the exit code reports 7. It reaches the remote socket through an `ssh -L` unix-socket forward. Runs in the terminal live batch with `TERMINAL_LAB_SSH_CONFIG`, `TERMINAL_VM_LINUX_HOLDER`. Built, not yet run.
 - Exit check: Migrate wording is "Move N terminals … in place", with restart only for holders too old to move (`svc_upgrade/src/items.rs`). Left for main: the SPEC PER-6 rewording and the new PER-32 (text in D801 K).
+
+**Exit run 2, 2026-11-19 (minion LIVEHOLDER, Opus 5.5), after DAEMONBUILD (23f1bd7f), ship target 0.3.11:**
+- Plan: (1) rerun the LIVEHOLDER focused set on the new crate layout (holder:all, revive:all, svc_upgrade unit, upgrade_holders(_move/_remote), the *_live tests) plus the two rig/slow ones still unrun (`move_session_freeze_test`, `delete_channel_test`); fix what fails. (2) PROGRESS T6: Migrate's move round reports Units (terminals moved / to move) on the Holders item; machine page banner + Migrate card show "N of M terminals moved" (frame 125). (3) `take_over_ssh_test` stays NOT RUN while h2-terminal-c1 is down (owner item).
+- Exit run 2, result:
+  - The focused set passed on the new crate layout, `--fast` (.bq/logs/20261119-124610-ae09e9.log): holder:all, revive:all, svc_upgrade unit, upgrade_holders(_move/_remote), the *_live tests, plus `move_session_freeze_test` and `delete_channel_test`, which now pass for the first time.
+  - PROGRESS T6 is written (D866) and frame 125 waits for recording.
+  - `take_over_ssh_test` was NOT RUN because h2-terminal-c1 is down.
+  - T7 is still deferred.

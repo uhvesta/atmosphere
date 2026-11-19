@@ -179,6 +179,9 @@ message HoldersReport {
   // no old holder; a report without it clears the host's Failed. Unset: no
   // failure.
   Error failed = 2;
+  // PROGRESS T6: the machine's current or last round of moves; unset when
+  // none ran since its daemon started.
+  HoldersMoved moved = 3;
 }
 
 // What the sender has made durable. The host acks journal seqs once the

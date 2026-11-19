@@ -36,6 +36,7 @@ fn migrate(id: &str, machine: &str, changes: Vec<String>, phase: MigratePhase) -
             migrated: None,
             steps: Vec::new(),
             holders: Vec::new(),
+            moved: None,
         }),
         doing: String::new(),
         rule: String::new(),

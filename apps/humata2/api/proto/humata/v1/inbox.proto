@@ -437,6 +437,20 @@ message MigratePreview {
   // D379: a Holders item's sessions and shells on old holders, each with what
   // happens to it. waiting_sessions (9) stays filled with the agent rows.
   repeated HolderSession holders = 11;
+  // PROGRESS T6: while Migrate moves a Holders item's terminals, how many of
+  // this round's terminals are handled. Unset before the first round.
+  HoldersMoved moved = 12;
+}
+
+// PROGRESS T6: one round of Migrate's moves (LIVEHOLDER). A terminal counts
+// as handled once it moved, or once its holder turned out too old to move or
+// out of reach (it then keeps running where it is), so the count never
+// sticks. A round that stops on a refused or lost move keeps its count.
+message HoldersMoved {
+  uint32 done = 1;
+  uint32 total = 2;
+  // When the round began, unix ms.
+  int64 started_unix_ms = 3;
 }
 
 message MigrateStep {

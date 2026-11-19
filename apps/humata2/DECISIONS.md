@@ -5022,14 +5022,6 @@ Golden 68 loses the inline Undo and gains the D283 strip, which is built for 0.4
 - Golden 68 and 69 draw the `pr-reviews` rollup green, as native does, and goldens 190 and 191 gain the session header's Back (D848).
 - **Reverse:** drop the strip view from the chat tab and re-record 68 and 69 without it.
 
-## D864
-Claude Code's auto-mode offer stops the input gate and nothing else (AGENTS2 minion, pick by Fable 5.2, 2026-11-19; amends D845, D762).
-- Live check O1 recorded Claude Code 2.1.328 drawing "Teach auto mode about your environment?" (1. Yes, 2. Not now, 3. Don't show again) after a turn, with no hook. A send typed then would go into it and its Enter would pick Yes.
-- `ScreenQuestion::Offer` holds those exact words in `runtime/src/screen_question.rs`. The input gate refuses Humata's text while it shows (FailedPrecondition: dismiss it in the terminal, then type again), and a held first message waits. Humata never answers it.
-- It holds no Needs you: `screen_ask` ignores an offer (`ScreenQuestion::needs_you`), because the agent isn't waiting on the person.
-- D845's freeze is narrowed, not lifted: a new gate pattern needs a recorded live screen and no hook, and only refuses.
-- **Reverse:** drop the `Offer` row if Claude Code fires a hook for the offer, removes it, or rewords it.
-
 ## D863
 Shortened text keeps its whole text, and every full-screen arrow names its key. The accessibility tree changes to match (Fable 5.2, REVIEWUI batch 3; DS-17, DS-46, DS-57, DS-79, DS-80).
 - Through `full_text`, these elements get a hover and a label: the session title, the full-screen title line, the file row (`repo/path`), the file note, the diff-base and per-repo base chips, the repo error name, and the PR review's repo name. The repo name now ellipsizes after the branch (case 05 step 10).
@@ -5039,6 +5031,14 @@ Shortened text keeps its whole text, and every full-screen arrow names its key. 
 - A force-push with new commits reads "The PR branch was force-pushed with N new commits" (case 12). The PR notice bar is a `Status` with its words as its label.
 - Native view snapshots gain the `Label`, `description` and `Status` lines. PNGs must not move; any PNG diff goes back to Fable.
 - **Reverse:** drop the `full_text` wrappers and the tooltips, then re-record the view snapshots.
+
+## D864
+Claude Code's auto-mode offer stops the input gate and nothing else (AGENTS2 minion, pick by Fable 5.2, 2026-11-19; amends D845, D762).
+- Live check O1 recorded Claude Code 2.1.328 drawing "Teach auto mode about your environment?" (1. Yes, 2. Not now, 3. Don't show again) after a turn, with no hook. A send typed then would go into it and its Enter would pick Yes.
+- `ScreenQuestion::Offer` holds those exact words in `runtime/src/screen_question.rs`. The input gate refuses Humata's text while it shows (FailedPrecondition: dismiss it in the terminal, then type again), and a held first message waits. Humata never answers it.
+- It holds no Needs you: `screen_ask` ignores an offer (`ScreenQuestion::needs_you`), because the agent isn't waiting on the person.
+- D845's freeze is narrowed, not lifted: a new gate pattern needs a recorded live screen and no hook, and only refuses.
+- **Reverse:** drop the `Offer` row if Claude Code fires a hook for the offer, removes it, or rewords it.
 
 ## D865
 The real Diff panel's stack view copies frames 119–121 (STACKVIEW minion; picks by Fable 5.2, 2026-11-19; round 1 rejected three goldens, round 2 approved all eight).
@@ -5064,3 +5064,13 @@ The real Diff panel's stack view copies frames 119–121 (STACKVIEW minion; pick
   - a shorter base label.
 - **Reverse:** revert panel_stack.rs and the stacked branches in panel_changes, then re-record the stack-* and looks-good-* goldens.
 
+## D866
+Migrate the holders shows how many terminals moved (PROGRESS T6, frame 125; minion LIVEHOLDER; pick by Fable 5.2, 2026-11-19, approved with changes, all applied).
+- The daemon counts a round of moves: `HoldersMoved { done, total, started_unix_ms }` on `MigratePreview.moved` and `HoldersReport.moved`. A terminal counts as handled once it moved, or once its holder proved too old to move or out of reach, so the count never sticks. A round that stops on a refused or lost move keeps its count.
+- Migrate card while it moves:
+  - Title, then "From Humata · migrating…", body, the list, then the progress line where the Migrate button was. There is no button and no Cancel, because a one-at-a-time in-place move has nothing safe to cancel.
+  - Progress line: "Moving <session moving now>" on the left (or "Moving terminals" when no row is moving), and "3 of 7 terminals moved" on the right.
+  - List header: "Still to move · N sessions". Row notes are "moving now" and "next".
+- Machine page: the same count sits in a row under the upgrade banner, titled "Moving terminals".
+- Fable noted that frame 83 (the waiting card) still speaks of restarts. That is right for holders too old to move, but a card whose holders all move in place should not say so. This is a follow-up for frame 83's copy and is not changed here.
+- **Reverse:** drop `moved` from the protos and `MigrateCard`, remove `moving_note`/`waiting_header`/`moved_progress` in request_card.rs and `holders_moving_row` in machine_page.rs, and delete frame 125.

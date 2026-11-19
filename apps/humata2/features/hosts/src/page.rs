@@ -23,7 +23,7 @@ use humata2_clients::machines::{
     ClashChoice, MachineDetail, MachineScripts, Machines, SkillsPreview, Started,
 };
 use humata2_clients::model::{
-    Answer, ChannelId, MachineId, MachineStop, MigrateFailure, MigratePhase, MigrateThing, Release, Request,
+    Answer, ChannelId, HoldersMoved, MachineId, MachineStop, MigrateFailure, MigratePhase, MigrateThing, Release, Request,
     RequestId, SessionId,
 };
 use crate::running::{Running, RunningAction, RunningDelegate, RunningState};
@@ -228,6 +228,19 @@ impl MachinePageState {
                 Some(&card.machine) == machine
                     && matches!(card.thing, MigrateThing::Daemon | MigrateThing::Store)
             })
+        })
+    }
+
+    /// How many terminals this machine's running Holders Migrate has moved
+    /// so far; `None` unless its unanswered Holders item is migrating and
+    /// has begun to move them.
+    #[must_use]
+    pub fn holders_moving(&self) -> Option<HoldersMoved> {
+        let machine = self.machine.as_ref();
+        self.migrations.iter().filter(|request| request.answer.is_none()).find_map(|request| {
+            let card = request.migrate()?;
+            let this = card.thing == MigrateThing::Holders && Some(&card.machine) == machine;
+            if this && card.phase == MigratePhase::Migrating { card.moved } else { None }
         })
     }
 

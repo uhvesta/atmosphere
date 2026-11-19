@@ -686,6 +686,7 @@ fn own_request(old: &OldLocalDaemon) -> Request {
             migrated: None,
             steps: Vec::new(),
             holders: Vec::new(),
+            moved: None,
         }),
         doing: String::new(),
         rule: String::new(),

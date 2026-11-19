@@ -73,6 +73,7 @@ fn item(thing: MigrateThing, phase: MigratePhase, answer: Option<Answer>) -> Req
             migrated: answer.as_ref().map(|_| "just now".to_owned()),
             steps: Vec::new(),
             holders: Vec::new(),
+            moved: None,
         }),
         doing: String::new(),
         rule: String::new(),

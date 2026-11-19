@@ -368,6 +368,81 @@ pub fn holders(look: Look) -> Div {
     inbox(look, waiting_side(), "8 waiting", 0, waiting_list(look, row), holders_card(look))
 }
 
+/// The shared progress line, drawn minimally: title and label over a 2 px
+/// track filled to `fill` (`widgets::progress_line`).
+fn count_line(look: Look, title: &'static str, label: &'static str, fill: f32) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .w_full()
+                .gap(px(6.))
+                .text_size(px(11.))
+                .whitespace_nowrap()
+                .child(div().flex_1().min_w_0().truncate().text_color(c(look.secondary)).child(title))
+                .child(div().flex_shrink_0().text_color(c(look.secondary)).child(label)),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(2.))
+                .rounded(px(1.))
+                .bg(c(look.line))
+                .relative()
+                .overflow_hidden()
+                .child(div().h_full().rounded(px(1.)).bg(c(look.accent)).w(relative(fill))),
+        )
+}
+
+/// Frame 125: the holders item (frame 83) while Migrate runs, with the count
+/// of terminals moved so far.
+pub fn holders_moving(look: Look) -> Div {
+    let session = |state: St, name: &'static str, note: &'static str| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(status(state))
+            .child(div().font_weight(FontWeight::MEDIUM).child(name))
+            .child(secondary(look, note))
+    };
+    let card = card(look)
+        .p(px(12.))
+        .gap(px(8.))
+        .text_size(px(12.5))
+        .max_w(px(560.))
+        .border_color(c(ORANGE))
+        .child(title_row(look, "Migrate holders on gpu-box", "1m"))
+        .child(secondary(look, "From Humata · migrating…"))
+        .child(div().child("7 terminals on gpu-box move onto 2.0.5's holder in place. Nothing restarts; each keeps its screen."))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(label(look, "Still to move · 3 sessions"))
+                .child(session(St::Working, "Benchmark BRIN · Codex", "moving now"))
+                .child(session(St::Idle, "Embeddings sweep · Claude Code", "next"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(small_icon(IconName::SquareTerminal, look.secondary))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("zsh in CUDA 13 smoke test"))
+                        .child(secondary(look, "next")),
+                ),
+        )
+        .child(count_line(look, "Moving Benchmark BRIN · Codex", "3 of 7 terminals moved", 3.0 / 7.0));
+    let row = inbox_row(look, "Migrate holders on gpu-box", "Humata · gpu-box", "1m", true, true);
+    inbox(look, waiting_side(), "8 waiting", 0, waiting_list(look, row), card)
+}
+
 const SUB_OLD: &str = "Debian 13 · x86_64 · gpu-box.lan (ssh) · humatad 2.0.4 (9f3e2d1)";
 const SUB_NEW: &str = "Debian 13 · x86_64 · gpu-box.lan (ssh) · humatad 2.0.5 (a1b2c3d)";
 

@@ -536,6 +536,9 @@ struct Inner {
     moving: Mutex<HashSet<String>>,
     /// Set while a round of moves runs, so only one runs at a time.
     moving_round: AtomicBool,
+    /// How far the current or last round of moves got (PROGRESS T6), shown
+    /// as "3 of 7 terminals moved". None until the first round.
+    round: Mutex<Option<pb::HoldersMoved>>,
     /// Woken by a click on Migrate and by the bin folder changing.
     wake: Arc<Notify>,
     /// Held across one look and what it does about it.
@@ -593,6 +596,7 @@ impl Holders {
                 restarting: Mutex::new(HashSet::new()),
                 moving: Mutex::new(HashSet::new()),
                 moving_round: AtomicBool::new(false),
+                round: Mutex::new(None),
                 wake: Arc::new(Notify::new()),
                 one_look: tokio::sync::Mutex::new(()),
                 report: deps.report,
@@ -727,6 +731,7 @@ impl Holders {
             keeps_running: shell_line(found.shells).into_iter().collect(),
             rows,
             failed: None,
+            moved: self.round(),
         };
         let build = tools::release_only(&self.inner.release.info());
         if let Err(error) = migrations.observe_holders(machine, build, detail).await {
@@ -806,7 +811,11 @@ impl Holders {
         } else {
             self.inner.failure.lock().unwrap_or_else(PoisonError::into_inner).clone()
         };
-        let next = pb::HoldersReport { holders: rows, failed };
+        let next = pb::HoldersReport {
+            holders: rows,
+            failed,
+            moved: self.round(),
+        };
         report.send_if_modified(|current| {
             if current.as_ref() == Some(&next) {
                 return false;
@@ -913,62 +922,69 @@ impl Holders {
         });
     }
 
-    /// Moves each of `movers` onto the current holder file, one at a time.
+    /// How far the current or last round of moves got.
+    fn round(&self) -> Option<pb::HoldersMoved> {
+        *self.inner.round.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Moves each of `movers` onto the current holder file, one at a time,
+    /// counting each one handled for the item (PROGRESS T6).
     async fn move_all(&self, movers: Vec<Mover>) -> Result<(), HoldersError> {
-        let builds = &self.inner.builds;
-        for mover in movers {
-            // A look made before an earlier round ended may list one that has
-            // moved since.
-            if builds.on_current(&mover.name) {
-                continue;
-            }
-            self.inner
-                .moving
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(mover.name.clone());
-            // Looks again, so the card shows it moving.
+        let shown = |count: pb::HoldersMoved| {
+            *self.inner.round.lock().unwrap_or_else(PoisonError::into_inner) = Some(count);
+            // Looks again, so the card shows the count.
             self.inner.wake.notify_one();
-            let outcome = humata2_holder::move_to(&mover.socket, builds.holder_file()).await;
-            self.inner
-                .moving
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&mover.name);
-            match outcome {
-                Ok(humata2_holder::Moved) => {
-                    builds.keep_logged(&mover.name);
-                    if let Some(session) = &mover.session {
-                        // The old image's connection closed with its move, which
-                        // ended the watch on this agent.
-                        self.inner.sessions.watch_agent(session.clone());
-                        self.inner
-                            .sessions
-                            .publish_session(session, pb::Change::Updated, None)
-                            .await;
-                    }
+        };
+        counted_round(movers, now_ms(), shown, |mover| self.move_one(mover)).await
+    }
+
+    /// Moves `mover` onto the current holder file. Ok when it is handled: it
+    /// moved, or it stays running where it is because its holder is too old
+    /// to move or can't be reached. An error stops the round.
+    async fn move_one(&self, mover: Mover) -> Result<(), HoldersError> {
+        let builds = &self.inner.builds;
+        // A look made before an earlier round ended may list one that has
+        // moved since.
+        if builds.on_current(&mover.name) {
+            return Ok(());
+        }
+        self.inner
+            .moving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(mover.name.clone());
+        // Looks again, so the card shows it moving.
+        self.inner.wake.notify_one();
+        let outcome = humata2_holder::move_to(&mover.socket, builds.holder_file()).await;
+        self.inner
+            .moving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&mover.name);
+        match after_move(&mover, outcome)? {
+            AfterMove::Moved => {
+                builds.keep_logged(&mover.name);
+                if let Some(session) = &mover.session {
+                    // The old image's connection closed with its move, which
+                    // ended the watch on this agent.
+                    self.inner.sessions.watch_agent(session.clone());
+                    self.inner
+                        .sessions
+                        .publish_session(session, pb::Change::Updated, None)
+                        .await;
                 }
-                Err(humata2_holder::HolderError::TooOldToMove { .. }) => {
-                    if let Err(error) = builds.too_old(&mover.name) {
-                        humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
-                    }
+            }
+            AfterMove::TooOld => {
+                if let Err(error) = builds.too_old(&mover.name) {
+                    humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
                 }
-                Err(
-                    source @ (humata2_holder::HolderError::Refused { .. }
-                    | humata2_holder::HolderError::LostInMove { .. }),
-                ) => {
-                    return Err(HoldersError::Move {
-                        what: mover.what(),
-                        source,
-                    });
-                }
-                Err(error) => {
-                    humata2_rpc_kit::log::say!(
-                        "humatad2: warning: couldn't reach {}'s holder to move it, so it is left as it is: {}",
-                        mover.what(),
-                        status::chain(&error)
-                    );
-                }
+            }
+            AfterMove::Unreached(error) => {
+                humata2_rpc_kit::log::say!(
+                    "humatad2: warning: couldn't reach {}'s holder to move it, so it is left as it is: {}",
+                    mover.what(),
+                    status::chain(&error)
+                );
             }
         }
         Ok(())
@@ -1089,6 +1105,66 @@ impl Holders {
             pb::SessionStatus::Idle | pb::SessionStatus::ProbablyIdle
         )
     }
+}
+
+/// What one move left, when it doesn't stop the round.
+#[derive(Debug)]
+enum AfterMove {
+    /// The holder runs the current build now.
+    Moved,
+    /// Its holder is too old to move: it keeps running, and an agent is
+    /// restarted when idle instead.
+    TooOld,
+    /// Its holder couldn't be reached to ask; it is left as it is.
+    Unreached(humata2_holder::HolderError),
+}
+
+/// What `outcome`, the move of `mover`, means for the round: a refused or
+/// lost move stops it (D801: the first failure stops the round); anything
+/// else counts the terminal as handled, so the count never sticks on it.
+fn after_move(
+    mover: &Mover,
+    outcome: Result<humata2_holder::Moved, humata2_holder::HolderError>,
+) -> Result<AfterMove, HoldersError> {
+    match outcome {
+        Ok(humata2_holder::Moved) => Ok(AfterMove::Moved),
+        Err(humata2_holder::HolderError::TooOldToMove { .. }) => Ok(AfterMove::TooOld),
+        Err(
+            source @ (humata2_holder::HolderError::Refused { .. }
+            | humata2_holder::HolderError::LostInMove { .. }),
+        ) => Err(HoldersError::Move {
+            what: mover.what(),
+            source,
+        }),
+        Err(error) => Ok(AfterMove::Unreached(error)),
+    }
+}
+
+/// One round of moves: `move_one` for each of `movers` in order, `shown`
+/// told the count before the first and after each one handled. The first
+/// error stops the round, and the count stays where it got to.
+async fn counted_round<F, Fut>(
+    movers: Vec<Mover>,
+    started_unix_ms: i64,
+    shown: impl Fn(pb::HoldersMoved),
+    mut move_one: F,
+) -> Result<(), HoldersError>
+where
+    F: FnMut(Mover) -> Fut,
+    Fut: std::future::Future<Output = Result<(), HoldersError>>,
+{
+    let mut count = pb::HoldersMoved {
+        done: 0,
+        total: u32::try_from(movers.len()).unwrap_or(u32::MAX),
+        started_unix_ms,
+    };
+    shown(count);
+    for mover in movers {
+        move_one(mover).await?;
+        count.done = count.done.saturating_add(1);
+        shown(count);
+    }
+    Ok(())
 }
 
 /// What the Holders item shows when a terminal couldn't be moved or
@@ -1447,5 +1523,100 @@ mod tests {
         assert_eq!(builds.recorded("ss_1.sha"), Some(Recorded { sha: before.sha, moves: false }));
         builds.too_old("nothing.sha").unwrap();
         assert_eq!(builds.recorded("nothing.sha"), None, "no record is made up");
+    }
+
+    fn movers(count: usize) -> Vec<Mover> {
+        (0..count)
+            .map(|index| Mover {
+                name: format!("ss_{index}.sha"),
+                socket: PathBuf::from(format!("/nowhere/ss_{index}.sock")),
+                session: Some(format!("ss_{index}")),
+                title: String::new(),
+            })
+            .collect()
+    }
+
+    fn counts(shown: &Mutex<Vec<pb::HoldersMoved>>) -> Vec<(u32, u32)> {
+        shown.lock().unwrap().iter().map(|count| (count.done, count.total)).collect()
+    }
+
+    #[tokio::test]
+    async fn a_round_of_n_moves_reports_each_terminal_in_order_and_ends_at_n_of_n() {
+        let shown = Mutex::new(Vec::new());
+        let moved = Mutex::new(Vec::new());
+
+        let outcome = counted_round(
+            movers(3),
+            1_700,
+            |count| shown.lock().unwrap().push(count),
+            |mover| {
+                moved.lock().unwrap().push(mover.name);
+                async { Ok(()) }
+            },
+        )
+        .await;
+
+        assert!(outcome.is_ok());
+        assert_eq!(counts(&shown), vec![(0, 3), (1, 3), (2, 3), (3, 3)]);
+        assert!(shown.lock().unwrap().iter().all(|count| count.started_unix_ms == 1_700));
+        assert_eq!(*moved.lock().unwrap(), vec!["ss_0.sha", "ss_1.sha", "ss_2.sha"]);
+    }
+
+    #[tokio::test]
+    async fn a_round_that_stops_keeps_the_count_it_got_to() {
+        let shown = Mutex::new(Vec::new());
+
+        let outcome = counted_round(
+            movers(3),
+            0,
+            |count| shown.lock().unwrap().push(count),
+            |mover| async move {
+                match mover.name.as_str() {
+                    "ss_1.sha" => after_move(
+                        &mover,
+                        Err(humata2_holder::HolderError::Refused {
+                            socket: mover.socket.clone(),
+                            message: "no".to_owned(),
+                        }),
+                    )
+                    .map(|_| ()),
+                    _ => Ok(()),
+                }
+            },
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(HoldersError::Move { .. })));
+        assert_eq!(counts(&shown), vec![(0, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn a_holder_that_cant_hand_over_counts_as_handled_and_a_refused_or_lost_move_stops_the_round() {
+        let mover = &movers(1)[0];
+        let socket = || mover.socket.clone();
+
+        assert!(matches!(after_move(mover, Ok(humata2_holder::Moved)), Ok(AfterMove::Moved)));
+        assert!(matches!(
+            after_move(mover, Err(humata2_holder::HolderError::TooOldToMove { socket: socket() })),
+            Ok(AfterMove::TooOld)
+        ));
+        assert!(matches!(
+            after_move(
+                mover,
+                Err(humata2_holder::HolderError::Connect {
+                    socket: socket(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                })
+            ),
+            Ok(AfterMove::Unreached(_))
+        ));
+        assert!(after_move(mover, Err(humata2_holder::HolderError::LostInMove { socket: socket() })).is_err());
+        assert!(
+            after_move(
+                mover,
+                Err(humata2_holder::HolderError::Refused { socket: socket(), message: String::new() })
+            )
+            .is_err()
+        );
     }
 }

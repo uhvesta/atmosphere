@@ -45,6 +45,7 @@ fn card(thing: MigrateThing, machine: &str, phase: MigratePhase) -> MigrateCard 
         migrated: None,
         steps: Vec::new(),
         holders: Vec::new(),
+        moved: None,
     }
 }
 

@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
     AccessRule, Answer, AskedBy, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
-    HolderSession, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
+    HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
     MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting,
 };
 use crate::humata2_grpc::humata::v1 as pb;
@@ -408,6 +408,11 @@ fn migrate_card(migrate: &pb::MigratePreview) -> MigrateCard {
             })
             .collect(),
         holders: migrate.holders.iter().map(holder_session).collect(),
+        moved: migrate.moved.as_ref().map(|moved| HoldersMoved {
+            done: moved.done,
+            total: moved.total,
+            started_ms: moved.started_unix_ms,
+        }),
     }
 }
 
@@ -1168,5 +1173,28 @@ mod tests {
             card.steps.iter().map(|step| step.state).collect::<Vec<_>>(),
             vec![humata2_clients::model::MigrateStepState::Pending; 2]
         );
+    }
+
+    #[test]
+    fn a_migrate_preview_maps_its_moved_count_and_none_without_one() {
+        use humata2_clients::model::HoldersMoved;
+        let card = |moved: Option<pb::HoldersMoved>| {
+            let mut wire = pending();
+            wire.kind = pb::RequestKind::Migrate as i32;
+            wire.preview = Some(pb::RequestPreview {
+                preview: Some(pb::request_preview::Preview::Migrate(pb::MigratePreview {
+                    thing: pb::MigrateThing::Holders as i32,
+                    moved,
+                    ..Default::default()
+                })),
+            });
+            request(&wire, &BTreeMap::new(), 120).migrate().cloned()
+        };
+        let with = card(Some(pb::HoldersMoved { done: 3, total: 7, started_unix_ms: 55 }));
+        assert_eq!(
+            with.and_then(|card| card.moved),
+            Some(HoldersMoved { done: 3, total: 7, started_ms: 55 })
+        );
+        assert_eq!(card(None).map(|card| card.moved), Some(None));
     }
 }
