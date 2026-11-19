@@ -23,6 +23,7 @@ use tonic::{Code, Request, Status};
 use crate::ports::TOKEN_HEADER;
 
 mod boards;
+mod todo;
 // REPOS (CH-21)
 mod session_repo;
 mod doc_versions;
@@ -1265,6 +1266,9 @@ impl Daemon for GrpcDaemon {
             Operation::BoardItemUpdate |
             Operation::BoardItemMove |
             Operation::BoardItemDelete |
+            Operation::TodoNext |
+            Operation::TodoAdd |
+            Operation::TodoClose |
             Operation::SessionsSearch |
             Operation::RepoSearch | // REPOS
             Operation::RepoLibrary |
@@ -1330,6 +1334,9 @@ impl Daemon for GrpcDaemon {
             Operation::BoardItemUpdate => self.board_item_update(call).await,
             Operation::BoardItemMove => self.board_item_move(call).await,
             Operation::BoardItemDelete => self.board_item_delete(call).await,
+            Operation::TodoNext => self.todo_next(call).await,
+            Operation::TodoAdd => self.todo_add(call).await,
+            Operation::TodoClose => self.todo_close(call).await,
             Operation::SessionsSearch => self.sessions_search(call).await,
             Operation::RepoSearch => self.repo_search(call).await, // REPOS
             Operation::RepoLibrary => self.repo_library().await,

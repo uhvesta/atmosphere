@@ -71,6 +71,12 @@ operations! {
     BoardItemMove => "board_item_move", "board.item_move";
     /// `BoardService.DeleteItem`.
     BoardItemDelete => "board_item_delete", "board.item_delete";
+    /// `TodoService.NextTodo`.
+    TodoNext => "todo_next", "todo.next";
+    /// `TodoService.CreateTodo`; an agent's item is created suggested.
+    TodoAdd => "todo_add", "todo.add";
+    /// `TodoService.UpdateTodo` with the state Closed.
+    TodoClose => "todo_close", "todo.close";
     /// `ViewService.PrepareView`.
     ViewPrepare => "view_prepare", "view.prepare";
     /// `ViewService.ReviseView`.
@@ -868,6 +874,39 @@ fn definition(operation: Operation) -> Definition {
             Effect::Remove,
             asks(vec![
                 req("id", item_id()),
+                opt("expected_revision", expected_revision()),
+            ]),
+        ),
+        Op::TodoNext => define(
+            "The top-ranked open item of the user's To-do list, or null when nothing is open. Filter by channel or session.",
+            Effect::Read,
+            asks(vec![
+                opt("channel", string().describe("A channel id; default: every channel")),
+                opt("session", session().describe("Only items this session works on")),
+            ]),
+        ),
+        Op::TodoAdd => define(
+            "Suggest a To-do item. It is added as suggested and stays out of the ranked list until the user says Yes; you cannot accept it yourself.",
+            Effect::Create,
+            asks(vec![
+                req("title", title()),
+                opt("channel", string().describe("A channel id; default: no channel")),
+                opt("description", string().max_length(20_000)),
+                opt("due", string().describe("A day as YYYY-MM-DD")),
+                opt("effort", one_of_strings(["s", "m", "l"])),
+                opt("impact", one_of_strings(["low", "medium", "high"])),
+                opt("tags", array(string().max_length(60))),
+                opt("steps", array(string().max_length(500)).describe("Step texts, in order")),
+                opt("evidence", array(string().max_length(2_000)).describe("What shows it is needed; shown when the user opens it")),
+            ]),
+        ),
+        Op::TodoClose => define(
+            "Close a To-do item because it is done. It is a request: the user's rules may send it to the Inbox, and the item stays open until they agree.",
+            Effect::Change,
+            asks(vec![
+                req("key", string().describe("An item key such as PAY-3")),
+                req("reason", reason()),
+                opt("evidence", array(string().max_length(2_000)).describe("What shows it is done")),
                 opt("expected_revision", expected_revision()),
             ]),
         ),

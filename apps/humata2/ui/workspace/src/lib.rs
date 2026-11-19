@@ -22,6 +22,8 @@ pub mod session_tabs;
 pub mod sidebar;
 pub mod sidebar_pinned;
 pub mod terminals;
+pub mod todo;
+pub mod todo_panel;
 pub mod view_tab;
 
 /// Shared imports for `panel_{board,files,inbox,info,journal}` extracted from `panels.rs`.

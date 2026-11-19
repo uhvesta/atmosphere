@@ -50,6 +50,12 @@ pub mod marks {
     pub mod fake;
     pub use fake::{Call, FakeMarks};
 }
+pub mod todo {
+    //! The To-do list.
+    pub use humata2_client_api::todo::*;
+    pub mod fake;
+    pub use fake::{Call, FakeTodo};
+}
 pub mod pull_requests {
     //! Pull request reviews.
     pub use humata2_client_api::pull_requests::*;

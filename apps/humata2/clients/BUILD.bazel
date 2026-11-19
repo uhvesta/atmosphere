@@ -9,6 +9,7 @@ FAKE_SRCS = [
     "src/history/fake.rs",
     "src/machines/fake.rs",
     "src/marks/fake.rs",
+    "src/todo/fake.rs",
     "src/pull_requests/fake.rs",
     "src/review_chat/fake.rs",
 ] + glob([
@@ -22,6 +23,7 @@ CLIENT_DEPS = [
     "//apps/humata2/daemon/machines/sample",
     "//apps/humata2/terminal/vt:ghostty_vt",
     "//apps/humata2/terminal/wire",
+    "//apps/humata2/todo",
     "//libs/tca-rust:tca",
     "@crates//:serde",
     "@crates//:thiserror",

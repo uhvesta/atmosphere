@@ -1,0 +1,46 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The To-do list: one ranked list for every channel and session, quick add, the item drawer,
+# Needs attention answers, Do next and the migration banner.
+# State, actions and effects only; the views are in //apps/humata2/ui.
+rust_library(
+    name = "todo",
+    srcs = glob(["src/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_todo_feature",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/clients:api",
+        "//apps/humata2/todo",
+        "//libs/tca-rust:tca",
+        "@crates//:serde",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":todo",
+            "//apps/humata2/clients",
+            "//apps/humata2/todo",
+            "//libs/tca-rust:tca",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

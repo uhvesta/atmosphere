@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The to-do rules: one ranked list, due chips, quick add, filters and the board migration.
+# Pure functions over values; no IO and no clock (today is always passed in).
+rust_library(
+    name = "todo",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_todo",
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = ["@crates//:serde"],
+)
+
+rust_test(
+    name = "todo_unit_test",
+    crate = ":todo",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [":todo"],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

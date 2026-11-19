@@ -80,6 +80,9 @@ session_stop
 session_type
 sessions_search
 skills_sync
+todo_add
+todo_close
+todo_next
 topology_get
 trash_restore
 view_mark_ready

@@ -4790,6 +4790,12 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - An agent on an away machine gets `not_built` for TodoService calls; forwarding needs new `Method` rows in svc_peer's ports and lands later.
 - **Reverse:** add the Method rows and an away-board test.
 
+## D839: Agents reach the To-do list through three MCP tools (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- `todo_next` (read), `todo_add` (always lands Suggested; the owner says Yes) and `todo_close` (an ask under the agent's Edit rule). Dates are strict YYYY-MM-DD; effort s|m|l; impact low|medium|high.
+- Until main adds their own Capability values (seam: `TODO_SUGGEST`, Default Allow; `TODO_CLOSE`, Ask me; appended in capabilities.proto and access/capability.rs, named in mcp tools.rs, shown as Settings agent-access switches), `todo_add` rides `ChannelBoardAdd`/`OwnBoardWrite` and `todo_close` the board Edit rule, like `board_item_create`/`board_item_update`.
+- **Reverse:** remove the three tool rows from tools.rs and svc_mcp/src/mcp/todo.rs.
+
 ## D845: Screen dialogs never reach the Agent inbox; the session shows "needs you" instead (INBOX manager, picks by Fable 5.2, 2026-11-19; INBOXHOOKS). Decided
 - **Cut (superseded by INBOXHOOKS):**
   - D767: a screen question raises an Inbox card;

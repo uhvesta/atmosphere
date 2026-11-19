@@ -24,6 +24,7 @@ pub mod history;
 mod keychain;
 mod local_daemon;
 pub mod marks;
+pub mod todo;
 pub mod model;
 // PROGRESS: the one model of a running operation's progress.
 pub mod progress;

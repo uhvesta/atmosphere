@@ -216,7 +216,7 @@ fn item_id(arguments: &Map<String, Value>, field: &str) -> pb::BoardItemId {
 }
 
 /// The strings of an array argument.
-fn strings(arguments: &Map<String, Value>, field: &str) -> Vec<String> {
+pub(super) fn strings(arguments: &Map<String, Value>, field: &str) -> Vec<String> {
     arguments
         .get(field)
         .and_then(Value::as_array)
@@ -252,7 +252,7 @@ fn optional_text(arguments: &Map<String, Value>, field: &str) -> Option<String> 
         .map(str::to_owned)
 }
 
-fn expected_revision(arguments: &Map<String, Value>) -> Option<pb::Revision> {
+pub(super) fn expected_revision(arguments: &Map<String, Value>) -> Option<pb::Revision> {
     arguments
         .get("expected_revision")
         .and_then(Value::as_u64)
@@ -370,7 +370,7 @@ fn item_json(item: &pb::BoardItem) -> Value {
 
 /// A read's reply: marked with when the host gave the answer if the daemon
 /// answered it from its last copy because the host is away (AW-7 row 2).
-fn read_reply(result: Value, stale_as_of: Option<std::time::SystemTime>) -> Reply {
+pub(super) fn read_reply(result: Value, stale_as_of: Option<std::time::SystemTime>) -> Reply {
     Reply::Applied {
         result,
         request: None,
@@ -379,7 +379,7 @@ fn read_reply(result: Value, stale_as_of: Option<std::time::SystemTime>) -> Repl
 }
 
 /// The time a read's response header says the host answered it, if it does.
-fn stale_as_of(metadata: &tonic::metadata::MetadataMap) -> Option<std::time::SystemTime> {
+pub(super) fn stale_as_of(metadata: &tonic::metadata::MetadataMap) -> Option<std::time::SystemTime> {
     metadata
         .get(stale::HEADER)
         .and_then(|value| value.to_str().ok())
