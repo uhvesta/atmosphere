@@ -214,6 +214,7 @@ impl Host {
             marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
             pull_requests: Arc::new(humata2_clients_live::LivePullRequests::new(&daemon)),
             review_chat: Arc::new(humata2_clients_live::LiveReviewChat::new(&daemon)),
+            todo: Arc::new(humata2_clients_live::todo::LiveTodo::new(&daemon)),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
