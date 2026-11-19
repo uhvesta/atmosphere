@@ -4,6 +4,10 @@ build:lint --@aspect_rules_lint//lint:fail_on_violation
 # always lint
 build --config=lint
 
+# Opt-in fast local edit-test loop: skips lint aspects (e.g. clippy) so Rust
+# targets compile once instead of twice. Always run default lint before commit.
+build:fast --aspects=
+
 # On Linux, build static musl binaries for the host CPU by default (see
 # bazel/platforms/BUILD.bazel). macOS hosts already target themselves.
 common --enable_platform_specific_config

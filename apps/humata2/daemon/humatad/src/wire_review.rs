@@ -139,12 +139,11 @@ impl ReviewSessions for SessionsAdapter {
         caller: &Caller,
         channel: ChannelRecord,
         request: &pb::StartReviewRequest,
+        prs: Vec<humata2_store::ReviewPr>,
+        push_allowed: bool,
     ) -> Result<pb::StartSessionResponse, Status> {
         let local = to_local_caller(caller);
-        let review = humata2_sessions::ReviewStart {
-            prs: Vec::new(),
-            push_allowed: false,
-        };
+        let review = humata2_sessions::ReviewStart { prs, push_allowed };
         let operation = self
             .0
             .begin_review(
@@ -181,10 +180,41 @@ impl ReviewStarter for StarterAdapter {
         machine: &str,
         default_agent: &str,
     ) -> Result<ChannelRecord, Status> {
-        let _ = (machine, default_agent);
-        Err(Status::unimplemented(
-            "create_pr_reviews_channel is not wired on StarterAdapter",
-        ))
+        let folder = humata2_svc_review::PR_REVIEWS_FOLDER;
+        let base = self.0.layout.channel(folder);
+        for sub in ["main", "sessions", "shared"] {
+            std::fs::create_dir_all(base.join(sub))
+                .map_err(|e| Status::internal(format!("couldn't create PR reviews folder: {e}")))?;
+        }
+        let record = ChannelRecord {
+            id: format!("ch_{}", uuid::Uuid::new_v4().simple()),
+            name: "PR Reviews".to_owned(),
+            folder: folder.to_owned(),
+            branch_prefix: None,
+            default_agent: default_agent.to_owned(),
+            repos: Vec::new(),
+            machines: Vec::new(),
+            revision: 1,
+            created_unix_ms: humata2_rpc_kit::now_ms(),
+        };
+        self.0
+            .store
+            .put_channel(&record)
+            .map_err(|e| crate::status::store(e, machine, "create the PR reviews channel"))?;
+        Ok(record)
+    }
+
+    fn clone_pr_reviews_mains(&self, channel_id: &str) -> Result<(), Status> {
+        humata2_sessions::clone_mains_with(
+            &self.0.store,
+            &self.0.layout,
+            &self.0.remote_template,
+            channel_id,
+            &mut |_: &str, _: Result<(), &humata2_sessions::GitError>| {},
+            |_, _, _| {},
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -278,13 +308,42 @@ impl ReviewTerminalCore for TerminalCoreAdapter {
         shown_wait: Duration,
         return_pause: Duration,
     ) -> CommentsTyped {
-        let _ = (target, key, paste, shown_wait, return_pause);
-        CommentsTyped::Typed
+        let local_target = crate::terminal::CommentsTarget {
+            tab: target.tab.clone(),
+            holder: target.holder,
+        };
+        let mut watch = match self.0.watch_for_comments(&local_target).await {
+            Ok(watch) => watch,
+            Err(status) => return CommentsTyped::NotTyped(status),
+        };
+        let typed = self.0.type_comments(&local_target, key, paste).await;
+        match typed {
+            crate::terminal::CommentsTyped::Yes => {
+                if let Some(watch) = watch.as_mut() {
+                    let _ = watch.shown(paste, shown_wait).await;
+                    if !return_pause.is_zero() {
+                        tokio::time::sleep(return_pause).await;
+                    }
+                    let ret_key = format!("{key}:return");
+                    let _ = self.0.type_comments(&local_target, &ret_key, b"\r").await;
+                }
+                CommentsTyped::Typed
+            }
+            crate::terminal::CommentsTyped::No(status) => CommentsTyped::NotTyped(status),
+            crate::terminal::CommentsTyped::Unknown(status) => CommentsTyped::Unknown(status),
+        }
     }
 
     async fn comments_arrived(&self, target: &CommentsTarget, key: &str) -> CommentsArrived {
-        let _ = (target, key);
-        CommentsArrived::Unknown
+        let local_target = crate::terminal::CommentsTarget {
+            tab: target.tab.clone(),
+            holder: target.holder,
+        };
+        match self.0.comments_arrived(&local_target, key).await {
+            crate::terminal::CommentsArrived::Yes => CommentsArrived::Yes,
+            crate::terminal::CommentsArrived::No => CommentsArrived::No,
+            crate::terminal::CommentsArrived::Unknown => CommentsArrived::Unknown,
+        }
     }
 }
 

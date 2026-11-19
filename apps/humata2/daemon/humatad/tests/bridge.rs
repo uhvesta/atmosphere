@@ -78,7 +78,7 @@ impl Drop for StopDetached {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn grpc_works_through_the_bridge() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let mut bridge = bridge(&binary("HUMATAD2"))
         .arg("--socket")
         .arg(&daemon.socket)
@@ -107,7 +107,7 @@ async fn grpc_works_through_the_bridge() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_sync_marker_comes_before_the_stream() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let mut bridge = bridge(&binary("HUMATAD2"))
         .arg("--socket")
         .arg(&daemon.socket)
@@ -164,7 +164,7 @@ async fn a_bridge_with_no_daemon_starts_one_that_outlives_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_bridge_ends_when_the_far_side_closes() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let mut bridge = bridge(&binary("HUMATAD2"))
         .arg("--socket")
         .arg(&daemon.socket)

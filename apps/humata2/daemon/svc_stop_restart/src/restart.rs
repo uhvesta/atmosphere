@@ -40,6 +40,20 @@ const RESUME_TIMEOUT: Duration = Duration::from_secs(30);
 /// interrupted.
 const SETTLE: Duration = Duration::from_secs(1);
 
+#[cfg(feature = "faults")]
+fn revive_settle() -> Duration {
+    std::env::var("HUMATA2_REVIVE_SETTLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(SETTLE)
+}
+
+#[cfg(not(feature = "faults"))]
+fn revive_settle() -> Duration {
+    SETTLE
+}
+
 /// Where and how the sessions are brought back.
 pub struct Revive {
     /// SEC-6: what contains agents when their setting says so.
@@ -104,7 +118,7 @@ pub fn starter(store: &Arc<Store>, revive: Revive, sessions: Sessions) -> Starte
             shell_args: revive.shell_args,
             home: revive.home,
             resume_timeout: RESUME_TIMEOUT,
-            settle: SETTLE,
+            settle: revive_settle(),
             reports: RestartReports {
                 folder: revive.reports,
                 version: env!("CARGO_PKG_VERSION").to_owned(),

@@ -13,6 +13,7 @@ pub mod mcp_client;
 pub mod power_cut;
 pub mod pr_github;
 pub mod remote_rig;
+pub mod shared;
 pub mod trust_box;
 pub mod upgrade;
 pub mod upgrade_rig;

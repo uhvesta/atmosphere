@@ -1440,3 +1440,169 @@ fn chunk_failure(what: &str) -> Status {
         ),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use humata2_daemon_ports::UserVia;
+    use humata2_grpc::humata::v1::transfer_service_server::TransferService;
+    use humata2_store::Store;
+
+    use super::*;
+
+    struct AllowAllGuard;
+
+    impl TransferGuardPort for AllowAllGuard {
+        fn check(&self, _caller: &Caller, _call: &Call) -> Result<Checked, Status> {
+            Ok(Checked::Allowed)
+        }
+        fn require(&self, _caller: &Caller, _call: &Call) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    struct NoopInbox;
+
+    #[tonic::async_trait]
+    impl TransferInboxPort for NoopInbox {
+        async fn ask(
+            &self,
+            _caller: &Caller,
+            _asked: AccessRequest,
+            _operation: &str,
+            _run: Option<Run>,
+            _board: Option<BoardAsk>,
+        ) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    struct TempTrash(PathBuf);
+
+    impl TrashBinPort for TempTrash {
+        fn get(&self) -> Result<Arc<tr::Trash>, Status> {
+            tr::Trash::open(self.0.clone())
+                .map(Arc::new)
+                .map_err(|err| internal(err.to_string(), ""))
+        }
+    }
+
+    fn user_req<T>(msg: T) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.extensions_mut().insert(Caller::User(UserVia::App));
+        req
+    }
+
+    fn test_svc(dir: &tempfile::TempDir) -> Arc<TransferSvc> {
+        let state = dir.path().join("state");
+        let channels = dir.path().join("channels");
+        let home = dir.path().join("home");
+        let trash = dir.path().join("trash");
+        fs::create_dir_all(&channels).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&trash).unwrap();
+        let store = Arc::new(Store::open(&state).expect("open store"));
+        let roots = Arc::new(Roots::new(store, "local".to_owned(), channels, home));
+        TransferSvc::new(
+            roots,
+            Arc::new(AllowAllGuard),
+            Arc::new(TempTrash(trash)),
+            state.clone(),
+            "local".to_owned(),
+            Arc::new(Compression::new(&state)),
+            Arc::new(NoopInbox),
+        )
+    }
+
+    #[test]
+    fn encode_and_decode_transfer_data_round_trips_and_tolerates_corrupt_hex() {
+        let original = Data {
+            sources: vec![pb::FileLocation {
+                machine: Some(pb::MachineId {
+                    value: "local".to_owned(),
+                }),
+                root: None,
+                path: "notes.txt".to_owned(),
+            }],
+            destination: Some(pb::FileLocation {
+                machine: Some(pb::MachineId {
+                    value: "local".to_owned(),
+                }),
+                root: None,
+                path: "dest".to_owned(),
+            }),
+            key: "idem-1".to_owned(),
+            by: None,
+            name: "notes.txt".to_owned(),
+            size: 42,
+            sha256: "abc123".to_owned(),
+        };
+        let encoded = encode(&original);
+        assert_eq!(decode(&encoded), original);
+        assert_eq!(decode("not-valid-hex!"), Data::default());
+        assert_eq!(decode("abc"), Data::default());
+    }
+
+    #[tokio::test]
+    async fn start_transfer_rejects_empty_sources_and_missing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+
+        let no_sources = svc
+            .start_transfer(user_req(pb::StartTransferRequest {
+                sources: Vec::new(),
+                destination: Some(pb::FileLocation {
+                    machine: Some(pb::MachineId {
+                        value: "local".to_owned(),
+                    }),
+                    root: None,
+                    path: "dest".to_owned(),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("empty sources must be rejected");
+        assert_eq!(no_sources.code(), Code::InvalidArgument);
+
+        let no_dest = svc
+            .start_transfer(user_req(pb::StartTransferRequest {
+                sources: vec![pb::FileLocation {
+                    machine: Some(pb::MachineId {
+                        value: "local".to_owned(),
+                    }),
+                    root: Some(pb::file_location::Root::Home(Default::default())),
+                    path: "a.txt".to_owned(),
+                }],
+                destination: None,
+                ..Default::default()
+            }))
+            .await
+            .expect_err("missing destination must be rejected");
+        assert_eq!(no_dest.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn list_and_cancel_unknown_transfer_over_temp_state_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+
+        let listed = svc
+            .list_transfers(user_req(pb::ListTransfersRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(listed.transfers.is_empty());
+
+        let missing_err = svc
+            .cancel_transfer(user_req(pb::TransferControlRequest {
+                id: Some(pb::TransferId {
+                    value: "tr_does_not_exist".to_owned(),
+                }),
+                idempotency_key: None,
+            }))
+            .await
+            .expect_err("unknown transfer id must return NotFound");
+        assert_eq!(missing_err.code(), Code::NotFound);
+    }
+}

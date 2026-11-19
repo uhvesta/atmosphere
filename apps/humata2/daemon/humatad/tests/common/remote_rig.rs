@@ -48,6 +48,7 @@ pub const LONG: Duration = Duration::from_secs(120);
 /// host waits 5 s and more (HO-5), so a test that restarts a box waits for
 /// the box and not for the host's backoff.
 const PEER_RETRY: (&str, &str) = ("HUMATA2_PEER_RETRY_MS", "20");
+const REVIVE_SETTLE: (&str, &str) = ("HUMATA2_REVIVE_SETTLE_MS", "50");
 
 const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
@@ -636,6 +637,7 @@ impl Rig {
         let mut launch_env = vec![
             ("PATH".to_owned(), path.clone()),
             (PEER_RETRY.0.to_owned(), PEER_RETRY.1.to_owned()),
+            (REVIVE_SETTLE.0.to_owned(), REVIVE_SETTLE.1.to_owned()),
         ];
         if !host_env.is_empty() {
             crate::common::state_folder(dir.path());
@@ -960,7 +962,7 @@ impl Rig {
     /// waiting for any link: for a test that keeps a machine away (its
     /// dials held by [`Self::link_lost`]) across the restart.
     pub async fn restart_host_unlinked(&mut self, env: &[(&str, &str)]) {
-        let mut all = vec![("PATH", self.path.as_str()), PEER_RETRY];
+        let mut all = vec![("PATH", self.path.as_str()), PEER_RETRY, REVIVE_SETTLE];
         all.extend_from_slice(env);
         self.host.kill();
         // The old feed ended with the old host; the new one is open before

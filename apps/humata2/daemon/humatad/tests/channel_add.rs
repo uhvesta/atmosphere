@@ -52,36 +52,41 @@ async fn get(daemon: &common::Daemon, channel: &pb::ChannelId) -> pb::Channel {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_added_to_a_channel_gets_a_main_clone_and_the_first_is_untouched() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    world.remote("acme", "web");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    world.remote(&owner, "api");
+    world.remote(&owner, "web");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
     let folder = world.channels.join(&channel.folder);
     let first_head = std::fs::read(folder.join("main/api/.git/HEAD")).unwrap();
 
-    let op = add_repo(&daemon, &id_of(&channel), "acme", "web", None)
+    let op = add_repo(daemon, &id_of(&channel), &owner, "web", None)
         .await
         .unwrap();
-    let ended = finished(&daemon, &op).await;
+    let ended = finished(daemon, &op).await;
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     assert!(folder.join("main/web/.git").exists());
     assert_eq!(std::fs::read(folder.join("main/api/.git/HEAD")).unwrap(), first_head);
-    let got = get(&daemon, &id_of(&channel)).await;
-    assert_eq!(got.repos, vec![repo_ref("acme", "api"), repo_ref("acme", "web")]);
+    let got = get(daemon, &id_of(&channel)).await;
+    assert_eq!(got.repos, vec![repo_ref(&owner, "api"), repo_ref(&owner, "web")]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn repeating_a_call_with_its_key_answers_the_same_operation() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    world.remote("acme", "web");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let key = common::shared::unique_name("add");
+    world.remote(&owner, "api");
+    world.remote(&owner, "web");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
 
-    let first = add_repo(&daemon, &id_of(&channel), "acme", "web", Some("add-1"))
+    let first = add_repo(daemon, &id_of(&channel), &owner, "web", Some(&key))
         .await
         .unwrap();
-    let again = add_repo(&daemon, &id_of(&channel), "acme", "web", Some("add-1"))
+    let again = add_repo(daemon, &id_of(&channel), &owner, "web", Some(&key))
         .await
         .unwrap();
 
@@ -90,26 +95,30 @@ async fn repeating_a_call_with_its_key_answers_the_same_operation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_the_channel_has_runs_as_a_retry_and_is_listed_once() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    world.remote(&owner, "api");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
 
-    let op = add_repo(&daemon, &id_of(&channel), "acme", "api", None)
+    let op = add_repo(daemon, &id_of(&channel), &owner, "api", None)
         .await
         .unwrap();
-    let ended = finished(&daemon, &op).await;
+    let ended = finished(daemon, &op).await;
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
-    assert_eq!(get(&daemon, &id_of(&channel)).await.repos, vec![repo_ref("acme", "api")]);
+    assert_eq!(get(daemon, &id_of(&channel)).await.repos, vec![repo_ref(&owner, "api")]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_owner_and_an_unknown_channel_are_refused() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    world.remote(&owner, "api");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
 
-    let bad = add_repo(&daemon, &id_of(&channel), "acme corp", "web", None)
+    let bad = add_repo(daemon, &id_of(&channel), "acme corp", "web", None)
         .await
         .unwrap_err();
     let (field, problem) = common::invalid_field(&bad);
@@ -119,7 +128,7 @@ async fn a_bad_owner_and_an_unknown_channel_are_refused() {
     let unknown = pb::ChannelId {
         value: "ch_nope".to_owned(),
     };
-    let missing = add_repo(&daemon, &unknown, "acme", "web", None)
+    let missing = add_repo(daemon, &unknown, &owner, "web", None)
         .await
         .unwrap_err();
     assert_eq!(missing.code(), Code::NotFound);
@@ -127,9 +136,12 @@ async fn a_bad_owner_and_an_unknown_channel_are_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_machine_the_host_never_added_is_refused_at_once() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let refused_name = common::shared::unique_name("Billing");
+    world.remote(&owner, "api");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
     let nowhere = pb::MachineId {
         value: "nowhere".to_owned(),
     };
@@ -149,25 +161,27 @@ async fn a_machine_the_host_never_added_is_refused_at_once() {
         .await
         .create_channel(pb::CreateChannelRequest {
             idempotency_key: None,
-            name: "Billing".to_owned(),
-            repos: vec![repo_ref("acme", "api")],
-            machines: vec![machine_id(&daemon).await, nowhere],
+            name: refused_name.clone(),
+            repos: vec![repo_ref(&owner, "api")],
+            machines: vec![machine_id(daemon).await, nowhere],
         })
         .await
         .unwrap_err();
 
     assert_eq!(common::not_found(&added), pb::EntityKind::Machine);
     assert_eq!(common::not_found(&created), pb::EntityKind::Machine);
-    assert_eq!(get(&daemon, &id_of(&channel)).await.machines, vec![machine_id(&daemon).await]);
-    assert!(!world.channels.join("billing").exists(), "nothing is made for a refused channel");
+    assert_eq!(get(daemon, &id_of(&channel)).await.machines, vec![machine_id(daemon).await]);
+    assert!(!world.channels.join(refused_name.to_lowercase()).exists(), "nothing is made for a refused channel");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn naming_this_machine_again_succeeds_and_lists_it_once() {
-    let (daemon, world) = start_world().await;
-    world.remote("acme", "api");
-    let (channel, _) = common::create_channel(&daemon, "Payments", &[("acme", "api")]).await;
-    let machine = machine_id(&daemon).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    world.remote(&owner, "api");
+    let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
+    let machine = machine_id(daemon).await;
 
     let op = daemon
         .channel_service()
@@ -180,10 +194,10 @@ async fn naming_this_machine_again_succeeds_and_lists_it_once() {
         .await
         .unwrap()
         .into_inner();
-    let ended = finished(&daemon, &op).await;
+    let ended = finished(daemon, &op).await;
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
-    assert_eq!(get(&daemon, &id_of(&channel)).await.machines, vec![machine]);
+    assert_eq!(get(daemon, &id_of(&channel)).await.machines, vec![machine]);
 }
 
 fn agent_request<T>(message: T, token: &str) -> tonic::Request<T> {

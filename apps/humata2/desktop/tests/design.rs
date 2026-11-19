@@ -16,6 +16,14 @@
 
 #[path = "design/agent_asks.rs"]
 mod agent_asks;
+#[path = "design/agent_inbox.rs"]
+mod agent_inbox;
+#[path = "design/agent_inbox_more.rs"]
+mod agent_inbox_more;
+#[path = "design/mock_sidebar.rs"]
+mod mock_sidebar;
+#[path = "design/todo.rs"]
+mod todo;
 #[path = "design/desk.rs"]
 mod desk;
 #[path = "design/board.rs"]
@@ -62,10 +70,16 @@ mod views;
 mod diff_targets;
 #[path = "design/screen_question.rs"]
 mod screen_question;
+#[path = "design/stack.rs"]
+mod stack;
 #[path = "design/stop.rs"]
 mod stop;
+#[path = "design/todo_more.rs"]
+mod todo_more;
 #[path = "design/upgrade.rs"]
 mod upgrade;
+#[path = "design/uxsimple.rs"]
+mod uxsimple;
 
 use gpui_kit::{prelude::*, *};
 use humata2_engine::Resources;
@@ -81,6 +95,7 @@ gpui_kit::assets::icon_assets!(
     [
         Archive,
         ArrowRight,
+        ArrowUpRight,
         Bell,
         BookOpenText,
         Bot,
@@ -308,7 +323,75 @@ const FRAMES: &[(&str, Look, Draw)] = &[
 /// Frames not yet approved: drawn into the test's undeclared outputs
 /// (`candidates/<name>.png`) for review, never checked against a golden.
 /// Move one into [`FRAMES`] and record it once it is approved.
-const CANDIDATES: &[(&str, Look, Draw)] = &[];
+const CANDIDATES: &[(&str, Look, Draw)] = &[
+    ("119-diff-stack-whole", LIGHT, stack::whole),
+    ("120-diff-stack-layer", LIGHT, stack::layer),
+    ("121-diff-stack-skim-drift", DARK, stack::skim_drift),
+];
+
+/// Frames drawn at the signed-off mockups' size, 1600 by 950 (the
+/// `milestones/mockups/*` frames). Same rules as [`FRAMES`].
+const WIDE: &[(&str, Look, Draw)] = &[];
+
+/// Wide frames not yet approved, drawn like [`CANDIDATES`] at 1600 by 950.
+const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
+    ("21-todo-list", LIGHT, todo::list),
+    ("22-todo-item-open", LIGHT, todo::item_open),
+    ("23-todo-channel-due-soon", LIGHT, todo::channel_due_soon),
+    ("24-todo-field-edit-ask", LIGHT, todo::field_edit_ask),
+    ("180-todo-quick-add", LIGHT, todo::quick_add),
+    ("181-todo-waiting-hidden-closed", LIGHT, todo::waiting_hidden_closed),
+    ("182-todo-pr-review-item", LIGHT, todo::pr_review_item),
+    ("183-todo-suggested-item", LIGHT, todo::suggested_item),
+    ("184-todo-empty", LIGHT, todo::empty),
+    ("185-todo-bare-list", LIGHT, todo::bare_list),
+    ("186-todo-sixty-items", LIGHT, todo::sixty_items),
+    ("187-todo-day-after-migration", LIGHT, todo::day_after_migration),
+    ("188-todo-do-next", LIGHT, todo_more::do_next_frame),
+    ("189-todo-migrate-message", LIGHT, todo_more::migrate_message),
+    ("190-todo-pr-review-session", LIGHT, todo_more::pr_review_session),
+    ("191-todo-session-ask", LIGHT, todo_more::session_todo_ask),
+    // INBOXHOOKS: the Agent inbox (boardsimple mockups b2, b3, b4-1, b5-1, b6, b9-2).
+    ("200-agent-inbox-empty", LIGHT, agent_inbox::empty),
+    ("201-agent-inbox-file-move", LIGHT, agent_inbox::file_move),
+    ("202-agent-inbox-session-move", LIGHT, agent_inbox::session_move),
+    ("203-agent-inbox-copy-ask-why", LIGHT, agent_inbox::copy_ask_why),
+    ("204-agent-inbox-question", LIGHT, agent_inbox::question),
+    ("205-session-agent-inbox-panel", LIGHT, agent_inbox_more::session_panel),
+    ("206-session-after-yes", LIGHT, agent_inbox_more::after_yes),
+    ("207-home-across", LIGHT, agent_inbox_more::home),
+    ("208-settings-agent-access", LIGHT, agent_inbox_more::agent_access),
+    ("209-agent-inbox-notification-dark", DARK, agent_inbox_more::notification),
+    ("210-session-inbox-after-no", LIGHT, agent_inbox_more::after_no),
+    // UXSIMPLE: the simpler review loop (uxsimple mockups).
+    ("uxs-1-1-start-working", LIGHT, uxsimple::start_working),
+    ("uxs-1-2-stack-made", LIGHT, uxsimple::stack_made),
+    ("uxs-2-1-ask-agent-to-show", LIGHT, uxsimple::ask_agent_to_show),
+    ("uxs-2-2-stack-full-screen", LIGHT, uxsimple::stack_full_screen),
+    ("uxs-3-1-comment-on-a-line", LIGHT, uxsimple::comment_on_a_line),
+    ("uxs-3-2-looks-good-per-layer", LIGHT, uxsimple::looks_good_per_layer),
+    ("uxs-3-3-new-agent-tab-menu", LIGHT, uxsimple::new_agent_tab_menu),
+    ("uxs-3-4-fresh-agent-beside-diff", LIGHT, uxsimple::fresh_agent_beside_diff),
+    ("uxs-4-1-agent-applies-comments", LIGHT, uxsimple::agent_applies_comments),
+    ("uxs-4-2-manual-diff-since-last-look", LIGHT, uxsimple::manual_diff_since_last_look),
+    ("uxs-4-3-everything-looks-good", LIGHT, uxsimple::everything_looks_good),
+];
+
+
+fn in_this_shard(index: usize) -> bool {
+    if let Some(status) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
+        let _ = std::fs::write(status, b"");
+    }
+    let total = std::env::var("TEST_TOTAL_SHARDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+    let shard = std::env::var("TEST_SHARD_INDEX")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    total <= 1 || index % total == shard
+}
 
 // The glob import brings in gpui's own `test` attribute, so name std's.
 #[::core::prelude::v1::test]
@@ -326,14 +409,20 @@ fn design_goldens() {
     let mut failed = Vec::new();
     let candidates = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR")
         .map(|folder| std::path::PathBuf::from(folder).join("candidates"));
-    for (name, look, draw) in FRAMES.iter().chain(CANDIDATES) {
+    let all = FRAMES.iter().chain(CANDIDATES).map(|frame| (frame, false));
+    let wide = WIDE.iter().chain(WIDE_CANDIDATES).map(|frame| (frame, true));
+    for (index, ((name, look, draw), is_wide)) in all.chain(wide).enumerate() {
+        if !in_this_shard(index) {
+            continue;
+        }
         let (look, draw) = (*look, *draw);
-        let candidate = CANDIDATES.iter().any(|(each, _, _)| each == name);
+        let candidate = CANDIDATES.iter().chain(WIDE_CANDIDATES).any(|(each, _, _)| each == name);
+        let (width, height) = if is_wide { (1600., 950.) } else { (1280., 760.) };
         if candidate && candidates.is_none() {
             continue;
         }
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(760.))))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))))),
             show: false,
             focus: false,
             ..WindowOptions::default()
@@ -358,7 +447,7 @@ fn design_goldens() {
         failed.is_empty(),
         "{} of {} design frames failed; look at each .new.png beside its golden, then record the ones the owner approves:\n\n{}",
         failed.len(),
-        FRAMES.len(),
+        FRAMES.len() + WIDE.len(),
         failed.join("\n\n")
     );
 }

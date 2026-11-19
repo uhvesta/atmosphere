@@ -23,6 +23,91 @@ struct Fixture {
     world: World,
 }
 
+async fn shared_long_world() -> &'static (Daemon, World) {
+    static SHARED: tokio::sync::OnceCell<(Daemon, World)> = tokio::sync::OnceCell::const_new();
+    SHARED
+        .get_or_init(|| async {
+            let dir = folder();
+            let world = World::new(dir.path());
+            let args = world.args();
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let daemon = Daemon::start_with_env(Build::Admin, dir, &refs, &[(EXPIRE, "600000")]).await;
+            (daemon, world)
+        })
+        .await
+}
+
+struct SharedFixture {
+    daemon: &'static Daemon,
+    world: &'static World,
+}
+
+impl SharedFixture {
+    async fn long() -> Self {
+        let (daemon, world) = shared_long_world().await;
+        Self { daemon, world }
+    }
+
+    async fn desk(&self) -> pb::desk_service_client::DeskServiceClient<Channel> {
+        pb::desk_service_client::DeskServiceClient::new(self.daemon.channel().await)
+    }
+
+    async fn start_with(&self, request: pb::StartDeskSessionRequest) -> (pb::SessionId, PathBuf) {
+        let started = self
+            .desk()
+            .await
+            .start_desk_session(request)
+            .await
+            .unwrap()
+            .into_inner();
+        let id = started.session.unwrap();
+        wait_status(self.daemon, &id, pb::SessionStatus::Working).await;
+        let path = PathBuf::from(started.desk.unwrap().folder.unwrap().path);
+        (id, path)
+    }
+
+    async fn start(&self, title: &str) -> (pb::SessionId, PathBuf) {
+        self.start_with(pb::StartDeskSessionRequest {
+            title: title.to_owned(),
+            ..Default::default()
+        })
+        .await
+    }
+
+    async fn close(&self, id: &pb::SessionId) -> pb::DeskSession {
+        self.desk()
+            .await
+            .close_desk_session(pb::CloseDeskSessionRequest {
+                idempotency_key: None,
+                session: Some(id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner()
+    }
+
+    async fn add_repo(&self, id: &pb::SessionId, owner: &str, name: &str) {
+        self.desk()
+            .await
+            .add_desk_repo(pb::AddDeskRepoRequest {
+                session: Some(id.clone()),
+                repo: Some(repo_ref(owner, name)),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn trash_items(&self) -> Vec<pb::TrashItem> {
+        pb::trash_service_client::TrashServiceClient::new(self.daemon.channel().await)
+            .list_trash(pb::ListTrashRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .items
+    }
+}
+
 impl Fixture {
     async fn expiring_after(ms: &str) -> Self {
         let dir = folder();
@@ -149,25 +234,26 @@ async fn wait_until<F: std::future::Future<Output = bool>>(what: &str, mut done:
 
 #[tokio::test]
 async fn a_new_desk_folder_is_a_repository_with_no_version_yet() {
-    let fixture = Fixture::expiring_after("600000").await;
-    let (_id, path) = fixture.start("Plan Q4").await;
+    let fixture = SharedFixture::long().await;
+    let (_id, path) = fixture.start(&common::shared::unique_name("Plan")).await;
     assert!(path.join(".git").is_dir(), "the folder is a repository of its own");
     assert!(!has_commit(&path), "nothing is saved until someone saves it");
 }
 
 #[tokio::test]
 async fn clones_in_the_folder_are_left_out_of_its_versions() {
-    let fixture = Fixture::expiring_after("600000").await;
-    fixture.world.remote("acme", "api");
-    fixture.world.remote("acme", "web");
+    let fixture = SharedFixture::long().await;
+    let owner = common::shared::unique_name("acme");
+    fixture.world.remote(&owner, "api");
+    fixture.world.remote(&owner, "web");
     let (id, path) = fixture
         .start_with(pb::StartDeskSessionRequest {
-            title: "Plan Q4".to_owned(),
-            repos: vec![repo_ref("acme", "api")],
+            title: common::shared::unique_name("Plan"),
+            repos: vec![repo_ref(&owner, "api")],
             ..Default::default()
         })
         .await;
-    fixture.add_repo(&id, "acme", "web").await;
+    fixture.add_repo(&id, &owner, "web").await;
     assert!(path.join("api/README.md").exists() && path.join("web/README.md").exists());
     assert_eq!(status(&path), "", "neither clone shows in the folder's own repository");
     std::fs::write(path.join("plan.md"), "# Q4\n").unwrap();
@@ -207,11 +293,13 @@ async fn a_version_saved_after_close_still_keeps_the_folder() {
 
 #[tokio::test]
 async fn a_channel_desk_folder_with_a_version_stays_when_its_session_closes() {
-    let fixture = Fixture::expiring_after("600000").await;
-    fixture.world.remote("acme", "api");
-    let (channel, _) = create_channel(&fixture.daemon, "Payments", &[("acme", "api")]).await;
-    let (target, _) = start_session(&fixture.daemon, &channel, "Ledger fix").await;
-    wait_status(&fixture.daemon, &target, pb::SessionStatus::Working).await;
+    let fixture = SharedFixture::long().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    fixture.world.remote(&owner, "api");
+    let (channel, _) = create_channel(fixture.daemon, &ch_name, &[(&owner, "api")]).await;
+    let (target, _) = start_session(fixture.daemon, &channel, "Ledger fix").await;
+    wait_status(fixture.daemon, &target, pb::SessionStatus::Working).await;
     let start = |title: &str| pb::StartDeskSessionRequest {
         title: title.to_owned(),
         channel: channel.id.clone(),

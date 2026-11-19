@@ -11,7 +11,7 @@ def _snapshot_globs(srcs):
         globs.append("%s__snapshots__/%s/**" % (prefix, file.removesuffix(".rs")))
     return globs
 
-def humata2_snapshot_test(name, srcs, data = [], env = {}, tags = [], **kwargs):
+def humata2_snapshot_test(name, srcs, data = [], env = {}, tags = [], shard_count = 0, **kwargs):
     """A rust_test that checks its snapshots, and `<name>_record`, which records them.
 
     The snapshots beside each source (`__snapshots__/<file stem>/`) are the
@@ -27,6 +27,7 @@ def humata2_snapshot_test(name, srcs, data = [], env = {}, tags = [], **kwargs):
       data: more runfiles.
       env: more environment variables, for both targets.
       tags: tags for both; the record target is also `manual`.
+      shard_count: optional Bazel shard_count for the check target only (never `_record`).
       **kwargs: passed to both rust_test targets.
     """
     snapshots = native.glob(
@@ -34,13 +35,16 @@ def humata2_snapshot_test(name, srcs, data = [], env = {}, tags = [], **kwargs):
         exclude = ["**/.failed/**"],
         allow_empty = True,
     )
+    check_kwargs = dict(kwargs)
+    if shard_count > 0:
+        check_kwargs["shard_count"] = shard_count
     rust_test(
         name = name,
         srcs = srcs,
         data = data + snapshots,
         env = env,
         tags = tags,
-        **kwargs
+        **check_kwargs
     )
     record_env = dict(env)
     record_env["HUMATA2_SNAPSHOT"] = "record"

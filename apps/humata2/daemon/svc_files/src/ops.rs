@@ -503,3 +503,108 @@ fn rename(target: &Target, new_name: &str) -> Result<pb::FileEntry, Status> {
     };
     Ok(entry_of(location, &meta, target.writable))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use humata2_store::Store;
+
+    use super::*;
+
+    fn test_roots(dir: &tempfile::TempDir) -> Arc<Roots> {
+        let store = Arc::new(Store::open(dir.path().join("state")).expect("open store"));
+        let channels = dir.path().join("channels");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&channels).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        Arc::new(Roots::new(store, "local".to_owned(), channels, home))
+    }
+
+    fn home_loc(path: &str) -> pb::FileLocation {
+        pb::FileLocation {
+            machine: Some(pb::MachineId {
+                value: "local".to_owned(),
+            }),
+            root: Some(pb::file_location::Root::Home(Default::default())),
+            path: path.to_owned(),
+        }
+    }
+
+    fn entry_path(entry: &pb::FileEntry) -> &str {
+        entry
+            .location
+            .as_ref()
+            .map(|l| l.path.as_str())
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn list_directory_sorts_folders_first_then_case_insensitively_and_paginates() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = test_roots(&dir);
+        let home = dir.path().join("home");
+        fs::create_dir(home.join("zeta_dir")).unwrap();
+        fs::create_dir(home.join("Alpha_dir")).unwrap();
+        fs::write(home.join("b.txt"), b"b").unwrap();
+        fs::write(home.join("A.txt"), b"a").unwrap();
+
+        let target = roots
+            .target(Some(home_loc("")), "location", Entry::Folder)
+            .unwrap();
+        let first = list(&target, 2, "").unwrap();
+        let first_names: Vec<&str> = first.entries.iter().map(entry_path).collect();
+        assert_eq!(first_names, vec!["Alpha_dir", "zeta_dir"]);
+        assert!(!first.page.as_ref().unwrap().next_page_token.is_empty());
+
+        let token = first.page.unwrap().next_page_token;
+        let second = list(&target, 10, &token).unwrap();
+        let second_names: Vec<&str> = second.entries.iter().map(entry_path).collect();
+        assert_eq!(second_names, vec!["A.txt", "b.txt"]);
+        assert!(second.page.as_ref().unwrap().next_page_token.is_empty());
+    }
+
+    #[test]
+    fn path_escape_and_absolute_paths_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = test_roots(&dir);
+
+        for bad in ["../outside", "sub/../../outside", "/etc/passwd"] {
+            let err = match roots.target(Some(home_loc(bad)), "location", Entry::File) {
+                Err(e) => e,
+                Ok(_) => panic!("expected {bad:?} to be rejected"),
+            };
+            assert!(
+                matches!(err.code(), Code::InvalidArgument | Code::PermissionDenied),
+                "path {bad:?}: got {:?}",
+                err.code()
+            );
+        }
+    }
+
+    #[test]
+    fn create_folder_and_rename_enforce_uniqueness_and_update_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = test_roots(&dir);
+
+        let target = roots
+            .target(Some(home_loc("notes")), "location", Entry::Folder)
+            .unwrap();
+        let created = make_folder(&target).unwrap();
+        assert_eq!(entry_path(&created), "notes");
+
+        // Creating the same folder again fails with AlreadyExists.
+        let dup = make_folder(&target).expect_err("duplicate folder must fail");
+        assert_eq!(dup.code(), Code::AlreadyExists);
+
+        // Renaming moves it and stat reflects the new path.
+        let renamed = rename(&target, "archive").unwrap();
+        assert_eq!(entry_path(&renamed), "archive");
+        let moved_target = roots
+            .target(Some(home_loc("archive")), "location", Entry::Folder)
+            .unwrap();
+        let stat = stat_of(&moved_target).unwrap();
+        assert_eq!(entry_path(&stat), "archive");
+        assert!(PathBuf::from(dir.path().join("home/archive")).is_dir());
+    }
+}

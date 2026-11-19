@@ -151,6 +151,7 @@ humata2_snapshot_test(
     srcs = ["tests/design.rs"] + glob(["tests/design/*.rs"]),
     compile_data = ["Cargo.toml"],
     crate_root = "tests/design.rs",
+    shard_count = 3,
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/engine:engine_test_support",

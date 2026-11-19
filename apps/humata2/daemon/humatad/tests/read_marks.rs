@@ -24,6 +24,29 @@ async fn started() -> (Daemon, pb::SessionId) {
     (daemon, session)
 }
 
+/// Shared daemon + world for non-restarting tests in this binary.
+async fn shared_world() -> &'static (Daemon, World) {
+    static SHARED: tokio::sync::OnceCell<(Daemon, World)> = tokio::sync::OnceCell::const_new();
+    SHARED
+        .get_or_init(|| async {
+            let (daemon, world) = start_world().await;
+            world.remote("acme", "api");
+            (daemon, world)
+        })
+        .await
+}
+
+/// Starts a fresh session in a unique channel on the shared daemon.
+async fn shared_session() -> (&'static Daemon, pb::SessionId) {
+    let (daemon, _world) = shared_world().await;
+    let name = common::shared::unique_name("Payments");
+    let (channel, setup) = create_channel(daemon, &name, &[("acme", "api")]).await;
+    assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{:?}", setup.error);
+    let (session, operation) = start_session(daemon, &channel, "Fix login").await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{:?}", operation.error);
+    (daemon, session)
+}
+
 /// Starts a session of a channel on `daemon`, which serves `world`, and
 /// returns it once it runs.
 async fn started_in(daemon: &Daemon, world: &World) -> pb::SessionId {
@@ -171,8 +194,8 @@ async fn viewing_a_session_clears_its_mark_and_a_restart_keeps_it_read() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn viewing_a_read_session_says_it_was_read() {
-    let (daemon, session) = started().await;
-    let mut client = marks(&daemon).await;
+    let (daemon, session) = shared_session().await;
+    let mut client = marks(daemon).await;
     let mut viewing = client.view_session(view_request(&session)).await.unwrap().into_inner();
     viewing.message().await.unwrap().expect("the first view is confirmed");
     // Read now, whatever the agent printed as it started.
@@ -183,23 +206,23 @@ async fn viewing_a_read_session_says_it_was_read() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_cannot_view_a_session() {
-    let (daemon, session) = started().await;
-    let (token, _attach) = shell_token(&daemon, &session).await;
+    let (daemon, session) = shared_session().await;
+    let (token, _attach) = shell_token(daemon, &session).await;
     let mut request = Request::new(view_request(&session));
     request
         .metadata_mut()
         .insert(TOKEN_HEADER, MetadataValue::try_from(token.as_str()).unwrap());
-    let refused = marks(&daemon).await.view_session(request).await.unwrap_err();
+    let refused = marks(daemon).await.view_session(request).await.unwrap_err();
     assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn viewing_an_unknown_session_is_not_found() {
-    let (daemon, _session) = started().await;
+    let (daemon, _world) = shared_world().await;
     let missing = pb::SessionId {
         value: "se_missing".to_owned(),
     };
-    let refused = marks(&daemon)
+    let refused = marks(daemon)
         .await
         .view_session(view_request(&missing))
         .await

@@ -40,7 +40,7 @@ const ASK_WHERE: &str =
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_snapshot_is_a_checkpoint_that_shows_what_was_printed() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
     let mut printer = Attach::start(&daemon, open(&tab, 0)).await;
     printer.type_text(SAY_HELLO).await;
@@ -55,7 +55,7 @@ async fn the_snapshot_is_a_checkpoint_that_shows_what_was_printed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn output_after_a_checkpoint_continues_from_its_offset() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
     let mut viewer = Attach::start(&daemon, checkpointing(&tab, 0)).await;
     viewer.wait_until(|viewer| viewer.snapshots == 1).await;
@@ -70,7 +70,7 @@ async fn output_after_a_checkpoint_continues_from_its_offset() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_query_nobody_is_watching_for_is_answered() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
     let mut typist = Attach::start(&daemon, checkpointing(&tab, 0)).await;
     let seq = typist.type_text(ASK_WHERE).await;
@@ -86,7 +86,7 @@ async fn a_query_nobody_is_watching_for_is_answered() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resize_by_one_attach_reaches_the_others() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
     let mut resizer = Attach::start(
         &daemon,
@@ -136,7 +136,7 @@ async fn a_resize_by_one_attach_reaches_the_others() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_checkpoint_format_the_daemon_does_not_make_is_refused() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
 
     let refused = match Attach::try_start(
@@ -161,7 +161,7 @@ async fn a_checkpoint_format_the_daemon_does_not_make_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_attach_without_an_engine_gets_raw_output_and_no_screen_size() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
     let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
     attach.type_text(SAY_HELLO).await;
@@ -184,7 +184,7 @@ fn looks_like_uuid(text: &str) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_checkpoint_names_the_terminal_and_keeps_the_name_across_attaches() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = machine_shell(&daemon).await;
 
     let mut first = Attach::start(&daemon, checkpointing(&tab, 0)).await;
@@ -238,7 +238,7 @@ async fn painted(daemon: &Daemon) -> pb::TabId {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_checkpoint_bigger_than_a_message_comes_in_pieces_and_installs() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = painted(&daemon).await;
 
     let mut viewer = Attach::start(
@@ -265,7 +265,7 @@ async fn a_checkpoint_bigger_than_a_message_comes_in_pieces_and_installs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_checkpoint_too_big_to_send_whole_is_refused_to_an_attach_that_takes_no_pieces() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
     let tab = painted(&daemon).await;
 
     let refused = match Attach::try_start(&daemon, checkpointing(&tab, 0)).await {

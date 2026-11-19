@@ -19,7 +19,12 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    async fn new() -> &'static Self {
+        static SHARED: tokio::sync::OnceCell<Fixture> = tokio::sync::OnceCell::const_new();
+        SHARED.get_or_init(Self::build).await
+    }
+
+    async fn build() -> Self {
         let dir = folder();
         let world = World::new(dir.path());
         let args = world.args();

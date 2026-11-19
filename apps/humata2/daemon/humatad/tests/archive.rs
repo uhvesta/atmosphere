@@ -297,7 +297,7 @@ async fn undo_of_end_for_good_gives_it_back_stopped_and_resume_revives_it() {
     assert!(back.archive.is_none(), "an undone archive still reads as archived");
     assert_eq!(back.status, Status::Stopped as i32, "{back:?}");
     // It stays stopped: nothing resumes it behind the user's back.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(get_session(&fixture.daemon, &id).await.status, Status::Stopped as i32);
 
     let resumed = fixture
@@ -343,7 +343,7 @@ async fn an_ended_session_refuses_resume_and_starts_no_agent() {
         .await
         .expect_err("an archived session was resumed");
     assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let after = get_session(&fixture.daemon, &id).await;
     assert!(after.archive.is_some(), "the refused resume unarchived it: {after:?}");
     assert_eq!(after.status, Status::Archived as i32, "an agent runs for an archived session: {after:?}");

@@ -8,7 +8,6 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
-    "//apps/humata2/daemon/svc_files",
     "@crates//:prost",
     "@crates//:rustix",
     "@crates//:serde_json",
@@ -28,6 +27,7 @@ rust_library(
     deps = SHARED_DEPS + [
         "//apps/humata2/daemon/sessions",
         "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_files",
         "//apps/humata2/daemon/transfers",
     ],
 )
@@ -42,6 +42,7 @@ rust_library(
     deps = SHARED_DEPS + [
         "//apps/humata2/daemon/sessions:sessions_faults",
         "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_files:svc_files_faults",
         "//apps/humata2/daemon/transfers:transfers_faults",
     ],
 )

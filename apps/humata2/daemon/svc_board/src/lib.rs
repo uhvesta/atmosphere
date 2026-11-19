@@ -1414,7 +1414,102 @@ impl pb::board_service_server::BoardService for BoardSvc {
 
 #[cfg(test)]
 mod tests {
-    use super::{merged, page_of, pb};
+    use humata2_daemon_ports::UserVia;
+    use pb::board_service_server::BoardService;
+
+    use super::*;
+
+    struct AllowAllGuard;
+
+    impl BoardGuard for AllowAllGuard {
+        fn check(&self, _caller: &Caller, _call: &Call) -> Result<Checked, Status> {
+            Ok(Checked::Allowed)
+        }
+        fn check_away(&self, _caller: &Caller, _call: &Call) -> Result<AwayCall, Status> {
+            Ok(AwayCall::Reachable)
+        }
+        fn lists_low_risk(&self, _asked: &AccessRequest) -> bool {
+            false
+        }
+        fn policy_changed(&self) {}
+        fn host_link(&self) -> String {
+            String::new()
+        }
+    }
+
+    struct NoopFeed;
+
+    impl BoardFeed for NoopFeed {
+        fn publish_in(
+            &self,
+            _change: pb::Change,
+            _payload: pb::event::Payload,
+            _scope: Scope,
+            _by: Option<pb::Actor>,
+        ) {
+        }
+    }
+
+    struct NoopInbox;
+
+    #[tonic::async_trait]
+    impl BoardInbox for NoopInbox {
+        async fn withdraw_about_item(&self, _key: &str) -> Result<(), Status> {
+            Ok(())
+        }
+        async fn defer_board(
+            &self,
+            _caller: &Caller,
+            _asked: AccessRequest,
+            _idempotency: Option<String>,
+            _board: BoardAsk,
+            _run: Run,
+        ) -> Status {
+            Status::permission_denied("deferred")
+        }
+        async fn pending_board_asks(&self) -> Vec<pb::InboxRequest> {
+            Vec::new()
+        }
+        async fn wait_final(
+            &self,
+            _caller: Caller,
+            _request: pb::WaitForAnswerRequest,
+        ) -> Result<pb::WaitResponse, Status> {
+            Err(Status::unimplemented("noop"))
+        }
+        async fn withdraw_as(
+            &self,
+            _caller: Caller,
+            _request: pb::WithdrawRequestRequest,
+        ) -> Result<pb::InboxRequest, Status> {
+            Err(Status::unimplemented("noop"))
+        }
+        async fn approved_on(
+            &self,
+            _machine: &str,
+            _id: &str,
+            _session: &str,
+        ) -> Option<pb::InboxRequest> {
+            None
+        }
+    }
+
+    fn user_req<T>(msg: T) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.extensions_mut().insert(Caller::User(UserVia::App));
+        req
+    }
+
+    fn test_svc(dir: &tempfile::TempDir) -> BoardSvc {
+        let store = Arc::new(Store::open(dir.path().join("state")).expect("open store"));
+        BoardSvc::new(
+            Arc::new(AllowAllGuard),
+            store,
+            Arc::new(NoopFeed),
+            Arc::new(NoopInbox),
+            "local".to_owned(),
+        )
+    }
 
     fn list(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -1440,5 +1535,184 @@ mod tests {
             page_token: "x".to_owned(),
         };
         assert!(page_of(Some(&bad)).is_err());
+    }
+
+    #[tokio::test]
+    async fn board_item_crud_move_and_ranking_over_temp_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        svc.store
+            .put_channel(&humata2_store::ChannelRecord {
+                id: "ch_alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                folder: "alpha".to_owned(),
+                branch_prefix: None,
+                default_agent: String::new(),
+                repos: Vec::new(),
+                machines: Vec::new(),
+                revision: 1,
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        let global = pb::BoardRef {
+            board: Some(pb::board_ref::Board::Global(pb::GlobalBoard {})),
+        };
+        let global_view = pb::BoardView {
+            view: Some(pb::board_view::View::Board(global.clone())),
+        };
+
+        // Create two items on the global board.
+        let first = svc
+            .create_item(user_req(pb::CreateItemRequest {
+                board: Some(global.clone()),
+                title: "First task".to_owned(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+        let second = svc
+            .create_item(user_req(pb::CreateItemRequest {
+                board: Some(global.clone()),
+                title: "Second task".to_owned(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+
+        let listed = svc
+            .list_items(user_req(pb::ListItemsRequest {
+                view: Some(global_view.clone()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(listed.items.len(), 2);
+
+        // Update title and move first item to In Progress.
+        let updated = svc
+            .update_item(user_req(pb::UpdateItemRequest {
+                id: first.id.clone(),
+                patch: Some(pb::ItemPatch {
+                    title: Some("First task renamed".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+        assert_eq!(updated.title, "First task renamed");
+
+        let moved = BoardService::move_item(
+            &svc,
+            user_req(pb::MoveItemRequest {
+                id: first.id.clone(),
+                column: pb::BoardColumn::InProgress as i32,
+                ..Default::default()
+            }),
+        )
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+        assert_eq!(moved.column, pb::BoardColumn::InProgress as i32);
+
+        // Delete the second item; only the first remains.
+        svc.delete_item(user_req(pb::DeleteItemRequest {
+            id: second.id.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        let after = svc
+            .list_items(user_req(pb::ListItemsRequest {
+                view: Some(global_view),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(after.items.len(), 1);
+        assert_eq!(after.items[0].id, first.id);
+    }
+
+    #[tokio::test]
+    async fn board_scopes_isolate_items_between_global_and_channel_boards() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        svc.store
+            .put_channel(&humata2_store::ChannelRecord {
+                id: "ch_alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                folder: "alpha".to_owned(),
+                branch_prefix: None,
+                default_agent: String::new(),
+                repos: Vec::new(),
+                machines: Vec::new(),
+                revision: 1,
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        let global = pb::BoardRef {
+            board: Some(pb::board_ref::Board::Global(pb::GlobalBoard {})),
+        };
+        let channel = pb::BoardRef {
+            board: Some(pb::board_ref::Board::Channel(pb::ChannelId {
+                value: "ch_alpha".to_owned(),
+            })),
+        };
+
+        svc.create_item(user_req(pb::CreateItemRequest {
+            board: Some(global.clone()),
+            title: "Global item".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        svc.create_item(user_req(pb::CreateItemRequest {
+            board: Some(channel.clone()),
+            title: "Channel item".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        let global_items = svc
+            .list_items(user_req(pb::ListItemsRequest {
+                view: Some(pb::BoardView {
+                    view: Some(pb::board_view::View::Board(global)),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .items;
+        let channel_items = svc
+            .list_items(user_req(pb::ListItemsRequest {
+                view: Some(pb::BoardView {
+                    view: Some(pb::board_view::View::Board(channel)),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .items;
+
+        assert_eq!(global_items.len(), 1);
+        assert_eq!(global_items[0].title, "Global item");
+        assert_eq!(channel_items.len(), 1);
+        assert_eq!(channel_items[0].title, "Channel item");
     }
 }

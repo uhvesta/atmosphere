@@ -8,6 +8,7 @@
 
 mod agent_inbox;
 mod deferred;
+mod facts;
 mod forwarded;
 mod host_asks;
 mod kept;
@@ -1080,7 +1081,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
             return Ok(Response::new(made));
         }
         let id = new_id();
-        let made = question(&id, agent, request.question, request.choices);
+        let mut made = question(&id, agent, request.question, request.choices);
+        made.working_on = self.working_on(agent);
         let held = Held::new(made);
         let reply = settled(&held);
         let entry = Entry::new(id, session, None, None, key, held.clone());

@@ -84,7 +84,12 @@ fn detail(id: &str, repos: &[&str]) -> SessionDetail {
 
 /// A daemon that knows a session with two clones, `web` then `api`; a
 /// session with no repos; and a session whose clone isn't a git repository.
-async fn world() -> World {
+async fn world() -> &'static World {
+    static WORLD: tokio::sync::OnceCell<World> = tokio::sync::OnceCell::const_new();
+    WORLD.get_or_init(build_world).await
+}
+
+async fn build_world() -> World {
     let dir = folder();
     let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
     store.put_session(&record(SESSION, dir.path())).unwrap();

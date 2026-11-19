@@ -1101,7 +1101,7 @@ async fn a_batch_typed_before_the_daemon_died_is_named_in_the_restart_report_as_
 #[tokio::test(flavor = "multi_thread")]
 async fn a_batch_begun_but_not_typed_before_the_daemon_died_is_typed_once_after() {
     let (mut daemon, _tab, comment, typed) = killed_while_sending("comments.begun").await;
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(typed_count(&typed, MARK), 0, "nothing was typed before the death");
 
     daemon.restart().await;
@@ -1111,9 +1111,9 @@ async fn a_batch_begun_but_not_typed_before_the_daemon_died_is_typed_once_after(
     let deadline = Instant::now() + WAIT;
     while typed_count(&typed, MARK) == 0 {
         assert!(Instant::now() < deadline, "the comment was never typed");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(typed_count(&typed, MARK), 1);
 }
 
@@ -1128,7 +1128,7 @@ async fn a_batch_whose_holder_was_lost_with_the_daemon_stays_unconfirmed_and_is_
     // nothing, so the user decides.
     let held = wait_for_status(&daemon, &comment, pb::CommentStatus::Queued).await;
     assert!(held.delivery_unconfirmed);
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(shown(&daemon, &tab, MARK).await, 0);
     assert_eq!(typed_count(&typed, MARK), 0);
 }

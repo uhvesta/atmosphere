@@ -45,7 +45,7 @@ pub const BOX: &str = "box-1";
 /// binary run at once, traces and cases of every operation together.
 /// `HUMATA2_POWER_CUT_AT_ONCE` sets another number, such as 1 to run them
 /// one after another.
-const AT_ONCE: usize = 8;
+const AT_ONCE: usize = 2;
 
 /// How long a stop point may take to fire once the operation is asked for.
 /// A point a trace saw that never fires is a failure, not a hang.
@@ -1258,13 +1258,19 @@ async fn trace(operation: Operation) -> Traced {
             continue;
         }
         let mut last = length();
-        for _ in 0..30 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut quiet = 0u32;
+        for _ in 0..240 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
             let now = length();
             if now == last {
-                break;
+                quiet += 1;
+                if quiet >= 2 {
+                    break;
+                }
+            } else {
+                last = now;
+                quiet = 0;
             }
-            last = now;
         }
     }
     let found = Traced {

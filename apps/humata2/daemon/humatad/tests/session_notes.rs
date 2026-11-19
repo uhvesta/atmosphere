@@ -27,8 +27,8 @@ fn as_agent<T>(message: T, token: &str) -> tonic::Request<T> {
 }
 
 struct Scene {
-    daemon: Daemon,
-    world: World,
+    daemon: &'static Daemon,
+    world: &'static World,
     asker: pb::SessionId,
     target: pb::SessionId,
     /// The target's agent, as its hooks speak for it.
@@ -39,33 +39,45 @@ struct Scene {
     _tabs: (Attach, Attach),
 }
 
+async fn shared_hooks_world() -> &'static (Daemon, World) {
+    static SHARED: tokio::sync::OnceCell<(Daemon, World)> = tokio::sync::OnceCell::const_new();
+    SHARED
+        .get_or_init(|| async {
+            let dir = folder();
+            let world = World::new(dir.path());
+            let agents = serde_json::json!([{
+                "name": common::AGENT_NAME,
+                "program": "/bin/sh",
+                "start_args": [world.root.join("agent.sh"), "--session-id", "{conversation}"],
+                "resume_args": [world.root.join("agent.sh"), "--resume", "{conversation}"],
+                "conversation_file": format!("{}/{{conversation}}.jsonl", world.conv.display()),
+                "turn_end": "hooks",
+            }]);
+            std::fs::write(&world.agents, agents.to_string()).unwrap();
+            let args = world.args();
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let daemon = Daemon::start_with(Build::Admin, dir, &refs).await;
+            (daemon, world)
+        })
+        .await
+}
+
 impl Scene {
     /// Two sessions whose agents' turns come from hooks; the target's agent
     /// has said its turn is over.
     async fn new() -> Self {
-        let dir = folder();
-        let world = World::new(dir.path());
-        let agents = serde_json::json!([{
-            "name": common::AGENT_NAME,
-            "program": "/bin/sh",
-            "start_args": [world.root.join("agent.sh"), "--session-id", "{conversation}"],
-            "resume_args": [world.root.join("agent.sh"), "--resume", "{conversation}"],
-            "conversation_file": format!("{}/{{conversation}}.jsonl", world.conv.display()),
-            "turn_end": "hooks",
-        }]);
-        std::fs::write(&world.agents, agents.to_string()).unwrap();
-        world.remote("acme", "api");
-        let args = world.args();
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let daemon = Daemon::start_with(Build::Admin, dir, &refs).await;
-        let (channel, setup) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+        let (daemon, world) = shared_hooks_world().await;
+        let owner = common::shared::unique_name("acme");
+        let ch_name = common::shared::unique_name("Payments");
+        world.remote(&owner, "api");
+        let (channel, setup) = create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
         assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{:?}", setup.error);
-        let (asker, started) = start_session(&daemon, &channel, "Asker").await;
+        let (asker, started) = start_session(daemon, &channel, "Asker").await;
         assert_eq!(started.state, pb::OperationState::Succeeded as i32, "{:?}", started.error);
-        let (target, started) = start_session(&daemon, &channel, "Target").await;
+        let (target, started) = start_session(daemon, &channel, "Target").await;
         assert_eq!(started.state, pb::OperationState::Succeeded as i32, "{:?}", started.error);
-        let (asker_token, asker_tab) = shell_token(&daemon, &asker).await;
-        let (target_token, target_tab) = shell_token(&daemon, &target).await;
+        let (asker_token, asker_tab) = shell_token(daemon, &asker).await;
+        let (target_token, target_tab) = shell_token(daemon, &target).await;
         let mut scene = Self {
             daemon,
             world,
@@ -77,7 +89,7 @@ impl Scene {
             _tabs: (asker_tab, target_tab),
         };
         scene.turn(pb::TurnState::Idle).await;
-        wait_status(&scene.daemon, &scene.target, pb::SessionStatus::Idle).await;
+        wait_status(scene.daemon, &scene.target, pb::SessionStatus::Idle).await;
         scene
     }
 

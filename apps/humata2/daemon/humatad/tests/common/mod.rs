@@ -240,6 +240,7 @@ impl Daemon {
             Build::Release => {}
         }
         command.args(&self.extra);
+        command.env("HUMATA2_REVIVE_SETTLE_MS", "50");
         command.envs(self.env_once.drain(..));
         let child = command
             .arg("--socket")
@@ -365,6 +366,7 @@ impl Daemon {
             Build::Release => {}
         }
         command.args(&self.extra);
+        command.env("HUMATA2_REVIVE_SETTLE_MS", "50");
         command.envs(env);
         let (mut reader, writer) = std::io::pipe().expect("make the ready pipe");
         let fd = writer.as_raw_fd();
@@ -913,20 +915,44 @@ impl World {
 
     /// A bare repository `owner/name` on branch `main` with one commit.
     pub fn remote(&self, owner: &str, name: &str) -> PathBuf {
+        static TEMPLATE_BARE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+        let template = TEMPLATE_BARE.get_or_init(|| {
+            let dir = TempDir::new().unwrap();
+            let bare = dir.path().join("template.git");
+            std::fs::create_dir_all(&bare).unwrap();
+            let bare_text = bare.display().to_string();
+            git(&["init", "--bare", "--initial-branch=main", &bare_text]);
+            let work = dir.path().join("scratch");
+            std::fs::create_dir_all(&work).unwrap();
+            let work_text = work.display().to_string();
+            git(&["init", "--initial-branch=main", &work_text]);
+            std::fs::write(work.join("README.md"), "template/repo\n").unwrap();
+            git(&["-C", &work_text, "add", "."]);
+            git(&["-C", &work_text, "commit", "-m", "first"]);
+            git(&["-C", &work_text, "push", &bare_text, "main"]);
+            dir
+        });
         let bare = self.remotes.join(owner).join(format!("{name}.git"));
-        std::fs::create_dir_all(&bare).unwrap();
-        let bare_text = bare.display().to_string();
-        git(&["init", "--bare", "--initial-branch=main", &bare_text]);
-        let work = self.root.join(format!("scratch-{owner}-{name}"));
-        std::fs::create_dir_all(&work).unwrap();
-        let work_text = work.display().to_string();
-        git(&["init", "--initial-branch=main", &work_text]);
-        std::fs::write(work.join("README.md"), format!("{owner}/{name}\n")).unwrap();
-        git(&["-C", &work_text, "add", "."]);
-        git(&["-C", &work_text, "commit", "-m", "first"]);
-        git(&["-C", &work_text, "push", &bare_text, "main"]);
+        copy_dir_all(&template.path().join("template.git"), &bare);
         bare
     }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let file_type = entry.file_type().unwrap();
+        let dest = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
+
+impl World {
 
     /// The commit `main` is at in the remote `bare`.
     pub fn remote_head(bare: &Path) -> String {

@@ -136,7 +136,7 @@ async fn archiving_keeps_the_agent_and_shell_running_and_lists_them_under_their_
     assert_eq!(get_session(&fixture.daemon, &fixture.id).await.status, Status::Archived as i32);
 
     // Past the undo window (0 ms): its folder is kept while it runs.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fixture.holders(), holders, "the terminals' holders changed");
     assert_eq!(fixture.answering(), holders.len());
     assert_eq!(programs_of(&holders), programs, "a program was restarted or ended");
@@ -202,7 +202,7 @@ async fn an_agent_needs_the_destroy_switch_to_archive_and_end() {
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_ne!(get_session(&fixture.daemon, &fixture.id).await.status, Status::Archived as i32);
     assert_eq!(fixture.answering(), holders.len(), "a refused call ended a terminal");
     assert_eq!(programs_of(&holders), programs);

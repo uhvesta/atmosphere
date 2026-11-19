@@ -63,6 +63,8 @@ pub trait ReviewSessions: Send + Sync {
         caller: &Caller,
         channel: ChannelRecord,
         request: &pb::StartReviewRequest,
+        prs: Vec<humata2_store::ReviewPr>,
+        push_allowed: bool,
     ) -> Result<pb::StartSessionResponse, Status>;
 }
 
@@ -75,6 +77,9 @@ pub trait ReviewStarter: Send + Sync {
         machine: &str,
         default_agent: &str,
     ) -> Result<ChannelRecord, Status>;
+    fn clone_pr_reviews_mains(&self, _channel_id: &str) -> Result<(), Status> {
+        Ok(())
+    }
 }
 
 /// Handle to a running background operation, wrapping `humatad::operations::Started`.
@@ -165,17 +170,21 @@ pub fn store_error(err: StoreError, _machine: &str, doing: &str) -> Status {
 
 /// Formats a [`Refusal`] as a gRPC `PermissionDenied` status.
 pub fn refused(refusal: &Refusal) -> Status {
+    let kind = match refusal {
+        Refusal::UserOnly { .. } => pb::error::Kind::UserOnly(pb::UserOnly { capability: 0 }),
+        _ => pb::error::Kind::Denied(pb::Denied {
+            source: pb::denied::Source::Unspecified as i32,
+            capability: 0,
+            request: None,
+            user_note: String::new(),
+        }),
+    };
     failure(
         Code::PermissionDenied,
         error(
             refusal.to_string(),
             "check your permissions and try again",
-            pb::error::Kind::Denied(pb::Denied {
-                source: pb::denied::Source::Unspecified as i32,
-                capability: 0,
-                request: None,
-                user_note: String::new(),
-            }),
+            kind,
         ),
     )
 }

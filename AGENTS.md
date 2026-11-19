@@ -3,6 +3,7 @@
 ## Builds
 
 - Build, test, bench and lint only through Bazel. Never run `cargo` directly; if something needs it, add a Bazel target instead.
+- For fast local edit-test loops, pass `--config=fast` to skip lint aspects (`clippy`, etc.) so Rust crates compile once instead of twice. Always run without `--config=fast` (default `--config=lint`) before committing.
 
 ## Errors
 

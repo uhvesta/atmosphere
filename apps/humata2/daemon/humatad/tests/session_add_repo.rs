@@ -37,14 +37,14 @@ async fn add(
 
 /// A running session of a channel of `acme/api` and `acme/web`, working in
 /// `api` only; `acme/docs` is on GitHub and in no channel.
-async fn running(daemon: &Daemon, world: &World) -> (pb::Channel, pb::SessionId) {
+async fn running(daemon: &Daemon, world: &World, owner: &str, ch_name: &str) -> (pb::Channel, pb::SessionId) {
     for name in ["api", "web", "docs"] {
-        world.remote("acme", name);
+        world.remote(owner, name);
     }
-    let (channel, _) = create_channel(daemon, "Payments", &[("acme", "api"), ("acme", "web")]).await;
+    let (channel, _) = create_channel(daemon, ch_name, &[(owner, "api"), (owner, "web")]).await;
     let machine = machine_id(daemon).await;
     let mut start = start_request(channel.id.as_ref().unwrap(), &machine, "Fix login");
-    start.repos = vec![pb::RepoChoice { repo: Some(repo_ref("acme", "api")), include: true }];
+    start.repos = vec![pb::RepoChoice { repo: Some(repo_ref(owner, "api")), include: true }];
     let response = daemon
         .session_service()
         .await
@@ -79,7 +79,7 @@ fn typed(world: &World) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_of_the_channel_is_cloned_into_the_session_on_its_branch_and_the_agent_is_told_nothing() {
     let (daemon, world) = start_world().await;
-    let (_channel, session) = running(&daemon, &world).await;
+    let (_channel, session) = running(&daemon, &world, "acme", "Payments").await;
     let branch = common::get_session(&daemon, &session).await.repos[0].branch.clone();
 
     let operation = add(&daemon, &session, "acme", "web").await.unwrap();
@@ -109,14 +109,16 @@ async fn a_repo_of_the_channel_is_cloned_into_the_session_on_its_branch_and_the_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_the_channel_lacks_joins_the_channel_and_the_library() {
-    let (daemon, world) = start_world().await;
-    let (channel, session) = running(&daemon, &world).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let (channel, session) = running(daemon, world, &owner, &ch_name).await;
 
-    let operation = add(&daemon, &session, "acme", "docs").await.unwrap();
-    let ended = finished(&daemon, &operation).await;
+    let operation = add(daemon, &session, &owner, "docs").await.unwrap();
+    let ended = finished(daemon, &operation).await;
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
-    assert!(names(&common::get_session(&daemon, &session).await).contains(&"acme/docs".to_owned()));
+    assert!(names(&common::get_session(daemon, &session).await).contains(&format!("{owner}/docs")));
     let got = daemon
         .channel_service()
         .await
@@ -124,46 +126,52 @@ async fn a_repo_the_channel_lacks_joins_the_channel_and_the_library() {
         .await
         .unwrap()
         .into_inner();
-    assert!(got.repos.contains(&repo_ref("acme", "docs")));
+    assert!(got.repos.contains(&repo_ref(&owner, "docs")));
     let library = humata2_repo_library::Library::open(&daemon.state.join("repos.db")).unwrap();
     let entries = library.list().unwrap().0;
-    assert!(entries.iter().any(|entry| entry.repo.to_string() == "acme/docs"));
+    assert!(entries.iter().any(|entry| entry.repo.to_string() == format!("{owner}/docs")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn adding_a_repo_the_session_has_changes_nothing() {
-    let (daemon, world) = start_world().await;
-    let (_channel, session) = running(&daemon, &world).await;
-    let before = names(&common::get_session(&daemon, &session).await);
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let (_channel, session) = running(daemon, world, &owner, &ch_name).await;
+    let before = names(&common::get_session(daemon, &session).await);
 
-    let operation = add(&daemon, &session, "acme", "api").await.unwrap();
-    let ended = finished(&daemon, &operation).await;
+    let operation = add(daemon, &session, &owner, "api").await.unwrap();
+    let ended = finished(daemon, &operation).await;
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
-    assert_eq!(names(&common::get_session(&daemon, &session).await), before);
+    assert_eq!(names(&common::get_session(daemon, &session).await), before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_that_does_not_exist_fails_the_operation_and_leaves_the_session_as_it_was() {
-    let (daemon, world) = start_world().await;
-    let (_channel, session) = running(&daemon, &world).await;
-    let before = names(&common::get_session(&daemon, &session).await);
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let (_channel, session) = running(daemon, world, &owner, &ch_name).await;
+    let before = names(&common::get_session(daemon, &session).await);
 
-    let operation = add(&daemon, &session, "acme", "nowhere").await.unwrap();
-    let ended = finished(&daemon, &operation).await;
+    let operation = add(daemon, &session, &owner, "nowhere").await.unwrap();
+    let ended = finished(daemon, &operation).await;
 
     assert_eq!(ended.state, pb::OperationState::Failed as i32);
     assert!(ended.error.is_some());
-    assert_eq!(names(&common::get_session(&daemon, &session).await), before);
+    assert_eq!(names(&common::get_session(daemon, &session).await), before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_name_and_an_unknown_session_are_refused() {
-    let (daemon, world) = start_world().await;
-    let (_channel, session) = running(&daemon, &world).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let (_channel, session) = running(daemon, world, &owner, &ch_name).await;
 
-    let bad = add(&daemon, &session, "acme corp", "web").await.unwrap_err();
-    let unknown = add(&daemon, &pb::SessionId { value: "se_nope".to_owned() }, "acme", "web")
+    let bad = add(daemon, &session, "acme corp", "web").await.unwrap_err();
+    let unknown = add(daemon, &pb::SessionId { value: "se_nope".to_owned() }, &owner, "web")
         .await
         .unwrap_err();
 
@@ -173,20 +181,22 @@ async fn a_bad_name_and_an_unknown_session_are_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_is_asked_first_and_may_not_bring_in_a_repo_its_channel_lacks() {
-    let (daemon, world) = start_world().await;
-    let (_channel, session) = running(&daemon, &world).await;
-    let (token, _attach) = shell_token(&daemon, &session).await;
+    let (daemon, world) = common::shared::shared_world().await;
+    let owner = common::shared::unique_name("acme");
+    let ch_name = common::shared::unique_name("Payments");
+    let (_channel, session) = running(daemon, world, &owner, &ch_name).await;
+    let (token, _attach) = shell_token(daemon, &session).await;
 
     let asked = daemon
         .session_service()
         .await
-        .add_repo_to_session(as_script_agent(request(&session, "acme", "web", None), &token))
+        .add_repo_to_session(as_script_agent(request(&session, &owner, "web", None), &token))
         .await
         .unwrap_err();
     let lacks = daemon
         .session_service()
         .await
-        .add_repo_to_session(as_script_agent(request(&session, "acme", "docs", None), &token))
+        .add_repo_to_session(as_script_agent(request(&session, &owner, "docs", None), &token))
         .await
         .unwrap_err();
 

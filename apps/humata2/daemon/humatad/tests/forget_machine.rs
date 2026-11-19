@@ -980,7 +980,7 @@ async fn removing_a_machine_mid_resume_ends_the_resumed_session_there() {
 
     // The resume goes on a while after the removal has begun.
     let released = tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(hold).map(drop))
             .await
             .unwrap()

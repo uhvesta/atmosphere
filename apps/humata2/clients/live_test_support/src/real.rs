@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use humata2_clients::model::Agent;
@@ -60,22 +60,56 @@ pub struct RealWorld {
     child: Child,
 }
 
+/// A cached bare git repository on `main` with one initial commit, copied into
+/// each test's `remotes/<owner>/<name>.git` instead of spawning 5 `git`
+/// subprocesses per repo.
+static TEMPLATE_BARE: OnceLock<TempDir> = OnceLock::new();
+
+fn template_bare() -> &'static Path {
+    TEMPLATE_BARE
+        .get_or_init(|| {
+            let dir = tempfile::Builder::new()
+                .prefix("h2t")
+                .tempdir_in("/tmp")
+                .expect("make template repo folder");
+            let bare = dir.path().join("template.git");
+            std::fs::create_dir_all(&bare).expect("make template bare folder");
+            let bare_text = bare.display().to_string();
+            git(&["init", "--bare", "--initial-branch=main", &bare_text]);
+            let work = dir.path().join("scratch");
+            std::fs::create_dir_all(&work).expect("make template scratch folder");
+            let work_text = work.display().to_string();
+            git(&["init", "--initial-branch=main", &work_text]);
+            std::fs::write(work.join("README.md"), "owner/ledger\n").expect("write");
+            git(&["-C", &work_text, "add", "."]);
+            git(&["-C", &work_text, "commit", "-m", "first"]);
+            git(&["-C", &work_text, "push", &bare_text, "main"]);
+            let _ = std::fs::remove_dir_all(&work);
+            dir
+        })
+        .path()
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create destination folder");
+    for entry in std::fs::read_dir(src).expect("read source folder") {
+        let entry = entry.expect("read dir entry");
+        let ty = entry.file_type().expect("read file type");
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &to);
+        } else {
+            std::fs::copy(entry.path(), to).expect("copy template file");
+        }
+    }
+}
+
 impl World for RealWorld {
     /// A bare remote `owner/name` on `main` with one commit.
     fn repo(&self, owner: &str, name: &str) -> String {
         let root = self.dir.path();
         let bare = root.join("remotes").join(owner).join(format!("{name}.git"));
-        std::fs::create_dir_all(&bare).expect("make the remote folder");
-        let bare_text = bare.display().to_string();
-        git(&["init", "--bare", "--initial-branch=main", &bare_text]);
-        let work = root.join(format!("scratch-{owner}-{name}"));
-        std::fs::create_dir_all(&work).expect("make the scratch folder");
-        let work_text = work.display().to_string();
-        git(&["init", "--initial-branch=main", &work_text]);
-        std::fs::write(work.join("README.md"), format!("{owner}/{name}\n")).expect("write");
-        git(&["-C", &work_text, "add", "."]);
-        git(&["-C", &work_text, "commit", "-m", "first"]);
-        git(&["-C", &work_text, "push", &bare_text, "main"]);
+        copy_dir_all(&template_bare().join("template.git"), &bare);
         format!("{owner}/{name}")
     }
 

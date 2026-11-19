@@ -269,7 +269,7 @@ async fn the_old_name_goes_when_the_last_holder_started_under_it_ends() {
     let tabs = fixture.tabs_of(&session.id);
 
     kill_holders(&tabs[..1]).await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(is_link(&old), "a holder that started under it still runs");
 
     kill_holders(&tabs[1..]).await;

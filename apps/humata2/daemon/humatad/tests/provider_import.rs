@@ -155,17 +155,17 @@ async fn a_file_that_replaces_the_built_in_lima_says_so() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_with_problems_shows_them_and_cannot_be_imported() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
 
-    let broken = preview(&daemon, b"[providers.broken]\nstart = \"true\"\n").await.unwrap();
+    let broken = preview(daemon, b"[providers.broken]\nstart = \"true\"\n").await.unwrap();
     assert!(broken.problems.iter().any(|problem| problem.field == "create"), "{:?}", broken.problems);
     assert!(broken.token.as_ref().is_none_or(|token| token.value.is_empty()));
-    assert_eq!(config(&daemon).await.toml, "");
+    assert_eq!(config(daemon).await.toml, "");
 
-    let not_text = preview(&daemon, &[0xff, 0xfe, 0x00]).await.unwrap_err();
+    let not_text = preview(daemon, &[0xff, 0xfe, 0x00]).await.unwrap_err();
     assert_eq!(not_text.code(), Code::InvalidArgument);
 
-    let empty = preview(&daemon, b"").await.unwrap();
+    let empty = preview(daemon, b"").await.unwrap();
     assert!(!empty.problems.is_empty() || empty.token.as_ref().is_none_or(|token| token.value.is_empty()));
 }
 
@@ -582,9 +582,9 @@ async fn an_agents_import_under_a_never_rule_is_denied_at_once() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_user_cannot_use_the_agents_ask() {
-    let daemon = Daemon::start().await;
+    let daemon = common::shared::shared_daemon().await;
 
-    let refused = providers(&daemon)
+    let refused = providers(daemon)
         .await
         .request_provider_import(pb::RequestProviderImportRequest {
             text: IMPORTED.to_owned(),
@@ -594,5 +594,5 @@ async fn the_user_cannot_use_the_agents_ask() {
         .unwrap_err();
 
     assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
-    assert_eq!(config(&daemon).await.toml, "");
+    assert_eq!(config(daemon).await.toml, "");
 }

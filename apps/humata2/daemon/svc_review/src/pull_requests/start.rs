@@ -140,6 +140,9 @@ fn prepare_channel(
         store
             .put_channel(&channel)
             .map_err(store_failed("save the PR reviews channel"))?;
+        starter
+            .clone_pr_reviews_mains(&channel.id)
+            .map_err(|source| StartReviewError::Channel { source })?;
     }
     let channel = store
         .channel(&channel.id)
@@ -219,7 +222,9 @@ impl PullRequests {
                 "",
             )
         })?;
-        let _started = sessions.begin_review(caller, channel, &request).await?;
-        Ok(pb::Operation::default())
+        let started = sessions
+            .begin_review(caller, channel, &request, prs, request.push_allowed)
+            .await?;
+        Ok(started.operation.unwrap_or_default())
     }
 }
