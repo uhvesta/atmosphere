@@ -38,7 +38,18 @@ struct Running {
 
 /// Watches `session`'s agent if its record says it runs. Returns at once.
 pub(crate) fn agent(tell: Tell, session: String) {
+    drop(agent_attached(tell, session));
+}
+
+/// As [`agent`], and the returned receiver is told once the watch is
+/// attached to the agent's holder (or won't be). A start waits for it
+/// before it says the agent runs: output after that is then always heard,
+/// so the agent's first answer marks its session (CH-16), however slow the
+/// watch's own attach is.
+pub(crate) fn agent_attached(tell: Tell, session: String) -> tokio::sync::oneshot::Receiver<()> {
+    let (ready, attached) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
+        // `ready` dropped on a return before the attach lets the waiter go on.
         let Some(Running {
             holder_pid,
             socket,
@@ -54,7 +65,7 @@ pub(crate) fn agent(tell: Tell, session: String) {
             tell.session(&session, humata2_grpc::humata::v1::Change::Updated, None)
                 .await;
         }
-        let code = follow(&tell, &session, holder_pid, &socket, timed).await;
+        let code = follow(&tell, &session, holder_pid, &socket, timed, ready).await;
         // D767: a question its screen asked goes with the agent.
         crate::screen_ask::gone(&session);
         // A watch that lost its holder keeps what it knew: the next one
@@ -78,6 +89,7 @@ pub(crate) fn agent(tell: Tell, session: String) {
                 .await;
         }
     });
+    attached
 }
 
 /// After the start's reconcile: tells the feed of every session as it now
@@ -194,12 +206,15 @@ async fn follow(
     holder_pid: u32,
     socket: &Path,
     timed: bool,
+    ready: tokio::sync::oneshot::Sender<()>,
 ) -> Option<i32> {
+    let attached = humata2_holder::attach(socket, u64::MAX).await;
+    let _ = ready.send(());
     let Attachment {
         welcome,
         events,
         control: _control,
-    } = humata2_holder::attach(socket, u64::MAX).await.ok()?;
+    } = attached.ok()?;
     if let Some(code) = welcome.exited {
         return Some(code);
     }

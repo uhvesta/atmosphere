@@ -30,6 +30,9 @@ case "$mode" in
   --resume) f="$CONV_DIR/$id.jsonl" ;;
 esac
 {{ printf '%s\n' "$@"; echo --; }} >> "$OUT/$id.args"
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,

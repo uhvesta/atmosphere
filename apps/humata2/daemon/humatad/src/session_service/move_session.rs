@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use humata2_access::{Capability, Target};
+use humata2_holder::HolderError;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{AgentState, ChannelRecord, DeskFolderKind, SessionRecord, StoreError};
 use pb::invalid_field::Problem;
@@ -41,7 +42,7 @@ use crate::channel_service::{blocking, failed};
 use crate::holder_end;
 use crate::identity::{self, Caller, UserVia};
 use crate::operations::{Progress, Started};
-use crate::remote_work::{HostOp, MachineOutcome, RemoteWork, channel_steps};
+use crate::remote_work::{HostOp, MachineOutcome, RemoteError, RemoteWork, channel_steps};
 use crate::status;
 
 const MOVE_SESSION: &str = "humata.v1.SessionService.MoveSession";
@@ -82,6 +83,132 @@ enum MoveError {
     },
     #[error("{machine} was removed from Humata while the PR reviews channel was being set up on it for review {session}")]
     ReviewMachineRemoved { session: String, machine: String },
+    /// D801 J: the old agent's holder can't pause its program, so nothing
+    /// was carried and the agent keeps running where it is.
+    #[error("the holder of session {session}'s agent on {machine} is from an older Humata build that can't pause its program for a move, so nothing was copied and the agent keeps running there")]
+    HolderTooOldToFreeze {
+        session: String,
+        machine: String,
+        #[source]
+        source: HolderError,
+    },
+    #[error("{machine} runs an older humatad2 that can't pause session {session}'s agent for a move, so nothing was copied and the agent keeps running there")]
+    MachineTooOldToFreeze {
+        session: String,
+        machine: String,
+        #[source]
+        source: Status,
+    },
+    #[error("couldn't pause session {session}'s agent on {machine} for the move; the agent was left running")]
+    FreezeFailed {
+        session: String,
+        machine: String,
+        #[source]
+        source: HolderError,
+    },
+    #[error("the holder of session {session}'s agent on {machine} didn't answer within {seconds} seconds when asked to pause or resume the agent; it may be wedged")]
+    FreezeTimeout {
+        session: String,
+        machine: String,
+        seconds: u64,
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+}
+
+/// Says what to do about a holder or machine too old to pause an agent.
+const MIGRATE_FIRST: &str = "click Migrate on the \"Migrate the holders\" item in the Inbox, which moves each holder onto the current build without restarting its agent where it can and updates the machine's tools, then move the session again";
+
+/// How long a holder gets to answer a freeze or thaw.
+const FREEZE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The holders (socket and pid) this daemon froze for a move and hasn't
+/// thawed: the running list reads them as "Paused for move" (D801 J). A
+/// holder ended with its move is never listed again, as the pid is its.
+static FROZEN: std::sync::Mutex<std::collections::BTreeSet<(std::path::PathBuf, u32)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether the holder at `socket` with process `pid` is frozen for a move
+/// this daemon is making.
+pub(crate) fn paused_for_move(socket: &std::path::Path, pid: u32) -> bool {
+    FROZEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&(socket.to_owned(), pid))
+}
+
+fn note_frozen(socket: &std::path::Path, pid: u32, frozen: bool) {
+    let mut held = FROZEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if frozen {
+        held.insert((socket.to_owned(), pid));
+    } else {
+        held.remove(&(socket.to_owned(), pid));
+    }
+}
+
+/// Freezes (`thaw` false) or thaws session `session`'s agent on this
+/// machine for a move (D801 J): its program is stopped with SIGSTOP and its
+/// holder serves the frozen screen, or the program runs again. Shells are
+/// never frozen: only the agent's own holder is asked. Answers whether an
+/// agent ran here to freeze or thaw; thawing an agent whose holder is gone
+/// is fine. A holder from a build before freezing is refused as Outdated,
+/// naming Migrate; nothing was stopped.
+pub(crate) async fn freeze_agent_here(
+    svc: &SessionSvc,
+    session: &str,
+    machine: &str,
+    thaw: bool,
+) -> Result<bool, Status> {
+    let loaded = svc.load(session).await?;
+    let Some(agent) = loaded.agent else {
+        return Ok(false);
+    };
+    let AgentState::Running { holder_pid } = agent.state else {
+        return Ok(false);
+    };
+    let socket = &agent.launch.holder_socket;
+    let asked = async {
+        if thaw {
+            humata2_holder::thaw(socket).await
+        } else {
+            humata2_holder::freeze(socket).await
+        }
+    };
+    let (session, machine) = (session.to_owned(), machine.to_owned());
+    match tokio::time::timeout(FREEZE_WAIT, asked).await {
+        Ok(Ok(())) => {
+            note_frozen(socket, holder_pid, !thaw);
+            Ok(true)
+        }
+        // The holder is gone, so there is nothing of it to let run.
+        Ok(Err(HolderError::Connect { .. })) if thaw => {
+            note_frozen(socket, holder_pid, false);
+            Ok(false)
+        }
+        Ok(Err(source @ HolderError::TooOldToFreeze { .. })) => Err(failed(
+            Code::FailedPrecondition,
+            &MoveError::HolderTooOldToFreeze { session, machine, source },
+            MIGRATE_FIRST,
+            None,
+        )),
+        Ok(Err(source)) => Err(failed(
+            Code::FailedPrecondition,
+            &MoveError::FreezeFailed { session, machine, source },
+            "check that the machine is up and the session's terminal answers, then try the move again",
+            None,
+        )),
+        Err(source) => Err(failed(
+            Code::DeadlineExceeded,
+            &MoveError::FreezeTimeout {
+                session,
+                machine,
+                seconds: FREEZE_WAIT.as_secs(),
+                source,
+            },
+            "the agent was left as it was; try the move again, and if it keeps happening end the session's terminal and resume it",
+            None,
+        )),
+    }
 }
 
 /// Sessions with a move running on this daemon, and a count that moves
@@ -355,6 +482,7 @@ impl SessionSvc {
             placing: AtomicBool::new(false),
             agent_ran: AtomicBool::new(true),
             rebased: AtomicBool::new(false),
+            frozen: AtomicBool::new(false),
         };
         tokio::spawn(async move { mover.run(held).await });
         Ok(Gated::Done(operation))
@@ -487,6 +615,10 @@ struct Mover {
     agent_ran: AtomicBool,
     /// The host's mirror was pointed at the new machine's copy.
     rebased: AtomicBool,
+    /// The old agent's program is frozen (SIGSTOP) for this move, so it
+    /// can't overlap the copy; the journal says so, and an undo or a
+    /// restart thaws it (D801 J).
+    frozen: AtomicBool,
 }
 
 impl Mover {
@@ -538,12 +670,12 @@ impl Mover {
     }
 
     async fn journal(&self, phase: &str) {
-        self.carry
-            .journal(
-                &self.operation,
-                Carry::entry(&self.operation, &self.session, &self.from, &self.to, phase, self.agent_ran.load(Ordering::SeqCst)),
-            )
-            .await;
+        let mut entry =
+            Carry::entry(&self.operation, &self.session, &self.from, &self.to, phase, self.agent_ran.load(Ordering::SeqCst));
+        // The move note says the old agent is frozen, so a restart thaws it
+        // or finishes the move (D801 J).
+        entry["frozen"] = serde_json::Value::Bool(self.frozen.load(Ordering::SeqCst));
+        self.carry.journal(&self.operation, entry).await;
     }
 
     /// The move got as far as `phase`: the journal says so, and a test
@@ -577,7 +709,7 @@ impl Mover {
     async fn go(&self) -> Result<(), Failure> {
         self.step("check", self.check()).await?;
         self.go_on("pause")?;
-        self.step("pause", async { Ok(()) }).await?;
+        self.step("pause", self.freeze_old()).await?;
         self.go_on("pack")?;
         let packed = self
             .step("pack", self.pack_session())
@@ -788,12 +920,86 @@ impl Mover {
             .map(drop)
     }
 
-    /// The old agent stops (after the copy is checked, so a failed copy
-    /// leaves it running), the session is packed again to see that nothing
-    /// changed while it ran, and the new agent starts in its conversation.
+    /// Freezes the old agent before anything is packed (D801 J): its program
+    /// stops where it is, so it can't write while it is copied nor run
+    /// beside the new agent. The note says so first, so a restart that finds
+    /// the program stopped thaws it. A machine whose agent can't be frozen
+    /// refuses the move here, before anything is carried.
+    async fn freeze_old(&self) -> Result<(), Status> {
+        self.frozen.store(true, Ordering::SeqCst);
+        self.journal("started").await;
+        match self.freeze_on(&self.from, false).await {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                // No agent ran: nothing was frozen.
+                self.frozen.store(false, Ordering::SeqCst);
+                self.journal("started").await;
+                Ok(())
+            }
+            Err(error) => {
+                // A freeze that failed part way is thawed; one the holder was
+                // too old to take stopped nothing.
+                match self.freeze_on(&self.from, true).await {
+                    Err(thaw) if thaw.code() != Code::FailedPrecondition => {}
+                    _ => {
+                        self.frozen.store(false, Ordering::SeqCst);
+                        self.journal("started").await;
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Freezes or thaws the session's agent on `machine`. Whether an agent
+    /// ran there.
+    async fn freeze_on(&self, machine: &str, thaw: bool) -> Result<bool, Status> {
+        if self.carry.is_host(machine) {
+            return freeze_agent_here(&self.svc, &self.session, machine, thaw).await;
+        }
+        match self.remote.freeze_session_on(machine, &self.session, thaw).await {
+            Ok(ran) => Ok(ran),
+            // The machine's daemon is from a build before freezing: it
+            // stopped nothing.
+            Err(RemoteError::Machine { source, .. }) if source.code() == Code::Unimplemented => Err(failed(
+                Code::FailedPrecondition,
+                &MoveError::MachineTooOldToFreeze {
+                    session: self.session.clone(),
+                    machine: machine.to_owned(),
+                    source,
+                },
+                MIGRATE_FIRST,
+                None,
+            )),
+            // Nothing of the session is there to let run.
+            Err(RemoteError::Machine { source, .. }) if thaw && source.code() == Code::NotFound => Ok(false),
+            Err(error) => Err(Status::from(error)),
+        }
+    }
+
+    /// The new agent runs and answered (the resume's check), so the frozen
+    /// old one is ended. It is the end of the overlap-free hand-over: until
+    /// here an undo only thaws it.
+    async fn end_frozen_old(&self) -> Result<(), Status> {
+        self.stop_on(&self.from).await?;
+        self.stopped.store(self.agent_ran.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.frozen.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// The new agent starts in the copied conversation, and once it has
+    /// answered the old one, frozen since the move began, is ended. An old
+    /// agent that wasn't frozen is stopped after the copy is checked, so a
+    /// failed copy leaves it running, and the session is packed again to
+    /// see that nothing changed while it ran.
     async fn hand_over(&self, digest: &str) -> Result<(), Status> {
         // MACHINESCRIPTS (D681): the old machine's leaving rules, a minute at most; never fails the move.
         self.script_leaving().await;
+        if self.frozen.load(Ordering::SeqCst) {
+            // Frozen, it wrote nothing since it was packed: what was copied is all of it.
+            self.resume_on(&self.to).await?;
+            return self.end_frozen_old().await;
+        }
         self.stop_old().await?;
         let again = self.pack_session().await?;
         if again.digest != digest {
@@ -1056,7 +1262,23 @@ impl Mover {
         // so, and the host starts it once both machines' links are up; a
         // restart's report names the session if that fails too (MV-14, MV-17).
         let mut resume_pending = false;
-        if self.stopped.load(Ordering::SeqCst)
+        // The old agent was frozen for the move and still is: it runs again,
+        // as it was. Its holder being gone leaves nothing to thaw.
+        if self.frozen.load(Ordering::SeqCst) {
+            match self.freeze_on(&self.from, true).await {
+                Ok(_) => self.frozen.store(false, Ordering::SeqCst),
+                Err(error) => {
+                    resume_pending = true;
+                    left = format!(
+                        " Its agent was paused for the move and didn't run again on {}: {}. Humata tries again once the machines are linked.",
+                        self.from,
+                        error.message()
+                    );
+                }
+            }
+        }
+        if !resume_pending
+            && self.stopped.load(Ordering::SeqCst)
             && let Err(error) = self.resume_on(&self.from).await
         {
             resume_pending = true;
@@ -1172,6 +1394,7 @@ pub(super) async fn recover(
         placing: AtomicBool::new(copy_began(&journal.phase)),
         agent_ran: AtomicBool::new(journal.agent_ran),
         rebased: AtomicBool::new(false),
+        frozen: AtomicBool::new(journal.frozen),
     };
     let outcome = match journal.phase.as_str() {
         "resumed" => mover.finish(true).await,
@@ -1226,6 +1449,7 @@ impl Mover {
                 to: self.to.clone(),
                 phase: phase.to_owned(),
                 agent_ran: self.agent_ran.load(Ordering::SeqCst),
+                frozen: self.frozen.load(Ordering::SeqCst),
             },
             None,
         );
@@ -1243,6 +1467,7 @@ impl Mover {
                 to: self.to.clone(),
                 phase: "unpacked".to_owned(),
                 agent_ran: true,
+                frozen: self.frozen.load(Ordering::SeqCst),
             },
             Some(Moving::begin(&self.session, &self.to, &self.operation)),
         );
@@ -1265,6 +1490,13 @@ impl Mover {
                     other => other?,
                 }
             }
+        }
+        // The old agent was frozen for the move: it runs again before the
+        // copy is taken back, so a target that is offline doesn't keep it
+        // stopped (D801 J).
+        if self.frozen.load(Ordering::SeqCst) {
+            self.freeze_on(&self.from, true).await?;
+            self.frozen.store(false, Ordering::SeqCst);
         }
         let (incoming, staged) = self.take_copy_back().await;
         incoming?;

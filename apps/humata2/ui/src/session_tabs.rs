@@ -274,8 +274,17 @@ struct StepRow {
     mark: &'static str,
     state: MoveStepState,
     title: String,
-    /// The running step's copy progress; none until its total is known.
-    progress: Option<CopyProgress>,
+    /// The running step's bar; none on every other row.
+    bar: Option<StepBar>,
+}
+
+/// The bar under the running step.
+#[derive(Debug, PartialEq)]
+enum StepBar {
+    /// The copy's share so far, with its text under the bar.
+    Measured(CopyProgress),
+    /// The move has not reported units yet, so the bar sweeps.
+    Sweep,
 }
 
 /// A thin bar's fill and its text under the running step.
@@ -299,6 +308,18 @@ fn copy_progress(done: u64, total: u64) -> Option<CopyProgress> {
     })
 }
 
+/// The bar under a step: only the running step has one, measured when the
+/// move reports its units and swept until then.
+fn step_bar(state: MoveStepState, done: u64, total: u64) -> Option<StepBar> {
+    if state != MoveStepState::Running {
+        return None;
+    }
+    Some(match copy_progress(done, total) {
+        Some(progress) => StepBar::Measured(progress),
+        None => StepBar::Sweep,
+    })
+}
+
 /// The card's rows, one per step in order (frame 64: done ✓, running ●,
 /// waiting ○).
 fn step_rows(moving: &MoveProgress) -> Vec<StepRow> {
@@ -314,13 +335,20 @@ fn step_rows(moving: &MoveProgress) -> Vec<StepRow> {
             },
             state: step.state,
             title: step.title.clone(),
-            progress: if step.state == MoveStepState::Running {
-                copy_progress(moving.done_units, moving.total_units)
-            } else {
-                None
-            },
+            bar: step_bar(step.state, moving.done_units, moving.total_units),
         })
         .collect()
+}
+
+/// The thin bar's size under a step: 180 px wide, 3 px tall.
+fn step_bar_metrics(look: Look) -> widgets::BarMetrics {
+    widgets::BarMetrics {
+        width: Some(px(180.)),
+        height: px(3.),
+        radius: px(2.),
+        track: look.line,
+        fill: look.accent,
+    }
 }
 
 /// Frame 64's card: "Moving to <machine>" and every step with its state.
@@ -334,7 +362,7 @@ fn steps_card(look: Look, to: &str, moving: &MoveProgress) -> AnyElement {
         .text_color(rgb(look.text))
         .text_size(px(12.))
         .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Moving to {to}")))
-        .children(step_rows(moving).into_iter().map(|row| {
+        .children(step_rows(moving).into_iter().enumerate().map(|(index, row)| {
             let (color, dim) = match row.state {
                 MoveStepState::Done => (GREEN, false),
                 MoveStepState::Running => (ORANGE, false),
@@ -353,24 +381,23 @@ fn steps_card(look: Look, to: &str, moving: &MoveProgress) -> AnyElement {
                                 .text_color(rgb(if dim { look.secondary } else { look.text }))
                                 .child(row.title),
                         )
-                        .children(row.progress.map(|progress| {
-                            col()
+                        .children(row.bar.map(|bar| match bar {
+                            StepBar::Measured(progress) => col()
                                 .gap(px(3.))
-                                .child(
-                                    div()
-                                        .w(px(180.))
-                                        .h(px(3.))
-                                        .rounded(px(2.))
-                                        .bg(rgb(look.line))
-                                        .child(
-                                            div()
-                                                .h_full()
-                                                .rounded(px(2.))
-                                                .bg(rgb(look.accent))
-                                                .w(relative(progress.fraction)),
-                                        ),
-                                )
+                                .child(widgets::progress_bar(
+                                    look,
+                                    Some(progress.fraction),
+                                    step_bar_metrics(look),
+                                    ("move-copy", index),
+                                ))
                                 .child(div().text_color(rgb(look.secondary)).child(progress.label))
+                                .into_any_element(),
+                            StepBar::Sweep => widgets::progress_bar(
+                                look,
+                                None,
+                                step_bar_metrics(look),
+                                ("move-sweep", index),
+                            ),
                         })),
                 )
         }))
@@ -552,7 +579,18 @@ fn file_body(
                 .child(error.to_string())
                 .test_text(error.to_string())
                 .into_any_element(),
-            None => div().p(px(14.)).child("Loading file…").into_any_element(),
+            None => div()
+                .id("file-loading")
+                .p(px(14.))
+                .role(Role::ProgressIndicator)
+                .aria_label("Loading")
+                .child(widgets::progress_bar(
+                    look,
+                    None,
+                    widgets::BarMetrics::line(look),
+                    "file-loading-sweep",
+                ))
+                .into_any_element(),
         })
         .test_support()
         .into_any_element()
@@ -1004,7 +1042,7 @@ mod tests {
     // `test` attribute, which would shadow the built-in one.
     use ::core::prelude::v1::test;
 
-    use super::{copy_progress, offers_resume, step_rows};
+    use super::{copy_progress, offers_resume, step_rows, StepBar, StepRow};
     use humata2_clients::fixture;
     use humata2_clients::model::Status;
 
@@ -1068,13 +1106,22 @@ mod tests {
         assert_eq!(copy_progress(0, 100).map(|p| p.fraction), Some(0.0));
     }
 
+    /// The fill of a row's measured bar; none for a sweep or no bar.
+    fn measured_fraction(row: &StepRow) -> Option<f32> {
+        match &row.bar {
+            Some(StepBar::Measured(progress)) => Some(progress.fraction),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn nothing_is_drawn_when_the_total_is_unknown() {
+    fn an_unmeasured_running_step_sweeps() {
         assert_eq!(copy_progress(10, 0), None);
-        use MoveStepState::{Done, Running};
-        let mut unknown = moving(&[Done, Running]);
+        use MoveStepState::{Done, Pending, Running};
+        let mut unknown = moving(&[Done, Running, Pending]);
         unknown.done_units = 10;
-        assert!(step_rows(&unknown).iter().all(|row| row.progress.is_none()));
+        let bars: Vec<Option<StepBar>> = step_rows(&unknown).into_iter().map(|row| row.bar).collect();
+        assert_eq!(bars, [None, Some(StepBar::Sweep), None]);
     }
 
     #[test]
@@ -1083,9 +1130,20 @@ mod tests {
         let mut copying = moving(&[Done, Running, Pending]);
         copying.done_units = 25;
         copying.total_units = 100;
-        let bars: Vec<bool> = step_rows(&copying).iter().map(|row| row.progress.is_some()).collect();
+        let rows = step_rows(&copying);
+        let bars: Vec<bool> = rows.iter().map(|row| row.bar.is_some()).collect();
         assert_eq!(bars, [false, true, false]);
-        assert_eq!(step_rows(&copying)[1].progress.as_ref().map(|p| p.fraction), Some(0.25));
+        assert_eq!(measured_fraction(&rows[1]), Some(0.25));
+    }
+
+    #[test]
+    fn a_step_that_is_not_running_never_carries_a_bar() {
+        use MoveStepState::{Done, Failed, Pending, Skipped, Undone};
+        let mut settled = moving(&[Done, Failed, Pending, Skipped, Undone]);
+        assert!(step_rows(&settled).iter().all(|row| row.bar.is_none()));
+        settled.done_units = 25;
+        settled.total_units = 100;
+        assert!(step_rows(&settled).iter().all(|row| row.bar.is_none()));
     }
 
     #[test]

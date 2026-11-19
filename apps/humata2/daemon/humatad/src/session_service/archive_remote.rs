@@ -412,6 +412,7 @@ impl SessionSvc {
             id: Some(pb::SessionId { value: id }),
             choice: choice as i32,
             plan: request.plan,
+            end: request.end,
         };
         tokio::spawn(self.clone().run_archive_remote(
             progress,
@@ -1915,6 +1916,11 @@ impl SessionSvc {
                         id,
                         choice: choice as i32,
                         plan: plan.token,
+                        // D801 I, PER-32: this end stays. Removing the
+                        // machine is the owner's explicit, named choice, and
+                        // its confirm lists the terminals that end with it;
+                        // nothing is left on a machine leaving the channel.
+                        end: Some(true),
                     };
                     self.archive_session_of(caller, request, true).await
                 }

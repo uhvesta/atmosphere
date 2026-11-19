@@ -1,8 +1,12 @@
 //! PlanDeleteChannel and DeleteChannel (CH-24, CH-25, NV-27, LD-5 to LD-7,
 //! D194): the plan lists every session, board item and pending request of
-//! the channel and changes nothing; the delete stops the agents, withdraws
-//! the requests, copies the channel's records into a side file in its
-//! folder, removes them from the state and sends the folder to the trash.
+//! the channel and changes nothing; the delete withdraws the requests,
+//! copies the channel's records into a side file in its folder, removes
+//! them from the state and sends the folder to the trash. D801 H: first,
+//! by default, each session with a running terminal is filed on the Desk
+//! (its folder renamed under the Desk's, its holders untouched, its agent
+//! given a pending re-key note); one that can't move goes on with no
+//! session, under "Not in a channel". `end_live` ends them instead.
 //! Restoring the trash item brings the channel back with its sessions
 //! archived ([`finish_restore`]). Only the user, present, can delete.
 //!
@@ -12,14 +16,18 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
+use humata2_access::{Call, Capability, ChannelId, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::repo_work;
-use humata2_store::{AgentState, ChannelRecord, Placement, SIDE_FILE, Store, StoreError};
+use humata2_revive::{RekeyError, RekeyNote, Started as RekeyStarted};
+use humata2_sessions::{DESK_CHANNEL, Layout, Starter, repo_work};
+use humata2_store::{
+    AgentState, ChannelRecord, DeskFolderKind, DeskRow, Placement, SIDE_FILE, Store, StoreError, TabKind,
+};
 use humata2_transfers::NewItem;
 use serde::{Deserialize, Serialize};
 use tonic::{Code, Status};
@@ -237,6 +245,328 @@ fn list(store: &Store, channel: &str, machine: &str) -> Result<Listing, ListErro
     Ok(listing)
 }
 
+/// A live session the delete moves to the Desk, its terminals left running
+/// (D801 H): its folder is renamed from `from`, under the channel's
+/// `sessions`, to `to`, under the Desk's folder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Move {
+    session: String,
+    #[serde(default)]
+    title: String,
+    from: PathBuf,
+    to: PathBuf,
+}
+
+/// A live session that can't move, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stays {
+    session: String,
+    title: String,
+    reason: String,
+}
+
+/// The sessions of a channel with a terminal running, by what the delete
+/// does with them when it keeps them running.
+#[derive(Debug, Default)]
+struct Sorted {
+    moves: Vec<Move>,
+    stays: Vec<Stays>,
+}
+
+/// Whether the process `pid` still exists.
+fn pid_alive(pid: u32) -> bool {
+    i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+}
+
+/// Whether a terminal of `session` runs: its agent's holder or a shell's.
+fn runs(store: &Store, session: &str) -> Result<bool, StoreError> {
+    if let Some(agent) = store.agent(session)?
+        && let AgentState::Running { holder_pid } = agent.state
+        && pid_alive(holder_pid)
+    {
+        return Ok(true);
+    }
+    Ok(store.tabs()?.into_iter().any(|tab| {
+        tab.kind == TabKind::Shell && tab.session.as_deref() == Some(session) && pid_alive(tab.holder_pid)
+    }))
+}
+
+/// The device the nearest existing folder at or above `path` is on.
+fn device_of(path: &Path) -> Option<u64> {
+    path.ancestors().find_map(|found| fs::metadata(found).ok()).map(|meta| meta.dev())
+}
+
+/// Sorts the live sessions of `channel` on this machine: the ones whose
+/// folder can be renamed onto the Desk, each with the Desk folder it would
+/// take, and the ones that can't, each with the reason (D801 H). A session
+/// with no running terminal is in neither: its folder goes to the Bin with
+/// the channel's. Reads only.
+fn sort_live(store: &Store, layout: &Layout, channel: &ChannelRecord, machine: &str) -> Result<Sorted, StoreError> {
+    let sessions = layout.sessions(&channel.folder);
+    let desk = layout.root().join(DESK_CHANNEL);
+    let desk_device = device_of(&desk);
+    let all = store.sessions()?;
+    let mut taken: BTreeSet<String> = all
+        .iter()
+        .filter(|session| session.channel == DESK_CHANNEL)
+        .filter_map(|session| session.folder.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .collect();
+    let mut sorted = Sorted::default();
+    for session in all.into_iter().filter(|session| session.channel == channel.id) {
+        if store.archive(&session.id)?.is_some() {
+            continue;
+        }
+        if !session.machine.is_empty() && session.machine != machine {
+            continue;
+        }
+        if !runs(store, &session.id)? {
+            continue;
+        }
+        let stays = |reason: &str| Stays {
+            session: session.id.clone(),
+            title: session.title.clone(),
+            reason: reason.to_owned(),
+        };
+        if session.folder.parent() != Some(sessions.as_path()) {
+            sorted.stays.push(stays(
+                "its folder is the channel's own, shared with other sessions, so it can't move by itself; its terminals keep running under \"Not in a channel\" and the folder goes to the Bin",
+            ));
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(&session.folder) else {
+            sorted.stays.push(stays(
+                "its folder is gone from the disk, so there is nothing to move; its terminals keep running under \"Not in a channel\"",
+            ));
+            continue;
+        };
+        if !meta.is_dir() {
+            sorted.stays.push(stays(
+                "its folder is not a plain folder, so it can't be renamed onto the Desk; its terminals keep running under \"Not in a channel\" and the folder goes to the Bin",
+            ));
+            continue;
+        }
+        if desk_device.is_some_and(|device| device != meta.dev()) {
+            sorted.stays.push(stays(
+                "its folder is on another disk than the Desk's, and moving it there would copy it and restart its terminals; they keep running under \"Not in a channel\" and the folder goes to the Bin. Move the session to the Desk first, or end the sessions to delete",
+            ));
+            continue;
+        }
+        if let Some(agent) = store.agent(&session.id)?
+            && matches!(agent.state, AgentState::Running { .. })
+            && !matches!(humata2_revive::read_note(&agent.launch.holder_socket), Ok(None))
+        {
+            sorted.stays.push(stays(
+                "its agent still has to carry its conversation to the folder an earlier rename gave the channel, which happens when it next resumes; its terminals keep running under \"Not in a channel\". Stop and resume the agent, then delete again to move it",
+            ));
+            continue;
+        }
+        let base = session
+            .folder
+            .file_name()
+            .map_or_else(|| "session".to_owned(), |name| name.to_string_lossy().into_owned());
+        let name = (1u32..)
+            .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
+            .find(|name| !taken.contains(name) && fs::symlink_metadata(desk.join(name)).is_err())
+            .unwrap_or_else(|| format!("{base}-{}", session.id));
+        taken.insert(name.clone());
+        sorted.moves.push(Move {
+            session: session.id.clone(),
+            title: session.title.clone(),
+            from: session.folder.clone(),
+            to: desk.join(name),
+        });
+    }
+    Ok(sorted)
+}
+
+/// Writes the note beside the holder of `mv`'s running agent that its next
+/// resume follows to carry the conversation to the Desk folder (D801 D). It
+/// is written before the folder moves, and again is a no-op.
+fn write_rekey(starter: &Starter, mv: &Move) -> Result<(), DeleteError> {
+    let store = starter.store.as_ref();
+    let Some(agent) = store.agent(&mv.session).map_err(DeleteError::Store)? else {
+        return Ok(());
+    };
+    if !matches!(agent.state, AgentState::Running { .. }) {
+        return Ok(());
+    }
+    let socket = &agent.launch.holder_socket;
+    let rekey = |source| DeleteError::Rekey { session: mv.session.clone(), source };
+    if let Some(existing) = humata2_revive::read_note(socket).map_err(rekey)? {
+        return if existing.path == mv.from && existing.target == mv.to {
+            Ok(())
+        } else {
+            Err(DeleteError::NoteTaken { session: mv.session.clone() })
+        };
+    }
+    let known = fs::read_dir(&mv.from)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|entry| entry.path())
+                .collect()
+        })
+        .unwrap_or_default();
+    let launch = &agent.launch;
+    let note = RekeyNote {
+        path: mv.from.clone(),
+        target: mv.to.clone(),
+        started: RekeyStarted {
+            folder: launch.folder.clone(),
+            argv: launch.argv.clone(),
+            resume_argv: launch.resume_argv.clone(),
+            conversation_file: launch.conversation_file.clone(),
+        },
+        known,
+        // Codex's and Copilot's conversations name their folder inside them.
+        follows: super::rename_folder::session_follows(
+            store,
+            &starter.agents,
+            &starter.home,
+            &starter.layout.root(),
+            &mv.session,
+            &mv.from,
+            &mv.to,
+        )
+        .map_err(DeleteError::Store)?,
+    };
+    humata2_revive::write_note(socket, &note).map_err(rekey)
+}
+
+/// Files the session on the Desk: renames its folder (its terminals keep
+/// their processes and their working folder), then rewrites its records
+/// last, so a run again after a cut finishes it. Answers whether it did
+/// anything: a session already on the Desk, or gone, is left alone.
+fn put_on_desk(starter: &Starter, mv: &Move, channel: &str) -> Result<bool, DeleteError> {
+    let store = starter.store.as_ref();
+    let Some(mut record) = store.session(&mv.session).map_err(DeleteError::Store)? else {
+        return Ok(false);
+    };
+    if record.channel != channel {
+        return Ok(false);
+    }
+    let moved = |source| DeleteError::DeskMove {
+        session: mv.session.clone(),
+        from: mv.from.clone(),
+        to: mv.to.clone(),
+        source,
+    };
+    let here = fs::symlink_metadata(&mv.from).is_ok();
+    let there = fs::symlink_metadata(&mv.to).is_ok();
+    match (here, there) {
+        (true, false) => {
+            write_rekey(starter, mv)?;
+            if let Some(desk) = mv.to.parent() {
+                make_dirs(desk).map_err(moved)?;
+            }
+            humata2_durable::rename(&mv.from, &mv.to).map_err(moved)?;
+            for parent in [mv.from.parent(), mv.to.parent()].into_iter().flatten() {
+                humata2_durable::sync_dir(parent).map_err(moved)?;
+            }
+        }
+        (false, true) => {}
+        (true, true) => {
+            return Err(moved(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the Desk already has a folder of that name",
+            )));
+        }
+        (false, false) => {
+            return Err(moved(std::io::Error::new(std::io::ErrorKind::NotFound, "the session's folder is gone")));
+        }
+    }
+    // A kill here leaves the folder on the Desk and the records in the
+    // channel: the restart finds the move in the delete's note and goes on.
+    crate::fault::point("delete_channel.desk_renamed");
+    // What the session keeps of its own place follows it (the rewrite runs
+    // again on a run that finishes the move).
+    move_folder::rewrite_session_folder(&mv.from, &mv.to)
+        .map_err(|source| DeleteError::DeskPaths { session: mv.session.clone(), source })?;
+    if let Some(mut detail) = store.session_detail(&mv.session).map_err(DeleteError::Store)? {
+        for repo in &mut detail.repos {
+            if let Ok(rest) = repo.path.strip_prefix(&mv.from) {
+                repo.path = mv.to.join(rest);
+            }
+        }
+        store.put_session_detail(&detail).map_err(DeleteError::Store)?;
+    }
+    // Kept: the sweep of the Desk's old folders never takes a session that
+    // had work running.
+    store
+        .put_desk(&DeskRow {
+            session_id: mv.session.clone(),
+            kind: DeskFolderKind::Scratch { kept: true },
+            boards: false,
+            channels_and_machines: false,
+            last_used_unix_ms: now_ms(),
+            closed_unix_ms: None,
+            deleted_unix_ms: None,
+            held_work: String::new(),
+        })
+        .map_err(DeleteError::Store)?;
+    // The record flips last: until it does, the session is still the
+    // channel's and a run again finishes the move.
+    record.channel = DESK_CHANNEL.to_owned();
+    record.folder = mv.to.clone();
+    store.put_session(&record).map_err(DeleteError::Store)?;
+    Ok(true)
+}
+
+/// Lets the running terminals of `sessions` go on without their sessions:
+/// each running shell and each running agent (as a shell, its agent record
+/// stopped) belongs to no session, so it shows under "Not in a channel"
+/// (D801 H, I). The terminals' programs are not touched.
+fn detach_running(store: &Store, sessions: &[String]) -> Result<(), StoreError> {
+    let tabs = store.tabs()?;
+    for session in sessions {
+        if let Some(mut agent) = store.agent(session)?
+            && let AgentState::Running { holder_pid } = agent.state
+            && pid_alive(holder_pid)
+        {
+            let mut tab = match store.tab(&agent.tab)? {
+                Some(tab) => tab,
+                None => humata2_store::TabRecord {
+                    id: agent.tab.clone(),
+                    session: None,
+                    kind: TabKind::Shell,
+                    title: agent.launch.agent.clone(),
+                    holder_socket: agent.launch.holder_socket.clone(),
+                    holder_pid,
+                    created_unix_ms: agent.updated_unix_ms,
+                    holder_generation: 0,
+                },
+            };
+            tab.session = None;
+            tab.kind = TabKind::Shell;
+            store.put_tab(&tab)?;
+            agent.state = AgentState::Stopped;
+            agent.updated_unix_ms = now_ms();
+            store.put_agent(&agent)?;
+        }
+        for mut tab in tabs
+            .iter()
+            .filter(|tab| tab.kind == TabKind::Shell && tab.session.as_deref() == Some(session.as_str()) && pid_alive(tab.holder_pid))
+            .cloned()
+        {
+            tab.session = None;
+            store.put_tab(&tab)?;
+        }
+    }
+    Ok(())
+}
+
+/// What the owner chose for the running terminals, and the moves already
+/// settled on (a run again after a restart reads them from the note).
+struct Carried {
+    /// End them (the red choice); unset keeps them running.
+    end_live: bool,
+    moves: Vec<Move>,
+}
+
 /// What stops a delete part way.
 #[derive(Debug, thiserror::Error)]
 enum DeleteError {
@@ -250,6 +580,8 @@ enum DeleteError {
     },
     #[error("the requests of the channel's sessions could not be withdrawn")]
     Withdraw(#[source] Status),
+    #[error("the standing grants of the channel's sessions could not be ended; delete the channel again to finish")]
+    Grants(#[source] Status),
     #[error("the channel's Desk sessions could not be closed into the trash")]
     DeskSessions(#[source] Status),
     #[error("the trash could not take the channel's folder {}", folder.display())]
@@ -263,6 +595,38 @@ enum DeleteError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
+    },
+    #[error(
+        "session {session}'s folder could not be moved from {} to {} on the Desk; its terminals still run where they were. Free the disk space or fix the permissions of those folders, then delete the channel again",
+        from.display(),
+        to.display()
+    )]
+    DeskMove {
+        session: String,
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "session {session}'s agent already has a conversation move waiting from an earlier rename, and a second one can't be added; stop and resume the agent, then delete the channel again"
+    )]
+    NoteTaken { session: String },
+    #[error(
+        "session {session}'s folder moved to the Desk, but the notes and git files in it still name its old place in the channel; the session is on the Desk and its terminals still run. Check the Humata folder can be written and has room, then delete the channel again to finish"
+    )]
+    DeskPaths {
+        session: String,
+        #[source]
+        source: MoveError,
+    },
+    #[error(
+        "session {session}'s agent could not be told where its conversation goes; its terminal still runs where it was. Fix the cause the message names, then delete the channel again"
+    )]
+    Rekey {
+        session: String,
+        #[source]
+        source: RekeyError,
     },
 }
 
@@ -299,11 +663,15 @@ fn remove_durably(path: &Path) -> std::io::Result<()> {
 }
 
 impl ChannelSvc {
-    /// Only the user, present, deletes a channel: an agent is refused and
-    /// nothing is asked of the Inbox (CH-25).
+    /// Only the user, present, deletes a channel, and nothing is asked of
+    /// the Inbox (CH-25). An agent may only with the destroy switch on
+    /// (D801 H, PER-32), which is off by default; it is never "present".
     fn user_deletes(&self, caller: &Caller, channel: &str, present: bool) -> Result<(), Status> {
         if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        if matches!(caller, Caller::Agent(_)) {
+            return self.destroy_switch(caller);
         }
         self.guard.require(
             caller,
@@ -325,6 +693,20 @@ impl ChannelSvc {
             }
         }
         Ok(())
+    }
+
+    /// The destroy switch: MachineDestroy on this machine, Never by default.
+    fn destroy_switch(&self, caller: &Caller) -> Result<(), Status> {
+        self.guard.require(
+            caller,
+            &Call::Use {
+                capability: Capability::MachineDestroy,
+                target: Target::Machine(MachineAction {
+                    machine: MachineId::new(self.machine.as_str()),
+                    action: MachineActionKind::Delete,
+                }),
+            },
+        )
     }
 
     async fn listing(&self, channel: &str) -> Result<Listing, Status> {
@@ -450,6 +832,7 @@ impl ChannelSvc {
             Some(desk) => desk.desks_of_channel(&id).await?,
             None => Vec::new(),
         };
+        let sorted = self.sorted(&channel).await?;
         Ok(pb::DeleteChannelPlan {
             channel: Some(pb::ChannelId { value: id.clone() }),
             live_sessions: listing.live.iter().map(|(id, s)| work(id, s)).collect(),
@@ -484,7 +867,37 @@ impl ChannelSvc {
             // (refuse_held_elsewhere), so no machine's return is waited on.
             offline_machines: Vec::new(),
             desk_sessions,
+            // D801 H: what the delete does with the running terminals unless
+            // the owner chooses to end them.
+            moves_to_desk: sorted
+                .moves
+                .iter()
+                .map(|mv| pb::SessionId { value: mv.session.clone() })
+                .collect(),
+            cannot_move: sorted
+                .stays
+                .iter()
+                .map(|stays| pb::CannotMoveToDesk {
+                    session: Some(pb::SessionId { value: stays.session.clone() }),
+                    title: stays.title.clone(),
+                    reason: stays.reason.clone(),
+                })
+                .collect(),
         })
+    }
+
+    /// The channel's live sessions sorted for the delete that keeps their
+    /// terminals running (D801 H).
+    async fn sorted(&self, channel: &ChannelRecord) -> Result<Sorted, Status> {
+        let (store, layout, record, machine) = (
+            self.starter.store.clone(),
+            self.starter.layout.clone(),
+            channel.clone(),
+            self.machine.clone(),
+        );
+        blocking(move || sort_live(&store, &layout, &record, &machine))
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "look at the channel's running sessions"))
     }
 
     pub(super) async fn delete_channel_of(
@@ -498,6 +911,13 @@ impl ChannelSvc {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("channel"))?;
         self.user_deletes(caller, &id, true)?;
+        // D801 H: ending running terminals destroys them, which an agent may
+        // do only with the destroy switch on. Moving them to the Desk, the
+        // default, needs none.
+        let end_live = request.end_live.unwrap_or(false);
+        if end_live && matches!(caller, Caller::Agent(_)) {
+            self.destroy_switch(caller)?;
+        }
         let token = request
             .plan
             .map(|plan| plan.value)
@@ -520,8 +940,15 @@ impl ChannelSvc {
                 changes,
             ));
         }
+        // Work in a session that moves to the Desk is not lost, so it needs
+        // no "Delete that work".
+        let sorted = if end_live { Sorted::default() } else { self.sorted(&channel).await? };
+        let moving: BTreeSet<&str> = sorted.moves.iter().map(|mv| mv.session.as_str()).collect();
         if !request.delete_unpushed_work
-            && let Some((session, listed)) = now.live.iter().find(|(_, listed)| listed.has_work())
+            && let Some((session, listed)) = now
+                .live
+                .iter()
+                .find(|(id, listed)| listed.has_work() && !moving.contains(id.as_str()))
         {
             return Err(unpushed(session, listed));
         }
@@ -537,7 +964,7 @@ impl ChannelSvc {
             entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId { value: id.clone() })),
         };
         let steps = [
-            ("stop".to_owned(), "Stopping the agents".to_owned()),
+            ("stop".to_owned(), "Moving the running sessions to the Desk and stopping the rest".to_owned()),
             ("withdraw".to_owned(), "Withdrawing the requests".to_owned()),
             ("snapshot".to_owned(), "Saving the channel's records".to_owned()),
             ("trash".to_owned(), "Moving the folder to the trash".to_owned()),
@@ -561,7 +988,8 @@ impl ChannelSvc {
         let by = identity::actor(caller);
         let data = caller_data(&by, &target);
         let operation_id = progress.operation().id.map(|id| id.value).unwrap_or_default();
-        let run = self.run_delete(channel.clone(), data, bin, Some(&progress)).await;
+        let carried = Carried { end_live, moves: sorted.moves };
+        let run = self.run_delete(channel.clone(), data, bin, Some(&progress), carried).await;
         match run {
             Ok(item) => {
                 let _ = remove_durably(&intent_path(&self.starter.layout.root(), &channel.id));
@@ -610,6 +1038,7 @@ impl ChannelSvc {
         data: String,
         bin: Arc<Bin>,
         progress: Option<&crate::operations::Progress>,
+        carried: Carried,
     ) -> Result<Option<String>, DeleteError> {
         let step = |key: &str, state: pb::StepState| {
             if let Some(progress) = progress {
@@ -619,8 +1048,30 @@ impl ChannelSvc {
         let root = self.starter.layout.root();
         let folder = self.starter.layout.channel(&channel.folder);
         let note = intent_path(&root, &channel.id);
+        let Carried { end_live, mut moves } = carried;
+        // A run again after a restart carries the moves its note names; one
+        // with none looks at what runs now.
+        if !end_live && moves.is_empty() {
+            moves = self
+                .sorted(&channel)
+                .await
+                .map_err(|source| DeleteError::Stop { session: String::new(), source })?
+                .moves;
+        }
         {
-            let (at, text) = (note.clone(), format!("{}\n{data}\n{}\n", channel.folder, channel.name));
+            let mut text = format!(
+                "{}\n{data}\n{}\n{}\n",
+                channel.folder,
+                channel.name,
+                if end_live { "end" } else { "keep" }
+            );
+            for mv in &moves {
+                let line = serde_json::to_string(mv)
+                    .map_err(|error| DeleteError::Intent { path: note.clone(), source: std::io::Error::other(error) })?;
+                text.push_str(&line);
+                text.push('\n');
+            }
+            let at = note.clone();
             blocking(move || -> Result<(), std::io::Error> {
                 if let Some(parent) = at.parent() {
                     make_dirs(parent)?;
@@ -644,6 +1095,28 @@ impl ChannelSvc {
             .filter(|session| session.channel == id)
             .map(|session| session.id)
             .collect();
+        // D801 H: the running sessions go to the Desk with their terminals
+        // running; the ones that can't move go on without a session.
+        let mut moved = Vec::new();
+        let mut sessions = sessions;
+        if !end_live {
+            for mv in &moves {
+                let (starter, mv_now, channel_id) = (self.starter.clone(), mv.clone(), channel.id.clone());
+                let did = blocking(move || put_on_desk(&starter, &mv_now, &channel_id))
+                    .await
+                    .map_err(|source| DeleteError::Stop { session: mv.session.clone(), source })??;
+                if did {
+                    moved.push(mv.session.clone());
+                }
+            }
+            crate::fault::point("delete_channel.moved_to_desk");
+            sessions.retain(|session| !moves.iter().any(|mv| &mv.session == session));
+            let (store, left) = (self.starter.store.clone(), sessions.clone());
+            blocking(move || detach_running(&store, &left))
+                .await
+                .map_err(|source| DeleteError::Stop { session: String::new(), source })?
+                .map_err(DeleteError::Store)?;
+        }
         self.stop_all(&sessions).await?;
         crate::fault::point("delete_channel.stopped");
         step("stop", pb::StepState::Done);
@@ -654,6 +1127,26 @@ impl ChannelSvc {
                 .withdraw_pending_of(session, pb::WithdrawReason::ChannelDeleted)
                 .await
                 .map_err(DeleteError::Withdraw)?;
+        }
+        // The moved sessions keep going: what they asked is moot, as it is
+        // when a session moves.
+        for session in &moved {
+            self.inbox
+                .withdraw_pending_of(session, pb::WithdrawReason::SessionMoved)
+                .await
+                .map_err(DeleteError::Withdraw)?;
+        }
+        // Their grants end with the channel they were given in: a session
+        // it deleted or moved off to the Desk asks again (DK-18), as one
+        // that moves into a channel does. Its requests are withdrawn first,
+        // so none is left to be withdrawn as stopped.
+        for session in sessions.iter().chain(&moved) {
+            self.end_grants(session).await.map_err(DeleteError::Grants)?;
+        }
+        if let Some(desk) = self.desk.get().and_then(|handle| handle.get()) {
+            for session in &moved {
+                desk.tell_session_updated(session).await;
+            }
         }
         step("withdraw", pb::StepState::Done);
         // CH-24: each Desk session's folder is inside the channel's, so it
@@ -734,6 +1227,19 @@ impl ChannelSvc {
         // said how the delete ended, so a restart report's line comes first.
         crate::fault::point("delete_channel.forgotten");
         Ok(item)
+    }
+
+    /// Ends the session's standing grants in the policy and tells the
+    /// requests that made them. Safe to repeat: an ended grant is gone.
+    async fn end_grants(&self, session: &str) -> Result<(), Status> {
+        let id = humata2_access::SessionId::new(session);
+        let ended = self.guard.with_policy(|policy, _| policy.end_grants_of(&id));
+        for grant in ended {
+            self.inbox
+                .revoked(&grant.granted_from.to_string(), std::time::SystemTime::now())
+                .await?;
+        }
+        Ok(())
     }
 
     /// Stops every terminal of the sessions, shells and agents, and saves
@@ -830,6 +1336,11 @@ impl ChannelSvc {
             else {
                 continue;
             };
+            // What the owner chose and the moves settled on, as the note
+            // saved them. A note from before the choice existed keeps the
+            // terminals running: ending one is never a default.
+            let end_live = lines.next() == Some("end");
+            let moves: Vec<Move> = lines.filter_map(|line| serde_json::from_str(line).ok()).collect();
             let (store, key) = (self.starter.store.clone(), id.to_owned());
             let known = blocking(move || store.channel(&key)).await.ok().and_then(Result::ok).flatten();
             let channel = known.unwrap_or_else(|| ChannelRecord {
@@ -848,7 +1359,10 @@ impl ChannelSvc {
             let record = |state: crate::restart::OperationState| {
                 operations.record(&operation, "delete_channel", "deleting", state);
             };
-            match self.run_delete(channel, data.to_owned(), bin.clone(), None).await {
+            match self
+                .run_delete(channel, data.to_owned(), bin.clone(), None, Carried { end_live, moves })
+                .await
+            {
                 Ok(_) => record(crate::restart::OperationState::Finished),
                 Err(error) => {
                     let reason = format!(

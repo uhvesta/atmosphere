@@ -23,3 +23,4 @@ Index of the Verify-layer cases, in area order. Each case has a `## Reproduce he
 | 17 | A plain shell on a machine runs as its own Terminal session that never reads Working | I flows-gaps | I-1 |
 | 18 | Adding a machine through a provider, logging in by hand, leaves a machine that starts unattended | I flows-gaps | I-2 |
 | 19 | A merged pull request says so and offers Archive, while the other pull request stays open | I flows-gaps | I-3 |
+| 20 | Claude Code and Codex pass the Copilot cases, and Humata reads each through its own structured channel | E agents-settings | AGENTS2 F1 |

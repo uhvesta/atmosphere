@@ -38,6 +38,8 @@ struct AskCall {
 enum Told {
     Conversation(String),
     Turn(Turn),
+    /// The link to a named thread dropped.
+    Lost,
 }
 
 struct FakeHumata {
@@ -63,6 +65,10 @@ impl Humata for FakeHumata {
 
     async fn conversation(&self, thread: String) {
         let _ = self.told.send(Told::Conversation(thread));
+    }
+
+    async fn lost(&self) {
+        let _ = self.told.send(Told::Lost);
     }
 
     async fn ask(&self, kind: AskKind, payload: Vec<u8>) -> Result<Vec<u8>, HumataError> {
@@ -325,29 +331,24 @@ async fn no_decision_sends_codex_nothing_so_its_popup_answers() {
 }
 
 #[tokio::test]
-async fn a_dropped_app_server_is_connected_again() {
+async fn a_dropped_app_server_is_told_connected_again_and_its_thread_named_again() {
     let mut rig = Rig::start();
     let mut peer = Peer::accept(&rig.listener).await;
     peer.handshake(&[THREAD]).await;
     assert_eq!(rig.told().await, Told::Conversation(THREAD.to_owned()));
     drop(peer);
+    // D798: Humata hears of the drop, so its screen fallback is back.
+    assert_eq!(rig.told().await, Told::Lost);
 
     let mut again = Peer::accept(&rig.listener).await;
     again.handshake(&[THREAD]).await;
-    // The same conversation, named again or not at all, never another.
+    // Named again, so Humata hears the session once more.
+    assert_eq!(rig.told().await, Told::Conversation(THREAD.to_owned()));
     again
         .send(json!({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":THREAD,
             "turn":{"id":"9","status":"inProgress","items":[]}}}))
         .await;
-    loop {
-        match rig.told().await {
-            Told::Conversation(thread) => assert_eq!(thread, THREAD),
-            Told::Turn(turn) => {
-                assert_eq!(turn, Turn::Working);
-                break;
-            }
-        }
-    }
+    assert_eq!(rig.told().await, Told::Turn(Turn::Working));
 }
 
 #[tokio::test]

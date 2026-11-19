@@ -797,7 +797,7 @@ fn plan(order: &[&str], notes: Vec<pb::ReviewNote>) -> pb::PrepareViewRequest {
             order: order.iter().map(|path| file(path)).collect(),
             groups: Vec::new(),
             notes,
-            stack: None,
+            ..pb::ReviewPlan::default()
         })),
     }
 }

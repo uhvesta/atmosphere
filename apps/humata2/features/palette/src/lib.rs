@@ -121,8 +121,24 @@ pub enum Command {
     },
     /// Expand the terminal in the current session.
     TerminalFullScreen,
+    /// Put the open session's side panel full screen, or bring it back.
+    PanelFullScreen,
     /// Join the open session's two tab groups into one.
     JoinTabGroups,
+    /// Show the stack's next layer up, from Whole stack to layer 1 (D804).
+    NextLayer,
+    /// Show the stack's layer below, back to Whole stack (D804).
+    PrevLayer,
+    /// Show the whole stack at once (D800).
+    WholeStack,
+    /// Open the Diff panel's next file (DS-2).
+    NextFile,
+    /// Open the Diff panel's previous file (DS-2).
+    PrevFile,
+    /// Step the open file to its next change (DS-27).
+    NextChange,
+    /// Step the open file to its previous change (DS-27).
+    PrevChange,
     /// Start, or stop, recording a bug report (I9, D159).
     Record,
     /// Take a snapshot for a bug report, like ⇧⌘S (D159).
@@ -253,6 +269,9 @@ pub struct PaletteState {
     pub in_session: bool,
     /// Whether the open session has two tab groups, so they can be joined.
     pub split: bool,
+    /// Whether the open session's Diff shows a stack, so its layers can be
+    /// stepped (D800).
+    pub stack: bool,
     /// Bug reporting, set by the app before it opens the palette.
     pub report: ReportStatus,
     /// The question the palette asks inline, if any (KP-5).
@@ -630,7 +649,7 @@ impl PaletteState {
             };
             let contextual = matches!(
                 entry.command,
-                Command::TogglePanel | Command::TerminalFullScreen
+                Command::TogglePanel | Command::TerminalFullScreen | Command::PanelFullScreen
             ) && self
                 .context
                 .as_ref()
@@ -680,6 +699,7 @@ impl PaletteState {
                 | Command::ContinueInChannel
                 | Command::StopAgent
                 | Command::TerminalFullScreen
+                | Command::PanelFullScreen
                 | Command::TogglePanel
         ) && !query.is_empty()
             && fuzzy(query, &entry.title).is_some()
@@ -803,6 +823,40 @@ impl PaletteState {
                 title: "Terminal full screen".into(),
                 hint: "⇧⌘↩".into(),
             });
+            entries.push(Entry {
+                command: Command::PanelFullScreen,
+                title: "Side panel full screen".into(),
+                hint: "⌃⌘↩".into(),
+            });
+            if self.stack {
+                entries.push(Entry {
+                    command: Command::NextLayer,
+                    title: "Next layer".into(),
+                    hint: "⌥⌘]".into(),
+                });
+                entries.push(Entry {
+                    command: Command::PrevLayer,
+                    title: "Previous layer".into(),
+                    hint: "⌥⌘[".into(),
+                });
+                entries.push(Entry {
+                    command: Command::WholeStack,
+                    title: "Whole stack".into(),
+                    hint: String::new(),
+                });
+            }
+            for (command, title, hint) in [
+                (Command::NextFile, "Next file", "⌥⌘↓"),
+                (Command::PrevFile, "Previous file", "⌥⌘↑"),
+                (Command::NextChange, "Next change", "⌃⌘↓"),
+                (Command::PrevChange, "Previous change", "⌃⌘↑"),
+            ] {
+                entries.push(Entry {
+                    command,
+                    title: title.into(),
+                    hint: hint.into(),
+                });
+            }
             if self.split {
                 entries.push(Entry {
                     command: Command::JoinTabGroups,

@@ -778,6 +778,9 @@ case "$mode" in
   --resume) f="$CONV_DIR/$id.jsonl" ;;
   --fresh) f="$CONV_DIR/other.jsonl"; : > "$f" ;;
 esac
+# Reads keys itself, as an agent's CLI does: a holder types into a program
+# still editing lines only after waiting out its keys limit (5 s).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,

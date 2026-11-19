@@ -345,13 +345,14 @@ pub(super) async fn session<D: Daemon, C: Console>(
             session,
             push_first,
             delete_work,
+            end,
         } => {
             let choice = match (push_first, delete_work) {
                 (true, _) => pb::ArchiveChoice::CommitPushPrThenArchive,
                 (false, true) => pb::ArchiveChoice::ArchiveAndDeleteWork,
                 (false, false) => pb::ArchiveChoice::Archive,
             };
-            archive(ctx, &session, choice).await
+            archive(ctx, &session, choice, end).await
         }
         SessionCommand::Delete { session } => {
             let id = Some(ctx.session(&session).await?);
@@ -543,13 +544,14 @@ async fn end_for_good<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, session: &str)
         };
         return ctx.change(rpc::desk::CLOSE_DESK_SESSION, &request).await;
     }
-    archive(ctx, &id.value, pb::ArchiveChoice::Archive).await
+    archive(ctx, &id.value, pb::ArchiveChoice::Archive, true).await
 }
 
 async fn archive<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     session: &str,
     choice: pb::ArchiveChoice,
+    end: bool,
 ) -> Result<Done, CliError> {
     let id = Some(ctx.session(session).await?);
     let archive = pb::ArchiveSessionRequest {
@@ -557,6 +559,7 @@ async fn archive<D: Daemon, C: Console>(
         id: id.clone(),
         choice: choice as i32,
         plan: None,
+        end: end.then_some(true),
     };
     ctx.planned(
         rpc::session::PLAN_ARCHIVE,

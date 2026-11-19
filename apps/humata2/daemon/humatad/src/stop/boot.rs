@@ -64,6 +64,10 @@ impl Settle {
     /// Ends every holder, withdraws the Inbox's pending requests, writes
     /// what ended into the record, and returns the start to show: stopped,
     /// with no report and nothing resumed.
+    ///
+    /// D801 I, PER-32: these ends stay. They finish the Stop the owner
+    /// chose (`humatad2 stop`, or Stop in the app) before this boot; a
+    /// boot without a stop record never comes here and ends nothing.
     pub(crate) async fn run(self) -> pb::LastStart {
         let Settle {
             folder,

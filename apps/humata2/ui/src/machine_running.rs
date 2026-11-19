@@ -214,6 +214,7 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
     };
     let when = match (holder.stopped, holder.started_unix_ms) {
         (true, _) => "Stopped".to_owned(),
+        (false, _) if holder.paused_for_move => "Paused for move".to_owned(),
         (false, Some(started)) => uptime(draw.now_ms, started),
         (false, None) => String::new(),
     };

@@ -255,7 +255,9 @@ impl Work {
         self.wait_for_main(&shown).await?;
         let lock = self.svc.lifecycle.lock_of(&self.session);
         let guard = lock.lock_owned().await;
-        let added = self.svc.starter.add_repo_to_session(&self.session, &self.repo).await;
+        let units = progress.units();
+        let sink: humata2_sessions::CloneUnits = std::sync::Arc::new(move |key: &str, done, total| units.set(key, done, total));
+        let added = humata2_sessions::with_clone_units(sink, self.svc.starter.add_repo_to_session(&self.session, &self.repo)).await;
         drop(guard);
         added?;
         progress.set_step(step, pb::StepState::Done, None);

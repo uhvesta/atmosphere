@@ -134,6 +134,7 @@ async fn an_agent_stopping_or_archiving_another_session_still_asks() {
                 id: Some(scene.other.clone()),
                 choice: pb::ArchiveChoice::Archive as i32,
                 plan: plan.token,
+                end: None,
             },
             &scene.token,
         ))

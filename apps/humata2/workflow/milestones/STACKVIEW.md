@@ -549,7 +549,61 @@ Rules to decide in the lane and record as a decision:
     layer move is needed (seam).
 - Ready to commit: T0-T2b yes (additive and unused outside `review_diff`).
   T3 only once its gate passes.
-
+- **Status, 2026-11-18 (manager, after the S1b seam):**
+  - Seam S1b applied by the manager: `review.proto` (tier = 12,
+    `ReviewPlan.from_stack` and `.importance`, layer topic, order, groups and
+    importance, `ReviewChange.layer = 12`), the literal sweep in wire.rs,
+    mcp.rs and tests, and the Rust types (`FromStack`, `Tier`,
+    `Importance`, `Layer` fields). Seam S2 (`daemon/mcp/src/tools.rs`
+    schemas) and the app types (`RepoBase::Range`/`Overlay`, `StackView`,
+    `ReviewView.stack`/`.layer`, `StackRows`) are in. Decisions in D804.
+  - Workers:
+    - W1 (Haiku) T3b-1, tools/stack `status --offline` with `head` and
+      `base_commit`: written, waiting for `//tools/stack:status_test`.
+    - W2 (Sonnet) T3b-2, `review_diff/src/from_stack.rs` and
+      `tests/from_stack.rs`: written; the manager capped titles at 60 and
+      deduped them, and added serde_json to BUILD.
+    - W3 (Sonnet) T3c importance, W4 (Haiku) T9 skills and MCP.md, W5
+      (Sonnet) T6 clients, W6 (Sonnet) T7 reducer, W7 (Sonnet) T8
+      panel_stack.rs and keys: running.
+    - All written by 2026-11-18 (batch G4, unbuilt): W1-W7, T4
+      (`humatad/src/review/stack.rs`, review.rs, review/views.rs,
+      tests/review_stack.rs) and T5 (`humatad/src/mcp.rs`). Manager fixes:
+      FilePlan export, FocusRequest `layer`/`whole_stack` and its literals,
+      `ShowLayer` routing in features/app pr_review.rs, NextLayer/PrevLayer
+      handlers in ui shell.rs, the humatad test ReviewPlan literals, stale
+      stack text in review-humata-change and humata-pull-requests skills.
+    - Open: palette entries (features/palette lib.rs + app commands.rs,
+      other lanes' files), the Migrate stack-tool Inbox item (needs a
+      Migrations handle from serve.rs), FileSummary tier into the app's
+      FileDiff and humatad serving tiers (`// T3c: tiers` marker), the
+      from_stack refresh on a moved stack, stack kept across a daemon
+      restart.
+  - 2026-11-18: hook-up built in own files. `ui/src/panel_stack.rs` now has
+    `stack_top` (layer list, "web isn't in this layer" lines, failed-ask
+    line), `header_line`, `hides_base_picker`, `stack_keys` (DIFF_STACK),
+    `skim_row`, `key_dot`, `skim_open`, `tier_of` (Normal until T3c), with
+    headless tests. features/review gains `stack::{Tier, fold_skims,
+    skim_label, ask_again_text}`, `ReviewAction::AskAgain`/`AskedAgain` (types
+    one keyed message into the session) and `ask_again_error`;
+    `tests/stack_fold.rs`. The panel_changes.rs lines are a `--check`-able
+    seam script (7 anchored edits) for main to apply when DIFFVIEW lets go.
+  - Still open after the seam: T3c tiers into the app's FileDiff (so
+    `tier_of` returns real tiers), skim fold in the plan-ordered list,
+    frames 119-121 with Fable's approval.
+  - 2026-11-18 (T3c tiers): daemon side done and tested. GetDiff serves
+    each file's final tier (agent's from the chat view, else auto-skim) via
+    `served_tiers`; plans and layers listing a file twice in `importance` are
+    refused; a joined Whole stack gets the layers' order and importance;
+    the chat keeps the plan's tiers through reports and Undo
+    (`ViewState::agent_importance`, tests/importance_chat.rs). features/review
+    gains `plan_layout`/`plan_layout_with` (skim fold per repo with `after`,
+    groups emptied by skims dropped, key first with no order;
+    tests/plan_skims.rs). Seams for main, both `--check` clean, to apply
+    together: `seam_tiers.py` (FileDiff.tier/FileTier, PlanView/LayerView
+    importance, ReviewViewState.importance = 9, `tier_of` body, 11 literal
+    sites) and `seam_panel_changes.py` (now also the plan list's skim rows).
+    Decision D805. Still open: frames 119-121 with Fable's approval.
 ## Spec and cases
 
 - The stacks UI rules are DS-60 to DS-68 in [DIFFVIEW-spec.md](DIFFVIEW-spec.md) §2.9. T4, T6, T7, T8 and T3c must meet them (see [REVIEWUI.md](REVIEWUI.md), "What STACKVIEW owns").

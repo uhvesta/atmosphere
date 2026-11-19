@@ -1,11 +1,12 @@
-//! RV-2, flow 26.3 step 8: each repo group in the Diff panel has its own
-//! Push & PR, which pushes that repo only and then names its pull request.
+//! RV-2, flow 26.3 step 8: each repo has its own Push & PR
+//! in the footer's menu, which pushes that repo only and then names its pull request.
 use super::*;
 
 #[test]
 fn each_repo_group_pushes_its_own_branch_and_names_its_pull_request() {
     let mut app = App::new(fixture::design());
     app.open("ledger", Panel::Changes);
+    app.click("changes-push-menu");
     assert!(app.contains("changes-push-api"));
     assert!(app.contains("changes-push-ledger"));
     assert!(!app.contains("changes-pushed-api"));
@@ -25,6 +26,7 @@ fn a_failed_push_shows_on_its_group_with_try_again() {
     app.fakes
         .daemon
         .fail_next(humata2_clients::Operation::Push, "gh is signed out");
+    app.click("changes-push-menu");
     app.click("changes-push-api");
     assert!(app.contains("changes-push-failed-api"));
     app.click("changes-push-api");

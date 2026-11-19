@@ -147,7 +147,14 @@ pub(crate) fn card(
         format!("{who} · {lines}")
     };
     let open = matches!(comment.status, Status::Draft | Status::Waiting);
-    shell(look, open)
+    // The agent's draft for GitHub takes the accent outline; the person's
+    // keeps the grey line.
+    let outlined = if github_draft {
+        matches!(comment.author, Author::Agent(_))
+    } else {
+        open
+    };
+    shell(look, outlined)
         .id(SharedString::from(format!("doc-comment-{id}")))
         .test_support()
         .child(

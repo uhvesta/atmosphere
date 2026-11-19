@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::scratch_child;
-use humata2_store::{ChannelDeskRow, Placement, SessionRecord, Store, StoreError};
+use humata2_store::{AgentState, ChannelDeskRow, Placement, SessionRecord, Store, StoreError, TabKind, TabRecord};
 use humata2_transfers::NewItem;
 use tokio::sync::broadcast::error::RecvError;
 use tonic::Status;
@@ -529,6 +529,66 @@ impl DeskSvc {
         Ok(closed)
     }
 
+    /// D801 I: detaches `session`'s running terminals instead of ending
+    /// them, for the watch's automatic closes. Each running holder (the
+    /// agent's and every shell's) keeps running, its tab no longer names the
+    /// session, so the running-holders listing shows it under "Not in a
+    /// channel" for the user to attach, adopt or end (D784). The agent is
+    /// saved as stopped, so nothing resumes a second copy of it. A session
+    /// on another machine, and one with no running terminal, are left to
+    /// the caller. An agent still starting is no error here: it is left as
+    /// it is, and `close_locked` refuses as before.
+    async fn detach_live(&self, session: &SessionRecord) -> Result<(), Status> {
+        if self.elsewhere(session).is_some() {
+            return Ok(());
+        }
+        let (store, id) = (self.starter.store.clone(), session.id.clone());
+        let detached = blocking(move || -> Result<Vec<String>, StoreError> {
+            let mut forgotten = Vec::new();
+            let tabs = store.tabs()?;
+            let agent = store.agent(&id)?;
+            if let Some(mut agent) = agent
+                && let AgentState::Running { holder_pid } = agent.state
+            {
+                let mut tab = match store.tab(&agent.tab)? {
+                    Some(tab) => tab,
+                    None => TabRecord {
+                        id: agent.tab.clone(),
+                        session: None,
+                        kind: TabKind::Shell,
+                        title: agent.launch.agent.clone(),
+                        holder_socket: agent.launch.holder_socket.clone(),
+                        holder_pid,
+                        created_unix_ms: agent.updated_unix_ms,
+                        holder_generation: 0,
+                    },
+                };
+                tab.session = None;
+                tab.kind = TabKind::Shell;
+                store.put_tab(&tab)?;
+                agent.state = AgentState::Stopped;
+                agent.updated_unix_ms = now_ms();
+                store.put_agent(&agent)?;
+                forgotten.push(tab.id);
+            }
+            for mut tab in tabs
+                .into_iter()
+                .filter(|tab| tab.session.as_deref() == Some(id.as_str()) && tab.kind == TabKind::Shell)
+            {
+                tab.session = None;
+                store.put_tab(&tab)?;
+                forgotten.push(tab.id);
+            }
+            Ok(forgotten)
+        })
+        .await?
+        .map_err(|error| status::store(error, &self.machine, "detach the session's running terminals"))?;
+        for tab in detached {
+            self.terminals.forget_tab(&tab);
+        }
+        Ok(())
+    }
+
     /// Moves the session's folder to this machine's trash as one item that
     /// names the session, after checking it is a direct child of its
     /// channel's `desk` folder and not a symlink. A folder already gone is
@@ -795,6 +855,7 @@ impl DeskSvc {
         .await?
         .map_err(|error| status::store(error, &self.machine, "look up the Desk session's channel and target"))?;
         if !channel_there {
+            self.detach_live(&session).await?;
             self.close_locked(None, &session, &row, false).await?;
             return Ok(None);
         }
@@ -803,11 +864,16 @@ impl DeskSvc {
             Target::Gone if row.target_gone => Ok(None),
             Target::Gone => {
                 if self.documents_of(&session, Some(&row.channel)).await?.is_empty() {
+                    self.detach_live(&session).await?;
                     self.close_locked(None, &session, &row, true).await?;
                 } else {
                     // The folder holds Markdown the user may want: stop, keep
                     // the folder, and show the target gone.
-                    self.stop_for_watch(&session).await?;
+                    // D801 I: the watch never ends a live holder. A session
+                    // on this machine detaches it; one on another machine
+                    // keeps running there under its session, still listed
+                    // and attachable, until the owner ends it.
+                    self.detach_live(&session).await?;
                     row.target_gone = true;
                     row.last_used_unix_ms = now_ms();
                     self.save_channel_desk_row(&row).await?;

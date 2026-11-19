@@ -1277,12 +1277,44 @@ fn steps(look: Look, steps: &[Step]) -> Stateful<Div> {
                                 .text_size(px(11.5))
                                 .text_color(rgb(look.secondary))
                                 .child(detail),
-                        ),
+                        )
+                        .children(sweeps(step.status).then(|| {
+                            widgets::progress_bar(
+                                look,
+                                None,
+                                widgets::BarMetrics::line(look),
+                                ("add-machine-sweep", index),
+                            )
+                        })),
                 )
                 .test_support()
         }))
 }
 
+/// Only a running step shows the sweep: the machine's progress is not
+/// measured, so the bar says work is on, not how far along it is.
+fn sweeps(status: StepStatus) -> bool {
+    status == StepStatus::Running
+}
+
 fn step_name(kind: StepKind) -> &'static str {
     kind.label()
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: the module's gpui glob brings in gpui's own
+    // `test` attribute, which would shadow the built-in one.
+    use ::core::prelude::v1::test;
+
+    use super::sweeps;
+    use humata2_clients::machines::StepStatus;
+
+    #[test]
+    fn only_a_running_step_sweeps() {
+        assert!(sweeps(StepStatus::Running));
+        assert!(!sweeps(StepStatus::Done));
+        assert!(!sweeps(StepStatus::Failed));
+        assert!(!sweeps(StepStatus::NotRun));
+    }
 }

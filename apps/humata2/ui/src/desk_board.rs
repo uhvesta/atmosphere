@@ -168,8 +168,9 @@ pub(crate) fn panel(
     Some(
         col()
             .size_full()
-            .child(crate::panels::header(
+            .child(crate::panels::panel_header(
                 ui,
+                state,
                 Panel::Board,
                 full,
                 Some(scope(look)),

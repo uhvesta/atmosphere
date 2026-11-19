@@ -407,3 +407,79 @@ async fn a_question_on_the_screen_of_a_session_not_heard_from_still_raises_a_scr
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// D797: a send of Humata's own (the composer, an Inbox reply and MCP's
+/// session_type all type through Type) made while the first message waits
+/// for the signal waits behind it, and goes after it once the session is
+/// heard; it never reaches the agent first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_send_while_the_first_message_waits_goes_after_it_once_the_session_is_heard() {
+    let fix = Fixture::start("claude-jsonl").await;
+    let (_token, mut shell) = shell_token(&fix.daemon, &fix.session).await;
+    let mut terminals = fix.daemon.terminals().await;
+    let request = pb::TypeRequest {
+        session: Some(fix.session.clone()),
+        text: format!("run:echo second >> '{}'\n", fix.marker.display()),
+        ..Default::default()
+    };
+    let send = tokio::spawn(async move { terminals.r#type(request).await });
+    tokio::time::sleep(SCREEN_WOULD_HAVE_SENT).await;
+    assert!(!fix.sent(), "a send reached the agent before it was heard");
+
+    fix.claude_starts(&mut shell).await;
+    send.await
+        .expect("the send's task")
+        .expect("the send goes through once the session is heard");
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let runs = std::fs::read_to_string(&fix.marker).unwrap_or_default();
+        if runs.lines().count() >= 2 {
+            assert_eq!(runs.lines().collect::<Vec<_>>(), ["sent", "second"], "out of order");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the first message and the send didn't both arrive: {runs:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// D798: when the Codex link drops, the screen fallback is back for the
+/// session: a question drawn on its screen raises a screen card again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_link_brings_back_the_screen_card() {
+    let fix = Fixture::start("codex-rollout").await;
+    let (token, mut shell) = shell_token(&fix.daemon, &fix.session).await;
+    fix.codex_starts(&mut shell).await;
+    fix.wait_sent_once().await;
+
+    let mut request = tonic::Request::new(pb::HookRequest {
+        agent: "codex".to_owned(),
+        event: "lost".to_owned(),
+        payload: b"{}".to_vec(),
+    });
+    request.metadata_mut().insert(
+        "humata-session-token",
+        tonic::metadata::MetadataValue::try_from(token.as_str()).expect("token is valid metadata"),
+    );
+    let mut replies = fix
+        .daemon
+        .session_service()
+        .await
+        .hook(request)
+        .await
+        .expect("the link's drop is told")
+        .into_inner();
+    while let Some(reply) = replies.message().await.expect("the drop's reply") {
+        if !reply.keepalive {
+            break;
+        }
+    }
+
+    let tab = agent_tab(&fix.daemon, &fix.session).await;
+    let mut agent = Attach::start(&fix.daemon, open(&tab, 0)).await;
+    fix.agent_draws_trust_box(&mut agent).await;
+    let deadline = Instant::now() + WAIT * 3;
+    while fix.pending().await.is_empty() {
+        assert!(Instant::now() < deadline, "no screen card came once the link dropped");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

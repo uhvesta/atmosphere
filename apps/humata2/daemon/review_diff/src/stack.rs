@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
+use crate::plan::{FileRef, Group, Importance, Tier};
 use crate::spec::{Base, Compare, DiffSpec, RepoSpec, Whitespace};
 use crate::{Checkout, Clones, DiffError};
 
@@ -24,7 +25,7 @@ pub struct Stack {
 }
 
 /// One step of a stack.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Layer {
     /// The layer's identity: unique ignoring case, at most 60 characters.
     pub title: String,
@@ -32,6 +33,24 @@ pub struct Layer {
     pub purpose: Option<String>,
     /// The repos the layer touches, each once.
     pub repos: Vec<LayerRepo>,
+    /// The stack topic the layer was read from (D803), which is then its
+    /// identity for drift and refresh.
+    pub topic: Option<String>,
+    /// This layer's reading order and groups (D802); a picked layer uses
+    /// these and nothing from the plan.
+    pub order: Vec<FileRef>,
+    pub groups: Vec<Group>,
+    /// The files the agent marked key or skim in this layer (D802).
+    pub importance: Vec<Importance>,
+}
+
+/// The order, groups and importance a view of the stack reads its files by
+/// (D802).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilePlan {
+    pub order: Vec<FileRef>,
+    pub groups: Vec<Group>,
+    pub importance: Vec<Importance>,
 }
 
 /// A layer's part in one repo.
@@ -376,6 +395,98 @@ impl Stack {
         }
         Ok(())
     }
+
+    /// The index of the layer titled `title`, ignoring case and spaces at
+    /// the ends.
+    fn index_of(&self, title: &str) -> Option<usize> {
+        let wanted = title.trim().to_lowercase();
+        self.layers
+            .iter()
+            .position(|layer| layer.title.trim().to_lowercase() == wanted)
+    }
+
+    /// What a picked layer reads by: its own order, groups and importance,
+    /// and nothing from the plan (D802).
+    ///
+    /// # Errors
+    ///
+    /// [`StackError::UnknownLayer`] when no layer has that title.
+    pub fn layer_plan(&self, title: &str) -> Result<FilePlan, StackError> {
+        let layer = self
+            .index_of(title)
+            .and_then(|index| self.layers.get(index))
+            .ok_or_else(|| StackError::UnknownLayer {
+                title: title.trim().to_owned(),
+                known: self
+                    .layers
+                    .iter()
+                    .map(|layer| layer.title.trim().to_owned())
+                    .collect(),
+            })?;
+        Ok(FilePlan {
+            order: layer.order.clone(),
+            groups: layer.groups.clone(),
+            importance: layer.importance.clone(),
+        })
+    }
+
+    /// What Whole stack reads by when the plan sent no order, groups or
+    /// importance (D802): the layers' orders joined bottom first with each
+    /// file at its first appearance, no groups, and per file key if any
+    /// layer says key, skim only if every layer touching it says skim. Only
+    /// key and skim files are listed.
+    #[must_use]
+    pub fn whole_plan(&self) -> FilePlan {
+        let mut order: Vec<FileRef> = Vec::new();
+        let mut seen = BTreeSet::new();
+        // Files in first-appearance order, with the tier each touching
+        // layer gave.
+        let mut touched: Vec<FileRef> = Vec::new();
+        let mut tiers: std::collections::BTreeMap<FileRef, Vec<Tier>> = std::collections::BTreeMap::new();
+        for layer in &self.layers {
+            let mut here: std::collections::BTreeMap<&FileRef, Tier> = std::collections::BTreeMap::new();
+            for file in &layer.order {
+                here.entry(file).or_default();
+                if seen.insert(file.clone()) {
+                    order.push(file.clone());
+                }
+            }
+            for entry in &layer.importance {
+                here.insert(&entry.file, entry.tier);
+            }
+            for file in layer
+                .order
+                .iter()
+                .chain(layer.importance.iter().map(|entry| &entry.file))
+            {
+                if let Some(tier) = here.remove(file) {
+                    if !tiers.contains_key(file) {
+                        touched.push(file.clone());
+                    }
+                    tiers.entry(file.clone()).or_default().push(tier);
+                }
+            }
+        }
+        let importance = touched
+            .into_iter()
+            .filter_map(|file| {
+                let given = tiers.get(&file)?;
+                let tier = if given.contains(&Tier::Key) {
+                    Tier::Key
+                } else if given.iter().all(|tier| *tier == Tier::Skim) {
+                    Tier::Skim
+                } else {
+                    return None;
+                };
+                Some(Importance { file, tier })
+            })
+            .collect();
+        FilePlan {
+            order,
+            groups: Vec::new(),
+            importance,
+        }
+    }
 }
 
 fn short(commit: &str) -> String {
@@ -464,11 +575,7 @@ impl CheckedStack {
     }
 
     fn index_of(&self, title: &str) -> Option<usize> {
-        let wanted = title.trim().to_lowercase();
-        self.stack
-            .layers
-            .iter()
-            .position(|layer| layer.title.trim().to_lowercase() == wanted)
+        self.stack.index_of(title)
     }
 
     fn repo_spec(&self, repo: &str, base: Base, compare: Compare) -> RepoSpec {
@@ -520,6 +627,23 @@ impl CheckedStack {
             })
             .collect();
         Ok(DiffSpec { repos })
+    }
+
+    /// What a picked layer reads by: its own order, groups and importance,
+    /// and nothing from the plan (D802). As [`Stack::layer_plan`].
+    ///
+    /// # Errors
+    ///
+    /// [`StackError::UnknownLayer`] when no layer has that title.
+    pub fn layer_plan(&self, title: &str) -> Result<FilePlan, StackError> {
+        self.stack.layer_plan(title)
+    }
+
+    /// What Whole stack reads by when the plan sent none (D802). As
+    /// [`Stack::whole_plan`].
+    #[must_use]
+    pub fn whole_plan(&self) -> FilePlan {
+        self.stack.whole_plan()
     }
 
     /// The whole stack: per repo, from the first base to the top head, plus

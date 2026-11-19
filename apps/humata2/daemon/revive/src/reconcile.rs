@@ -328,6 +328,13 @@ async fn revive_agent(
             _ => resume(store, config, record, created, env, why).await,
         };
     };
+    // D801 I: this branch undoes a start Humata never finished, and that is
+    // all it may do. A holder moving onto a new build (a live `.handoff`
+    // beside its socket) is a running terminal, so a stale record never
+    // ends it: it is left for the next reconcile.
+    if matches!(record.state, AgentState::Launching | AgentState::Resuming) && is_moving(&socket) {
+        return Ok(Revived::Left);
+    }
     match record.state {
         AgentState::Running { holder_pid } => {
             if let Some(code) = welcome.exited {
@@ -394,6 +401,54 @@ async fn revive_agent(
             stop_holder(&socket, None).await;
             resume(store, config, record, created, env, why).await
         }
+    }
+}
+
+/// Whether the holder serving `socket` is in the middle of moving onto a
+/// new build: its `.handoff` marker is there and the holder's process is
+/// alive. Asked of `ps`, which signals nothing.
+fn is_moving(socket: &Path) -> bool {
+    if !humata2_holder::handoff_path(socket).exists() {
+        return false;
+    }
+    humata2_holder::holder_pid(socket).is_some_and(|pid| {
+        std::process::Command::new("ps")
+            .args(["-o", "pid=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
+    })
+}
+
+#[cfg(test)]
+mod moving_tests {
+    use std::fs;
+
+    use super::is_moving;
+
+    #[test]
+    fn a_marker_beside_a_live_holder_is_moving() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("t.sock");
+        fs::write(humata2_holder::handoff_path(&socket), b"H2HANDOFF").unwrap();
+        // This test's own process stands in for the live holder.
+        fs::write(socket.with_extension("pid"), std::process::id().to_string()).unwrap();
+        assert!(is_moving(&socket));
+    }
+
+    #[test]
+    fn no_marker_is_not_moving() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("t.sock");
+        fs::write(socket.with_extension("pid"), std::process::id().to_string()).unwrap();
+        assert!(!is_moving(&socket));
+    }
+
+    #[test]
+    fn a_marker_with_no_live_holder_is_not_moving() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("t.sock");
+        fs::write(humata2_holder::handoff_path(&socket), b"H2HANDOFF").unwrap();
+        assert!(!is_moving(&socket));
     }
 }
 

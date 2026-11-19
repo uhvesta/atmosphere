@@ -4,11 +4,13 @@
 //! a flow test and a recording all find it by what it says.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
+use humata2_clients::progress::OpProgress;
 
 use crate::bridge::Ui;
 use crate::theme::{self, Look, color};
@@ -216,4 +218,300 @@ pub(crate) fn error_banner_in(
             ),
         )
         .test_support()
+}
+
+/// Nothing draws for an operation's first this-many ms, so a quick one never
+/// flickers.
+pub(crate) const SHOW_AFTER_MS: i64 = 300;
+/// The elapsed time shows once an operation has run this long.
+pub(crate) const ELAPSED_AFTER_MS: i64 = 10_000;
+/// One lap of the unmeasured sweep.
+const SWEEP_MS: u64 = 1_600;
+/// The sweep's segment is a quarter of the track wide.
+const SWEEP_SHARE: f32 = 0.25;
+/// Where the sweep sits in a still frame (goldens and the zero-delta frame).
+const SWEEP_REST: f32 = 0.37;
+
+/// What the progress line draws for one operation at one moment.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ProgressDraw {
+    /// 0..=1 when measured; `None` draws the sweep.
+    pub(crate) fraction: Option<f32>,
+    /// The label as the operation reports it: "42%", or empty.
+    pub(crate) label: String,
+    /// "14s", "2m 10s" or "1h 5m"; `None` before the elapsed time applies.
+    pub(crate) elapsed: Option<String>,
+}
+
+/// What the progress line shows for `progress` at `now_ms` (unix ms). `None`
+/// while the operation has run under 300 ms, and also when a start time in
+/// the future makes its run time zero. With `now_ms` `None` (the start time
+/// is not known) it always draws and never shows the elapsed time.
+pub(crate) fn progress_draw(progress: &OpProgress, now_ms: Option<i64>) -> Option<ProgressDraw> {
+    let run_ms = match now_ms {
+        Some(now) => {
+            let run = now.saturating_sub(progress.started_ms).max(0);
+            if run < SHOW_AFTER_MS {
+                return None;
+            }
+            Some(run)
+        }
+        None => None,
+    };
+    Some(ProgressDraw {
+        fraction: progress.fraction.map(clamp_fraction),
+        label: progress.label.clone(),
+        elapsed: run_ms
+            .filter(|run| *run >= ELAPSED_AFTER_MS)
+            .map(elapsed_text),
+    })
+}
+
+/// A fraction within 0..=1; anything not finite reads as 0.
+fn clamp_fraction(fraction: f32) -> f32 {
+    if fraction.is_finite() {
+        fraction.clamp(0., 1.)
+    } else {
+        0.
+    }
+}
+
+/// A run time as the progress line reads it: "14s", "2m 10s", "1h 5m".
+pub(crate) fn elapsed_text(ms: i64) -> String {
+    let secs = ms.max(0) / 1_000;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
+    }
+}
+
+/// The size and colours of a thin bar. `width: None` takes the full width
+/// the bar is given.
+#[derive(Clone, Copy)]
+pub(crate) struct BarMetrics {
+    pub(crate) width: Option<Pixels>,
+    pub(crate) height: Pixels,
+    pub(crate) radius: Pixels,
+    pub(crate) track: u32,
+    pub(crate) fill: u32,
+}
+
+impl BarMetrics {
+    /// The progress line's bar: full width, 2 px, the border colour under an
+    /// accent fill.
+    pub(crate) fn line(look: Look) -> Self {
+        Self {
+            width: None,
+            height: px(2.),
+            radius: px(1.),
+            track: look.line,
+            fill: look.accent,
+        }
+    }
+}
+
+/// A thin bar: a track in `metrics.track` with a fill in `metrics.fill`.
+/// A measured `fraction` fills that share of the track. Unmeasured (`None`)
+/// a quarter-track segment sweeps left to right every 1.6 s; `id` keeps that
+/// animation's state with its own bar, so it must be stable per call site.
+pub(crate) fn progress_bar(
+    _look: Look,
+    fraction: Option<f32>,
+    metrics: BarMetrics,
+    id: impl Into<ElementId>,
+) -> AnyElement {
+    let track = div()
+        .flex_shrink_0()
+        .h(metrics.height)
+        .rounded(metrics.radius)
+        .bg(rgb(metrics.track));
+    let track = match metrics.width {
+        Some(width) => track.w(width),
+        None => track.w_full(),
+    };
+    let fill = metrics.fill;
+    let radius = metrics.radius;
+    match fraction {
+        Some(fraction) => track
+            .child(
+                div()
+                    .h_full()
+                    .rounded(radius)
+                    .bg(rgb(fill))
+                    .w(relative(clamp_fraction(fraction))),
+            )
+            .into_any_element(),
+        None => track
+            .relative()
+            .overflow_hidden()
+            .with_animation(
+                id,
+                Animation::new(Duration::from_millis(SWEEP_MS))
+                    .repeat()
+                    .with_max_fps(30.),
+                move |track, t| {
+                    track.child(
+                        div()
+                            .absolute()
+                            .top(px(0.))
+                            .h_full()
+                            .w(relative(SWEEP_SHARE))
+                            .left(relative((SWEEP_REST + t) % 1.))
+                            .rounded(radius)
+                            .bg(rgb(fill)),
+                    )
+                },
+            )
+            .into_any_element(),
+    }
+}
+
+/// The progress line: the step's title, its label and the elapsed time on
+/// one row, the bar under it. For the first 300 ms it is an empty element
+/// that wakes the view a few times a second, so the line appears on time
+/// even when nothing else changes. `now_ms` is the caller's clock (unix ms);
+/// `None` draws at once, without a clock.
+pub(crate) fn progress_line(
+    look: Look,
+    progress: &OpProgress,
+    now_ms: Option<i64>,
+) -> AnyElement {
+    // Keyed by the operation, so each line on screen keeps its own animations.
+    let key = format!("{}@{}", progress.title, progress.started_ms);
+    let Some(draw) = progress_draw(progress, now_ms) else {
+        return div()
+            .with_animation(
+                SharedString::from(format!("progress-wait-{key}")),
+                Animation::new(Duration::from_millis(SHOW_AFTER_MS.unsigned_abs()))
+                    .repeat()
+                    .with_max_fps(10.),
+                |wait, _| wait,
+            )
+            .into_any_element();
+    };
+    let bar = progress_bar(
+        look,
+        draw.fraction,
+        BarMetrics::line(look),
+        SharedString::from(format!("progress-sweep-{key}")),
+    );
+    let heading = row()
+        .w_full()
+        .gap(px(6.))
+        .text_size(px(11.))
+        .whitespace_nowrap()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(rgb(look.secondary))
+                .child(progress.title.clone()),
+        )
+        .children((!draw.label.is_empty()).then(|| {
+            div()
+                .flex_shrink_0()
+                .text_color(rgb(look.secondary))
+                .child(draw.label)
+        }))
+        .children(draw.elapsed.map(|elapsed| {
+            div()
+                .flex_shrink_0()
+                .text_color(rgb(look.tertiary))
+                .child(format!(" · {elapsed}"))
+        }));
+    let line = col().w_full().gap(px(3.)).child(heading).child(bar);
+    match now_ms {
+        // The elapsed time only moves when the caller's clock does, and the
+        // caller re-renders only when something on screen changes. So with a
+        // clock, this element re-renders once a second while it is drawn.
+        Some(_) => line
+            .with_animation(
+                SharedString::from(format!("progress-tick-{key}")),
+                Animation::new(Duration::from_secs(1))
+                    .repeat()
+                    .with_max_fps(1.),
+                |line, _| line,
+            )
+            .into_any_element(),
+        None => line.into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: the module's gpui glob brings in gpui's own
+    // `test` attribute, which would shadow the built-in one.
+    use ::core::prelude::v1::test;
+
+    use super::{ELAPSED_AFTER_MS, SHOW_AFTER_MS, elapsed_text, progress_draw};
+    use humata2_clients::progress::OpProgress;
+
+    fn op(fraction: Option<f32>, label: &str, started_ms: i64) -> OpProgress {
+        OpProgress {
+            title: "Cloning acme/api".to_owned(),
+            fraction,
+            label: label.to_owned(),
+            started_ms,
+        }
+    }
+
+    #[test]
+    fn a_measured_fraction_is_kept_within_the_bar() {
+        let at = |fraction| {
+            progress_draw(&op(Some(fraction), "", 0), Some(SHOW_AFTER_MS))
+                .and_then(|draw| draw.fraction)
+        };
+        assert_eq!(at(0.42), Some(0.42));
+        assert_eq!(at(1.7), Some(1.0));
+        assert_eq!(at(-0.2), Some(0.0));
+        assert_eq!(at(f32::NAN), Some(0.0), "a value that is not finite reads as 0");
+    }
+
+    #[test]
+    fn the_label_is_passed_through_and_an_unmeasured_step_has_no_fraction() {
+        let measured = progress_draw(&op(Some(0.42), "42%", 0), Some(5_000));
+        assert_eq!(measured.as_ref().map(|d| d.label.as_str()), Some("42%"));
+        let unmeasured = progress_draw(&op(None, "", 0), Some(5_000));
+        assert_eq!(unmeasured.as_ref().map(|d| d.fraction), Some(None));
+    }
+
+    #[test]
+    fn nothing_draws_before_the_first_300_ms() {
+        assert!(progress_draw(&op(Some(0.5), "50%", 1_000), Some(1_299)).is_none());
+        assert!(progress_draw(&op(Some(0.5), "50%", 1_000), Some(1_300)).is_some());
+    }
+
+    #[test]
+    fn a_start_time_in_the_future_has_not_begun() {
+        assert!(progress_draw(&op(None, "", 5_000), Some(1_000)).is_none());
+    }
+
+    #[test]
+    fn elapsed_time_shows_once_the_run_reaches_ten_seconds() {
+        let started = 1_000;
+        let at_9s = progress_draw(&op(None, "", started), Some(started + 9_000));
+        assert_eq!(at_9s.and_then(|d| d.elapsed), None);
+        let at_10s = progress_draw(&op(None, "", started), Some(started + ELAPSED_AFTER_MS));
+        assert_eq!(at_10s.and_then(|d| d.elapsed).as_deref(), Some("10s"));
+    }
+
+    #[test]
+    fn a_long_run_reads_in_minutes() {
+        let two_minutes = progress_draw(&op(None, "", 0), Some(130_000));
+        assert_eq!(two_minutes.and_then(|d| d.elapsed).as_deref(), Some("2m 10s"));
+        assert_eq!(elapsed_text(14_000), "14s");
+        assert_eq!(elapsed_text(3_900_000), "1h 5m");
+    }
+
+    #[test]
+    fn with_no_clock_it_always_draws_and_shows_no_elapsed_time() {
+        let draw = progress_draw(&op(Some(0.3), "30%", 0), None);
+        assert!(draw.is_some(), "no clock, no wait");
+        assert_eq!(draw.and_then(|d| d.elapsed), None);
+        assert!(progress_draw(&op(None, "", i64::MAX), None).is_some());
+    }
 }

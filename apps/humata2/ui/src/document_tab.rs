@@ -288,6 +288,11 @@ pub(crate) struct Documents {
     base_filter: Entity<InputState>,
     base_filter_for: Option<String>,
     _base_filtering: Subscription,
+    /// The Diff panel's "Filter files" field (RV-6), and the session whose
+    /// text it holds.
+    file_filter: Entity<InputState>,
+    file_filter_for: Option<SessionId>,
+    _file_filtering: Subscription,
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
@@ -528,6 +533,36 @@ impl Documents {
                 },
             )
         };
+        let file_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let file_filtering = {
+            let ui = ui.clone();
+            cx.subscribe(
+                &file_filter,
+                move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| {
+                    if !matches!(event, InputEvent::Change) {
+                        return;
+                    }
+                    let value = input.read(cx).value().to_string();
+                    let held = ui.read(|state| {
+                        state.session.open.clone().map(|session| {
+                            let held = state.review.file_filter(&session).to_owned();
+                            (session, held)
+                        })
+                    });
+                    // Only the person's typing is news, not the store's own set.
+                    if let Some((session, held)) = held.filter(|(_, held)| *held != value) {
+                        let _ = held;
+                        ui.send(
+                            AppAction::Review(humata2_review::ReviewAction::FilterFiles(
+                                session, value,
+                            )),
+                            cx,
+                        );
+                    }
+                },
+            )
+        };
         Self {
             pages: HashMap::new(),
             comment_input,
@@ -541,7 +576,15 @@ impl Documents {
             base_filter,
             base_filter_for: None,
             _base_filtering: filtering,
+            file_filter,
+            file_filter_for: None,
+            _file_filtering: file_filtering,
         }
+    }
+
+    /// The Diff panel's "Filter files" field.
+    pub(crate) fn file_filter(&self) -> Entity<InputState> {
+        self.file_filter.clone()
     }
 
     /// The filter field of the open repository base menu.
@@ -562,6 +605,13 @@ impl Documents {
                 facts: Rc::new(RefCell::new(None)),
             })
             .clone()
+    }
+
+    /// The scroll state of the Diff panel's code view for `name` in
+    /// `session` (DS-73). Two sessions on one file keep their own scroll; the
+    /// unit separator keeps a session's key apart from any `repo/path` key.
+    pub(crate) fn session_diff_view(&self, session: &SessionId, name: &str) -> DiffView {
+        self.diff_view(&format!("{}\u{1f}{name}", session.as_str()))
     }
 
     /// The editor state of a changed code file, kept across frames.
@@ -664,6 +714,23 @@ impl Documents {
                     }
                     self.seen = Some(target);
                 }
+            }
+        }
+
+        // The "Filter files" field shows the open session's own text.
+        let open = ui.read(|state| {
+            state.session.open.clone().map(|session| {
+                let text = state.review.file_filter(&session).to_owned();
+                (session, text)
+            })
+        });
+        if let Some((session, text)) = open {
+            // Also after a clear by Esc, which only the store knows of.
+            let shown = self.file_filter.read(cx).value().to_string();
+            if self.file_filter_for.as_ref() != Some(&session) || shown != text {
+                self.file_filter
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+                self.file_filter_for = Some(session);
             }
         }
 

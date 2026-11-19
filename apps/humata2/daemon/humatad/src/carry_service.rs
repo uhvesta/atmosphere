@@ -178,20 +178,13 @@ impl SessionCarrySvc {
     /// Puts what the session left on this machine in the trash and drops its
     /// records. What went to the trash is named in the answer.
     pub(crate) async fn release(&self, operation: &str, session: &str, channel: &str) -> Result<Vec<String>, Status> {
-        // The session's shells run on its new machine now (MV-13); here they stop before their tabs are forgotten.
-        let holders = {
-            let (starter, session) = (self.starter.clone(), session.to_owned());
-            blocking(move || starter.shell_holders(&session)).await?.map_err(failed)?
-        };
-        for (socket, pid) in holders {
-            let owner = format!("a shell of session {session} it left");
-            if let Err(error) = crate::holder_end::shut_or_end(&socket, pid, &owner).await {
-                crate::log::say!(
-                    "humatad2: stopping a shell of session {session} it left: {}; that shell may still be running here, and nothing in Humata shows it any more",
-                    status::chain(&error)
-                );
-            }
-        }
+        // D801 I: the session's shells run on its new machine now (MV-13), but
+        // a shell here is a running terminal, and Humata ends one only when
+        // the owner does. So release leaves each running: `forget_moved`
+        // drops the session's records and tabs, and the running-holders
+        // listing then shows every shell still here under "Not in a channel"
+        // (D784), where the owner attaches, adopts or ends it. The move's
+        // confirm names them (a UI seam).
         let (starter, bin, operation, session, channel, take) = (
             self.starter.clone(),
             self.bin.clone(),

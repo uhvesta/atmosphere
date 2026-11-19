@@ -230,6 +230,7 @@ pub(super) async fn channel<D: Daemon, C: Console>(
                 plan: None,
                 presence: None,
                 delete_unpushed_work: delete_work,
+                end_live: None,
             };
             ctx.planned(
                 rpc::channel::PLAN_DELETE_CHANNEL,

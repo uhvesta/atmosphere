@@ -244,6 +244,20 @@ message DeleteChannelPlan {
   // CH-24: the channel's open Desk sessions. The delete closes each into
   // its own trash item before the channel's folder moves.
   repeated SessionId desk_sessions = 12;
+  // D801 H: the live sessions with a running terminal that the delete files
+  // on the Desk and keeps running (the default).
+  repeated SessionId moves_to_desk = 13;
+  // D801 H: live sessions that can't move (shared channel folder, another
+  // filesystem, ...). Unless end_live, their terminals run on under "Not in
+  // a channel" and the folder goes to the Bin.
+  repeated CannotMoveToDesk cannot_move = 14;
+}
+
+message CannotMoveToDesk {
+  SessionId session = 1;
+  string title = 2;
+  // What to tell the owner: why it can't move and what happens instead.
+  string reason = 3;
 }
 
 message DeleteChannelRequest {
@@ -254,6 +268,10 @@ message DeleteChannelRequest {
   // CH-24 "Delete that work": required when any listed session has
   // uncommitted or unpushed work.
   bool delete_unpushed_work = 5;
+  // D801 H: unset moves running sessions to the Desk and keeps them
+  // running; true ends them and deletes (an agent caller needs the destroy
+  // switch).
+  optional bool end_live = 6;
 }
 
 message DeleteChannelResponse {

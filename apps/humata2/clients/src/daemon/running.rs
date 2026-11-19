@@ -39,6 +39,9 @@ pub struct RunningHolder {
     /// Resume and End for good go through the session, never the
     /// running-holder calls, which refuse it.
     pub agent_tab: bool,
+    /// Its agent is frozen while its session moves to another machine
+    /// (D801 J): shown as "Paused for move".
+    pub paused_for_move: bool,
 }
 
 impl RunningHolder {

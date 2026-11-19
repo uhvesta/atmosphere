@@ -19,7 +19,7 @@ pub(super) fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> 
     let views = state.views.journal(&family);
     col()
         .size_full()
-        .child(header(ui, Panel::Journal, full, None, look))
+        .child(panel_header(ui, state, Panel::Journal, full, None, look))
         .child(
             col()
                 .id("session-journal")

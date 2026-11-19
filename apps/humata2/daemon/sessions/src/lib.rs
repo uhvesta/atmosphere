@@ -47,7 +47,7 @@ pub use desk::{
 };
 pub use desk_move::{DeskMoveError, DeskMoveRepo, desk_move_repos, repoint_clone};
 pub use git::{
-    DEFAULT_REMOTE_TEMPLATE, clone_main, clone_session, default_branch, local_branches,
+    DEFAULT_REMOTE_TEMPLATE, clone_main, clone_main_with, clone_session, clone_session_with, default_branch, local_branches,
     remote_branches, remote_url,
 };
 pub use layout::{Layout, partial};
@@ -55,8 +55,8 @@ pub use names::{Branch, branch_slug, channel_folder, pick_branch, valid_branch_n
 pub use prefix::{BRANCH_PREFIX_KEY, default_prefix, effective_prefix, set_default_prefix};
 pub use rename::BranchRename;
 pub use recover::{Leftovers, Recovery, recover};
-pub use setup::{NewChannel, clone_mains, create_channel};
-pub use start::{RepoName, ReviewStart, StartRequest, Started, Starter};
+pub use setup::{NewChannel, clone_mains, clone_mains_with, create_channel};
+pub use start::{CloneUnits, RepoName, with_clone_units, ReviewStart, StartRequest, Started, Starter};
 pub use first_message::{Boxed, FirstMessage, GateRefusal, HeldMessages, Resend, StartSignal, WriteGate};
 pub use fork::{ForkCopy, ForkPlan, ForkRequest, handover_file};
 pub use continue_in::ContinueRequest;

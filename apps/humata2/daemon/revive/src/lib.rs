@@ -30,6 +30,9 @@ use std::time::Duration;
 
 use humata2_store::TabRecord;
 
+pub use agent::rekey::{
+    FollowFailed, FollowStep, RekeyError, RekeyNote, Started, note_path, read_note, remove_note, write_note,
+};
 pub use agent::{launch_agent, launch_in_flight};
 pub use error::{ContainRefused, ReviveError};
 pub use gate::{GateRefusal, WriteGate};
@@ -94,6 +97,9 @@ pub trait HolderBuilds: std::fmt::Debug + Send + Sync {
 }
 
 /// What a [`CliVersions::current`] answer is, as a future.
+/// What a [`CliVersions::follow`] answer is, as a future.
+pub type Followed<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), FollowFailed>> + Send + 'a>>;
+
 pub type VersionAsked<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>;
 
 /// CV-3: what a resume asks for the version of an agent's CLI, which may
@@ -103,6 +109,14 @@ pub trait CliVersions: std::fmt::Debug + Send + Sync {
     /// prints it; None when the agent names no version command, isn't
     /// known, or its CLI doesn't answer in time.
     fn current<'a>(&'a self, agent: &'a str) -> VersionAsked<'a>;
+
+    /// D801 D: has the agent's kind move a conversation to the folder its
+    /// agent now works in, as a rename does for a stopped agent. Called by a
+    /// resume that carries a conversation a channel's rename left behind.
+    /// The default follows nothing.
+    fn follow<'a>(&'a self, _step: &'a FollowStep) -> Followed<'a> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// SEC-6 (D217): what every agent launch and resume asks for the argv to

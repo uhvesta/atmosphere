@@ -57,6 +57,7 @@ mod hooks;
 mod lineage;
 mod move_recover;
 mod move_session;
+pub(crate) use move_session::paused_for_move;
 mod notes;
 mod own_copy;
 mod pointers;
@@ -68,6 +69,7 @@ mod remote_review;
 mod remote_start;
 mod script_steps;
 mod start_fresh;
+pub(crate) mod status_since;
 mod stop_launching;
 mod stop_running;
 pub(crate) mod turns;
@@ -1622,6 +1624,7 @@ fn session_pb(
     here: &str,
 ) -> pb::Session {
     let state = agent.map(|agent| &agent.state);
+    let status = shown_status(&record.id, &record.agent, state, detail.map(|detail| detail.start));
     pb::Session {
         id: Some(pb::SessionId {
             value: record.id.clone(),
@@ -1644,7 +1647,8 @@ fn session_pb(
             },
         }),
         folder: record.folder.display().to_string(),
-        status: shown_status(&record.id, &record.agent, state, detail.map(|detail| detail.start)) as i32,
+        status: status as i32,
+        status_since: Some(timestamp_ms(status_since::observe(&record.id, status, now_ms()))),
         repos: detail
             .map(|detail| {
                 detail
@@ -2015,20 +2019,27 @@ async fn run_start(
                 let _ = ready.send(Ok(()));
             }
         };
-        match review {
-            Some(review) => starter.start_review(request, review, &env, &mut note).await,
-            None => starter.start(request, &env, &mut note).await,
-        }
+        let units = progress.units();
+        let sink: humata2_sessions::CloneUnits = Arc::new(move |key: &str, done, total| units.set(key, done, total));
+        humata2_sessions::with_clone_units(sink, async {
+            match review {
+                Some(review) => starter.start_review(request, review, &env, &mut note).await,
+                None => starter.start(request, &env, &mut note).await,
+            }
+        })
+        .await
     };
     match started {
         Ok(started) => {
             progress.set_step("verify", pb::StepState::Done, None);
             let session = started.session.id;
+            // The watch hears the agent before the start says it runs, so
+            // its first answer is never missed (CH-16).
+            let _ = watch::agent_attached(tell.clone(), session.clone()).await;
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
                 value: session.clone(),
             })));
             tell.session(&session, pb::Change::Updated, Some(by)).await;
-            watch::agent(tell, session);
         }
         Err(error) => {
             let (code, failure) = start_error(&error);
@@ -2573,6 +2584,27 @@ impl pb::session_service_server::SessionService for SessionSvc {
             move || async move { me.stop(&who, request, true).await },
         )
         .await
+    }
+
+    /// D801 J: pauses or resumes the agent a move is taking away. Only the
+    /// host's own call counts, as `StopSession.for_move` does.
+    async fn freeze_session(
+        &self,
+        request: Request<pb::FreezeSessionRequest>,
+    ) -> Result<Response<pb::FreezeSessionResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::refuse_peer(&caller)?;
+        if !matches!(caller, Caller::User(identity::UserVia::Host)) || self.guard.host_link().on_host() {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        let request = request.into_inner();
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let ran = move_session::freeze_agent_here(self, &id, &self.machine, request.thaw).await?;
+        Ok(Response::new(pb::FreezeSessionResponse { ran }))
     }
 
     /// Starts the agent again with its pinned conversation (SE-15, PER-13):

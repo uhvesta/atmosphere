@@ -189,6 +189,8 @@ fn an_offered_view_keeps_what_it_holds_and_who_prepared_it() {
             },
         ]),
         ViewContent::ReviewPlan(PlanView {
+            importance: Vec::new(),
+            stack: None,
             targets: vec![
                 RepoDiffSpec {
                     repo: "acme/api".to_owned(),

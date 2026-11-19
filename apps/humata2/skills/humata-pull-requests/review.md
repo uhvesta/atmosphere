@@ -34,7 +34,7 @@ The review tools are MCP tools; the CLI has no command for them:
 | `review_summary_draft` | Draft the review's summary for the owner to edit. |
 | `review_note`, `review_note_edit`, `review_note_drop` | A note for the owner beside the code; never posted to GitHub. |
 | `review_focus` | Move the owner's view to a file and lines. |
-| `review_prepare` | Offer an order, groups and notes (see `order-humata-review`). |
+| `review_prepare` | Offer an order, groups, a stack of layers and notes (see `order-humata-review` and `shared/stacks.md`). |
 
     humata review drafts <session> --json     # the drafts so far
 

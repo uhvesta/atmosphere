@@ -454,6 +454,16 @@ fn conversation_command(agent: Agent, humata: &Path, socket: &Path) -> String {
     )
 }
 
+/// The shell command Claude's Notification hook runs to tell Humata the
+/// agent is waiting on a prompt: the payload on its stdin names which.
+fn notification_command(agent: Agent, humata: &Path, socket: &Path) -> String {
+    format!(
+        "{} hook {} notification >/dev/null 2>&1 || true",
+        humata_call(humata, socket),
+        agent.name(),
+    )
+}
+
 /// The shell command that tells Humata the session is `state`: working,
 /// idle or needs-input. Its output is discarded and it never fails.
 fn turn_command(humata: &Path, socket: &Path, state: &str) -> String {
@@ -479,6 +489,17 @@ pub fn claude_conversation_hook(humata: &Path, socket: &Path) -> serde_json::Val
     json!({
         "type": "command",
         "command": conversation_command(Agent::Claude, humata, socket),
+        "async": true,
+        "timeout": 10,
+    })
+}
+
+/// The Claude hook entry that tells Humata a prompt is waiting in its
+/// terminal (D798), run in the background so it never blocks Claude.
+pub fn claude_notification_hook(humata: &Path, socket: &Path) -> serde_json::Value {
+    json!({
+        "type": "command",
+        "command": notification_command(Agent::Claude, humata, socket),
         "async": true,
         "timeout": 10,
     })

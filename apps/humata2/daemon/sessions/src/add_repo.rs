@@ -6,8 +6,8 @@
 use humata2_store::{MainClone, SessionRepo};
 
 use crate::error::{GitError, StartError};
-use crate::git::{clone_session, git, remote_url};
-use crate::start::{RepoName, Starter, blocking, store_err};
+use crate::git::{clone_session_with, git, remote_url};
+use crate::start::{RepoName, Starter, blocking, clone_reporter, clone_units, store_err};
 
 /// What adding a repo to a session did.
 #[derive(Clone, Debug)]
@@ -30,10 +30,16 @@ impl Starter {
     ) -> Result<AddedRepo, StartError> {
         let this = self.clone();
         let (key, wanted) = (session.to_owned(), repo.clone());
-        blocking(move || this.add_repo_blocking(&key, &wanted)).await?
+        let mut report = clone_reporter(clone_units(), &repo.1);
+        blocking(move || this.add_repo_blocking(&key, &wanted, &mut report)).await?
     }
 
-    fn add_repo_blocking(&self, session: &str, repo: &RepoName) -> Result<AddedRepo, StartError> {
+    fn add_repo_blocking(
+        &self,
+        session: &str,
+        repo: &RepoName,
+        report: &mut dyn FnMut(u64),
+    ) -> Result<AddedRepo, StartError> {
         let (owner, name) = repo;
         let record = self
             .store
@@ -88,7 +94,7 @@ impl Starter {
             let branch = self.pick_excluding(&channel, std::slice::from_ref(repo), &record.title, Some(session))?;
             let main = self.layout.main_clone(&channel.folder, name);
             let url = remote_url(&self.remote_template, owner, name).map_err(git_error)?;
-            clone_session(&main, &url, &path, &branch.name).map_err(git_error)?;
+            clone_session_with(&main, &url, &path, &branch.name, report).map_err(git_error)?;
             branch.name
         };
         let added = SessionRepo {

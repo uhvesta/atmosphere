@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::bridge::Ui;
 use crate::theme::Look;
-use crate::widgets::{col, row};
+use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::base::ObservedElement;
@@ -18,8 +18,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::{EntryKind, StorageAction, StorageKind, StorageRow, TransferMode};
-use humata2_files::{FilesAction as A, FilesState, NamingKind, RowChoice, Side, human_bytes};
+use humata2_clients::{Entry, EntryKind, StorageAction, StorageKind, StorageRow, TransferMode};
+use humata2_files::{FilesAction as A, FilesState, NamingKind, Pane, RowChoice, Side, human_bytes};
 
 const ORANGE: u32 = 0xff9f0a;
 const RED: u32 = 0xff453a;
@@ -210,9 +210,41 @@ fn line(
     line
 }
 
+/// What a pane's rows hold: the loading sweep at the top while a read runs,
+/// then the entries it already has, which stay listed through a reload.
+#[derive(Debug, PartialEq)]
+struct PaneRows<'a> {
+    sweep: bool,
+    entries: &'a [Entry],
+}
+
+fn pane_rows(pane: &Pane) -> PaneRows<'_> {
+    PaneRows {
+        sweep: pane.loading,
+        entries: &pane.entries,
+    }
+}
+
+/// The loading sweep of pane `tag`: a full-width line, no words.
+fn loading_sweep(look: Look, tag: &str) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("files-loading {tag}")))
+        .role(Role::ProgressIndicator)
+        .aria_label("Loading")
+        .test_support()
+        .child(widgets::progress_bar(
+            look,
+            None,
+            widgets::BarMetrics::line(look),
+            SharedString::from(format!("files-sweep {tag}")),
+        ))
+        .into_any_element()
+}
+
 fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div> {
     let pane = state.pane(side);
     let tag = side_name(side);
+    let plan = pane_rows(pane);
     let active = state.active == side;
     let stale = pane.stale;
 
@@ -267,6 +299,9 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
         );
 
     let mut rows = col().flex_1().min_h_0();
+    if plan.sweep {
+        rows = rows.child(loading_sweep(look, tag));
+    }
     if stale {
         let name = pane
             .machine
@@ -326,7 +361,7 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
             None,
         ));
     }
-    for entry in &pane.entries {
+    for entry in plan.entries {
         let is_folder = entry.kind == EntryKind::Folder;
         let on = pane.selected.contains(&entry.name);
         let ui2 = ui.clone();
@@ -376,9 +411,6 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
                 }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
             }),
         ));
-    }
-    if pane.loading && !pane.loaded {
-        rows = rows.child(div().px(px(12.)).py(px(8.)).child(dim(look, "Reading…")));
     }
     if pane.loaded && !stale {
         rows = rows.child(
@@ -1172,4 +1204,52 @@ pub(crate) fn page(
         .children(low_disk_sheet(ui, state, look))
         .test_support()
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    fn entry(name: &str) -> Entry {
+        Entry {
+            name: name.to_owned(),
+            kind: EntryKind::File,
+            size: Some(1),
+            modified_unix_s: 0,
+        }
+    }
+
+    fn a_pane(loading: bool, loaded: bool, entries: Vec<Entry>) -> Pane {
+        Pane {
+            loading,
+            loaded,
+            entries,
+            ..Pane::default()
+        }
+    }
+
+    #[test]
+    fn a_first_read_shows_the_sweep_and_no_entries() {
+        let pane = a_pane(true, false, Vec::new());
+        let plan = pane_rows(&pane);
+        assert!(plan.sweep);
+        assert!(plan.entries.is_empty());
+    }
+
+    #[test]
+    fn a_settled_loaded_pane_shows_no_sweep() {
+        let pane = a_pane(false, true, vec![entry("notes.txt")]);
+        assert!(!pane_rows(&pane).sweep);
+    }
+
+    #[test]
+    fn a_reload_shows_the_sweep_and_keeps_its_entries_listed() {
+        let entries = vec![entry("archive"), entry("notes.txt")];
+        let pane = a_pane(true, true, entries.clone());
+        let plan = pane_rows(&pane);
+        assert!(plan.sweep);
+        assert_eq!(plan.entries, entries.as_slice());
+    }
 }

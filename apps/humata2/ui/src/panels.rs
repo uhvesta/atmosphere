@@ -93,6 +93,7 @@ fn icon_action(
     ui: &Rc<Ui>,
     id: &'static str,
     label: &'static str,
+    tooltip: &'static str,
     glyph: IconName,
     event: AppAction,
     look: Look,
@@ -101,6 +102,7 @@ fn icon_action(
     Button::new(id)
         .child(icon(glyph, look.secondary, 12.))
         .accessibility_label(label)
+        .tooltip(tooltip)
         .ghost()
         .small()
         .w(px(16.))
@@ -117,8 +119,17 @@ fn title(panel: Panel) -> &'static str {
         panel.name()
     }
 }
-/// A panel's header: its title, what the panel puts beside it, and the
-/// expand and close buttons. The Desk session's panels draw it too.
+
+thread_local! {
+    /// "# place › session" for the full-screen title bar. `panel()` sets it
+    /// from the state it already holds before it builds the body, so
+    /// `header()` need not read the store again from inside that read.
+    static SESSION_LINE: std::cell::RefCell<Option<SharedString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Kept until panel_changes.rs moves to `panel_header` (seam_header.py), then removed with SESSION_LINE.
+/// A panel's header, its full-screen line read from `SESSION_LINE`. See `panel_header`.
 pub(crate) fn header(
     ui: &Rc<Ui>,
     panel: Panel,
@@ -126,13 +137,124 @@ pub(crate) fn header(
     extra: Option<Div>,
     look: Look,
 ) -> Div {
+    header_with(
+        ui,
+        panel,
+        full,
+        extra,
+        look,
+        SESSION_LINE.with(|line| line.borrow().clone()),
+    )
+}
+
+/// A panel's header. Beside the terminal it is a 36 pt row: the title, what
+/// the panel puts beside it, and the Full screen and Close buttons; a
+/// double-click on it goes full screen. In full screen it is the one 52 pt
+/// title bar: the window lights, "# place › session", the title with the
+/// extra beside it, and Show the terminal. The Desk session's panels draw it
+/// too.
+pub(crate) fn panel_header(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    panel: Panel,
+    full: bool,
+    extra: Option<Div>,
+    look: Look,
+) -> Div {
+    header_with(ui, panel, full, extra, look, session_line(state))
+}
+
+/// "# place › session" of the open session, for the full-screen title bar.
+fn session_line(state: &AppState) -> Option<SharedString> {
+    let session = state
+        .session
+        .open
+        .as_ref()
+        .and_then(|id| state.workspace.session(id))?;
+    Some(SharedString::from(format!(
+        "{} › {}",
+        humata2_clients::desk::place(&state.workspace, &session.channel),
+        session.title
+    )))
+}
+
+/// The header's drawing; `line` is the "# place › session" of full screen.
+fn header_with(
+    ui: &Rc<Ui>,
+    panel: Panel,
+    full: bool,
+    extra: Option<Div>,
+    look: Look,
+    line: Option<SharedString>,
+) -> Div {
+    if full {
+        return row()
+            .h(px(52.))
+            .px(px(16.))
+            .gap(px(12.))
+            .flex_shrink_0()
+            .bg(rgb(look.content))
+            .border_b_1()
+            .border_color(rgb(look.line))
+            .child(crate::chrome::lights())
+            .child(div().w(px(4.)))
+            .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
+            // The names ellipsize; Show the terminal always stays. The title
+            // column is not clipped: the base menu is a deferred child that
+            // must draw past it.
+            .child(
+                col()
+                    .min_w_0()
+                    .flex_shrink(1.)
+                    .whitespace_nowrap()
+                    .children(line.map(|line| {
+                        secondary(look, line)
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                    }))
+                    .child(
+                        row()
+                            .gap(px(10.))
+                            .min_w_0()
+                            .child(
+                                text(title(panel))
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .flex_shrink_0(),
+                            )
+                            .children(extra.map(|e| e.min_w_0().flex_shrink(1.))),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(action(
+                ui,
+                "show-terminal",
+                "Show the terminal",
+                AppAction::Session(SessionAction::ToggleWiden),
+                look,
+                false,
+            ));
+    }
+    let toggle = ui.clone();
+    // The row carries the id for the double-click; the wrapper keeps the
+    // return type a plain `Div` for the callers that pick between headers.
+    div().flex_shrink_0().child(
     row()
+        .id("panel-header")
         .gap(px(10.))
         .h(px(36.))
         .px(px(14.))
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
+        // Double-click: the macOS zoom habit.
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            if event.click_count == 2 {
+                toggle.send(AppAction::Session(SessionAction::ToggleWiden), cx);
+            }
+        })
+        .test_support()
         .child(
             text(title(panel))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -153,16 +275,9 @@ pub(crate) fn header(
                 .child(icon_action(
                     ui,
                     "expand-panel",
-                    if full {
-                        "Show the terminal"
-                    } else {
-                        "Expand panel"
-                    },
-                    if full {
-                        IconName::Minimize2
-                    } else {
-                        IconName::Maximize2
-                    },
+                    "Full screen",
+                    "Full screen  ⌃⌘↩",
+                    IconName::Maximize2,
                     AppAction::Session(SessionAction::ToggleWiden),
                     look,
                 ))
@@ -170,11 +285,13 @@ pub(crate) fn header(
                     ui,
                     "close-panel",
                     "Close panel",
+                    "Close panel",
                     IconName::X,
                     AppAction::Session(SessionAction::SetPanel(None)),
                     look,
                 )),
-        )
+        ),
+    )
 }
 fn status(value: Status) -> Div {
     let dot = div().size(px(8.)).rounded_full().flex_shrink_0();
@@ -264,6 +381,7 @@ pub(crate) fn panel(
         .open
         .as_ref()
         .and_then(|id| state.workspace.session(id));
+    SESSION_LINE.with(|held| *held.borrow_mut() = session_line(state));
     let body = match (panel, session) {
         (Panel::Changes, _) => changes(ui, state, full, look, width, window, documents),
         (Panel::Inbox, _) => inbox(ui, state, full, look),
@@ -271,7 +389,7 @@ pub(crate) fn panel(
         (Panel::Journal, _) => journal(ui, state, full, look),
         (Panel::Files, Some(session)) => files(ui, state, session, full, file_filter, look),
         (Panel::Info, Some(session)) => info(ui, state, session, full, look),
-        _ => col().child(header(ui, panel, full, None, look)),
+        _ => col().child(panel_header(ui, state, panel, full, None, look)),
     };
     col()
         .id(if full {
@@ -298,56 +416,7 @@ pub(crate) fn panel(
                 .border_l_1()
                 .border_color(rgb(look.line))
         })
-        .when(full, |frame| {
-            frame.flex_1().child(
-                row()
-                    .h(px(52.))
-                    .px(px(16.))
-                    .gap(px(12.))
-                    .flex_shrink_0()
-                    .bg(rgb(look.content))
-                    .border_b_1()
-                    .border_color(rgb(look.line))
-                    .child(crate::chrome::lights())
-                    .child(div().w(px(4.)))
-                    .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
-                    // The names ellipsize; Show the terminal always stays.
-                    .child(
-                        col()
-                            .min_w_0()
-                            .flex_shrink(1.)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .children(session.map(|session| {
-                                secondary(
-                                    look,
-                                    format!(
-                                        "{} › {}",
-                                        humata2_clients::desk::place(&state.workspace, &session.channel),
-                                        session.title
-                                    ),
-                                )
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                            }))
-                            .child(
-                                text(title(panel))
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD),
-                            ),
-                    )
-                    .child(div().flex_1())
-                    .child(action(
-                        ui,
-                        "show-terminal",
-                        "Show the terminal",
-                        AppAction::Session(SessionAction::ToggleWiden),
-                        look,
-                        false,
-                    )),
-            )
-        })
+        .when(full, |frame| frame.flex_1())
         // Under the 52 pt title bar a full-height body would run that far
         // past the window, so it takes what is left.
         .child(body.flex_1().min_h_0())

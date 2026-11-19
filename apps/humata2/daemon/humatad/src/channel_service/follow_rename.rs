@@ -1,8 +1,10 @@
 //! A renamed channel's folder follows on every machine the channel lists
 //! (MV-16, D314). Each machine does what this host does in rename_folder.rs
 //! through its own `RenameChannel`: it derives the folder from the name,
-//! stops its agents, renames the folder once, rewrites its records and
-//! resumes the agents. A machine that is offline is renamed when it next
+//! renames the folder once and rewrites its records. Its agents and shells
+//! keep running under the old name, which stays a link to the new folder
+//! while they do (D801 D); only a folder on another disk than the Humata
+//! folder stops its agents and resumes them. A machine that is offline is renamed when it next
 //! links: nothing is queued, the host compares each channel's name and
 //! folder with the machine's at every link, so a host restart loses
 //! nothing. Until then the host leaves its records of that machine's

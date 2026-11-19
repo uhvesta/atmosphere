@@ -433,7 +433,7 @@ impl Restart {
         }
         if entry.lost.is_some() {
             // Reported once: the session was dealt with above.
-            if let Err(error) = fs::remove_file(handoff_path(&entry.socket))
+            if let Err(error) = fs::remove_file(humata2_holder::handoff_path(&entry.socket))
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 eprintln!("humata2 revive: couldn't remove the move marker beside {}: {error}", entry.socket.display());
@@ -643,19 +643,11 @@ fn write_beside(folder: &Path, name: &str, bytes: &[u8]) -> Result<(), ReviveErr
     written.map_err(|source| ReviveError::RestartJson { path, source })
 }
 
-/// The marker a holder moving onto a new build writes beside its socket
-/// and the new build removes once it serves (D801 A).
-fn handoff_path(socket: &Path) -> PathBuf {
-    let mut path = socket.as_os_str().to_owned();
-    path.push(".handoff");
-    PathBuf::from(path)
-}
-
 /// Why a holder is gone, if it was lost moving onto a new holder build:
 /// its move marker is still there and no holder answers for it. A marker
 /// beside a live holder is a move in progress and says nothing.
 fn lost_in_move(socket: &Path) -> Option<&'static str> {
-    let marker = handoff_path(socket);
+    let marker = humata2_holder::handoff_path(socket);
     if !marker.exists() {
         return None;
     }
@@ -687,7 +679,7 @@ mod lost_in_move_tests {
     fn a_marker_beside_a_holder_that_is_gone_is_lost() {
         let dir = tempfile::tempdir().unwrap();
         let socket = socket(dir.path());
-        fs::write(handoff_path(&socket), b"H2HANDOFF").unwrap();
+        fs::write(humata2_holder::handoff_path(&socket), b"H2HANDOFF").unwrap();
         // No pid file: no holder answers for it.
         assert!(lost_in_move(&socket).is_some());
     }
@@ -696,7 +688,7 @@ mod lost_in_move_tests {
     fn a_marker_beside_a_live_holder_is_a_move_in_progress() {
         let dir = tempfile::tempdir().unwrap();
         let socket = socket(dir.path());
-        fs::write(handoff_path(&socket), b"H2HANDOFF").unwrap();
+        fs::write(humata2_holder::handoff_path(&socket), b"H2HANDOFF").unwrap();
         // This test's own process stands in for the live holder.
         fs::write(socket.with_extension("pid"), std::process::id().to_string()).unwrap();
         assert_eq!(lost_in_move(&socket), None);

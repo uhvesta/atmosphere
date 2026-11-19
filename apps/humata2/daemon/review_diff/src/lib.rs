@@ -40,6 +40,8 @@ mod comment_message;
 mod comments;
 mod diff;
 mod error;
+mod from_stack;
+mod importance;
 mod git;
 mod model;
 mod passage;
@@ -70,13 +72,16 @@ pub use model::{
     Snapshot, Trees, Viewed,
 };
 pub use passage::{Placement, place};
+pub use from_stack::*;
+pub use importance::*;
 pub use plan::{
-    Anchor, AnchorError, Arrangement, FileRef, Group, Note, NoteState, NoteTarget, ReviewPlan,
-    Section,
+    Anchor, AnchorError, Arrangement, FileRef, Group, Importance, Note, NoteState, NoteTarget,
+    ReviewPlan, Section, Tier,
 };
 pub use snapshot::KEPT_SNAPSHOTS;
 pub use stack::{
-    CheckedStack, Drift, DriftKind, Layer, LayerRepo, Part, Resolved, Stack, StackError,
+    CheckedStack, Drift, DriftKind, FilePlan, Layer, LayerRepo, Part, Resolved, Stack,
+    StackError,
 };
 pub use spec::{
     Base, BaseContext, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace,

@@ -60,6 +60,24 @@ project.
 - **Approved designs:** goldens in `apps/humata2/desktop/tests/__snapshots__/design/`;
   only with the owner's OK.
 - **Screen:** headless only; no windows on the owner's screen.
+- **Rolling batches (owner, 2026-11-18: "speed up our iterations ... in parallel and in batches"):**
+  - Every agent builds and tests its own focused targets before it reports (allowed above). A batch that doesn't compile never reaches main.
+  - Main runs a rolling gate instead of waiting for every lane. Whenever one or more lanes report, it first runs one compile-only `bazel build //apps/humata2/...` (minutes), then one `bazel test` over just those lanes' targets and their direct dependents.
+  - Commit and push each lane's green paths straight after its gate. Don't wait for other lanes. Cut a point release once the tracked tree is clean.
+  - The full `//apps/humata2/...` test set and the slow tier run once, before a release.
+  - Golden re-records are batched: re-record every changed frame in one run, then send them to Fable in one judging round.
+- **Test tiers (owner, 2026-11-18: "cheap presubmit checks ... then the full post submit checks ... scoped tests until right before release"):**
+  - **Presubmit** (`apps/humata2/tools/tests/presubmit.sh [targets…]`): the default for every agent and every train. It first compiles what it will test, then runs the given targets, or with no arguments the tests affected by the changed files. It skips everything in `tools/tests/slow.txt`.
+  - **Scoped slow:** `--with-slow <target>`, or (one case, ~10× faster) `bazel test <target> --test_arg=<case_name> --test_arg=--exact` (rules_rust ignores `--test_filter`). Only for the slow target a fix is about, filtered to its cases where possible.
+  - **Postsubmit** (`presubmit.sh --full`): every non-manual test plus the slow tier. Main runs it once, right before a release, then fixes everything it finds.
+  - **Train:** when two or more lanes report, main runs one presubmit over the union of their targets. Failures are split per lane by Claims, and each green lane is committed at once.
+  - **A slow test failure becomes a small test** (owner, 2026-11-18: "write a small short test targeting how it failed and iterate on that"):
+    1. Read the slow failure once and name the exact failure mode (the step, the cut point, the state left behind).
+    2. Write a short, fast test, about 10 s and outside slow.txt, that reproduces that one failure mode and fails for the same reason.
+    3. Iterate on the fix with only that small test (and its presubmit neighbours) until it passes.
+    4. Keep the small test. It becomes presubmit coverage.
+    5. Rerun the slow target only after all presubmit work is green, batched with the other slow reruns in the full run before release.
+  - `slow.txt` holds the targets over 60 s. TESTSPEED takes a target off once it is fast. A new test that takes more than 60 s goes on the list.
 - **Lane limit:** 10 managers (raised 2026-11-15, owner: not fast enough); was 7 (2026-11-15, owner wants more parallelism):
   dormant lanes don't count; at most 4 edit `daemon/humatad`; drop to 6 if a
   batched gate fails twice with unclear attribution. Early lanes may open on

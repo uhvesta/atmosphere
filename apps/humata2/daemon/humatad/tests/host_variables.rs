@@ -155,6 +155,9 @@ case "$mode" in
 esac
 printf '%s\n' "$@" > "$OUT/argv-$id.args"
 env > "$OUT/env-$id.part" && mv "$OUT/env-$id.part" "$OUT/env-$id.txt"
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; done
 "#,

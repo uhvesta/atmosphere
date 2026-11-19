@@ -441,6 +441,11 @@ enum HolderNote {
   HOLDER_NOTE_STAYS_UNTIL_CLOSED = 3;
   // An agent that tells no turns, so it has no idle moment to restart at.
   HOLDER_NOTE_NO_IDLE_MOMENT = 4;
+  // A terminal (agent or shell) whose holder can move: Migrate moves it onto
+  // the current holder in place; the program keeps running (LIVEHOLDER, D801).
+  HOLDER_NOTE_MOVES = 5;
+  // Its move is under way now.
+  HOLDER_NOTE_MOVING = 6;
 }
 
 message RequestAnswer {

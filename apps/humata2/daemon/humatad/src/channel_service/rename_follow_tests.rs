@@ -213,3 +213,69 @@ fn a_conversation_file_that_is_not_where_its_cli_keeps_it_is_refused_and_a_missi
     assert!(matches!(refused, Err(FollowError::Misplaced { .. })), "{refused:?}");
     assert!(matches!(gone, Ok(false)), "{gone:?}");
 }
+
+/// D801 D: a session whose folder moves on its own (a Desk session into a
+/// channel, a deleted channel's session to the Desk) gets steps that, run
+/// at its agent's next resume, make its Codex conversation and thread row
+/// name the new folder. A session with no agent has none.
+#[test]
+fn a_moved_session_s_codex_conversation_follows_it_by_the_steps_its_note_keeps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(tmp.path()).unwrap();
+    let (old, new) = (home.join("desk/fix"), home.join("payments/sessions/fix"));
+    let (deep, now_deep) = (old.join("api/src"), new.join("api/src"));
+    let rollout = home.join(format!(".codex/sessions/2026/11/16/rollout-2026-11-16T13-48-56-{ID}.jsonl"));
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    let text = CODEX_THREE_TURNS
+        .replace("{codex}", &home.join(".codex").to_string_lossy())
+        .replace("{folder}", &deep.to_string_lossy())
+        .replace("{id}", ID);
+    fs::write(&rollout, &text).unwrap();
+    let threads = write_threads(&home, &[(ID, &rollout, &deep)]);
+    let store = Store::open(home.join("state")).unwrap();
+    let agent = |kind: &str, session: &str| AgentRecord {
+        session: session.to_owned(),
+        tab: format!("tab_{session}"),
+        launch: AgentLaunch {
+            agent: kind.to_owned(),
+            folder: deep.clone(),
+            conversation_id: ID.to_owned(),
+            conversation_file: rollout.clone(),
+            holder_socket: home.join(session),
+            cols: 80,
+            rows: 24,
+            ..AgentLaunch::default()
+        },
+        state: AgentState::Running { holder_pid: 1 },
+        generation: 1,
+        interruptions: Vec::new(),
+        updated_unix_ms: 1,
+    };
+    store
+        .put_session(&SessionRecord {
+            id: "se_1".to_owned(),
+            channel: "desk".to_owned(),
+            machine: "ma_1".to_owned(),
+            title: "Fix".to_owned(),
+            agent: "codex".to_owned(),
+            folder: old.clone(),
+            created_unix_ms: 1,
+        })
+        .unwrap();
+    store.put_agent(&agent("codex", "se_1")).unwrap();
+    let agents = Agents::builtin();
+    let channels = home.join("channels");
+
+    let steps = session_follows(&store, &agents, &home, &channels, "se_1", &old, &new).unwrap();
+    assert!(!steps.is_empty(), "a Codex conversation has steps to follow");
+    let kind = agents.get("codex").unwrap();
+    for step in &steps {
+        kind.follow_folder(&step.home, &step.id, &step.file, &step.from, &step.to, &step.scratch).unwrap();
+    }
+    let followed = fs::read_to_string(&rollout).unwrap();
+    assert!(followed.contains(&*now_deep.to_string_lossy()), "the rollout names the new folder");
+    assert!(!followed.contains(&*old.to_string_lossy()), "the rollout still names the old folder");
+    assert_eq!(thread_cwd(&threads, ID), now_deep.to_string_lossy(), "the CLI's thread row follows");
+
+    assert!(session_follows(&store, &agents, &home, &channels, "se_9", &old, &new).unwrap().is_empty(), "no agent, no steps");
+}

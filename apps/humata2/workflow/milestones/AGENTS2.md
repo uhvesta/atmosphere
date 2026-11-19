@@ -43,7 +43,7 @@ Screen parsing (`screen_ask`, D786) stays only as a fallback.
 
 ## Lane
 
-Manager: AGENTS2 manager (Opus 5.5). State: **plan accepted by main; waiting for "go"** (after 0.3.2 is committed). Live checks moved to Owed. Decisions: D795–D799 (Fable 5.2's rulings).
+Manager: AGENTS2 manager (Opus 5.5). State: **batch 5 (C3–C5, F1) in progress, 2026-11-18 evening**; batches 1–4 committed. Live checks moved to Owed. Decisions: D795–D799 (Fable 5.2's rulings).
 
 ### Research: what each CLI offers (installed: claude 2.1.326, codex-cli 0.169.0, copilot 1.0.114-0)
 
@@ -121,6 +121,9 @@ The owner's approval to copy agent logins into scratch homes ended at 08:20, so 
   - The screen check path stays wired and tested for kinds marked `Screen`. If the check fails, mark codex `Screen`. Following `/new` then rests on the link's later `thread/started` or the folder scan.
 - **O3, Claude `/clear` carries the new conversation id.** Does SessionStart `source=clear` carry the new `session_id` and `transcript_path`?
   - Switches nothing if it passes. If it fails, the conversation hooks on UserPromptSubmit and Stop (A2) already name the new id at the next turn. The test covers both: a SessionStart that names it, and a first follow at a later hook. So a failure only drops `clear` from the SessionStart matcher.
+
+- **O4, Codex under the wrapper.** Do `codex app-server --listen unix://S -c k=v` take the session's `-c` overrides (the Humata MCP server), and does `codex --remote unix://S resume <id>` resume the thread in the TUI?
+  - Switches nothing if both pass. If `-c` is refused by `app-server`, drop `config_pairs` in `daemon/codex/src/wrapper.rs` (the TUI still gets them). If `resume` refuses `--remote`, the wrapper's resume falls back to plain `codex resume <id>` with the hooks.
 
 ### Tasks (workers write code; only main runs bazel and git)
 
@@ -226,3 +229,16 @@ The owner's approval to copy agent logins into scratch homes ended at 08:20, so 
   - the composer, Inbox and MCP sends going through E1's gate (only the start message is gated so far);
   - F1: VERIFY by kind;
   - O1–O3: still owed live.
+- Evening (fresh manager): batch 5.
+  - Failing tests first, by the manager: `codex:wrapper_test` (new tests/wrapper.rs: private 0700 socket folder, app-server gets only the `-c` pairs and no hooks, TUI on `--remote`, thread named, exit status passed through, app-server and folder cleaned up; app-server failing runs plain `codex -c hooks=…`; codex missing is NotInstalled), the codex kind argv in `sessions_unit_test`, a codex env-wrapper case in agent_switches' `cli_to_find` test, and `the_wrapped_codex_needs_no_trust_step` in codex_trust.
+  - C3 (Sonnet): `daemon/codex/src/wrapper.rs`. C5 (Haiku): `agents.rs` codex kind is `/usr/bin/env HUMATA_SOCKET=… humata codex --hooks {codex_hooks} -- [resume {conversation}]`, `version_args` `codex --version`; `cli_to_find` names codex; `carrying` skips the value after `--hooks`. C4 (Sonnet): `cli/src/commands/codex.rs`, args/mod/error registration, `cli/tests/codex.rs`.
+  - F1 (manager): `flows/cases/verify/20-claude-and-codex-in-place-of-copilot.md` and its README row.
+  - Provisional picks for main to log (D-number): the wrapper gives the app-server only the session's `-c` pairs and never the hooks (hooks there would double every ask); the socket lives in a fresh 0700 `h2cx-<hex>` folder under the temp dir (or /tmp when that path is too long for a unix socket), removed on exit; the wrapped Codex kind shows no D202 trust row, and the fallback prints that Codex asks to trust the hooks once in `/hooks`.
+  - Left for a later batch (low priority per owner): composer/Inbox/MCP sends waiting for the ready signal (today they go through the screen guard, which already refuses a trust screen); E2's rest (link drop reported to the daemon, Claude Notification to the waiting card, per-channel withdrawals).
+
+- Batch 5 closed. C3 wrapper, C4 `humata codex` and C5 kind switch are done and their presubmits pass. Fix after main's report: `cli_to_find` had looked up `codex` by name for every kind called codex, so rigs that stand a script in for Codex (move_session_test) were refused. Now only the `env`-wrapped built-in is looked up by name; any other program is found by its own path (unit case added). Left: the composer, Inbox and MCP sends go through the ready gate; the rest of E2; O1–O4 owed live.
+- Batch 6 (main's go after D806): the deferred items.
+  - Send gate (D797): `start_ready` holds Humata's own sends behind a held first message. `expects` marks it pending and the new `StartSignal::delivered` (sessions first_message.rs) releases it. `terminal.rs` `type_in` waits at most 30 s in `behind_start`, then refuses with FailedPrecondition and types nothing. The composer, Inbox replies and MCP session_type all go through Type. Keys typed into the terminal pass. A session with nothing held (after a daemon restart, or no signal) passes at once. Test: `ready_gate_test` › `a_send_while_the_first_message_waits_goes_after_it_once_the_session_is_heard`.
+  - Link drop (D798): `Humata::lost` (default no-op). `run_link` calls it when a link that had named its thread drops, and names the thread again on reconnect. `humata codex` sends Hook event `lost`, and the daemon then calls `start_ready::unheard`, so `screen_ask` reads the screen again. Once the session is heard again, a screen card raised in the gap stays until its screen stops asking. Tests: `codex:link_test` › `a_dropped_app_server_is_told_connected_again_and_its_thread_named_again`; `ready_gate_test` › `a_dropped_link_brings_back_the_screen_card`.
+  - Notification and withdrawals (worker): Claude's `Notification` (permission_prompt|elicitation_dialog) runs `humata hook claude notification`. With no held ask, and asks not kept in the terminal, it raises a "waiting in its terminal" notice card. A turn report withdraws it. An Idle turn withdraws every held ask as Resolved, and a late answer is refused. Tests: 5 new cases in `hooks_test`, plus the `hooks_json` unit.
+  - Provisional: the notice card is plain, not D781 on_screen (hooks.rs has no tab index), and only by its content is it Dismiss-only. The UI should show only Dismiss for key `notice-in-terminal`. The idle sweep also runs on SessionStart's idle report.

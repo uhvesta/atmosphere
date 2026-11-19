@@ -17,7 +17,7 @@ use humata2_store::{
 use crate::agents::Agents;
 use crate::error::{GitError, StartError};
 use crate::first_message::FirstMessage;
-use crate::git::{clone_pull_head, clone_session, git, local_branches, remote_branches, remote_url};
+use crate::git::{clone_pull_head_with, clone_session_with, git, local_branches, remote_branches, remote_url};
 use crate::layout::Layout;
 use crate::names::{Branch, branch_slug, pick_branch, valid_branch_name};
 use crate::prefix::effective_prefix;
@@ -82,6 +82,34 @@ pub struct Started {
     pub session: SessionRecord,
     pub detail: SessionDetail,
     pub agent: AgentRecord,
+}
+
+/// Hears how far a session clone is: `(step key, done, total)`.
+pub type CloneUnits = Arc<dyn Fn(&str, u64, u64) + Send + Sync>;
+
+tokio::task_local! {
+    static CLONE_UNITS: CloneUnits;
+}
+
+/// Runs `work` so the session clones it makes (start, review start, continue,
+/// add a repo) report their units to `units` under the step key `clone:<repo>`.
+/// Work run without this reports nothing.
+pub async fn with_clone_units<F: std::future::Future>(units: CloneUnits, work: F) -> F::Output {
+    CLONE_UNITS.scope(units, work).await
+}
+
+pub(crate) fn clone_units() -> Option<CloneUnits> {
+    CLONE_UNITS.try_with(Clone::clone).ok()
+}
+
+/// A clone's reporter for the step `clone:<name>`, to move onto a blocking thread.
+pub(crate) fn clone_reporter(units: Option<CloneUnits>, name: &str) -> impl FnMut(u64) + Send + 'static {
+    let key = format!("clone:{name}");
+    move |done| {
+        if let Some(units) = &units {
+            units(&key, done, 1000);
+        }
+    }
 }
 
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -466,8 +494,9 @@ impl Starter {
             let main = self.layout.main_clone(&channel.folder, &repo.name);
             let url = remote_url(&self.remote_template, &repo.owner, &repo.name).map_err(git_err)?;
             let (path, branch, number) = (repo.path.clone(), repo.branch.clone(), pr.number);
+            let mut report = clone_reporter(clone_units(), &repo.name);
             let at = blocking(move || -> Result<String, GitError> {
-                clone_pull_head(&main, &url, &path, &branch, number)?;
+                clone_pull_head_with(&main, &url, &path, &branch, number, &mut report)?;
                 Ok(git(Some(&path), &["rev-parse", "HEAD"])?.trim().to_owned())
             })
             .await?
@@ -658,7 +687,8 @@ impl Starter {
                     }
                 })?;
             let (path, branch) = (repo.path.clone(), repo.branch.clone());
-            blocking(move || clone_session(&main, &url, &path, &branch))
+            let mut report = clone_reporter(clone_units(), &repo.name);
+            blocking(move || clone_session_with(&main, &url, &path, &branch, &mut report))
                 .await?
                 .map_err(|source| StartError::Git {
                     owner: repo.owner.clone(),

@@ -70,3 +70,58 @@ fn status_draws_the_chain_from_the_relatives() {
     assert_eq!(of("docs")["depth"], 0);
     assert!(printed["restack"].is_null(), "{printed:#}");
 }
+
+/// `stack status --json --offline`, which must not call gh at all.
+fn offline_status(world: &World) -> Value {
+    let run = world.stack(&["status", "--json", "--offline"]);
+    run.ok();
+    assert!(world.calls().is_empty(), "offline status called gh: {:#?}", world.calls());
+    serde_json::from_str(&run.stdout).expect("status --json prints JSON")
+}
+
+#[test]
+fn offline_status_reads_each_topic_head_and_base_without_gh() {
+    let world = World::new();
+    world.commit("codec.rs", "codec\n", &message("add the codec", "Topic: codec"));
+    world.commit("journal.rs", "journal\n", &message("compress the journal", "Topic: journal\nRelative: codec"));
+
+    let printed = offline_status(&world);
+    let topics = printed["topics"].as_array().cloned().expect("topics");
+    assert_eq!(topics.len(), 2, "{printed:#}");
+    assert_eq!(topics[0]["topic"], "codec");
+    assert_eq!(topics[1]["topic"], "journal");
+    assert!(topics.iter().all(|topic| topic["number"].is_null()), "{printed:#}");
+    assert!(topics.iter().all(|topic| topic["head"].is_string()), "{printed:#}");
+    assert!(topics.iter().all(|topic| topic["base_commit"].is_string()), "{printed:#}");
+    assert_eq!(topics[0]["base_commit"], world.git(&["rev-parse", "origin/main"]));
+    assert_eq!(topics[1]["base_commit"], topics[0]["head"]);
+    assert!(printed["orphaned"].as_array().is_some_and(|orphaned| orphaned.is_empty()), "{printed:#}");
+}
+
+#[test]
+fn offline_status_gives_the_same_heads_on_every_run() {
+    let world = World::new();
+    world.commit("codec.rs", "codec\n", &message("add the codec", "Topic: codec"));
+    world.commit("journal.rs", "journal\n", &message("compress the journal", "Topic: journal\nRelative: codec"));
+
+    let heads = |printed: &Value| -> Vec<Value> {
+        printed["topics"]
+            .as_array()
+            .map(|topics| topics.iter().map(|topic| topic["head"].clone()).collect())
+            .unwrap_or_default()
+    };
+    let first = heads(&offline_status(&world));
+    let second = heads(&offline_status(&world));
+    assert_eq!(first.len(), 2);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn offline_text_status_runs_without_gh() {
+    let world = World::new();
+    world.commit("codec.rs", "codec\n", &message("add the codec", "Topic: codec"));
+
+    let run = world.stack(&["status", "--offline"]);
+    run.ok();
+    assert!(world.calls().is_empty(), "offline status called gh: {:#?}", world.calls());
+}

@@ -168,7 +168,7 @@ fn preview(request: &Request, look: Look) -> Div {
             let color = match line.kind {
                 LineKind::Added => GREEN,
                 LineKind::Removed => RED,
-                LineKind::Hunk => look.secondary,
+                LineKind::Hunk | LineKind::Note => look.secondary,
                 LineKind::Context => look.text,
             };
             text(line.text.clone())
@@ -409,6 +409,8 @@ const fn holder_note(note: HolderNote) -> &'static str {
         HolderNote::Restarting => "restarts now and resumes its conversation",
         HolderNote::NoIdleMoment => "can't tell when it's idle",
         HolderNote::StaysUntilClosed => "stays on its old release until you close it",
+        HolderNote::Moves => "moves to the new release and keeps running",
+        HolderNote::Moving => "moving now; it keeps running",
     }
 }
 

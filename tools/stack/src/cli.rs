@@ -383,6 +383,12 @@ pub(crate) struct StatusArgs {
     /// Print the status as JSON instead of text.
     #[arg(long)]
     pub(crate) json: bool,
+
+    /// Read the stack without the network: no fetch and no GitHub calls, so
+    /// no pull requests and no GitHub login are needed. The trunk comes from
+    /// --trunk, stack.toml, or the remote's HEAD as last fetched.
+    #[arg(long)]
+    pub(crate) offline: bool,
 }
 
 #[derive(Debug, Args)]

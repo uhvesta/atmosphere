@@ -1,9 +1,11 @@
 //! The screens in the middle of the window, one per route.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::Disableable as _;
 use gpui_kit::component::{Sizable as _, input::InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
@@ -153,6 +155,14 @@ pub(crate) fn session_header(
         .find(|x| x.id == session.machine);
     let terminal_full = state.full_screen() == Some(FullScreen::Terminal);
     let compact = width < 560.;
+    // P8: a Working session's run time counts up from its start. The clock is
+    // read only when there is a start to measure from.
+    let working_now = session
+        .status_since_ms
+        .filter(|_| session.status == Status::Working)
+        .map(|_| ui.clients().daemon.now_ms());
+    let working = working_now
+        .and_then(|now| working_for(session.status, session.status_since_ms, now));
     let mut crumbs = row()
         .min_w_0()
         .overflow_hidden()
@@ -161,6 +171,9 @@ pub(crate) fn session_header(
         .text_size(px(11.5))
         .text_color(rgb(look.secondary));
     let desk = state.is_desk_session(&session.id);
+    let diff_shows = state.panel() == Some(humata2_session::Panel::Changes)
+        && !state.layout.panel.collapsed
+        && state.full_screen() != Some(FullScreen::Terminal);
     // A channel's own Desk session names that channel and its Desk, and the
     // link goes to the Desk tab (frame 93).
     let owner = state
@@ -248,6 +261,9 @@ pub(crate) fn session_header(
                 .child(words),
         );
     }
+    if !compact && working_now.is_some() {
+        heading = heading.child(working_note(session, look, working));
+    }
     row()
         .h(px(52.))
         .px(px(16.))
@@ -259,6 +275,14 @@ pub(crate) fn session_header(
         .when(collapsed || terminal_full, |x| {
             x.child(chrome::lights()).child(div().w(px(4.)))
         })
+        // DS-58: the same ‹ Back as every other page's top bar.
+        .child(
+            widgets::ghost_in(look, ui, "session-back", "", AppAction::Back)
+                .icon(IconName::ChevronLeft)
+                .accessibility_label("Back")
+                .tooltip("Back  ⌘[")
+                .disabled(state.trail.is_empty()),
+        )
         .child(
             col()
                 .flex_1()
@@ -312,8 +336,10 @@ pub(crate) fn session_header(
                 .text_color(rgb(0xffffff)),
             )
         })
-        // Frame 68: a pull request review is submitted from its header.
-        .when(session.pull_request_review && !desk, |bar| {
+        // Frame 68: a pull request review is submitted from its header,
+        // unless the Diff panel shows: its footer holds Submit review then
+        // (DS-55), and one blue action is enough (DS-11).
+        .when(session.pull_request_review && !desk && !diff_shows, |bar| {
             bar.child(
                 widgets::primary_in(
                     look,
@@ -340,22 +366,38 @@ pub(crate) fn session_header(
                 look.secondary,
             ))
         })
-        .child(chrome::action(
-            ui,
-            "terminal-full-screen",
-            if terminal_full {
-                "Return to columns"
-            } else {
-                "Expand terminal"
-            },
-            if terminal_full {
-                IconName::Minimize2
-            } else {
-                IconName::Maximize2
-            },
-            AppAction::ToggleFullScreen(FullScreen::Terminal),
-            look.secondary,
-        ))
+        .child({
+            // Like `chrome::action`, with the shortcut in a tooltip so the
+            // two arrows do not read as duplicates.
+            let ui = ui.clone();
+            div()
+                .id("terminal-full-screen")
+                .role(Role::Button)
+                .aria_label(if terminal_full {
+                    "Return to columns"
+                } else {
+                    "Expand terminal"
+                })
+                .size(px(15.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(chrome::icon(
+                    if terminal_full {
+                        IconName::Minimize2
+                    } else {
+                        IconName::Maximize2
+                    },
+                    look.secondary,
+                    15.,
+                ))
+                .on_click(move |_, _, cx| {
+                    ui.send(AppAction::ToggleFullScreen(FullScreen::Terminal), cx)
+                })
+                .test_support()
+        })
         .child(chrome::action(
             ui,
             "toggle-side-panel",
@@ -373,6 +415,39 @@ pub(crate) fn session_header(
 
 /// The header's ⋯ button and, when open, its menu (SE-7). No frame draws the
 /// menu; it is the machine page's menu card (D295).
+/// The words the header shows for a session that has been Working since
+/// `since_ms` (unix ms), once the run is at least [`widgets::ELAPSED_AFTER_MS`]:
+/// "Working · 2m 10s". `None` for any other status, when the start is not
+/// known, or while the run is still short.
+fn working_for(status: Status, since_ms: Option<i64>, now_ms: i64) -> Option<String> {
+    if status != Status::Working {
+        return None;
+    }
+    let run = now_ms.saturating_sub(since_ms?);
+    (run >= widgets::ELAPSED_AFTER_MS)
+        .then(|| format!("Working · {}", widgets::elapsed_text(run)))
+}
+
+/// The Working run time in the header (P8): its words once the run is long
+/// enough, else an empty box. Either way it re-draws once a second, so the
+/// words appear on time and then count up.
+fn working_note(session: &Session, look: Look, words: Option<String>) -> AnyElement {
+    // Before there is anything to say it only ticks: out of the row's flow,
+    // so the heading keeps its spacing.
+    let note = if words.is_none() { div().absolute() } else { div() };
+    note.text_size(px(11.5))
+        .text_color(rgb(look.secondary))
+        .children(words)
+        .with_animation(
+            SharedString::from(format!("session-working-{}", session.id)),
+            Animation::new(Duration::from_secs(1))
+                .repeat()
+                .with_max_fps(1.),
+            |note, _| note,
+        )
+        .into_any_element()
+}
+
 fn session_menu(ui: &Rc<Ui>, state: &AppState, session: &Session, desk: bool, look: Look) -> Div {
     let open = state.session.menu;
     let pick = |item| AppAction::Session(SessionAction::MenuPick(item));
@@ -606,4 +681,36 @@ fn review_notices(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) 
             .bg(rgb(look.term))
             .children(bars),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: the module's gpui glob brings in gpui's own
+    // `test` attribute, which would shadow the built-in one.
+    use ::core::prelude::v1::test;
+
+    use super::working_for;
+    use crate::widgets::elapsed_text;
+    use humata2_clients::model::Status;
+
+    #[test]
+    fn a_working_session_shows_how_long_it_has_run() {
+        let text = working_for(Status::Working, Some(0), 130_000);
+        assert!(text.is_some_and(|text| text.ends_with(elapsed_text(130_000).as_str())));
+    }
+
+    #[test]
+    fn a_working_run_under_the_threshold_shows_nothing_yet() {
+        assert_eq!(working_for(Status::Working, Some(0), 9_000), None);
+    }
+
+    #[test]
+    fn a_session_that_is_not_working_shows_no_run_time() {
+        assert_eq!(working_for(Status::Idle, Some(0), 130_000), None);
+    }
+
+    #[test]
+    fn a_working_session_with_no_known_start_shows_no_run_time() {
+        assert_eq!(working_for(Status::Working, None, 130_000), None);
+    }
 }

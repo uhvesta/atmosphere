@@ -50,13 +50,15 @@ most a one-line purpose that names the step without judging it.
 
 ## 3. Send the stack to the view
 
-Follow `shared/stacks.md`, section 4: one `review_prepare` call with the
-whole stack's `spec` (one entry per repo), the files in `order` layer by
-layer, and one `groups` entry per layer. No `notes`.
+Follow `shared/stacks.md`, section 4: one `review_prepare` call with
+`from_stack: {repo}` when the repo has a `tools/stack` stack (send `tip`
+if it forks), otherwise `stack.layers` with a range per repo, or a worktree
+layer for uncommitted work on top. Add `importance` only for the key and
+skim files you know of (paths and a tier). No `groups`, no `notes`.
 
-That is the closest the view comes to a stack today. The stepped view,
-where each layer shows its own diff, is not built yet; `shared/stacks.md`
-says exactly what the user gets meanwhile.
+The owner gets the layers as a list at the top of the file list: Whole
+stack first, then each layer. Stepping through each layer's own diff is
+being built (STACKVIEW); `shared/stacks.md` says what the view shows.
 
 ## 4. A narrow ask: one diff spec
 
@@ -73,8 +75,11 @@ says exactly what the user gets meanwhile.
   `spec` alone and put the layer list in your reply. Don't retry.
 - If the spec is refused (a base that doesn't exist, a repo the session
   doesn't have), fix it from the error; don't guess a second base.
-- If a file in `order` or a group's `first` is refused, it isn't in the
-  diff: check the path and the repo.
+- If a file in `order`, an `importance` entry or a group's `first` is
+  refused, it isn't in the diff: check the path and the repo.
+- If `from_stack` is refused, the error says why (a fork needs `tip`, a
+  commit needs a `Topic:` trailer, a restack must finish, the stack tool
+  is missing). Fix that, or send explicit layers; don't guess them.
 
 ## 6. Say what you sent, and stop
 
@@ -85,10 +90,9 @@ A few lines, no more:
 - the layer list, bottom to top, each with its pull request, repos and
   file count (`shared/stacks.md` has the form), and how you picked the
   layers (an existing stack, per commit, or your own split);
-- for a stack, one plain line on the view: "You can go through it layer
-  by layer as sections. Files that two layers change show once, under the
-  lower layer: `<files>`. Stepping through each layer's own diff is being
-  built."
+- for a stack, one plain line on the view: "You can pick Whole stack or
+  any layer in the file list. Stepping through each layer's own diff is
+  being built."
 
 Then stop. Don't summarise what the code does, don't point out problems,
 and don't offer opinions, unless the user asks.
@@ -106,6 +110,5 @@ and don't offer opinions, unless the user asks.
 - `review_prepare` and `review_context` are MCP tools; the CLI has no
   command for them. `humata diff <session> --json` prints a session's
   changes as data but opens nothing.
-- The stepped stack view (`shared/stacks.md`, "Not built"): sending the
-  layers themselves with a range per repo, one layer's own diff, the whole
-  stack as layers, and stepping with `review_focus`.
+- The stepped stack view (`shared/stacks.md`, "Not built yet"): one
+  layer's own diff, and stepping to a layer with `review_focus`.

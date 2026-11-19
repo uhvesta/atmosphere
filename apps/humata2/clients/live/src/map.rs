@@ -9,6 +9,7 @@ use humata2_clients::model::{
 };
 use humata2_clients::machines::OperationId;
 use humata2_clients::model::{MoveStep, MoveStepState};
+use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
 use humata2_grpc::humata::v1 as pb;
 
 use crate::local_time::LocalNow;
@@ -368,6 +369,10 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
             .as_ref()
             .is_some_and(|binding| binding.push_allowed),
         folder: session.folder.clone(),
+        status_since_ms: session
+            .status_since
+            .as_ref()
+            .map(|at| unix_ms(at.seconds, at.nanos)),
         clones: session
             .repos
             .iter()
@@ -439,6 +444,81 @@ pub(crate) fn with_operation(session: &mut Session, operation: &pb::Operation) {
             total_units: step.total_units,
         })
         .collect();
+}
+
+/// The step that copies a move's session, whose units are bytes.
+const COPY: &str = "copy";
+/// Bytes per MB as the progress label counts them (decimal, as the move card).
+const MB: u64 = 1_000_000;
+
+/// The running step of an operation as the progress line draws it
+/// (PROGRESS). `None` unless the operation is running and one of its steps
+/// is. A step with no total is unmeasured: no fraction, no label.
+pub(crate) fn progress(operation: &pb::Operation) -> Option<OpProgress> {
+    if operation.state != pb::OperationState::Running as i32 {
+        return None;
+    }
+    let step = operation
+        .steps
+        .iter()
+        .find(|step| step.state == pb::StepState::Running as i32)?;
+    let (fraction, label) = if step.total_units == 0 {
+        (None, String::new())
+    } else {
+        let done = step.done_units.min(step.total_units);
+        let label = if step.key == COPY {
+            format!("{} of {} MB", done / MB, step.total_units / MB)
+        } else {
+            format!("{}%", percent(done, step.total_units))
+        };
+        (Some((done as f64 / step.total_units as f64) as f32), label)
+    };
+    Some(OpProgress {
+        title: step.title.clone(),
+        fraction,
+        label,
+        started_ms: operation
+            .started_at
+            .as_ref()
+            .map_or(0, |at| unix_ms(at.seconds, at.nanos)),
+    })
+}
+
+/// The kind of a daemon operation, as the dialog that started one picks its
+/// own out of the feed (PROGRESS). A kind no dialog follows, or one this
+/// client doesn't know, is `Other`.
+pub(crate) fn op_kind(kind: i32) -> OpKind {
+    match pb::OperationKind::try_from(kind) {
+        Ok(pb::OperationKind::StartSession) => OpKind::StartSession,
+        Ok(pb::OperationKind::ForkSession) => OpKind::Fork,
+        Ok(pb::OperationKind::ContinueInChannel) => OpKind::ContinueInChannel,
+        Ok(pb::OperationKind::AddRepo) => OpKind::AddRepo,
+        Ok(pb::OperationKind::RestoreSession) => OpKind::Restore,
+        Ok(pb::OperationKind::RebuildSession) => OpKind::Rebuild,
+        Ok(pb::OperationKind::StartPrReview) => OpKind::StartPrReview,
+        _ => OpKind::Other,
+    }
+}
+
+/// The update the progress feed carries for an operation: its id, kind and
+/// running step (PROGRESS). `None` when the operation has no id to match it
+/// by.
+pub(crate) fn op_update(operation: &pb::Operation) -> Option<OpUpdate> {
+    let id = operation.id.as_ref()?;
+    Some(OpUpdate {
+        id: id.value.clone(),
+        kind: op_kind(operation.kind),
+        progress: progress(operation),
+    })
+}
+
+/// `done` of `total` as a whole percent, capped at 100; 0 when `total` is 0.
+pub(crate) fn percent(done: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    let value = (u128::from(done) * 100 / u128::from(total)).min(100);
+    u8::try_from(value).unwrap_or(100)
 }
 
 /// What the host left out of a session's agent's writes (AW-9, D267).
@@ -720,6 +800,24 @@ mod tests {
     }
 
     #[test]
+    fn a_status_start_time_becomes_unix_ms_and_none_stays_none() {
+        let mut since = pb_session(pb::SessionStatus::Working);
+        since.status_since = Some(Default::default());
+        if let Some(at) = since.status_since.as_mut() {
+            at.seconds = 1_700_000_000;
+            at.nanos = 250_000_000;
+        }
+        let mapped = session(&since, &[], &AgentNames::default());
+        assert_eq!(mapped.status_since_ms, Some(1_700_000_000_250));
+        let unknown = session(
+            &pb_session(pb::SessionStatus::Working),
+            &[],
+            &AgentNames::default(),
+        );
+        assert_eq!(unknown.status_since_ms, None);
+    }
+
+    #[test]
     fn what_the_host_left_out_comes_across_and_none_stays_none() {
         let plain = session(&pb_session(pb::SessionStatus::Idle), &[], &AgentNames::default());
         assert_eq!(plain.away_left_out, None);
@@ -919,5 +1017,148 @@ mod tests {
             push_allowed: false,
         });
         assert!(session(&bound, &[], &agents).pull_request_review);
+    }
+
+    fn progress_step(key: &str, state: pb::StepState, done: u64, total: u64) -> pb::OperationStep {
+        pb::OperationStep {
+            key: key.to_owned(),
+            title: format!("title of {key}"),
+            state: state as i32,
+            done_units: done,
+            total_units: total,
+            ..Default::default()
+        }
+    }
+
+    fn running_operation(steps: Vec<pb::OperationStep>) -> pb::Operation {
+        pb::Operation {
+            state: pb::OperationState::Running as i32,
+            steps,
+            ..Default::default()
+        }
+    }
+
+    fn progress_of(operation: &pb::Operation) -> OpProgress {
+        match progress(operation) {
+            Some(shown) => shown,
+            None => panic!("a running operation with a running step shows progress"),
+        }
+    }
+
+    #[test]
+    fn a_measured_clone_step_gives_its_fraction_title_and_percent() {
+        let operation = running_operation(vec![
+            progress_step("record", pb::StepState::Done, 0, 0),
+            progress_step("clone_main:acme/api", pb::StepState::Running, 420, 1000),
+        ]);
+        let shown = progress_of(&operation);
+        assert!(matches!(shown.fraction, Some(f) if (f - 0.42).abs() < 1e-6));
+        assert_eq!(shown.title, "title of clone_main:acme/api");
+        assert!(shown.label.contains("42"));
+    }
+
+    #[test]
+    fn a_copy_step_labels_its_bytes_in_megabytes() {
+        let operation = running_operation(vec![progress_step(
+            "copy",
+            pb::StepState::Running,
+            120_000_000,
+            512_000_000,
+        )]);
+        let shown = progress_of(&operation);
+        assert!(matches!(shown.fraction, Some(f) if (f - 0.234_375).abs() < 1e-6));
+        assert!(shown.label.contains("120"));
+        assert!(shown.label.contains("512"));
+    }
+
+    #[test]
+    fn an_unmeasured_step_has_no_fraction_and_no_label() {
+        let operation = running_operation(vec![progress_step("clone_main:acme/api", pb::StepState::Running, 5, 0)]);
+        let shown = progress_of(&operation);
+        assert_eq!(shown.fraction, None);
+        assert!(shown.label.is_empty());
+    }
+
+    #[test]
+    fn done_past_total_is_a_full_fraction() {
+        let operation = running_operation(vec![progress_step(
+            "clone_main:acme/api",
+            pb::StepState::Running,
+            1500,
+            1000,
+        )]);
+        let shown = progress_of(&operation);
+        assert!(matches!(shown.fraction, Some(f) if (f - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn no_running_step_or_a_finished_operation_shows_no_progress() {
+        let all_done = running_operation(vec![
+            progress_step("record", pb::StepState::Done, 0, 0),
+            progress_step("clone_main:acme/api", pb::StepState::Done, 1000, 1000),
+        ]);
+        assert_eq!(progress(&all_done), None);
+
+        let mut succeeded = running_operation(vec![progress_step("copy", pb::StepState::Running, 1, 2)]);
+        succeeded.state = pb::OperationState::Succeeded as i32;
+        assert_eq!(progress(&succeeded), None);
+    }
+
+    #[test]
+    fn the_start_time_is_the_operation_start_in_unix_ms() {
+        let mut operation = running_operation(vec![progress_step("record", pb::StepState::Running, 0, 0)]);
+        operation.started_at = Some(humata2_grpc::Timestamp {
+            seconds: 12,
+            nanos: 5_000_000,
+        });
+        assert_eq!(progress_of(&operation).started_ms, 12_005);
+    }
+
+    fn update_of(operation: &pb::Operation) -> OpUpdate {
+        match op_update(operation) {
+            Some(update) => update,
+            None => panic!("an operation with an id has an update"),
+        }
+    }
+
+    #[test]
+    fn a_running_fork_with_a_running_step_is_a_fork_update_with_its_progress() {
+        let mut operation = running_operation(vec![progress_step("copy", pb::StepState::Running, 1, 2)]);
+        operation.id = Some(pb::OperationId {
+            value: "op_fork".to_owned(),
+        });
+        operation.kind = pb::OperationKind::ForkSession as i32;
+        let update = update_of(&operation);
+        assert_eq!(update.id, "op_fork");
+        assert_eq!(update.kind, OpKind::Fork);
+        assert_eq!(
+            update.progress.map(|shown| shown.title),
+            Some("title of copy".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_succeeded_operation_is_an_update_with_no_progress() {
+        let mut operation = running_operation(vec![progress_step("copy", pb::StepState::Running, 1, 2)]);
+        operation.id = Some(pb::OperationId {
+            value: "op_fork".to_owned(),
+        });
+        operation.kind = pb::OperationKind::ForkSession as i32;
+        operation.state = pb::OperationState::Succeeded as i32;
+        let update = update_of(&operation);
+        assert_eq!(update.kind, OpKind::Fork);
+        assert_eq!(update.progress, None);
+    }
+
+    #[test]
+    fn an_operation_without_an_id_has_no_update() {
+        let operation = running_operation(vec![progress_step("copy", pb::StepState::Running, 1, 2)]);
+        assert_eq!(op_update(&operation), None);
+    }
+
+    #[test]
+    fn a_kind_no_dialog_follows_or_an_unknown_one_is_other() {
+        assert_eq!(op_kind(pb::OperationKind::MoveSession as i32), OpKind::Other);
+        assert_eq!(op_kind(9_999), OpKind::Other);
     }
 }

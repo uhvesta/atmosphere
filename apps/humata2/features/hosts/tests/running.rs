@@ -31,6 +31,7 @@ fn holder(tab: Option<&str>, session: Option<&str>, title: &str, agent: Agent, s
         machine: mac(),
         stopped,
         agent_tab: false,
+        paused_for_move: false,
     }
 }
 
@@ -189,6 +190,7 @@ fn adopting_a_terminal_no_channel_has_puts_it_in_a_session() {
 fn shell_session_row(session: &SessionId) -> RunningHolder {
     RunningHolder {
         agent_tab: true,
+        paused_for_move: false,
         ..holder(Some("shell-agent-tab"), Some(session.as_str()), "shell1", Agent::Shell, false)
     }
 }

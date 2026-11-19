@@ -19,8 +19,9 @@ pub(super) fn inbox(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Di
         .or_else(|| requests.first().map(|request| &request.id));
     col()
         .size_full()
-        .child(header(
+        .child(panel_header(
             ui,
+            state,
             Panel::Inbox,
             full,
             Some(secondary(look, "this session and its forks")),

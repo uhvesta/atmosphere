@@ -154,6 +154,26 @@ pub struct ForkDraft {
     pub turns: Option<Vec<PastTurn>>,
     /// The list open under a row.
     pub picker: Option<ForkPicker>,
+    /// The running step of the fork operation while the dialog waits.
+    pub progress: Option<humata2_clients::progress::OpProgress>,
+    /// The operation id `progress` follows; latched by the first fork update.
+    pub op: Option<String>,
+}
+
+/// Latches `op` onto the first update's id and keeps that operation's
+/// progress; updates of another id change nothing.
+pub fn follow_operation(
+    op: &mut Option<String>,
+    progress: &mut Option<humata2_clients::progress::OpProgress>,
+    update: humata2_clients::progress::OpUpdate,
+) {
+    match op {
+        Some(id) if *id != update.id => {}
+        _ => {
+            *op = Some(update.id);
+            *progress = update.progress;
+        }
+    }
 }
 
 /// A move being set up (MV-1 to MV-3).
@@ -612,6 +632,9 @@ pub enum SessionAction {
     CancelContinue,
     /// The daemon started the new session, or didn't.
     Continued(Result<SessionId, DaemonError>),
+    /// A watched operation moved on; the Fork and Continue dialogs that wait
+    /// keep its progress.
+    OperationMoved(humata2_clients::progress::OpUpdate),
     /// The daemon said what archiving would lose.
     ArchivePlanned {
         session: SessionId,
@@ -899,6 +922,22 @@ impl Reducer for Sessions {
             | SessionAction::ConfirmContinue
             | SessionAction::CancelContinue
             | SessionAction::Continued(_)) => return self.continue_in(state, action),
+            SessionAction::OperationMoved(update) => {
+                use humata2_clients::progress::OpKind;
+                match update.kind {
+                    OpKind::Fork if state.forking => {
+                        if let Some(draft) = &mut state.fork {
+                            follow_operation(&mut draft.op, &mut draft.progress, update);
+                        }
+                    }
+                    OpKind::ContinueInChannel => {
+                        if let Some(draft) = state.continuing.as_mut().filter(|draft| draft.sending) {
+                            follow_operation(&mut draft.op, &mut draft.progress, update);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             SessionAction::History(action) => return self.history(state, action),
             SessionAction::Close(action) => return self.close(state, action),
             SessionAction::Show(workspace) => {
@@ -1503,6 +1542,8 @@ impl Reducer for Sessions {
                     branch,
                     turns: None,
                     picker: None,
+                    progress: None,
+                    op: None,
                 });
                 state.error = None;
             }
@@ -1600,6 +1641,10 @@ impl Reducer for Sessions {
                     return Effect::none();
                 }
                 state.forking = true;
+                if let Some(draft) = &mut state.fork {
+                    draft.progress = None;
+                    draft.op = None;
+                }
                 state.error = None;
                 let daemon = self.clients.daemon.clone();
                 let options = ForkOptions {
@@ -1621,6 +1666,10 @@ impl Reducer for Sessions {
             }
             SessionAction::Forked(result) => {
                 state.forking = false;
+                if let Some(draft) = &mut state.fork {
+                    draft.progress = None;
+                    draft.op = None;
+                }
                 match result {
                     Ok(id) => {
                         state.fork = None;

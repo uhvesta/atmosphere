@@ -618,6 +618,9 @@ pub struct Session {
     pub folder: String,
     /// The repositories cloned inside it, with their absolute paths.
     pub clones: Vec<SessionClone>,
+    /// When its status became what it is now, unix ms (P8); the tab header
+    /// shows how long it has been Working. `None` when not known.
+    pub status_since_ms: Option<i64>,
 }
 
 impl Session {
@@ -928,6 +931,10 @@ pub enum HolderNote {
     StaysUntilClosed,
     /// The agent has no turn tracking, so there is no idle moment.
     NoIdleMoment,
+    /// Moves onto the current holder in place; keeps running.
+    Moves,
+    /// Moving now.
+    Moving,
 }
 
 impl Request {
@@ -1088,6 +1095,9 @@ pub enum LineKind {
     Removed,
     /// A hunk header.
     Hunk,
+    /// A note under a line, such as git's "No newline at end of file": not a
+    /// code line, so it has no numbers and takes no comment.
+    Note,
 }
 
 /// One line of a diff.
@@ -1138,6 +1148,28 @@ pub struct FileDiff {
     pub binary: bool,
     /// Why this file's lines could not be read; `None` when they could.
     pub error: Option<String>,
+    /// git's mode for the file before the change, as its octal digits read as
+    /// a number (100644); 0 when the old side is missing.
+    pub old_mode: u32,
+    /// git's mode for the file after the change, as its octal digits read as
+    /// a number (100755); 0 when the new side is missing.
+    pub new_mode: u32,
+    /// How much the file matters, as the daemon served it (D802): the
+    /// agent's tier, else the daemon's own (lockfiles and generated files
+    /// skim).
+    pub tier: FileTier,
+}
+
+/// How much a file matters to the reader (D802).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FileTier {
+    /// Read this first.
+    Key,
+    /// Read it in order.
+    #[default]
+    Normal,
+    /// Safe to skim.
+    Skim,
 }
 
 /// A review comment on a diff line (RV-4).
@@ -1215,6 +1247,9 @@ pub enum DiffBase {
     PullRequestBase,
     /// Each repository against its own base (RV-31). A repository left out
     /// gets the daemon's default base.
+    /// A spec with a stack base ([`RepoBase::Range`] or
+    /// [`RepoBase::Overlay`]) is a stack layer or the whole stack (D800):
+    /// exactly its repositories show, and no others.
     Spec(Vec<RepoDiffSpec>),
 }
 
@@ -1237,6 +1272,23 @@ pub enum RepoBase {
     Uncommitted,
     /// This repository's pull request's base (PR-10); pull request reviews only.
     PullRequestBase,
+    /// `base..head` as they are, whatever is checked out (D800): a stack
+    /// layer's own change.
+    Range {
+        /// The older rev.
+        base: String,
+        /// The newer rev.
+        head: String,
+    },
+    /// `base` against the working tree, but only the uncommitted files under
+    /// `paths` (D800): a stack's uncommitted layer, or the whole stack over
+    /// one.
+    Overlay {
+        /// The rev the overlay sits on.
+        base: String,
+        /// The pathspecs whose uncommitted files show.
+        paths: Vec<String>,
+    },
 }
 
 /// One repository's base in a [`DiffBase::Spec`].

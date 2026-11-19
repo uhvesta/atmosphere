@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::model::{
-    Agent, ChannelId, PreparedView, RepoBase, RepoDiffSpec, Scope, SessionId, ViewId, ViewState,
+    Agent, ChannelId, FileTier, PreparedView, RepoBase, RepoDiffSpec, Scope, SessionId, ViewId, ViewState,
 };
 use humata2_clients::views::{
-    PlanGroup, PlanNote, PlanView, ViewContent, ViewEvents, ViewRecord, ViewsClient, WalkthroughStep,
+    LayerDrift, LayerRepoView, LayerView, PlanGroup, PlanNote, PlanTier, PlanView, StackView, ViewContent, ViewEvents, ViewRecord, ViewsClient, WalkthroughStep,
 };
 use humata2_clients::{DaemonError, Reply};
 use humata2_grpc::humata::v1 as pb;
@@ -121,8 +121,228 @@ pub(crate) fn repo_base(base: Option<&pb::DiffSpecBase>) -> RepoBase {
     }
 }
 
+/// The agent's tiers (D802); an entry without a file is dropped.
+fn tiers(list: &[pb::ReviewImportance]) -> Vec<PlanTier> {
+    list.iter()
+        .filter_map(|entry| {
+            let (repo, path) = file(entry.file.as_ref())?;
+            Some(PlanTier {
+                repo,
+                path,
+                tier: crate::diff::file_tier(entry.tier),
+            })
+        })
+        .collect()
+}
+
+/// The inverse of [`tiers`].
+fn tiers_to_wire(list: &[PlanTier]) -> Vec<pb::ReviewImportance> {
+    use pb::review_importance::Tier;
+    list.iter()
+        .map(|entry| pb::ReviewImportance {
+            file: Some(repo_path_wire(&entry.repo, &entry.path)),
+            tier: match entry.tier {
+                FileTier::Key => Tier::Key,
+                FileTier::Normal => Tier::Normal,
+                FileTier::Skim => Tier::Skim,
+            } as i32,
+        })
+        .collect()
+}
+
+fn plan_group(group: &pb::ReviewGroup) -> Option<PlanGroup> {
+    Some(PlanGroup {
+        title: group.title.clone(),
+        note: group.note.clone(),
+        first: file(group.first.as_ref())?,
+    })
+}
+
+fn layer_drift(wire: &pb::ReviewLayerResolved) -> Option<LayerDrift> {
+    use pb::review_layer_resolved::Drift;
+    match Drift::try_from(wire.drift) {
+        Ok(Drift::Moved) => Some(LayerDrift::Moved),
+        Ok(Drift::Missing) => Some(LayerDrift::Missing),
+        Ok(Drift::HeadMoved) => Some(LayerDrift::HeadMoved),
+        _ => None,
+    }
+}
+
+/// One layer's part in a repository: a range as it was sent, or its
+/// uncommitted files on top of the commit HEAD resolved to.
+fn layer_repo(wire: &pb::ReviewLayerRepo) -> Option<LayerRepoView> {
+    use pb::review_layer_repo::Part;
+    let repo = wire.repo.as_ref().map(map::repo_text)?;
+    let base = match wire.part.as_ref()? {
+        Part::Range(range) => RepoBase::Range {
+            base: range.base.clone(),
+            head: range.head.clone(),
+        },
+        Part::Worktree(worktree) => RepoBase::Overlay {
+            base: wire
+                .resolved
+                .as_ref()
+                .map(|resolved| resolved.head_commit.clone())
+                .filter(|commit| !commit.is_empty())
+                .unwrap_or_else(|| "HEAD".to_owned()),
+            paths: worktree.include_paths.clone(),
+        },
+    };
+    Some(LayerRepoView {
+        repo: repo.clone(),
+        spec: RepoDiffSpec { repo, base },
+        pull_request: wire.pull_request.clone(),
+        files: wire.resolved.as_ref().map_or(0, |resolved| resolved.files),
+        drift: wire.resolved.as_ref().and_then(layer_drift),
+    })
+}
+
+/// Each repository's Whole stack (D800): from the first layer's base to the
+/// top range head, or, when the repository has uncommitted layers, that base
+/// with the uncommitted files under all their paths. Repositories in the order
+/// the layers first reach them.
+fn whole_stack(layers: &[LayerView]) -> Vec<RepoDiffSpec> {
+    let mut whole: Vec<(String, Option<String>, Option<String>, Vec<String>, bool)> = Vec::new();
+    for part in layers.iter().flat_map(|layer| &layer.repos) {
+        let at = match whole.iter().position(|each| each.0 == part.repo) {
+            Some(at) => at,
+            None => {
+                whole.push((part.repo.clone(), None, None, Vec::new(), false));
+                whole.len() - 1
+            }
+        };
+        let entry = &mut whole[at];
+        match &part.spec.base {
+            RepoBase::Range { base, head } => {
+                entry.1.get_or_insert_with(|| base.clone());
+                entry.2 = Some(head.clone());
+            }
+            RepoBase::Overlay { base, paths } => {
+                entry.1.get_or_insert_with(|| base.clone());
+                entry.4 = true;
+                for path in paths {
+                    if !entry.3.contains(path) {
+                        entry.3.push(path.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    whole
+        .into_iter()
+        .filter_map(|(repo, base, head, paths, overlay)| {
+            let base = base?;
+            let base = match (overlay, head) {
+                (true, _) => RepoBase::Overlay { base, paths },
+                (false, Some(head)) => RepoBase::Range { base, head },
+                (false, None) => return None,
+            };
+            Some(RepoDiffSpec { repo, base })
+        })
+        .collect()
+}
+
+pub(crate) fn stack(wire: &pb::ReviewStack) -> StackView {
+    let layers: Vec<LayerView> = wire
+        .layers
+        .iter()
+        .map(|layer| LayerView {
+            title: layer.title.clone(),
+            purpose: layer.purpose.clone(),
+            topic: layer.topic.clone(),
+            repos: layer.repos.iter().filter_map(layer_repo).collect(),
+            order: layer.order.iter().filter_map(|path| file(Some(path))).collect(),
+            groups: layer.groups.iter().filter_map(plan_group).collect(),
+            importance: tiers(&layer.importance),
+        })
+        .collect();
+    let whole = whole_stack(&layers);
+    StackView { layers, whole }
+}
+
+fn repo_path_wire(repo: &str, path: &str) -> pb::RepoPath {
+    pb::RepoPath {
+        repo: map::parse_repo(repo),
+        path: path.to_owned(),
+    }
+}
+
+/// A stack as the app reports it back to the daemon: the inverse of
+/// [`stack`]. The daemon re-resolves the revs, so the commits are not sent.
+pub(crate) fn stack_to_wire(stack: &StackView) -> pb::ReviewStack {
+    use pb::review_layer_repo::Part;
+    use pb::review_layer_resolved::Drift;
+    pb::ReviewStack {
+        layers: stack
+            .layers
+            .iter()
+            .map(|layer| pb::ReviewLayer {
+                title: layer.title.clone(),
+                purpose: layer.purpose.clone(),
+                topic: layer.topic.clone(),
+                repos: layer
+                    .repos
+                    .iter()
+                    .filter_map(|part| {
+                        let (part_wire, head_commit) = match &part.spec.base {
+                            RepoBase::Range { base, head } => (
+                                Part::Range(pb::ReviewLayerRange {
+                                    base: base.clone(),
+                                    head: head.clone(),
+                                }),
+                                String::new(),
+                            ),
+                            RepoBase::Overlay { base, paths } => (
+                                Part::Worktree(pb::ReviewLayerWorktree {
+                                    include_paths: paths.clone(),
+                                }),
+                                base.clone(),
+                            ),
+                            _ => return None,
+                        };
+                        let drift = match part.drift {
+                            None => Drift::None,
+                            Some(LayerDrift::Moved) => Drift::Moved,
+                            Some(LayerDrift::Missing) => Drift::Missing,
+                            Some(LayerDrift::HeadMoved) => Drift::HeadMoved,
+                        };
+                        Some(pb::ReviewLayerRepo {
+                            repo: map::parse_repo(&part.repo),
+                            part: Some(part_wire),
+                            pull_request: part.pull_request.clone(),
+                            resolved: Some(pb::ReviewLayerResolved {
+                                base_commit: String::new(),
+                                head_commit,
+                                drift: drift as i32,
+                                files: part.files,
+                            }),
+                        })
+                    })
+                    .collect(),
+                order: layer
+                    .order
+                    .iter()
+                    .map(|(repo, path)| repo_path_wire(repo, path))
+                    .collect(),
+                groups: layer
+                    .groups
+                    .iter()
+                    .map(|group| pb::ReviewGroup {
+                        title: group.title.clone(),
+                        note: group.note.clone(),
+                        first: Some(repo_path_wire(&group.first.0, &group.first.1)),
+                    })
+                    .collect(),
+                importance: tiers_to_wire(&layer.importance),
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn plan(wire: &pb::ReviewPlan) -> PlanView {
     PlanView {
+        stack: wire.stack.as_ref().map(stack),
         targets: wire
             .spec
             .iter()
@@ -135,17 +355,8 @@ pub(crate) fn plan(wire: &pb::ReviewPlan) -> PlanView {
             })
             .collect(),
         order: wire.order.iter().filter_map(|path| file(Some(path))).collect(),
-        groups: wire
-            .groups
-            .iter()
-            .filter_map(|group| {
-                Some(PlanGroup {
-                    title: group.title.clone(),
-                    note: group.note.clone(),
-                    first: file(group.first.as_ref())?,
-                })
-            })
-            .collect(),
+        groups: wire.groups.iter().filter_map(plan_group).collect(),
+        importance: tiers(&wire.importance),
         notes: wire
             .notes
             .iter()
@@ -493,6 +704,114 @@ mod tests {
             ]
         );
         assert_eq!(plan.order, vec![("a/b".to_owned(), "x.rs".to_owned())]);
+    }
+
+    #[test]
+    fn a_stack_plan_maps_layers_pull_requests_and_the_whole_stack() {
+        use pb::review_layer_repo::Part;
+        let repo = |name: &str, part: Part, pr: &str, head: &str| pb::ReviewLayerRepo {
+            repo: map::parse_repo(name),
+            part: Some(part),
+            pull_request: pr.to_owned(),
+            resolved: Some(pb::ReviewLayerResolved {
+                head_commit: head.to_owned(),
+                files: 3,
+                drift: pb::review_layer_resolved::Drift::Moved as i32,
+                ..pb::ReviewLayerResolved::default()
+            }),
+        };
+        let range = |base: &str, head: &str| {
+            Part::Range(pb::ReviewLayerRange {
+                base: base.to_owned(),
+                head: head.to_owned(),
+            })
+        };
+        let layer = |title: &str, repos: Vec<pb::ReviewLayerRepo>| pb::ReviewLayer {
+            title: title.to_owned(),
+            repos,
+            ..pb::ReviewLayer::default()
+        };
+        let plan = plan(&pb::ReviewPlan {
+            stack: Some(pb::ReviewStack {
+                layers: vec![
+                    layer("one", vec![repo("a/b", range("m", "x1"), "a/b#1", "")]),
+                    layer("two", vec![repo("a/b", range("x1", "x2"), "a/b#2", "")]),
+                    layer(
+                        "wip",
+                        vec![repo(
+                            "a/b",
+                            Part::Worktree(pb::ReviewLayerWorktree {
+                                include_paths: vec!["src".to_owned()],
+                            }),
+                            "",
+                            "x2",
+                        )],
+                    ),
+                ],
+            }),
+            ..pb::ReviewPlan::default()
+        });
+        let Some(stack) = plan.stack else {
+            panic!("a stack plan carries its stack");
+        };
+        let titles: Vec<&str> = stack.layers.iter().map(|each| each.title.as_str()).collect();
+        assert_eq!(titles, vec!["one", "two", "wip"]);
+        assert_eq!(stack.layers[1].repos[0].pull_request, "a/b#2");
+        assert_eq!(
+            stack.layers[1].repos[0].spec.base,
+            RepoBase::Range {
+                base: "x1".to_owned(),
+                head: "x2".to_owned()
+            }
+        );
+        assert_eq!(
+            stack.layers[2].repos[0].spec.base,
+            RepoBase::Overlay {
+                base: "x2".to_owned(),
+                paths: vec!["src".to_owned()]
+            }
+        );
+        assert_eq!(stack.layers[0].repos[0].files, 3);
+        assert_eq!(stack.layers[0].repos[0].drift, Some(LayerDrift::Moved));
+        assert_eq!(
+            stack.whole,
+            vec![RepoDiffSpec {
+                repo: "a/b".to_owned(),
+                base: RepoBase::Overlay {
+                    base: "m".to_owned(),
+                    paths: vec!["src".to_owned()]
+                }
+            }]
+        );
+    }
+
+    #[test]
+    fn whole_stack_of_committed_layers_runs_from_the_first_base_to_the_top_head() {
+        let part = |base: &str, head: &str| LayerRepoView {
+            repo: "a/b".to_owned(),
+            spec: RepoDiffSpec {
+                repo: "a/b".to_owned(),
+                base: RepoBase::Range {
+                    base: base.to_owned(),
+                    head: head.to_owned(),
+                },
+            },
+            pull_request: String::new(),
+            files: 0,
+            drift: None,
+        };
+        let layer = |repos| LayerView {
+            repos,
+            ..LayerView::default()
+        };
+        let whole = whole_stack(&[layer(vec![part("m", "1")]), layer(vec![part("1", "2")])]);
+        assert_eq!(
+            whole[0].base,
+            RepoBase::Range {
+                base: "m".to_owned(),
+                head: "2".to_owned()
+            }
+        );
     }
 
     #[test]

@@ -13,85 +13,90 @@ use gpui_kit::{prelude::*, *};
 use crate::kit::*;
 use crate::session::{self, Fill, Panel, Screen, Term};
 
-/// The line over the repos: the file and repo counts and the totals.
-fn summary(look: Look) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .px(px(4.))
-        .pb(px(6.))
-        .child(secondary(look, "4 files · 2 repos"))
-        .child(div().flex_1())
-        .child(div().text_size(px(11.)).text_color(c(GREEN)).child("+285"))
-        .child(div().text_size(px(11.)).text_color(c(RED)).child("−42"))
-}
-
-/// A repo's header, on two lines: the name, its branch and the counts, then
-/// the base it compares against with Push & PR. The counts line up with the
-/// file rows' counts below.
-fn repo_head(look: Look, name: &'static str, base: &'static str, branch: &'static str, add: &'static str, del: &'static str, open: bool) -> Div {
+/// A repo's one row: the fold chevron, its name, the base it compares
+/// against (every repo shares the session's branch, so none is shown), and
+/// its totals at the right. Push & PR lives in the footer.
+fn repo_head(look: Look, name: &'static str, base: &'static str, add: &'static str, del: &'static str, open: bool) -> Div {
     let against = div()
         .flex()
         .items_center()
+        .min_w_0()
         .text_size(px(11.5))
         .whitespace_nowrap()
-        .child(div().mr(px(3.)).text_color(c(if open { look.accent } else { look.secondary })).child("against"))
-        .child(div().text_color(c(if open { look.accent } else { look.text })).child(base))
-        .child(div().ml(px(3.)).child(small_icon(IconName::ChevronsUpDown, if open { look.accent } else { look.secondary })));
-    let top = div()
+        .child(div().flex_shrink_0().mr(px(3.)).text_color(c(if open { look.accent } else { look.secondary })).child("against"))
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(c(if open { look.accent } else { look.text })).child(base))
+        .child(div().flex_shrink_0().ml(px(3.)).child(small_icon(IconName::ChevronsUpDown, if open { look.accent } else { look.secondary })));
+    div()
         .flex()
         .items_center()
         .gap(px(6.))
         .h(px(26.))
         .px(px(4.))
         .pr(px(8.))
-        .child(small_icon(IconName::ChevronDown, look.tertiary))
-        .child(small_icon(IconName::FolderGit2, look.secondary))
-        .child(div().font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(name))
-        .child(div().flex_1())
-        .child(div().text_size(px(11.)).text_color(c(look.tertiary)).whitespace_nowrap().child(branch))
-        .child(div().text_size(px(11.)).text_color(c(GREEN)).child(add))
-        .child(div().text_size(px(11.)).text_color(c(RED)).child(del));
-    let bottom = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .h(px(26.))
-        .pl(px(40.))
-        .pr(px(4.))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronDown, look.tertiary)))
+        .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
         .child(against)
         .child(div().flex_1())
-        .child(div().px(px(6.)).text_size(px(11.5)).text_color(c(look.accent)).child("Push & PR"));
-    div().flex().flex_col().child(top).child(bottom)
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-/// A file under its repo, 22 px in from the list's edge so its icon sits
-/// under the repo's folder icon.
-fn file_row(look: Look, name: &'static str, add: &'static str, del: &'static str, on: bool, comments: Option<&'static str>) -> Div {
+/// A file under its repo: a 14 px status column (empty for a modified file),
+/// the name, then its directory dimmed, the comment count and +a −r.
+/// `path` is the directory, then the name.
+fn file_row(
+    look: Look,
+    path: (&'static str, &'static str),
+    mark: Option<&'static str>,
+    add: &'static str,
+    del: &'static str,
+    on: bool,
+    comments: Option<&'static str>,
+) -> Div {
+    let (dir, name) = path;
+    let letter = mark.map(|mark| (mark, if mark == "A" { GREEN } else if mark == "D" { RED } else { look.secondary }));
     div()
         .flex()
         .items_center()
         .gap(px(6.))
-        .h(px(24.))
+        .h(px(25.))
         .pl(px(22.))
         .pr(px(8.))
         .rounded(px(5.))
         .when(on, |row| row.bg(c(look.fill)))
-        .child(small_icon(IconName::FileCode, look.secondary))
-        .child(div().flex_1().whitespace_nowrap().child(name))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .children(letter.map(|(letter, hex)| div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(hex)).child(letter))),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .gap(px(6.))
+                .child(div().flex_shrink_0().max_w_full().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(c(look.tertiary)).child(dir)),
+        )
         .children(comments.map(|count| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(2.))
+                .flex_shrink_0()
+                .gap(px(3.))
                 .text_size(px(11.))
-                .text_color(c(look.accent))
-                .child(small_icon(IconName::MessageSquare, look.accent))
+                .text_color(c(look.secondary))
+                .child(small_icon(IconName::MessageSquare, look.secondary))
                 .child(count)
         }))
-        .child(div().text_size(px(11.)).text_color(c(GREEN)).child(add))
-        .child(div().text_size(px(11.)).text_color(c(RED)).child(del))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
 fn diff_lines(look: Look) -> Div {
@@ -165,9 +170,19 @@ fn file_view(look: Look) -> Div {
                 .border_color(c(look.line))
                 .text_size(px(12.))
                 .child(small_icon(IconName::FileCode, look.secondary))
-                .child(div().font_weight(FontWeight::MEDIUM).child("api/src/client.rs"))
-                .child(div().flex_1())
-                .child(secondary(look, "Open in editor")),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap(px(4.))
+                        .child(secondary(look, "api ·").flex_shrink_0())
+                        .child(secondary(look, "src/").min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
+                        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
+                )
+                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
         )
         .child(diff_lines(look))
         .child(session::comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
@@ -182,6 +197,8 @@ fn footer(look: Look) -> Div {
         .p(px(10.))
         .border_t_1()
         .border_color(c(look.line))
+        .child(session::quiet(look, "Push & PR…"))
+        .child(session::quiet(look, "Add repo…"))
         .child(secondary(look, "1 draft comment"))
         .child(div().flex_1())
         .child(button(look, Kind::Primary, "Send 1 comment"))
@@ -197,13 +214,13 @@ fn repo_list(look: Look, full: bool, open: bool) -> Div {
         .gap(px(1.))
         .text_size(px(12.5))
         .when(full, |list| list.w(px(300.)).h_full().border_r_1().border_color(c(look.line)))
-        .child(summary(look))
-        .child(repo_head(look, "ledger", "release/2.4", "ledger-schema", "+142", "−18", open))
-        .child(file_row(look, "migrations/0042_accounts.sql", "+41", "−0", false, None))
-        .child(file_row(look, "src/posting.rs", "+101", "−18", false, None))
-        .child(repo_head(look, "api", "main", "ledger-schema", "+143", "−24", false))
-        .child(file_row(look, "src/client.rs", "+62", "−21", true, Some("2")))
-        .child(file_row(look, "src/entry.rs", "+81", "−3", false, None))
+        .child(repo_head(look, "ledger", "release/2.4", "+142", "−18", open))
+        .child(file_row(look, ("migrations/", "0042_accounts.sql"), Some("A"), "+41", "−0", false, None))
+        // Renamed from src/ledger.rs; not the open file, so no note line shows.
+        .child(file_row(look, ("src/", "posting.rs"), Some("R"), "+101", "−18", false, None))
+        .child(repo_head(look, "api", "main", "+143", "−24", false))
+        .child(file_row(look, ("src/", "client.rs"), None, "+62", "−21", true, Some("2")))
+        .child(file_row(look, ("src/", "entry.rs"), None, "+81", "−3", false, None))
 }
 
 /// The panel's column: its header with the picker, the repos and the
@@ -223,7 +240,8 @@ fn panel_body(look: Look, full: bool, overlay: Option<Div>) -> Div {
         .relative()
         .flex()
         .flex_col()
-        .child(session::panel_header(look, "Diff", full, Some(popup(look, "Comparing per repo"))))
+        // Full screen has one title bar (the shell's), carrying the picker.
+        .when(!full, |panel| panel.child(session::panel_header(look, "Diff", false, Some(popup(look, "Comparing per repo")))))
         .child(content)
         .child(footer(look))
         .children(overlay)
@@ -256,8 +274,8 @@ fn base_menu(look: Look) -> Div {
     };
     div()
         .absolute()
-        .top(px(120.))
-        .left(px(62.))
+        .top(px(72.))
+        .left(px(84.))
         .w(px(240.))
         .flex()
         .flex_col()
@@ -293,7 +311,7 @@ pub fn beside_terminal(look: Look) -> Div {
 /// its name's line.
 pub fn full_screen(look: Look) -> Div {
     let screen = Screen { fill: Fill::PanelFull, ..Screen::new(Some(Panel::Diff), Term::Working) };
-    session::session_with(look, screen, Panel::Diff, "Diff", panel_body(look, true, None))
+    session::session_with_extra(look, screen, Panel::Diff, "Diff", Some(popup(look, "Comparing per repo")), panel_body(look, true, None))
 }
 
 /// Frame 86 (light): frame 84 with the ledger repo's base menu open.
@@ -341,6 +359,18 @@ pub fn no_default_branch(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(session::panel_header(look, "Diff", false, Some(popup(look, "Comparing per repo"))))
-        .child(block);
+        .child(block)
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .p(px(10.))
+                .border_t_1()
+                .border_color(c(look.line))
+                // No diff, nothing to push: only Add repo… (as the app).
+                .child(session::quiet(look, "Add repo…")),
+        );
     session::session_with(look, Screen::new(Some(Panel::Diff), Term::Working), Panel::Diff, "Diff", body)
 }

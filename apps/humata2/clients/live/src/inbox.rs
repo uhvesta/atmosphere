@@ -435,6 +435,8 @@ fn holder_session(holder: &pb::HolderSession) -> HolderSession {
         pb::HolderNote::RestartsWhenIdle => HolderNote::RestartsWhenIdle,
         pb::HolderNote::Restarting => HolderNote::Restarting,
         pb::HolderNote::NoIdleMoment => HolderNote::NoIdleMoment,
+        pb::HolderNote::Moves => HolderNote::Moves,
+        pb::HolderNote::Moving => HolderNote::Moving,
         pb::HolderNote::StaysUntilClosed | pb::HolderNote::Unspecified => {
             HolderNote::StaysUntilClosed
         }

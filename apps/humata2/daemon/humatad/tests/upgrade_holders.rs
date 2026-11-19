@@ -23,6 +23,11 @@
 //! `<state>/holder_builds/<session>.sha`. A test deletes one while the
 //! daemon is down to stand for a session started before D373, which has
 //! no record, and to force a second detection with something new to show.
+//!
+//! These tests are about holders too old to move onto a new build in place
+//! (LIVEHOLDER): before the upgrade each record loses its `moves` line, so
+//! every holder stands for one from before LIVEHOLDER, which Migrate
+//! restarts. Moving holders is `tests/upgrade_holders_move.rs`.
 
 mod common;
 #[path = "common/upgrade.rs"]
@@ -95,6 +100,9 @@ case "$mode" in
   --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
   --resume) f="$CONV_DIR/$id.jsonl" ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do
   case "$line" in
@@ -200,6 +208,7 @@ impl Mac {
     /// `tests/upgrade_local.rs` does; returns once the daemon answers as
     /// `b`.
     async fn upgrade_to_b(&self) -> String {
+        too_old_to_move(&self.daemon.state);
         for (name, variable) in RELEASE_B {
             put_file(variable, &self.bin.join(format!(".{name}.next")));
         }
@@ -350,6 +359,24 @@ impl Mac {
         self.daemon.kill();
         std::fs::remove_file(&record).unwrap_or_else(|error| panic!("couldn't remove {}: {error}", record.display()));
         self.daemon.restart().await;
+    }
+}
+
+/// Makes every holder record of the daemon at `state` stand for a holder
+/// from before LIVEHOLDER: the sha256 stays and the `moves` line goes, so
+/// Migrate restarts its agent rather than move it, and a shell stays.
+fn too_old_to_move(state: &Path) {
+    let Ok(records) = std::fs::read_dir(state.join("holder_builds")) else {
+        return;
+    };
+    for record in records.flatten() {
+        let path = record.path();
+        if path.extension().is_none_or(|extension| extension != "sha") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("couldn't read {}: {error}", path.display()));
+        let sha = text.lines().next().unwrap_or_default().trim().to_owned();
+        std::fs::write(&path, sha).unwrap_or_else(|error| panic!("couldn't write {}: {error}", path.display()));
     }
 }
 

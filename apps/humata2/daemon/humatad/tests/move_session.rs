@@ -708,7 +708,7 @@ async fn a_moved_conversation_is_mirrored_once() {
 
 /// MV-13: the session's shell tab comes along as a new shell in the
 /// session's folder on box-2, starting with the output it had saved, and
-/// box-1's shell stops.
+/// box-1's shell keeps running with no session.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_moved_session_s_shell_tab_comes_back_on_the_new_machine_with_its_output() {
     let rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
@@ -761,7 +761,10 @@ async fn a_moved_session_s_shell_tab_comes_back_on_the_new_machine_with_its_outp
     shell.wait_for("shell-said-42").await;
     shell.wait_for("This is a new shell in").await;
     assert!(rig.the("box-1").tabs().is_empty(), "box-1 forgot the session's tabs");
-    assert!(!holder_answers(&old), "box-1's shell stopped");
+    // D801 I: the release never ends a running terminal; box-1's shell
+    // keeps running, with no session (tests/detach_live.rs lists it).
+    assert!(holder_answers(&old), "box-1's shell keeps running");
+    common::kill_holders(&[old]).await;
 }
 
 /// After a restart has undone a move cut short, the session is on `home`

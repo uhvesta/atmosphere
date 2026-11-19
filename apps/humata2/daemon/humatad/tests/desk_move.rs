@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{
-    Attach, Build, Daemon, World, agent_tab, create_channel, error_of, finished, folder,
-    get_session, git, open, repo_ref, shell_token, wait_status,
+    Build, Daemon, World, create_channel, error_of, finished, folder, get_session, git, repo_ref, shell_token,
+    wait_status,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -394,15 +394,6 @@ fn branch_of(clone: &Path) -> String {
     git(&["-C", &clone.display().to_string(), "symbolic-ref", "--short", "HEAD"])
 }
 
-/// Waits until `path` is gone.
-async fn wait_gone(path: &Path) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while path.exists() {
-        assert!(std::time::Instant::now() < deadline, "{} was never removed", path.display());
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 fn succeeded(operation: &pb::Operation) -> bool {
     operation.state == pb::OperationState::Succeeded as i32
 }
@@ -445,11 +436,10 @@ async fn a_moved_session_lands_in_the_channel_with_its_work_on_a_new_branch() {
     let repos = fixture.channel_repos().await;
     assert!(repos.contains(&repo_ref("acme", "web")), "{repos:?}");
     assert!(!fixture.on_desk(&id).await);
-    // The scratch folder goes once the moved session is up.
-    wait_gone(&desk).await;
-    let tab = agent_tab(&fixture.daemon, &id).await;
-    let mut attach = Attach::start(&fixture.daemon, open(&tab, 0)).await;
-    attach.wait_for("agent up --resume").await;
+    // D801 E: the scratch folder was renamed, not copied, and its agent runs
+    // on; its old name is a link to the new folder while the agent runs.
+    assert!(std::fs::symlink_metadata(&desk).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(desk.join("notes.md")).unwrap(), "# Q4\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -612,8 +602,8 @@ async fn a_move_that_fails_leaves_a_running_desk_session_and_nothing_half_moved(
     std::fs::write(desk.join("api/wip.txt"), "half done\n").unwrap();
     let plan = fixture.plan(&id).await.unwrap();
     // The Desk clone already has a branch of the plan's name, which the
-    // plan doesn't look at, so putting its copy on that branch fails after
-    // the agent stopped and the folder was copied.
+    // plan doesn't look at, so putting its clone on that branch fails after
+    // the folder was renamed into the channel: the rename is undone.
     git(&["-C", &desk.join("api").display().to_string(), "branch", &plan.branch]);
 
     let ended = fixture.move_by(&id, &plan).await;

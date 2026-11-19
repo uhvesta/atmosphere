@@ -52,6 +52,8 @@ enum Reverse {
     RestoreNote(Note),
     /// The plan was different.
     Plan(Option<PlanView>),
+    /// The stack showed another layer (`None` is Whole stack).
+    Layer(Option<String>),
 }
 
 /// Where the agent last focused the view, as long as the person hasn't moved
@@ -113,6 +115,9 @@ pub struct FollowerState {
     pub notes: Vec<Note>,
     /// The plan of how to review, once the agent prepared one.
     pub plan: Option<PlanView>,
+    /// The stack layer the agent has the view on, by title; `None` is
+    /// Whole stack (D800).
+    pub layer: Option<String>,
     /// The changes shown, oldest first.
     pub applied: Vec<Applied>,
     /// The last thing that failed, with what to do.
@@ -185,6 +190,8 @@ pub enum FollowerAction {
 pub enum Delegate {
     /// Scroll the review to this place.
     Show(Place),
+    /// Show this stack layer in the review; `None` is Whole stack.
+    ShowLayer(Option<String>),
 }
 
 /// The follower's reducer.
@@ -293,6 +300,11 @@ impl Follower {
                 }
             }
             Some(ReviewChangeKind::Plan(plan)) => Reverse::Plan(state.plan.replace(plan)),
+            Some(ReviewChangeKind::Layer(layer)) => {
+                let before = std::mem::replace(&mut state.layer, layer.clone());
+                effect = Effect::send(FollowerAction::Delegate(Delegate::ShowLayer(layer)));
+                Reverse::Layer(before)
+            }
             None => {
                 if change.tool == "diff" {
                     // The code moved lines: the notes' places changed.
@@ -354,6 +366,10 @@ impl Follower {
             Reverse::Plan(plan) => {
                 state.plan = plan;
                 Effect::none()
+            }
+            Reverse::Layer(layer) => {
+                state.layer.clone_from(&layer);
+                Effect::send(FollowerAction::Delegate(Delegate::ShowLayer(layer)))
             }
         }
     }

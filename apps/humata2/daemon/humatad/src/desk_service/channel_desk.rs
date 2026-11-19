@@ -310,9 +310,9 @@ impl DeskSvc {
     /// could have named (a session of the channel that is there, not
     /// archived, not a Desk session), else the call is refused and nothing
     /// changes. A closed session is FailedPrecondition. The row's
-    /// `target_gone` is cleared; when it was set the watch had stopped the
-    /// session for it, so its agent resumes the way Reopen's does (a session
-    /// on another machine is not resumed from here). The agent's next call
+    /// `target_gone` is cleared; when it was set the watch had detached the
+    /// session's terminals, so its agent resumes the way Reopen's does (a
+    /// session on another machine was left running, so nothing resumes). The agent's next call
     /// is judged against the new target: [`access_of`] reads the row on every
     /// call. Takes the session's lock.
     pub(super) async fn set_channel_desk_target(
@@ -334,14 +334,9 @@ impl DeskSvc {
             ));
         }
         self.channel_to_watch(&row.channel, target.as_deref()).await?;
-        let stopped_for_it = row.target_gone;
-        // A session on another machine is resumed there: refuse before
-        // changing anything when that machine can't be reached.
-        if stopped_for_it
-            && let (Some(machine), Some(remote)) = (self.elsewhere(&session), &self.remote)
-        {
-            remote.require_link(&machine).map_err(Status::from)?;
-        }
+        // D801 I: the watch detached a session here, so its agent starts
+        // again; one on another machine was left running there.
+        let stopped_for_it = row.target_gone && self.elsewhere(&session).is_none();
         row.target_session = target;
         row.target_gone = false;
         row.last_used_unix_ms = now_ms();

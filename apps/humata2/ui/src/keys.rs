@@ -63,10 +63,36 @@ gpui_kit::actions!(
         GoFiles,
         /// ⇧⌘↩: the terminal full screen.
         TerminalFullScreen,
+        /// ⌃⌘↩: the side panel full screen, and back.
+        PanelFullScreen,
         /// ⇧⌘F: fork the open session.
         ForkSession,
         /// Tab in the Inbox's list: its open item's terminal (D781).
         FocusInboxTerminal,
+        /// ⌥⌘]: the next layer of a stack review (DS-60).
+        NextLayer,
+        /// ⌥⌘[: the previous layer of a stack review (DS-60).
+        PrevLayer,
+        /// ⌥⌘↓: the next file of the Diff panel (DS-2).
+        NextFile,
+        /// ⌥⌘↑: the previous file of the Diff panel (DS-2).
+        PrevFile,
+        /// ⌃⌘↓: the next change of the open file (DS-27).
+        NextChange,
+        /// ⌃⌘↑: the previous change of the open file (DS-27).
+        PrevChange,
+        /// ⌥Z: flip Wrap and Scroll for long lines, in the diff only (DS-40).
+        ToggleDiffWrap,
+        /// ↓ in the focused file list: the next row (DS-84).
+        FileListDown,
+        /// ↑ in the focused file list: the previous row (DS-84).
+        FileListUp,
+        /// ↩ in the focused file list: open the file, or fold the repository (DS-84).
+        FileListOpen,
+        /// ← in the focused file list: fold the repository, or go up to it (DS-84).
+        FileListCollapse,
+        /// → in the focused file list: unfold the repository, or go to its first file (DS-84).
+        FileListExpand,
     ]
 );
 
@@ -78,9 +104,22 @@ pub const SIDEBAR: &str = "Sidebar";
 /// moves focus to the next stop (D781).
 pub(crate) const INBOX: &str = "HumataInbox";
 
+/// The Diff panel's key context while a stack review shows its layer list.
+/// The Diff panel sets it on its root; ⌥⌘] and ⌥⌘[ step layers only there.
+pub(crate) const DIFF_STACK: &str = "HumataDiffStack";
+
+/// The Diff's key context, set on the open file's code and header. ⌥Z is
+/// bound only here: Option is not Alt in a terminal or a text box, where ⌥Z
+/// types "Ω", so it must never be app-wide (DIFFVIEW-spec §8, item 2).
+pub(crate) const DIFF: &str = "HumataDiff";
+
+/// The Diff's file list while it has focus. Its arrows and Enter are bound
+/// only here, so they never reach the sidebar's or a text box's (DS-84).
+pub(crate) const DIFF_LIST: &str = "HumataDiffList";
+
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 19] = [
+pub const SHORTCUTS: [(&str, &str); 26] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⇧⌘N", "New channel"),
@@ -92,6 +131,8 @@ pub const SHORTCUTS: [(&str, &str); 19] = [
     ("⌘0", "Hide or show the sidebar"),
     ("⌥⌘0", "Hide or show the side panel"),
     ("⌥⌘M", "Move the session to another machine"),
+    ("⇧⌘↩", "Terminal full screen"),
+    ("⌃⌘↩", "Side panel full screen"),
     ("⌘1 ⌘2 ⌘3", "Home, Inbox, Board"),
     ("⌘,", "Settings"),
     ("⌘L", "Move focus to the sidebar"),
@@ -100,6 +141,11 @@ pub const SHORTCUTS: [(&str, &str); 19] = [
     ("Enter", "Open the sidebar row; send a message"),
     ("⇧⌘R", "Start or stop recording a bug report"),
     ("⇧⌘S", "Take a bug report snapshot"),
+    ("⌥⌘] ⌥⌘[", "Next, previous layer of a stack"),
+    ("⌥⌘↓ ⌥⌘↑", "Next, previous file"),
+    ("⌃⌘↓ ⌃⌘↑", "Next, previous change"),
+    ("⌥Z", "Wrap long lines in the diff"),
+    ("↑ ↓ ↩ ← →", "Move, open or fold in the focused file list"),
 ];
 
 /// Binds every shortcut. Call once at launch. Off a Mac each ⌘ chord
@@ -221,6 +267,7 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-4", GoHosts, None),
         KeyBinding::new("cmd-5", GoFiles, None),
         KeyBinding::new("shift-cmd-enter", TerminalFullScreen, None),
+        KeyBinding::new("ctrl-cmd-enter", PanelFullScreen, None),
         KeyBinding::new("shift-cmd-f", ForkSession, None),
         KeyBinding::new("shift-cmd-r", ToggleRecording, None),
         KeyBinding::new("shift-cmd-s", TakeSnapshot, None),
@@ -232,6 +279,24 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("end", Last, sidebar),
         KeyBinding::new("enter", Open, sidebar),
         KeyBinding::new("tab", FocusInboxTerminal, Some(INBOX)),
+        KeyBinding::new("alt-cmd-]", NextLayer, Some(DIFF_STACK)),
+        KeyBinding::new("alt-cmd-[", PrevLayer, Some(DIFF_STACK)),
+        // The shell does nothing unless the open session's panel shows the
+        // Diff, so these work while the terminal has focus.
+        KeyBinding::new("alt-cmd-down", NextFile, None),
+        KeyBinding::new("alt-cmd-up", PrevFile, None),
+        KeyBinding::new("ctrl-cmd-down", NextChange, None),
+        KeyBinding::new("ctrl-cmd-up", PrevChange, None),
+        // Only with the diff focused: elsewhere ⌥Z types a character.
+        KeyBinding::new("alt-z", ToggleDiffWrap, Some(DIFF)),
+        // A text field inside the diff (the comment box) keeps ⌥Z as typing.
+        KeyBinding::new("alt-z", gpui_kit::NoAction, Some("Input")),
+        // The file list's own keys, only while the list has focus (DS-84).
+        KeyBinding::new("down", FileListDown, Some(DIFF_LIST)),
+        KeyBinding::new("up", FileListUp, Some(DIFF_LIST)),
+        KeyBinding::new("enter", FileListOpen, Some(DIFF_LIST)),
+        KeyBinding::new("left", FileListCollapse, Some(DIFF_LIST)),
+        KeyBinding::new("right", FileListExpand, Some(DIFF_LIST)),
     ]
 }
 

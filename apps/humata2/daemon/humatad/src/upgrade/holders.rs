@@ -6,18 +6,23 @@
 //!
 //! - [`Builds`] keeps, for each holder this daemon spawns, the sha256 of the
 //!   `--holder` file it was spawned from, as `<state>/holder_builds/<name>.sha`
-//!   (`<session>.sha` for an agent, `<tab>.shell.sha` for a shell tab). It is
-//!   written just before the holder starts, through a temporary file renamed
-//!   into place, and never when a holder is only reattached.
+//!   (`<session>.sha` for an agent, `<tab>.shell.sha` for a shell tab), and a
+//!   second line `moves` when that file can move a running holder onto
+//!   another build in place. It is written just before the holder starts,
+//!   through a temporary file renamed into place, and never when a holder is
+//!   only reattached.
 //! - [`Holders`] compares those records with the `humata2_holder` the
-//!   release names. A session whose holder differs, or has no record (it
+//!   release names. A terminal whose holder differs, or has no record (it
 //!   began before D373), is on an old holder. While this daemon's own
 //!   `--holder` file is the release's, one pending Holders item for this
-//!   machine lists the agent sessions on old holders; shells are only said
-//!   to keep running, and never hold the item open. Migrate restarts each
-//!   listed agent onto the current holder at its next idle moment, in the
-//!   same session and conversation, and the item ends Approved once none
-//!   waits.
+//!   machine lists them. Migrate moves each holder whose record says `moves`
+//!   onto the current build in place, one at a time, the first being the
+//!   canary: same process, same program, same screen, nothing restarts, and
+//!   the round stops at the first move that fails. An agent whose holder is
+//!   too old to move is restarted onto the current holder at its next idle
+//!   moment, in the same session and conversation; a shell whose holder is
+//!   too old stays until it is closed and never holds the item open. The item
+//!   ends Approved once nothing is left to move or restart.
 //!
 //! A machine's own daemon looks the same way at its own holders (D378). It
 //! posts no item: it pushes the list to the host as a [`Reports`] value, which
@@ -32,11 +37,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::InstalledFile;
@@ -46,7 +53,7 @@ use humata2_store::{AgentRecord, AgentState, ResumeFailure, StoreError, TabKind,
 use tokio::sync::{Notify, broadcast, watch};
 
 use super::build::Release;
-use super::items::{Carry, Detail, Migrations, Progress};
+use super::items::{Carry, Detail, Migrations, Progress, outstanding, waiting_sessions};
 use super::run::{RunError, hash_file};
 use super::tools;
 use crate::events::Feed;
@@ -110,7 +117,64 @@ pub(crate) struct Builds {
     holder: PathBuf,
     /// Woken when an agent's record is kept: what waits may have changed.
     wake: Arc<Notify>,
-    hashed: Mutex<Option<(Stamp, String)>>,
+    /// The holder file's stamp, sha256 and whether it can move a holder.
+    hashed: Mutex<Option<(Stamp, String, bool)>>,
+}
+
+/// What a record says of the holder file a holder was spawned from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Recorded {
+    sha: String,
+    /// The file could move a running holder onto another build in place.
+    /// A record written before moving existed says nothing here, so it is
+    /// too old to move.
+    moves: bool,
+}
+
+/// How long `--handoff-versions` has to answer.
+const PROBE_LIMIT: Duration = Duration::from_secs(20);
+
+/// Whether the holder file at `holder` can move a running holder onto another
+/// build: it answers `--handoff-versions` with at least one version number.
+/// Any failure says no, which is the safe answer: the holder is restarted
+/// instead.
+fn can_move(holder: &Path) -> bool {
+    let spawned = Command::new(holder)
+        .arg("--handoff-versions")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return false;
+    };
+    // Read on its own thread so a full pipe never stalls the child.
+    let reader = child.stdout.take().map(|mut out| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = out.read_to_string(&mut text);
+            text
+        })
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < PROBE_LIMIT => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let Some(reader) = reader else {
+        return false;
+    };
+    let Ok(text) = reader.join() else {
+        return false;
+    };
+    status.is_some_and(|status| status.success()) && text.split_whitespace().any(|word| word.parse::<u32>().is_ok())
 }
 
 impl Builds {
@@ -125,6 +189,11 @@ impl Builds {
         }
     }
 
+    /// The `--holder` file this daemon spawns holders from, and moves them onto.
+    fn holder_file(&self) -> &Path {
+        &self.holder
+    }
+
     /// Woken after each agent holder is about to spawn.
     fn wake(&self) -> Arc<Notify> {
         self.wake.clone()
@@ -132,31 +201,63 @@ impl Builds {
 
     /// The sha256 of the `--holder` file now.
     fn current(&self) -> Result<String, BuildsError> {
+        self.current_build().map(|(sha, _)| sha)
+    }
+
+    /// The sha256 of the `--holder` file now, and whether it can move a
+    /// holder in place. Both are worked out once per change of the file.
+    fn current_build(&self) -> Result<(String, bool), BuildsError> {
         let read = |source| BuildsError::Read {
             path: self.holder.clone(),
             source,
         };
         let stamp = Stamp::of(&fs::metadata(&self.holder).map_err(read)?);
-        if let Some((seen, sha)) = &*self.hashed.lock().unwrap_or_else(PoisonError::into_inner)
+        if let Some((seen, sha, moves)) = &*self.hashed.lock().unwrap_or_else(PoisonError::into_inner)
             && *seen == stamp
         {
-            return Ok(sha.clone());
+            return Ok((sha.clone(), *moves));
         }
         let sha = hash_file(&self.holder).map_err(read)?;
-        *self.hashed.lock().unwrap_or_else(PoisonError::into_inner) = Some((stamp, sha.clone()));
-        Ok(sha)
+        let moves = can_move(&self.holder);
+        *self.hashed.lock().unwrap_or_else(PoisonError::into_inner) = Some((stamp, sha.clone(), moves));
+        Ok((sha, moves))
     }
 
-    /// The sha256 recorded under `name`, if there is one.
-    fn recorded(&self, name: &str) -> Option<String> {
-        fs::read_to_string(self.dir.join(name))
-            .ok()
-            .map(|text| text.trim().to_owned())
-            .filter(|sha| !sha.is_empty())
+    /// What is recorded under `name`, if there is a record.
+    fn recorded(&self, name: &str) -> Option<Recorded> {
+        let text = fs::read_to_string(self.dir.join(name)).ok()?;
+        let mut lines = text.lines().map(str::trim);
+        let sha = lines.next().filter(|sha| !sha.is_empty())?.to_owned();
+        Some(Recorded {
+            sha,
+            moves: lines.any(|line| line == "moves"),
+        })
+    }
+
+    /// Whether the holder recorded under `name` is on the current holder file.
+    fn on_current(&self, name: &str) -> bool {
+        match (self.recorded(name), self.current()) {
+            (Some(recorded), Ok(current)) => recorded.sha.eq_ignore_ascii_case(&current),
+            _ => false,
+        }
     }
 
     fn keep(&self, name: &str) -> Result<(), BuildsError> {
-        let sha = self.current()?;
+        let (sha, moves) = self.current_build()?;
+        self.write(name, &sha, moves)
+    }
+
+    /// The record under `name` no longer says its holder can move, because a
+    /// move found it too old. Its sha stays. Nothing is written when there is
+    /// no record.
+    fn too_old(&self, name: &str) -> Result<(), BuildsError> {
+        match self.recorded(name) {
+            Some(recorded) if recorded.moves => self.write(name, &recorded.sha, false),
+            _ => Ok(()),
+        }
+    }
+
+    fn write(&self, name: &str, sha: &str, moves: bool) -> Result<(), BuildsError> {
         let path = self.dir.join(name);
         let failed = |source| BuildsError::Write {
             path: path.clone(),
@@ -166,6 +267,9 @@ impl Builds {
         let temp = self.dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
         let written = File::create(&temp).and_then(|mut file| {
             file.write_all(sha.as_bytes())?;
+            if moves {
+                file.write_all(b"\nmoves\n")?;
+            }
             file.sync_all()
         });
         written
@@ -215,6 +319,43 @@ struct Waiting {
     /// The agent's holder process while it runs; none while it launches or
     /// resumes.
     holder_pid: Option<u32>,
+    /// Its holder can be moved onto the current build in place; only a running
+    /// agent's can.
+    moves: bool,
+    /// The agent's holder socket, to move it.
+    socket: PathBuf,
+}
+
+/// A terminal whose holder can be moved onto the current build in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Mover {
+    /// Its record under `holder_builds`.
+    name: String,
+    /// Its holder's socket.
+    socket: PathBuf,
+    /// The session, for an agent or a Terminal session's shell; none for a
+    /// shell tab.
+    session: Option<String>,
+    title: String,
+}
+
+impl Mover {
+    fn of_agent(waiting: &Waiting) -> Self {
+        Self {
+            name: format!("{}.sha", waiting.session),
+            socket: waiting.socket.clone(),
+            session: Some(waiting.session.clone()),
+            title: waiting.title.clone(),
+        }
+    }
+
+    /// Which terminal this is, for what is said when it can't move.
+    fn what(&self) -> String {
+        match &self.session {
+            Some(session) => format!("session {session}'s terminal"),
+            None => format!("the shell tab {}", self.name.trim_end_matches(".shell.sha")),
+        }
+    }
 }
 
 /// What one look found on old holders.
@@ -222,8 +363,24 @@ struct Waiting {
 struct Found {
     /// The agent sessions, by session id.
     waiting: Vec<Waiting>,
-    /// The shells (shell tabs and Terminal sessions).
+    /// The shells (shell tabs and Terminal sessions) whose holder is too old
+    /// to move: they stay until closed.
     shells: usize,
+    /// The shells whose holder can move.
+    movable_shells: Vec<Mover>,
+}
+
+impl Found {
+    /// Everything a move round would move, in order: agents first, then
+    /// shells.
+    fn movers(&self) -> Vec<Mover> {
+        self.waiting
+            .iter()
+            .filter(|waiting| waiting.moves)
+            .map(Mover::of_agent)
+            .chain(self.movable_shells.iter().cloned())
+            .collect()
+    }
 }
 
 /// One agent record and what is known about it, for [`classify`].
@@ -231,24 +388,58 @@ struct Seen {
     record: AgentRecord,
     /// A Terminal session's plain shell, which has no conversation to resume.
     is_shell: bool,
-    recorded: Option<String>,
+    recorded: Option<Recorded>,
 }
 
-/// Which of `agents` and `shell_tabs` (each with its recorded sha256) are on
-/// a holder other than the one with sha256 `wanted`. An agent that isn't
-/// meant to run, and one that is a plain shell, is never waiting.
-fn classify(wanted: &str, agents: Vec<Seen>, shell_tabs: &[Option<String>]) -> Found {
-    let old = |recorded: &Option<String>| !recorded.as_deref().is_some_and(|sha| sha.eq_ignore_ascii_case(wanted));
-    let mut found = Found {
-        shells: shell_tabs.iter().filter(|recorded| old(*recorded)).count(),
-        ..Found::default()
+/// One shell tab and what is known about it, for [`classify`].
+struct SeenTab {
+    tab: TabRecord,
+    recorded: Option<Recorded>,
+}
+
+/// Which of `agents` and `shell_tabs` are on a holder other than the one with
+/// sha256 `wanted`, and which of those can move in place. An agent that isn't
+/// meant to run is never waiting. A holder moves only while it runs.
+fn classify(wanted: &str, agents: Vec<Seen>, shell_tabs: Vec<SeenTab>) -> Found {
+    let old = |recorded: &Option<Recorded>| {
+        !recorded
+            .as_ref()
+            .is_some_and(|recorded| recorded.sha.eq_ignore_ascii_case(wanted))
     };
+    let can = |recorded: &Option<Recorded>| recorded.as_ref().is_some_and(|recorded| recorded.moves);
+    let mut found = Found::default();
+    for seen in shell_tabs {
+        if !old(&seen.recorded) {
+            continue;
+        }
+        if seen.tab.holder_pid != 0 && can(&seen.recorded) {
+            found.movable_shells.push(Mover {
+                name: format!("{}.shell.sha", seen.tab.id),
+                socket: seen.tab.holder_socket,
+                session: None,
+                title: String::new(),
+            });
+        } else {
+            found.shells += 1;
+        }
+    }
     for seen in agents {
         if !seen.record.state.should_run() || !old(&seen.recorded) {
             continue;
         }
+        let running = matches!(seen.record.state, AgentState::Running { .. });
+        let moves = running && can(&seen.recorded);
         if seen.is_shell {
-            found.shells += 1;
+            if moves {
+                found.movable_shells.push(Mover {
+                    name: format!("{}.sha", seen.record.session),
+                    socket: seen.record.launch.holder_socket,
+                    session: Some(seen.record.session),
+                    title: String::new(),
+                });
+            } else {
+                found.shells += 1;
+            }
         } else {
             found.waiting.push(Waiting {
                 session: seen.record.session,
@@ -257,19 +448,24 @@ fn classify(wanted: &str, agents: Vec<Seen>, shell_tabs: &[Option<String>]) -> F
                     AgentState::Running { holder_pid } => Some(holder_pid),
                     _ => None,
                 },
+                moves,
+                socket: seen.record.launch.holder_socket,
             });
         }
     }
     found.waiting.sort_by(|a, b| a.session.cmp(&b.session));
+    found.movable_shells.sort_by(|a, b| a.name.cmp(&b.name));
     found
 }
 
-/// The line that says the shells keep running.
+/// The line that says the shells on holders too old to move keep running.
 pub(super) fn shell_line(shells: usize) -> Option<String> {
     match shells {
         0 => None,
-        1 => Some("1 shell stays on its holder until it is closed".to_owned()),
-        many => Some(format!("{many} shells stay on their holders until they are closed")),
+        1 => Some("1 shell on a holder too old to move stays on it until it is closed".to_owned()),
+        many => Some(format!(
+            "{many} shells on holders too old to move stay on them until they are closed"
+        )),
     }
 }
 
@@ -303,6 +499,15 @@ enum HoldersError {
     },
 
     #[error(
+        "couldn't move {what} onto the current holder in place. If the holder refused, it keeps running on its old holder and nothing changed; if it was lost in the move, open the terminal to see what is left of it. Click Migrate again"
+    )]
+    Move {
+        what: String,
+        #[source]
+        source: humata2_holder::HolderError,
+    },
+
+    #[error(
         "session {session}'s agent didn't take its conversation up on the current holder ({reason:?}, exit code {exit_code:?}); nothing runs in its place. Open the session's terminal to read what it printed, fix the cause, resume the session, then click Migrate for the others"
     )]
     ResumeFailed {
@@ -327,6 +532,10 @@ struct Inner {
     feed: Arc<Feed>,
     /// Sessions being restarted now, so one restart is never begun twice.
     restarting: Mutex<HashSet<String>>,
+    /// The records of the holders being moved now, so their rows show Moving.
+    moving: Mutex<HashSet<String>>,
+    /// Set while a round of moves runs, so only one runs at a time.
+    moving_round: AtomicBool,
     /// Woken by a click on Migrate and by the bin folder changing.
     wake: Arc<Notify>,
     /// Held across one look and what it does about it.
@@ -383,6 +592,8 @@ impl Holders {
                 tell: deps.tell,
                 feed: deps.feed,
                 restarting: Mutex::new(HashSet::new()),
+                moving: Mutex::new(HashSet::new()),
+                moving_round: AtomicBool::new(false),
                 wake: Arc::new(Notify::new()),
                 one_look: tokio::sync::Mutex::new(()),
                 report: deps.report,
@@ -398,8 +609,9 @@ impl Holders {
         self.inner.wake.clone()
     }
 
-    /// Migrate was clicked: each agent waiting is restarted at its next idle
-    /// moment, beginning with the ones idle now.
+    /// Migrate was clicked: each holder that can move is moved in place, and
+    /// each agent whose holder can't is restarted at its next idle moment,
+    /// beginning with the ones idle now.
     pub(super) fn begin(&self) {
         self.inner.migrating.store(true, Ordering::SeqCst);
         // A new round: what failed last time is reported again only if it fails again.
@@ -493,6 +705,8 @@ impl Holders {
                     session: session.clone(),
                     title,
                     holder_pid: None,
+                    moves: false,
+                    socket: PathBuf::new(),
                 });
             }
         }
@@ -503,14 +717,14 @@ impl Holders {
             return;
         }
         let (migrations, machine) = (&self.inner.migrations, &self.inner.machine);
-        if found.waiting.is_empty() {
+        if !outstanding(&rows) {
             if let Err(error) = migrations.resolved(pb::MigrateThing::Holders, machine).await {
                 crate::log::say!("humatad2: warning: {}", status::chain(&error));
             }
             return;
         }
         let detail = Detail {
-            waiting: found.waiting.iter().map(|waiting| waiting.session.clone()).collect(),
+            waiting: waiting_sessions(&rows),
             keeps_running: shell_line(found.shells).into_iter().collect(),
             rows,
             failed: None,
@@ -521,19 +735,31 @@ impl Holders {
             return;
         }
         if migrations.is_migrating(pb::MigrateThing::Holders, machine) {
-            for waiting in found.waiting.into_iter().filter(idle) {
-                self.restart_in_background(waiting.session);
-            }
+            self.carry_on(found);
+        }
+    }
+
+    /// Migrate is under way: starts a round of moves, and restarts the
+    /// agents whose holders can't move and are idle now.
+    fn carry_on(&self, found: Found) {
+        self.move_in_background(found.movers());
+        for waiting in found.waiting.into_iter().filter(|waiting| !waiting.moves && idle(waiting)) {
+            self.restart_in_background(waiting.session);
         }
     }
 
     /// The rows of the card (D379): a row for each agent waiting, with what
-    /// Migrate does with it, then one for each shell, which stays until it is
-    /// closed.
+    /// Migrate does with it, then one for each shell that moves, then one for
+    /// each shell that stays until it is closed.
     fn rows(&self, found: &Found) -> Vec<pb::HolderSession> {
         let restarting = self.inner.restarting.lock().unwrap_or_else(PoisonError::into_inner);
+        let moving = self.inner.moving.lock().unwrap_or_else(PoisonError::into_inner);
         let agents = found.waiting.iter().map(|waiting| {
-            let note = if restarting.contains(&waiting.session) {
+            let note = if moving.contains(&format!("{}.sha", waiting.session)) {
+                pb::HolderNote::Moving
+            } else if waiting.moves {
+                pb::HolderNote::Moves
+            } else if restarting.contains(&waiting.session) {
                 pb::HolderNote::Restarting
             } else if waiting
                 .holder_pid
@@ -551,19 +777,28 @@ impl Holders {
                 note: note as i32,
             }
         });
-        let shells = (0..found.shells).map(|_| pb::HolderSession {
+        let movable = found.movable_shells.iter().map(|mover| pb::HolderSession {
+            session: mover.session.as_ref().map(|session| pb::SessionId { value: session.clone() }),
+            title: mover.title.clone(),
+            note: if moving.contains(&mover.name) {
+                pb::HolderNote::Moving
+            } else {
+                pb::HolderNote::Moves
+            } as i32,
+        });
+        let stays = (0..found.shells).map(|_| pb::HolderSession {
             session: None,
             title: String::new(),
             note: pb::HolderNote::StaysUntilClosed as i32,
         });
-        agents.chain(shells).collect()
+        agents.chain(movable).chain(stays).collect()
     }
 
     /// A machine's look (D378): the list goes to the host when it changed,
     /// and what the host asked for goes on.
     fn report(&self, report: &Reports, found: Found, rows: Vec<pb::HolderSession>) {
         // With no old holder left there is nothing to retry, so no failure.
-        let failed = if found.waiting.is_empty() {
+        let failed = if !outstanding(&rows) {
             None
         } else {
             self.inner.failure.lock().unwrap_or_else(PoisonError::into_inner).clone()
@@ -573,19 +808,17 @@ impl Holders {
             if current.as_ref() == Some(&next) {
                 return false;
             }
-            *current = Some(next);
+            *current = Some(next.clone());
             true
         });
         if !self.inner.migrating.load(Ordering::SeqCst) {
             return;
         }
-        if found.waiting.is_empty() {
+        if !outstanding(&next.holders) {
             self.inner.migrating.store(false, Ordering::SeqCst);
             return;
         }
-        for waiting in found.waiting.into_iter().filter(idle) {
-            self.restart_in_background(waiting.session);
-        }
+        self.carry_on(found);
     }
 
     /// What is on old holders, or none while it can't be said: the release
@@ -622,10 +855,13 @@ impl Holders {
             }
         };
         let agent_tabs: HashSet<&str> = agents.iter().map(|agent| agent.tab.as_str()).collect();
-        let shell_tabs: Vec<Option<String>> = tabs
+        let shell_tabs: Vec<SeenTab> = tabs
             .iter()
             .filter(|tab| tab.kind == TabKind::Shell && !agent_tabs.contains(tab.id.as_str()))
-            .map(|tab| inner.builds.recorded(&format!("{}.shell.sha", tab.id)))
+            .map(|tab| SeenTab {
+                recorded: inner.builds.recorded(&format!("{}.shell.sha", tab.id)),
+                tab: tab.clone(),
+            })
             .collect();
         let seen = agents
             .into_iter()
@@ -638,13 +874,111 @@ impl Holders {
                 })
             })
             .collect();
-        let mut found = classify(&wanted, seen, &shell_tabs);
+        let mut found = classify(&wanted, seen, shell_tabs);
         for waiting in &mut found.waiting {
             if let Ok(Some(session)) = store.session(&waiting.session) {
                 waiting.title = session.title;
             }
         }
+        for mover in &mut found.movable_shells {
+            if let Some(session) = &mover.session
+                && let Ok(Some(session)) = store.session(session)
+            {
+                mover.title = session.title;
+            }
+        }
         Some(found)
+    }
+
+    /// Starts a round of moves of `movers`, unless one is running. The first
+    /// is the canary: the round stops at the first move that fails (D801).
+    /// Nothing here ends a holder: a move that isn't made leaves it running.
+    fn move_in_background(&self, movers: Vec<Mover>) {
+        if movers.is_empty() || self.inner.moving_round.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let outcome = me.move_all(movers).await;
+            me.inner.moving_round.store(false, Ordering::SeqCst);
+            if let Err(error) = outcome {
+                crate::log::say!("humatad2: warning: {}", status::chain(&error));
+                me.fail(holders_problem("", &error)).await;
+            }
+            // The item may have more to do, or be done.
+            me.inner.wake.notify_one();
+        });
+    }
+
+    /// Moves each of `movers` onto the current holder file, one at a time.
+    async fn move_all(&self, movers: Vec<Mover>) -> Result<(), HoldersError> {
+        let builds = &self.inner.builds;
+        for mover in movers {
+            // A look made before an earlier round ended may list one that has
+            // moved since.
+            if builds.on_current(&mover.name) {
+                continue;
+            }
+            self.inner
+                .moving
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(mover.name.clone());
+            // Looks again, so the card shows it moving.
+            self.inner.wake.notify_one();
+            let outcome = humata2_holder::move_to(&mover.socket, builds.holder_file()).await;
+            self.inner
+                .moving
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&mover.name);
+            match outcome {
+                Ok(humata2_holder::Moved) => {
+                    builds.keep_logged(&mover.name);
+                    if let Some(session) = &mover.session {
+                        // The old image's connection closed with its move, which
+                        // ended the watch on this agent.
+                        let tell = &self.inner.tell;
+                        agent_watch::agent(tell.clone(), session.clone());
+                        tell.session(session, pb::Change::Updated, None).await;
+                    }
+                }
+                Err(humata2_holder::HolderError::TooOldToMove { .. }) => {
+                    if let Err(error) = builds.too_old(&mover.name) {
+                        crate::log::say!("humatad2: warning: {}", status::chain(&error));
+                    }
+                }
+                Err(
+                    source @ (humata2_holder::HolderError::Refused { .. }
+                    | humata2_holder::HolderError::LostInMove { .. }),
+                ) => {
+                    return Err(HoldersError::Move {
+                        what: mover.what(),
+                        source,
+                    });
+                }
+                Err(error) => {
+                    crate::log::say!(
+                        "humatad2: warning: couldn't reach {}'s holder to move it, so it is left as it is: {}",
+                        mover.what(),
+                        status::chain(&error)
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The round stopped on `problem`: this machine's item shows it Failed
+    /// (the host's, through the next report, when this is a machine's daemon).
+    async fn fail(&self, problem: pb::Error) {
+        if self.inner.report.is_some() {
+            // The host's item shows it Failed through the next report.
+            self.inner.migrating.store(false, Ordering::SeqCst);
+            *self.inner.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(problem);
+        } else {
+            self.inner.migrations.fail_holders(&self.inner.machine, problem).await;
+        }
     }
 
     fn restart_in_background(&self, session: String) {
@@ -669,14 +1003,7 @@ impl Holders {
                 .remove(&session);
             if let Err(error) = outcome {
                 crate::log::say!("humatad2: warning: {}", status::chain(&error));
-                let problem = holders_problem(&session, &error);
-                if me.inner.report.is_some() {
-                    // The host's item shows it Failed through the next report.
-                    me.inner.migrating.store(false, Ordering::SeqCst);
-                    *me.inner.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(problem);
-                } else {
-                    me.inner.migrations.fail_holders(&me.inner.machine, problem).await;
-                }
+                me.fail(holders_problem(&session, &error)).await;
             }
             // The item may have more to restart, or be done.
             me.inner.wake.notify_one();
@@ -738,14 +1065,24 @@ impl Holders {
     }
 }
 
-/// What the Holders item shows when `session`'s agent couldn't be restarted:
-/// the cause, and the two ways out.
+/// What the Holders item shows when a terminal couldn't be moved or
+/// `session`'s agent couldn't be restarted: the cause, and the way out.
 fn holders_problem(session: &str, error: &HoldersError) -> pb::Error {
-    pb::Error {
-        message: status::chain(error),
-        fix: format!(
+    let fix = match error {
+        HoldersError::Move {
+            source: humata2_holder::HolderError::LostInMove { .. },
+            ..
+        } => "open the terminal's tab to see what is left of it, then click Migrate again for the others".to_owned(),
+        HoldersError::Move { .. } => {
+            "click Migrate again; the terminal keeps running on its old holder until a move works".to_owned()
+        }
+        _ => format!(
             "open session {session}'s terminal to read what it printed and fix the cause, then click Migrate again; or close session {session} to free its old holder"
         ),
+    };
+    pb::Error {
+        message: status::chain(error),
+        fix,
         retry: None,
         kind: None,
     }
@@ -867,11 +1204,36 @@ mod tests {
         }
     }
 
-    fn seen(session: &str, state: AgentState, is_shell: bool, recorded: Option<&str>) -> Seen {
+    fn sha(sha: &str, moves: bool) -> Option<Recorded> {
+        Some(Recorded {
+            sha: sha.to_owned(),
+            moves,
+        })
+    }
+
+    fn seen(session: &str, state: AgentState, is_shell: bool, recorded: Option<Recorded>) -> Seen {
+        let mut record = agent(session, state);
+        record.launch.holder_socket = PathBuf::from(format!("/sock/{session}"));
         Seen {
-            record: agent(session, state),
+            record,
             is_shell,
-            recorded: recorded.map(str::to_owned),
+            recorded,
+        }
+    }
+
+    fn shell_tab(id: &str, holder_pid: u32, recorded: Option<Recorded>) -> SeenTab {
+        SeenTab {
+            tab: TabRecord {
+                id: id.to_owned(),
+                session: None,
+                kind: TabKind::Shell,
+                title: String::new(),
+                holder_socket: PathBuf::from(format!("/sock/{id}")),
+                holder_pid,
+                created_unix_ms: 0,
+                holder_generation: 0,
+            },
+            recorded,
         }
     }
 
@@ -884,11 +1246,11 @@ mod tests {
         let found = classify(
             NEW,
             vec![
-                seen("b", running(2), false, Some("aa")),
+                seen("b", running(2), false, sha("aa", false)),
                 seen("a", running(1), false, None),
-                seen("c", running(3), false, Some("BB")),
+                seen("c", running(3), false, sha("BB", false)),
             ],
-            &[],
+            Vec::new(),
         );
 
         let sessions: Vec<&str> = found.waiting.iter().map(|waiting| waiting.session.as_str()).collect();
@@ -905,7 +1267,7 @@ mod tests {
                 seen("exited", AgentState::Exited { code: 0 }, false, None),
                 seen("resuming", AgentState::Resuming, false, None),
             ],
-            &[],
+            Vec::new(),
         );
 
         let sessions: Vec<&str> = found.waiting.iter().map(|waiting| waiting.session.as_str()).collect();
@@ -914,18 +1276,78 @@ mod tests {
     }
 
     #[test]
-    fn shells_are_counted_and_never_wait() {
+    fn a_running_agent_whose_record_says_moves_moves_and_one_without_it_is_too_old() {
         let found = classify(
             NEW,
             vec![
-                seen("terminal", running(4), true, Some("aa")),
-                seen("current-terminal", running(5), true, Some(NEW)),
+                seen("can", running(1), false, sha("aa", true)),
+                seen("old", running(2), false, sha("aa", false)),
+                seen("unrecorded", running(3), false, None),
+                seen("launching", AgentState::Resuming, false, sha("aa", true)),
             ],
-            &[None, Some("aa".to_owned()), Some(NEW.to_owned())],
+            Vec::new(),
+        );
+
+        let moves: Vec<(&str, bool)> = found
+            .waiting
+            .iter()
+            .map(|waiting| (waiting.session.as_str(), waiting.moves))
+            .collect();
+        assert_eq!(
+            moves,
+            [("can", true), ("launching", false), ("old", false), ("unrecorded", false)]
+        );
+        let movers = found.movers();
+        assert_eq!(movers.len(), 1);
+        assert_eq!(movers[0].socket, PathBuf::from("/sock/can"));
+        assert_eq!(movers[0].session.as_deref(), Some("can"));
+    }
+
+    #[test]
+    fn shells_that_can_move_are_movers_and_the_rest_are_counted_and_stay() {
+        let found = classify(
+            NEW,
+            vec![
+                seen("terminal", running(4), true, sha("aa", true)),
+                seen("old-terminal", running(5), true, sha("aa", false)),
+                seen("current-terminal", running(6), true, sha(NEW, true)),
+            ],
+            vec![
+                shell_tab("tb_old", 7, None),
+                shell_tab("tb_move", 8, sha("aa", true)),
+                shell_tab("tb_current", 9, sha(NEW, true)),
+                shell_tab("tb_gone", 0, sha("aa", true)),
+            ],
         );
 
         assert!(found.waiting.is_empty());
-        assert_eq!(found.shells, 3, "two shell tabs and one Terminal session are on old holders");
+        assert_eq!(found.shells, 3, "a tab and a Terminal session on too old holders, and a tab with no holder");
+        let movers: Vec<(&str, Option<&str>)> = found
+            .movable_shells
+            .iter()
+            .map(|mover| (mover.name.as_str(), mover.session.as_deref()))
+            .collect();
+        assert_eq!(movers, [("tb_move.shell.sha", None), ("terminal.sha", Some("terminal"))]);
+        assert_eq!(found.movable_shells[0].socket, PathBuf::from("/sock/tb_move"));
+    }
+
+    #[test]
+    fn a_terminal_session_that_is_not_running_yet_stays_until_it_runs() {
+        let found = classify(
+            NEW,
+            vec![seen("terminal", AgentState::Resuming, true, sha("aa", true))],
+            Vec::new(),
+        );
+
+        assert!(found.movable_shells.is_empty());
+        assert_eq!(found.shells, 1);
+    }
+
+    #[test]
+    fn a_shell_on_a_holder_too_old_to_move_is_counted_and_gives_nothing_to_move() {
+        let found = classify(NEW, Vec::new(), vec![shell_tab("tb_old", 7, None)]);
+        assert!(found.movers().is_empty());
+        assert_eq!(found.shells, 1);
     }
 
     #[test]
@@ -933,6 +1355,12 @@ mod tests {
         assert_eq!(shell_line(0), None);
         assert!(shell_line(1).is_some_and(|line| line.starts_with("1 shell ")));
         assert!(shell_line(3).is_some_and(|line| line.starts_with("3 shells ")));
+    }
+
+    fn write_holder(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
@@ -947,8 +1375,8 @@ mod tests {
         fs::write(&holder, b"release b is longer").unwrap();
         builds.record_shell("tb_1");
 
-        assert_eq!(builds.recorded("tb_1.shell.sha").unwrap(), builds.current().unwrap());
-        assert_ne!(builds.recorded("tb_1.shell.sha").unwrap(), first, "the new file was hashed");
+        assert_eq!(builds.recorded("tb_1.shell.sha").unwrap().sha, builds.current().unwrap());
+        assert_ne!(builds.recorded("tb_1.shell.sha").unwrap().sha, first.sha, "the new file was hashed");
         assert_eq!(builds.recorded("ss_1.sha").unwrap(), first, "a shell's record leaves an agent's alone");
         let left: Vec<_> = fs::read_dir(dir.path().join("holder_builds")).unwrap().collect();
         assert_eq!(left.len(), 2, "no temporary file is left behind");
@@ -961,5 +1389,53 @@ mod tests {
 
         assert!(matches!(builds.keep("ss_1.sha"), Err(BuildsError::Read { .. })));
         assert_eq!(builds.recorded("ss_1.sha"), None);
+    }
+
+    #[test]
+    fn a_holder_file_that_names_its_handoff_versions_is_recorded_as_able_to_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = dir.path().join("humata2_holder");
+        write_holder(&holder, "#!/bin/sh\necho 1 2\n");
+        let builds = Builds::new(dir.path(), &holder);
+
+        builds.record_agent("ss_1");
+
+        assert!(builds.recorded("ss_1.sha").unwrap().moves);
+    }
+
+    #[test]
+    fn a_holder_file_that_cannot_say_its_handoff_versions_is_recorded_as_unable_to_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let fails = dir.path().join("fails");
+        let silent = dir.path().join("silent");
+        let words = dir.path().join("words");
+        write_holder(&fails, "#!/bin/sh\necho 1\nexit 3\n");
+        write_holder(&silent, "#!/bin/sh\nexit 0\n");
+        write_holder(&words, "#!/bin/sh\necho none\n");
+
+        for holder in [fails, silent, words, dir.path().join("missing")] {
+            assert!(!can_move(&holder), "{} must not count as able to move", holder.display());
+        }
+    }
+
+    #[test]
+    fn a_record_with_no_moves_line_is_too_old_to_move_and_too_old_keeps_the_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = dir.path().join("humata2_holder");
+        write_holder(&holder, "#!/bin/sh\necho 1\n");
+        let builds = Builds::new(dir.path(), &holder);
+        fs::create_dir_all(dir.path().join("holder_builds")).unwrap();
+        fs::write(dir.path().join("holder_builds/old.sha"), "abc\n").unwrap();
+
+        assert_eq!(builds.recorded("old.sha"), sha("abc", false));
+
+        builds.record_agent("ss_1");
+        let before = builds.recorded("ss_1.sha").unwrap();
+        assert!(before.moves);
+        builds.too_old("ss_1.sha").unwrap();
+
+        assert_eq!(builds.recorded("ss_1.sha"), Some(Recorded { sha: before.sha, moves: false }));
+        builds.too_old("nothing.sha").unwrap();
+        assert_eq!(builds.recorded("nothing.sha"), None, "no record is made up");
     }
 }

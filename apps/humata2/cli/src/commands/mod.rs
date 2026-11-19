@@ -10,6 +10,7 @@ mod inbox;
 mod login;
 mod looking;
 mod machine_scripts;
+mod codex;
 mod opencode;
 // REPOS
 mod repos;
@@ -191,6 +192,11 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
             program,
             model,
         } => opencode::opencode(ctx, conversation, state, program, model).await,
+        Command::Codex {
+            program,
+            hooks,
+            args,
+        } => codex::codex(ctx, program, hooks, args).await,
     }
 }
 
@@ -435,6 +441,7 @@ pub fn operation(command: &Command) -> &'static str {
         Command::Turn { .. } => "session.report_turn",
         Command::Hook { .. } => "session.hook",
         Command::Opencode { .. } => "session.opencode",
+        Command::Codex { .. } => "session.codex",
     }
 }
 

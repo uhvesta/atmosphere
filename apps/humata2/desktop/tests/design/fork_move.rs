@@ -381,3 +381,83 @@ pub fn moving(look: Look) -> Div {
         .child(body);
     session::shell(look, Side::at("API rate limiter"), middle, None)
 }
+
+/// Frame 123: frame 64's card with the sweep under a running step that
+/// copies nothing (PROGRESS): a 180×3 px track, segment 25% wide at 37%.
+pub fn moving_unmeasured(look: Look) -> Div {
+    let tabs = div()
+        .flex()
+        .items_center()
+        .h(px(32.))
+        .flex_shrink_0()
+        .bg(c(look.panel))
+        .border_b_1()
+        .border_color(c(look.line))
+        .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true))
+        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
+        .child(div().flex_1())
+        .child(div().mr(px(12.)).child(secondary(look, "read-only until the agent resumes")));
+    let steps = card(look)
+        .gap(px(8.))
+        .p(px(12.))
+        .mt(px(10.))
+        .font_family(SYSTEM_FONT)
+        .text_size(px(12.))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child("Moving to This Mac"))
+        .child(step(look, "✓", GREEN, "Paused the agent", false))
+        .child(step(look, "✓", GREEN, "Copied the branch and 3 uncommitted files", false))
+        .child(step(look, "✓", GREEN, "Copied the conversation (fixed paths)", false))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .whitespace_nowrap()
+                .child(div().w(px(14.)).flex().justify_center().text_color(c(ORANGE)).child("●"))
+                .child(
+                    div().flex().flex_col().gap(px(4.)).child(div().text_color(c(look.text)).child("Resuming claude on This Mac…")).child(
+                        div().w(px(180.)).h(px(3.)).rounded(px(2.)).bg(c(look.line)).relative().overflow_hidden().child(
+                            div().absolute().top(px(0.)).h_full().w(relative(0.25)).left(relative(0.37)).rounded(px(2.)).bg(c(look.accent)),
+                        ),
+                    ),
+                ),
+        )
+                .child(step(look, "○", look.tertiary, "Delete the copy on devbox-1", true))
+        .child(secondary(look, "If a step fails, the session keeps running on devbox-1 and nothing is deleted."));
+    let body = div()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .px(px(14.))
+        .pt(px(10.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .bg(c(look.term))
+        .font_family(MONO)
+        .text_size(px(12.))
+        .line_height(px(17.))
+        .child(tl(look.term_dim, "~/src/api (api-rate-limiter) $ claude"))
+        .child(tl(look.term_dim, "● Update(api/src/limiter.rs)"))
+        .child(tl(look.term_dim, "  ⎿ Updated with 38 additions and 4 removals"))
+        .child(tl(look.term_dim, "● Bash(cargo test -p api limiter)"))
+        .child(tl(look.term_dim, "  ⎿ test result: ok. 9 passed; 0 failed"))
+        .child(tl(look.term_dim, ""))
+        .child(steps)
+        .child(div().flex_1())
+        .child(div().opacity(0.5).child(session::input_box(look, false)))
+        .child(div().pt(px(4.)).font_family(SYSTEM_FONT).text_size(px(11.5)).text_color(c(look.secondary)).child("Read-only until the agent resumes on This Mac."));
+    let middle = div()
+        .child(session::header_with(
+            look,
+            "# payments-rewrite",
+            St::Working,
+            "API rate limiter",
+            Some(("Moving to This Mac…", ORANGE)),
+            vec![secondary(look, "Claude Code · devbox-1 → This Mac")],
+        ))
+        .child(tabs)
+        .child(body);
+    session::shell(look, Side::at("API rate limiter"), middle, None)
+}

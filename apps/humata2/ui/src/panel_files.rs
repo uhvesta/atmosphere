@@ -269,7 +269,7 @@ pub(super) fn files(
     );
     col()
         .size_full()
-        .child(header(ui, Panel::Files, full, Some(add_repo), look))
+        .child(panel_header(ui, state, Panel::Files, full, Some(add_repo), look))
         .child(
             div()
                 .id("session-file-filter")

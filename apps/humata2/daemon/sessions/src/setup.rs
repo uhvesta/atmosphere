@@ -7,7 +7,7 @@ use humata2_store::fault::point;
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, Store, StoreError};
 
 use crate::error::{GitError, SetupError};
-use crate::git::{clone_main, remote_url};
+use crate::git::{clone_main_with, remote_url};
 use crate::layout::Layout;
 use crate::names::channel_folder;
 
@@ -91,7 +91,20 @@ pub fn clone_mains(
     layout: &Layout,
     remote_template: &str,
     channel_id: &str,
+    on_step: impl FnMut(&str, Result<(), &GitError>),
+) -> Result<(), SetupError> {
+    clone_mains_with(store, layout, remote_template, channel_id, on_step, |_, _, _| {})
+}
+
+/// [`clone_mains`] that also hears how far each clone is as `(owner/name,
+/// done, total)`, with the total always 1000.
+pub fn clone_mains_with(
+    store: &Store,
+    layout: &Layout,
+    remote_template: &str,
+    channel_id: &str,
     mut on_step: impl FnMut(&str, Result<(), &GitError>),
+    mut on_units: impl FnMut(&str, u64, u64),
 ) -> Result<(), SetupError> {
     let channel = store
         .channel(channel_id)
@@ -110,7 +123,7 @@ pub fn clone_mains(
             Ok(())
         } else {
             remote_url(remote_template, &repo.owner, &repo.name)
-                .and_then(|url| clone_main(&url, &dest))
+                .and_then(|url| clone_main_with(&url, &dest, &mut |done| on_units(&shown, done, 1000)))
         };
         point("sessions.channel.cloned");
         let main = match &result {

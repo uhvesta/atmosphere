@@ -15,11 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_access::{Capability, Target};
+use humata2_access::{Capability, MachineAction, MachineActionKind, MachineId, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{GitError, RepoWork, handover_file, repo_work};
 use humata2_store::{
-    AgentState, ArchiveRow, ArchiveState, SessionDetail, Store, StoreError,
+    AgentState, ArchiveRow, ArchiveState, SessionDetail, Store, StoreError, TabKind,
 };
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -510,6 +510,12 @@ impl SessionSvc {
         if let Some(asked) = self.gate_end(caller, &loaded, approved)? {
             return Ok(Gated::Ask(asked));
         }
+        // D801 F: unset keeps the agent and shells running. Ending them
+        // destroys a running terminal, so an agent needs the destroy switch.
+        let ending = request.end.unwrap_or(false);
+        if ending && let Some(asked) = self.gate_destroy(caller, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
         if let Some(operation) = self
             .operations
             .existing(caller, request.idempotency_key.as_ref())?
@@ -613,7 +619,11 @@ impl SessionSvc {
 
         let mut steps = if pushing { step_rows(&pushes) } else { Vec::new() };
         steps.extend([
-            ("stop".to_owned(), "Stopping the agent".to_owned()),
+            (
+                "stop".to_owned(),
+                if ending { "Ending the agent and shells" } else { "Leaving the agent and shells running" }
+                    .to_owned(),
+            ),
             ("summarize".to_owned(), "Writing what the session had".to_owned()),
             (
                 "free_clones".to_owned(),
@@ -644,6 +654,7 @@ impl SessionSvc {
                 id,
                 pushes,
                 identity::actor(caller),
+                ending,
             ));
             return Ok(Gated::Done(operation));
         }
@@ -655,6 +666,10 @@ impl SessionSvc {
             summary: Vec::new(),
             free_after_unix_ms: archived.saturating_add(undo_window_ms()),
         };
+        if let Err(refused) = self.keep_end(&id, ending).await {
+            progress.fail(store_failure(&refused, &id));
+            return Err(refused);
+        }
         if let Err(refused) = self.save_archive(&row).await {
             progress.fail(store_failure(&refused, &id));
             return Err(refused);
@@ -667,7 +682,7 @@ impl SessionSvc {
             .session(&id, pb::Change::Updated, Some(by.clone()))
             .await;
         publish_family(&self.tell, &id, Some(by.clone())).await;
-        tokio::spawn(self.clone().run_archive(progress, row, by));
+        tokio::spawn(self.clone().run_archive(progress, row, by, ending));
         Ok(Gated::Done(operation))
     }
 
@@ -830,8 +845,14 @@ impl SessionSvc {
             let operation = format!("archive:{}", row.session_id);
             let record = |state: State| operations.record(&operation, "archive", "archiving", state);
             let guard = self.lifecycle.lock_of(&row.session_id).lock_owned().await;
-            match self.finish_archive(row.clone()).await {
-                Ok(()) => record(State::Finished),
+            // The archive's own choice to end its terminals or keep them
+            // running, kept beside the row; none kept means keep running.
+            let end = self.end_kept(&row.session_id);
+            match self.finish_archive(row.clone(), end).await {
+                Ok(()) => {
+                    self.forget_end(&row.session_id).await;
+                    record(State::Finished)
+                }
                 Err(error) => {
                     let reason = format!(
                         "{}; the session stays archiving, so fix that, then restart humatad2 to finish it",
@@ -953,11 +974,135 @@ impl SessionSvc {
             .map_err(|error| status::store(error, &self.machine, "read the archived sessions"))
     }
 
+    /// Where an archive that ends its terminals says so until it is
+    /// finished, so a restart that finishes it ends them too (D801 F).
+    fn end_path(&self, session: &str) -> Option<std::path::PathBuf> {
+        self.starter
+            .holders
+            .parent()
+            .map(|state| state.join("archive_ends").join(session))
+    }
+
+    /// Keeps the archive's choice to end its terminals before its row is
+    /// saved: a row a restart finishes always finds the choice it was made
+    /// with. Keeping them running is no file, so one a cut left from an
+    /// earlier try goes.
+    async fn keep_end(&self, session: &str, end: bool) -> Result<(), Status> {
+        let Some(path) = self.end_path(session) else {
+            return Ok(());
+        };
+        if !end {
+            let _ = blocking(move || std::fs::remove_file(path)).await;
+            return Ok(());
+        }
+        let kept = blocking(move || -> Result<(), String> {
+            let folder = path.parent().unwrap_or(&path).to_owned();
+            let made = std::fs::symlink_metadata(&folder).is_err();
+            humata2_durable::create_dir_all(&folder, 0o700).map_err(|error| format!("{}: {error}", folder.display()))?;
+            if made && let Some(parent) = folder.parent() {
+                humata2_durable::sync_dir(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+            }
+            humata2_store::write_atomic(&path, b"end").map_err(|error| status::chain(&error))
+        })
+        .await?;
+        kept.map_err(|error| {
+            status::internal(
+                format!("couldn't keep the choice to end session {session}'s terminals ({error}); nothing was archived, so check that the data folder's disk isn't full and archive it again"),
+                "",
+            )
+        })
+    }
+
+    /// Whether the archive of `session` asked to end its terminals.
+    fn end_kept(&self, session: &str) -> bool {
+        self.end_path(session).is_some_and(|path| path.exists())
+    }
+
+    /// The archive of `session` is finished: its kept choice goes.
+    async fn forget_end(&self, session: &str) {
+        if let Some(path) = self.end_path(session) {
+            let _ = blocking(move || std::fs::remove_file(path)).await;
+        }
+    }
+
     async fn save_archive(&self, row: &ArchiveRow) -> Result<(), Status> {
         let (store, row) = (self.starter.store.clone(), row.clone());
         blocking(move || store.put_archive(&row))
             .await?
             .map_err(|error| status::store(error, &self.machine, "save the archive"))
+    }
+
+    /// The destroy switch an agent needs to end terminals (D784, D801 F);
+    /// the user always may.
+    fn gate_destroy(
+        &self,
+        caller: &Caller,
+        approved: bool,
+    ) -> Result<Option<Box<humata2_access::AccessRequest>>, Status> {
+        if !matches!(caller, Caller::Agent(_)) {
+            return Ok(None);
+        }
+        self.gate(
+            caller,
+            Capability::MachineDestroy,
+            Target::Machine(MachineAction {
+                machine: MachineId::new(self.machine.as_str()),
+                action: MachineActionKind::Delete,
+            }),
+            approved,
+        )
+    }
+
+    /// Ends the session's shell terminals and drops their tabs. A holder
+    /// already gone is as ended as one that was asked to.
+    async fn end_shells(&self, session: &str) -> Result<(), ArchiveError> {
+        let stopped = |source: Status| ArchiveError::Stop {
+            session: session.to_owned(),
+            source: Box::new(source),
+        };
+        let store = self.starter.store.clone();
+        let tabs = blocking(move || store.tabs())
+            .await
+            .map_err(stopped)?
+            .map_err(|source| ArchiveError::Store {
+                session: session.to_owned(),
+                source,
+            })?;
+        for tab in tabs
+            .into_iter()
+            .filter(|tab| tab.kind == TabKind::Shell && tab.session.as_deref() == Some(session))
+        {
+            if let Err(error) =
+                holder_end::shut_or_end(&tab.holder_socket, tab.holder_pid, &format!("tab {}", tab.id)).await
+            {
+                crate::log::say!("humatad2: {error}");
+            }
+            let (store, id) = (self.starter.store.clone(), tab.id.clone());
+            blocking(move || store.remove_tab(&id))
+                .await
+                .map_err(stopped)?
+                .map_err(|source| ArchiveError::Store {
+                    session: session.to_owned(),
+                    source,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Whether any terminal of the session still has a holder answering on
+    /// its socket: its folder is then not freed, so no running program loses
+    /// its working folder. A tab list that can't be read counts as running.
+    async fn keeps_running(&self, session: &str) -> bool {
+        let (store, key) = (self.starter.store.clone(), session.to_owned());
+        blocking(move || {
+            store.tabs().map_or(true, |tabs| {
+                tabs.iter()
+                    .filter(|tab| tab.session.as_deref() == Some(key.as_str()))
+                    .any(|tab| std::os::unix::net::UnixStream::connect(&tab.holder_socket).is_ok())
+            })
+        })
+        .await
+        .unwrap_or(true)
     }
 
     /// Stops the session's agent as StopSession does.
@@ -1009,6 +1154,7 @@ impl SessionSvc {
         id: String,
         pushes: Vec<RepoPush>,
         by: pb::Actor,
+        end: bool,
     ) {
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         if let Err(stopped) = run_pushes(&progress, &pushes, "archive again").await {
@@ -1031,6 +1177,10 @@ impl SessionSvc {
             summary: Vec::new(),
             free_after_unix_ms: archived.saturating_add(undo_window_ms()),
         };
+        if let Err(refused) = self.keep_end(&id, end).await {
+            progress.fail(store_failure(&refused, &id));
+            return;
+        }
         if let Err(refused) = self.save_archive(&row).await {
             progress.fail(store_failure(&refused, &id));
             return;
@@ -1043,17 +1193,20 @@ impl SessionSvc {
             .session(&id, pb::Change::Updated, Some(by.clone()))
             .await;
         publish_family(&self.tell, &id, Some(by.clone())).await;
-        self.run_archive(progress, row, by).await;
+        self.run_archive(progress, row, by, end).await;
     }
 
     /// The rest of an archive once it is recorded: stop, summarize, mark it
     /// archived, end the session's grants and requests, and set the free.
-    async fn run_archive(self, progress: Progress, row: ArchiveRow, by: pb::Actor) {
+    async fn run_archive(self, progress: Progress, row: ArchiveRow, by: pb::Actor, end: bool) {
         let id = row.session_id.clone();
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         progress.set_step("stop", pb::StepState::Running, None);
         progress.set_step("summarize", pb::StepState::Waiting, None);
-        let finished = self.finish_archive(row.clone()).await;
+        let finished = self.finish_archive(row.clone(), end).await;
+        if finished.is_ok() {
+            self.forget_end(&id).await;
+        }
         drop(guard);
         match finished {
             Ok(()) => {
@@ -1082,9 +1235,17 @@ impl SessionSvc {
 
     /// Stops the agent, writes the summary, marks the row archived and ends
     /// the session's grants. The caller holds the session's lock.
-    async fn finish_archive(&self, row: ArchiveRow) -> Result<(), ArchiveError> {
+    ///
+    /// `end` ends the session's agent and shells (D801 F). Otherwise they
+    /// keep running, archived. A restart finishing a cut archive passes
+    /// false: the choice isn't recorded, and keeping a terminal running is
+    /// the safe side.
+    async fn finish_archive(&self, row: ArchiveRow, end: bool) -> Result<(), ArchiveError> {
         let id = row.session_id.clone();
-        self.stop_agent(&id).await?;
+        if end {
+            self.stop_agent(&id).await?;
+            self.end_shells(&id).await?;
+        }
         // A kill here leaves the agent stopped and the row still archiving:
         // the restart finishes it.
         crate::fault::point("archive.agent_stopped");
@@ -1179,6 +1340,11 @@ impl SessionSvc {
     /// row is still archived: a restore in the window left no row.
     async fn free_folder(&self, session: &str) -> Result<(), ArchiveError> {
         let guard = self.lifecycle.lock_of(session).lock_owned().await;
+        // D801 F: an archived session whose terminals run keeps its folder
+        // until they end; a later restart tries again.
+        if self.keeps_running(session).await {
+            return Ok(());
+        }
         // Sessions that share a folder free it one at a time, so the last
         // one sees the others freed and removes it (D214).
         let (store, key) = (self.starter.store.clone(), session.to_owned());

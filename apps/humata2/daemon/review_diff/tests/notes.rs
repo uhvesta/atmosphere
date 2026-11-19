@@ -156,7 +156,7 @@ fn a_plan_orders_and_groups_files_and_the_rest_follow() {
             first: file("a.rs"),
         }],
         notes: Vec::new(),
-        stack: None,
+        ..ReviewPlan::default()
     };
     plan.check(std::slice::from_ref(&shown)).expect("a valid plan");
     let arrangement = plan.arrange(std::slice::from_ref(&shown));
@@ -191,7 +191,7 @@ fn a_plan_naming_a_file_the_diff_does_not_show_is_refused() {
         order: vec![file("a.rs"), file("nope.rs")],
         groups: Vec::new(),
         notes: Vec::new(),
-        stack: None,
+        ..ReviewPlan::default()
     };
     assert!(plan.check(std::slice::from_ref(&shown)).is_err());
 }

@@ -397,6 +397,12 @@ RIG_TESTS.append("screen_questions_remote")
 # check to queue while working on recovery.
 RIG_TESTS.append("power_cut_focus")
 
+RIG_TESTS.append("move_session_freeze")
+
+# The two box cuts during Start that the machine suite once caught (fast,
+# not in slow.txt).
+RIG_TESTS.append("power_cut_start_box")
+
 # The PER-28 power-cut suites (D243): one test per operation, each a trace of
 # it and then a fresh host and box per point. A shard's tests share a few
 # rigs at a time (AT_ONCE in tests/common/power_cut.rs), so its operations

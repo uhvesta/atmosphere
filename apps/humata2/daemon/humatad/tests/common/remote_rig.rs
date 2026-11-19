@@ -43,6 +43,12 @@ use crate::common::{AGENT_NAME, Build, Daemon, World, binary, folder, start_requ
 /// daemon's start (15 s at most). This is more than twice the two together.
 pub const LONG: Duration = Duration::from_secs(120);
 
+/// How soon the host dials a machine again after its link drops
+/// (`HUMATA2_PEER_RETRY_MS`, test daemons only): at once, where a shipped
+/// host waits 5 s and more (HO-5), so a test that restarts a box waits for
+/// the box and not for the host's backoff.
+const PEER_RETRY: (&str, &str) = ("HUMATA2_PEER_RETRY_MS", "100");
+
 const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// `humatad2` as a machine gets it from the tools bundle.
@@ -107,6 +113,9 @@ case "$mode" in
   --resume) f="$CONV_DIR/$id.jsonl" ;;
   --fresh) f="$CONV_DIR/other.jsonl"; : > "$f" ;;
 esac
+# Reads keys itself, as an agent's CLI does: a holder types into a program
+# still editing lines only after waiting out its keys limit (5 s).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,
@@ -140,7 +149,10 @@ pub const COPILOT_AGENT: &str = "copilot";
 /// What stands in for the Codex and Copilot CLIs: it only answers, and
 /// never writes its conversation, so what a test put there is what a copy
 /// carries.
-const CLI_AGENT: &str = r#"echo "agent up $1"
+const CLI_AGENT: &str = r#"# Reads keys itself, as an agent's CLI does: a holder types into a program
+# still editing lines only after waiting out its keys limit (5 s).
+stty -icanon 2>/dev/null
+echo "agent up $1"
 while IFS= read -r line; do echo "got: $line"; done
 "#;
 
@@ -621,7 +633,10 @@ impl Rig {
         // The daemon's own PATH, given to it alone: this rig's `ssh` first,
         // and nothing of the test process's environment changes.
         let path = format!("{}:/usr/bin:/bin", bin.display());
-        let mut launch_env = vec![("PATH".to_owned(), path.clone())];
+        let mut launch_env = vec![
+            ("PATH".to_owned(), path.clone()),
+            (PEER_RETRY.0.to_owned(), PEER_RETRY.1.to_owned()),
+        ];
         if !host_env.is_empty() {
             crate::common::state_folder(dir.path());
             std::fs::create_dir_all(&world.channels).unwrap();
@@ -945,7 +960,7 @@ impl Rig {
     /// waiting for any link: for a test that keeps a machine away (its
     /// dials held by [`Self::link_lost`]) across the restart.
     pub async fn restart_host_unlinked(&mut self, env: &[(&str, &str)]) {
-        let mut all = vec![("PATH", self.path.as_str())];
+        let mut all = vec![("PATH", self.path.as_str()), PEER_RETRY];
         all.extend_from_slice(env);
         self.host.kill();
         // The old feed ended with the old host; the new one is open before

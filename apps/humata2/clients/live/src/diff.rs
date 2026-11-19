@@ -3,13 +3,23 @@
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    DiffBase, DiffLine, FileChange, FileDiff, LineKind, PushChoice, PushPlan, PushRepo, RepoBase,
+    DiffBase, DiffLine, FileChange, FileDiff, FileTier, LineKind, PushChoice, PushPlan, PushRepo, RepoBase,
     RepoBases, RepoDiff, RepoDiffSpec, SessionFile, SessionId,
 };
 use humata2_grpc::humata::v1 as pb;
 
 use crate::connection::{Shared, fresh_key};
 use crate::map;
+
+/// A tier as the wire carries it (D802); unset reads as normal.
+pub(crate) fn file_tier(wire: i32) -> FileTier {
+    use pb::review_importance::Tier;
+    match Tier::try_from(wire) {
+        Ok(Tier::Key) => FileTier::Key,
+        Ok(Tier::Skim) => FileTier::Skim,
+        _ => FileTier::Normal,
+    }
+}
 
 const WHAT: &str = "The session's changes";
 
@@ -47,8 +57,14 @@ pub(crate) fn spec_to_wire(repos: &[RepoDiffSpec]) -> Option<pb::DiffSpec> {
                     upto: Upto::Unstaged as i32,
                     untracked: Untracked::All as i32,
                     untracked_paths: Vec::new(),
-                    head: String::new(),
-                    worktree_paths: Vec::new(),
+                    head: match &each.base {
+                        RepoBase::Range { head, .. } => head.clone(),
+                        _ => String::new(),
+                    },
+                    worktree_paths: match &each.base {
+                        RepoBase::Overlay { paths, .. } => paths.clone(),
+                        _ => Vec::new(),
+                    },
                 }),
                 ..pb::RepoDiffSpec::default()
             })
@@ -73,6 +89,30 @@ fn repo_base_to_wire(base: &RepoBase) -> pb::diff_spec_base::Base {
         RepoBase::ForkPoint => Base::ForkPoint(pb::ForkPointBase {}),
         RepoBase::Uncommitted => Base::Rev("HEAD".to_owned()),
         RepoBase::PullRequestBase => Base::PullRequestBase(pb::PullRequestBaseRef {}),
+        RepoBase::Range { base, .. } | RepoBase::Overlay { base, .. } => Base::Rev(base.clone()),
+    }
+}
+
+/// Whether a base is a stack layer or the Whole stack (D800): exactly its
+/// repositories show.
+fn is_stack(base: &DiffBase) -> bool {
+    match base {
+        DiffBase::Spec(repos) => repos
+            .iter()
+            .any(|each| matches!(each.base, RepoBase::Range { .. } | RepoBase::Overlay { .. })),
+        _ => false,
+    }
+}
+
+/// The repositories a `GetDiff` is limited to: a stack's own, none (every
+/// repository of the session) for anything else.
+fn repo_filter(base: &DiffBase) -> Vec<pb::RepoRef> {
+    match base {
+        DiffBase::Spec(repos) if is_stack(base) => repos
+            .iter()
+            .filter_map(|each| map::parse_repo(&each.repo))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -81,7 +121,7 @@ fn line(kind: LineKind, old: u32, new: u32, text: &str) -> DiffLine {
         LineKind::Context => (Some(old), Some(new)),
         LineKind::Added => (None, Some(new)),
         LineKind::Removed => (Some(old), None),
-        LineKind::Hunk => (None, None),
+        LineKind::Hunk | LineKind::Note => (None, None),
     };
     DiffLine {
         kind,
@@ -121,6 +161,8 @@ fn readable_repo_base(base: &RepoBase) -> String {
         RepoBase::ForkPoint => "since fork".to_owned(),
         RepoBase::Uncommitted => "uncommitted changes".to_owned(),
         RepoBase::PullRequestBase => "the pull request's base".to_owned(),
+        RepoBase::Range { base, head } => format!("{base}..{head}"),
+        RepoBase::Overlay { base, .. } => format!("{base} and uncommitted changes"),
     }
 }
 
@@ -404,6 +446,34 @@ impl Shared {
     /// Every repository's changes in the session's clones, against where
     /// its branch started. Each file is fetched whole, page after page.
     pub(crate) async fn session_diffs(&self, session: &SessionId, base: &DiffBase) -> Result<Vec<RepoDiff>, DaemonError> {
+        self.read_diffs(session, base, repo_filter(base)).await
+    }
+
+    /// One repository's changes in the session (DS-35), read on its own so a
+    /// repository that fails doesn't hide the others.
+    pub(crate) async fn repo_diff(
+        &self,
+        session: &SessionId,
+        base: &DiffBase,
+        repo: &str,
+    ) -> Result<Vec<RepoDiff>, DaemonError> {
+        let repo_ref = map::parse_repo(repo).ok_or_else(|| DaemonError::Refused {
+            what: format!("The changes of {repo}"),
+            reason: format!(
+                "{repo} isn't a repository name in owner/name form. Pick one of the session's repositories from its list"
+            ),
+        })?;
+        self.read_diffs(session, base, vec![repo_ref]).await
+    }
+
+    /// The changes of the repositories in `repos` (all of the session's when
+    /// empty), each file fetched whole, page after page.
+    async fn read_diffs(
+        &self,
+        session: &SessionId,
+        base: &DiffBase,
+        repos: Vec<pb::RepoRef>,
+    ) -> Result<Vec<RepoDiff>, DaemonError> {
         let id = Some(pb::SessionId {
             value: session.as_str().to_owned(),
         });
@@ -412,7 +482,7 @@ impl Shared {
             .get_diff(pb::GetDiffRequest {
                 session: id.clone(),
                 base: wire_base(base),
-                repos: Vec::new(),
+                repos,
             })
             .await
             .map_err(|status| self.error(&status, WHAT))?
@@ -454,6 +524,14 @@ impl Shared {
                                     _ => LineKind::Context,
                                 };
                                 lines.push(line(kind, each.old_line, each.new_line, &each.text));
+                                if each.no_newline {
+                                    lines.push(DiffLine {
+                                        kind: LineKind::Note,
+                                        old: None,
+                                        new: None,
+                                        text: "\\ No newline at end of file".to_owned(),
+                                    });
+                                }
                             }
                         }
                         match page.next {
@@ -480,6 +558,9 @@ impl Shared {
                     similarity: summary.similarity,
                     binary: summary.binary,
                     error: None,
+                    old_mode: summary.old_mode,
+                    new_mode: summary.new_mode,
+                    tier: file_tier(summary.tier),
                 });
             }
             diffs.push(RepoDiff {
@@ -630,6 +711,61 @@ mod tests {
             old_side(&repos[0]),
             Some(SpecBase::MergeBaseWith("origin/main".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_range_compares_its_head_and_an_overlay_its_paths() {
+        let base = DiffBase::Spec(vec![
+            spec(
+                "acme/api",
+                RepoBase::Range {
+                    base: "aaa".to_owned(),
+                    head: "bbb".to_owned(),
+                },
+            ),
+            spec(
+                "acme/web",
+                RepoBase::Overlay {
+                    base: "ccc".to_owned(),
+                    paths: vec!["src".to_owned()],
+                },
+            ),
+        ]);
+        let Some(repos) = repo_specs(&base) else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(old_side(&repos[0]), Some(SpecBase::Rev("aaa".to_owned())));
+        assert_eq!(
+            repos[0].compare.as_ref().map(|c| c.head.clone()),
+            Some("bbb".to_owned())
+        );
+        assert_eq!(old_side(&repos[1]), Some(SpecBase::Rev("ccc".to_owned())));
+        assert_eq!(
+            repos[1].compare.as_ref().map(|c| c.worktree_paths.clone()),
+            Some(vec!["src".to_owned()])
+        );
+        assert_eq!(
+            repos[1].compare.as_ref().map(|c| c.head.clone()),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn a_stack_spec_limits_the_diff_to_its_repositories_and_a_plain_one_does_not() {
+        let stack = DiffBase::Spec(vec![spec(
+            "acme/api",
+            RepoBase::Range {
+                base: "a".to_owned(),
+                head: "b".to_owned(),
+            },
+        )]);
+        assert_eq!(repo_filter(&stack), vec![pb::RepoRef {
+            owner: "acme".to_owned(),
+            name: "api".to_owned(),
+        }]);
+        let plain = DiffBase::Spec(vec![spec("acme/api", RepoBase::DefaultBranch)]);
+        assert!(repo_filter(&plain).is_empty());
+        assert!(repo_filter(&DiffBase::OriginMain).is_empty());
     }
 
     #[test]

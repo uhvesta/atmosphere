@@ -15,7 +15,7 @@ use humata2_session::{Conversation, ConversationRead, ConversationTarget, Sessio
 
 use crate::bridge::Ui;
 use crate::theme::{self, Look};
-use crate::widgets::{col, row};
+use crate::widgets::{self, col, row};
 
 /// Sends a Conversation action to the store.
 pub(crate) type SendConversation = Rc<dyn Fn(SessionAction, &mut App)>;
@@ -49,6 +49,45 @@ pub(crate) fn body(
     )
 }
 
+/// Where the loading sweep sits in the Conversation tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Where {
+    /// At the top, above the earlier turns.
+    Top,
+    /// At the bottom, below the later turns.
+    Bottom,
+}
+
+/// Where the sweep shows: at the top before anything is read and while the
+/// earlier turns (or a retried first read) load, at the bottom while the later
+/// turns load, and nowhere when no read runs.
+fn sweep_at(conversation: Option<&Conversation>) -> Option<Where> {
+    match conversation {
+        None => Some(Where::Top),
+        Some(conversation) => match conversation.loading {
+            Some(ConversationRead::Around | ConversationRead::Earlier) => Some(Where::Top),
+            Some(ConversationRead::Later) => Some(Where::Bottom),
+            None => None,
+        },
+    }
+}
+
+/// The loading sweep of the tab: a full-width line, no words.
+fn sweep(look: Look) -> AnyElement {
+    div()
+        .id("conversation-loading")
+        .role(Role::ProgressIndicator)
+        .aria_label("Loading")
+        .test_support()
+        .child(widgets::progress_bar(
+            look,
+            None,
+            widgets::BarMetrics::line(look),
+            "conversation-sweep",
+        ))
+        .into_any_element()
+}
+
 fn tab(
     conversation: Option<&Conversation>,
     agent: Agent,
@@ -60,13 +99,9 @@ fn tab(
     let mut children: Vec<AnyElement> = Vec::new();
     // The child the hit's turn is at, to scroll it into view.
     let mut marked_child = None;
+    let at = sweep_at(conversation);
     match conversation {
-        None => children.push(
-            div()
-                .text_color(rgb(look.secondary))
-                .child("Reading the conversation…")
-                .into_any_element(),
-        ),
+        None => children.push(sweep(look)),
         Some(conversation) => {
             let loading = conversation.loading;
             if let Some(error) = &conversation.error {
@@ -95,6 +130,9 @@ fn tab(
                         .into_any_element(),
                 );
             }
+            if at == Some(Where::Top) {
+                children.push(sweep(look));
+            }
             if conversation.can_show_earlier() {
                 children.push(
                     button(
@@ -114,6 +152,9 @@ fn tab(
                     marked_child = Some(children.len());
                 }
                 children.push(turn_block(turn, &entries, conversation.target.seq, agent, look));
+            }
+            if at == Some(Where::Bottom) {
+                children.push(sweep(look));
             }
             if conversation.can_show_later() {
                 children.push(
@@ -319,5 +360,37 @@ mod tests {
         };
         let sent = sent_by_clicking(cx, Some(failed), "conversation-retry");
         assert_eq!(sent, vec![SessionAction::RetryConversation]);
+    }
+
+    fn reading(read: ConversationRead) -> Conversation {
+        Conversation {
+            loading: Some(read),
+            ..conversation()
+        }
+    }
+
+    #[test]
+    fn nothing_read_yet_sweeps_the_top() {
+        assert_eq!(sweep_at(None), Some(Where::Top));
+    }
+
+    #[test]
+    fn reading_the_earlier_turns_sweeps_the_top() {
+        assert_eq!(sweep_at(Some(&reading(ConversationRead::Earlier))), Some(Where::Top));
+    }
+
+    #[test]
+    fn reading_the_later_turns_sweeps_the_bottom() {
+        assert_eq!(sweep_at(Some(&reading(ConversationRead::Later))), Some(Where::Bottom));
+    }
+
+    #[test]
+    fn a_retried_first_read_sweeps_the_top() {
+        assert_eq!(sweep_at(Some(&reading(ConversationRead::Around))), Some(Where::Top));
+    }
+
+    #[test]
+    fn a_conversation_that_is_not_reading_shows_no_sweep() {
+        assert_eq!(sweep_at(Some(&conversation())), None);
     }
 }

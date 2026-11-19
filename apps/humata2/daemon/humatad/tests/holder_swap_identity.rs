@@ -35,6 +35,9 @@ case "$mode" in
     while [ ! -e "$CONV_DIR/whoami.json" ]; do printf .; sleep 0.05; done
     echo ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,
@@ -131,6 +134,7 @@ impl Fixture {
                 id: Some(id.clone()),
                 choice: pb::ArchiveChoice::Archive as i32,
                 plan: plan.token,
+                end: Some(true),
             })
             .await
             .unwrap()

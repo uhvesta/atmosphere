@@ -1051,6 +1051,7 @@ async fn archived_reviews_keep_unsubmitted_drafts_through_a_restore() {
             id: session.id.clone(),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()

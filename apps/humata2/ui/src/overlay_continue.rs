@@ -169,6 +169,13 @@ impl Overlays {
                         .disabled(draft.channel.is_none() || draft.sending),
                     ),
             )
+            .children(
+                draft
+                    .progress
+                    .as_ref()
+                    .filter(|_| draft.sending)
+                    .map(|p| widgets::progress_line(look, p, Some(ui.clients().daemon.now_ms()))),
+            )
             .test_support()
             .focus_trap("continue-trap", &self.sheet);
         div()

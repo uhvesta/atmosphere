@@ -54,6 +54,11 @@ pub trait Humata: Send + Sync + 'static {
         kind: AskKind,
         payload: Vec<u8>,
     ) -> impl Future<Output = Result<Vec<u8>, HumataError>> + Send;
+    /// The link to the thread it named dropped (D798): until it is named
+    /// again, Humata reads the session's screen for asks.
+    fn lost(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 /// Why one connection to the app-server ended.
@@ -106,6 +111,11 @@ pub async fn run_link<H: Humata>(socket: PathBuf, humata: Arc<H>, retry: Duratio
     loop {
         if let Err(error) = connection(&socket, &humata, &mut named).await {
             eprintln!("humata: Codex link: {error}");
+        }
+        // A link that had named its thread is told dropped, and names it
+        // again once connected, so Humata hears the session once more.
+        if named.take().is_some() {
+            humata.lost().await;
         }
         tokio::time::sleep(retry).await;
     }

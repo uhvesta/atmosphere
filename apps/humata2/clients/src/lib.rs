@@ -22,6 +22,8 @@ mod keychain;
 mod local_daemon;
 pub mod marks;
 pub mod model;
+// PROGRESS: the one model of a running operation's progress.
+pub mod progress;
 // REPOS (RL-1): the repo library and the one repo search.
 pub mod repos;
 pub mod machines;

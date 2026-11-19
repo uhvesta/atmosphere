@@ -45,6 +45,9 @@ case "$mode" in
   --session-id) mkdir -p "$(dirname "$f")"; : > "$f" ;;
   --resume) [ -f "$f" ] || { echo "no conversation at $f"; exit 3; } ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; done
 "#;
@@ -760,6 +763,7 @@ async fn a_deleted_channel_is_refused_and_nothing_changes() {
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .unwrap()
@@ -793,6 +797,7 @@ async fn an_archived_session_is_refused_and_nothing_changes() {
             id: Some(source.id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()

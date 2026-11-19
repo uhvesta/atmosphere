@@ -161,7 +161,7 @@ fn terminal_and_panel_full_screen_return_to_the_same_columns() {
     assert_eq!(app.ui.read(|s| s.full_screen()), Some(FullScreen::Panel));
     assert!(app.contains("panel-full-screen"));
     assert!(!app.contains("terminal"));
-    app.click("expand-panel");
+    app.click("show-terminal");
     assert!(app.contains("terminal"));
     assert!(app.contains("side-panel"));
     assert_eq!(app.ui.read(|s| s.layout), layout);

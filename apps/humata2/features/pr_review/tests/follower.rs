@@ -65,6 +65,8 @@ fn focus_request(path: &str, line: u32) -> FocusRequest {
         lines: Some(LineSpan { first: line, last: line }),
         side: Side::New,
         highlights: Vec::new(),
+        layer: None,
+        whole_stack: false,
     }
 }
 

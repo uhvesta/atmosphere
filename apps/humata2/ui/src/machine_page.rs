@@ -138,6 +138,28 @@ fn dim(look: Look, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+/// Whether the page shows the loading sweep in place of its detail: a load is
+/// running and there is no detail to show yet.
+fn sweep_without_detail(loading: bool, has_detail: bool) -> bool {
+    loading && !has_detail
+}
+
+/// The loading sweep of the machine page: a full-width line, no words.
+fn loading_sweep(look: Look) -> AnyElement {
+    div()
+        .id("machine-loading")
+        .role(Role::ProgressIndicator)
+        .aria_label("Loading")
+        .test_support()
+        .child(widgets::progress_bar(
+            look,
+            None,
+            widgets::BarMetrics::line(look),
+            "machine-sweep",
+        ))
+        .into_any_element()
+}
+
 fn card(look: Look) -> Div {
     col()
         .rounded(px(9.))
@@ -635,10 +657,10 @@ fn overview(
                 .test_support(),
         );
     }
+    if sweep_without_detail(state.loading, state.detail.is_some()) {
+        page = page.child(loading_sweep(look));
+    }
     let Some(detail) = &state.detail else {
-        if state.loading {
-            page = page.child(dim(look, "Loading…"));
-        }
         return page;
     };
     page.child(
@@ -1874,5 +1896,27 @@ mod system_line_tests {
             "macOS 26.1 · arm64 · 10.0.0.2 (ssh) · humatad 0.2.5"
         );
         assert!(!system_line("", "", "", "", "").contains('·'));
+    }
+}
+
+#[cfg(test)]
+mod loading_sweep_tests {
+    use ::core::prelude::v1::test;
+
+    use super::sweep_without_detail;
+
+    #[test]
+    fn a_first_load_shows_the_sweep() {
+        assert!(sweep_without_detail(true, false));
+    }
+
+    #[test]
+    fn a_page_that_is_not_loading_shows_no_sweep() {
+        assert!(!sweep_without_detail(false, false));
+    }
+
+    #[test]
+    fn a_page_with_detail_does_not_show_the_sweep_in_place_of_it() {
+        assert!(!sweep_without_detail(true, true));
     }
 }

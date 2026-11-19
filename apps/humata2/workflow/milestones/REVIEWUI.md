@@ -130,3 +130,48 @@ Spec §5, P-1 to P-9. Cases [07](../../flows/cases/diff/07-a-big-file-stays-smoo
 ## Lane
 
 - 2026-11-18: spec, 16 cases and this milestone written by the coach. Not started. Depends on DIFFVIEW (DV-5 for RV-2 and RV-8; DV-16 and DV-18 for RV-1's footer). Runs in parallel with STACKVIEW, sharing only the layer-key decision (RV-5 → T8).
+
+### Plan (minion REVIEWUI, 2026-11-18 18:10)
+
+Verified against the tree (uncommitted DIFFVIEW batch included):
+- Already done by DIFFVIEW, only checks left: Submit review… in the footer (`diff-submit-review`, W-D), icon tooltips with keys ("Full screen ⌃⌘↩", "Close panel", "Open in editor"; DV-18), Esc leaves full screen after the comment box, base menu, repo picker and push menu (`overlay.rs` dismiss order), layer keys ⌥⌘] / ⌥⌘[ in `DIFF_STACK` (STACKVIEW), file/change keys and their sheet rows (DV-15). The full-screen chord is ⌃⌘↩, not ⌥⌘↩ (DIFFVIEW 17:05).
+- Left for RV: footer count wording with the agent's name (DS-55), session-bar Submit review hidden while the Diff shows, agent draft outline (DS-54), per-session scroll key (DS-73), no refetch on panel toggle (DS-76: `ReviewAction::Open` always fetches today, `features/review/src/lib.rs:1127`), focus back after Show the terminal (DS-83), full text on hover for shortened names (DS-80), review file head pinned and Scroll honoured (RV-2), file filter (RV-6), base menu right anchor (RV-7), ⌥Z context (after DV-17), budgets (RV-8).
+- `ui/src/panel_changes.rs`, `features/review/src/lib.rs`, `ui/src/pages.rs` belong to other lanes: RV writes seam hunks (scratchpad `reviewui/*.py --check`) for main, and new code in new files.
+
+**Batch 1 (now; nothing in panel_changes.rs)**
+
+| Task | Worker | Files (edit) | Seams for main | Tests |
+|---|---|---|---|---|
+| B1 DS-76 no refetch | Haiku high | new `features/review/tests/open_again.rs` | `features/review/src/lib.rs` Open arm (seam_open.py) | `opening_again_with_the_diff_held_reads_nothing`, `try_again_and_a_base_pick_still_read` |
+| B2 DS-73 + DS-69 place per session | Haiku high | `ui/src/document_tab.rs` (additive `session_diff_view`), new `desktop/tests/native/review_ui.rs` | panel_changes.rs 3 `diff_view` call sites (seam_scroll_key.py); `mod review_ui;` in native.rs | `two_sessions_on_one_file_keep_their_own_scroll`, `show_the_terminal_keeps_the_line_scroll_drafts_and_open_box`, `toggling_the_panel_sends_no_fetch` |
+| B3 RV-1 drafts | Haiku high | `ui/src/comment_cards.rs`, `desktop/tests/native/pr_session.rs` | panel_changes.rs footer label; pages.rs Submit review hide (seam_submit.py) | `submit_review_in_the_footer_opens_the_sheet`, `the_session_bar_hides_submit_review_while_the_diff_shows`; outline via frame 68 (Fable) |
+| B4 DS-80 full text on hover | Sonnet medium | new `ui/src/full_text.rs` | `mod full_text;` in ui/src/lib.rs | unit/native test that a shortened text carries its full text |
+
+**Batch 2 (once DIFFVIEW hands over panel_changes.rs after DV-17):** RV-2, RV-6 (filter state in a new `features/review/src/file_filter.rs`), RV-7, DS-80 call sites, ⌥Z context check, DS-83, then RV-8 with DV-14.
+
+### Workers
+
+| Worker | Task | Status |
+|---|---|---|
+| manager | B1 DS-76 reopen: `features/review/tests/open_again.rs`, `src/reopen.rs`, `seam_open.py` | done; seam waits for DIFFVIEW |
+| Haiku a7527158 | B2 DS-73 per-session place: `session_diff_view`, `desktop/tests/native/review_ui.rs`; call sites in `seam_panel_changes.py` | done; 2 tests red until seam applied |
+| Haiku a17f280d | B3 DS-54 outline + DS-11 footer Submit review tests (`comment_cards.rs`, `pr_session.rs`) | done; frames 68/68b need re-record |
+| Haiku ac840a35 | B4 DS-80 `ui/src/full_text.rs` helper | done; call sites in batch 2 |
+| Sonnet a48c5124 | 2c RV-6 file filter (`features/review/src/file_filter.rs`, file list in panel_changes.rs) | running |
+| Sonnet a98e1d7d | 2b RV-2 review head pinned + Scroll (`review_repo*`, code column in panel_changes.rs) | running |
+| manager | 2a DS-15 cards start at the code column (640 cap stays, spec §8.6); 2d RV-7; 2f ⌥Z; 2g DS-83 tests in review_ui.rs | tests written, red run queued |
+
+### Batch 2 plan (minion REVIEWUI, 2026-11-18 19:40; panel_changes.rs + features/review/src/lib.rs handed over by main once the seams are in)
+
+Order, each TDD with its failing test written first (manager), code by Haiku workers, one file owner at a time on panel_changes.rs:
+
+| # | Task | Where (today's lines) | Tests |
+|---|---|---|---|
+| 2a | DS-15 cards start at the code column (DIFFVIEW leftover; spec §8 item 6 settles the 640 cap as inside 720, so it stays) | `fit` in panel_changes.rs | `review_ui::the_comment_box_starts_at_the_code_column` |
+| 2b | RV-2 review file head pinned, Scroll honoured | `review_repo` :1415 / `review_repo_head` :1570, `self.wrap \|\| review` :3146 | `pr_session::a_review_file_head_stays_while_its_lines_scroll`, `scroll_in_a_review_keeps_the_gutter_still` |
+| 2c | RV-6 file filter above 20 files | state in new `features/review/src/file_filter.rs`; field above the list | `a_filter_shows_above_twenty_files`, `filtering_keeps_only_matching_files_and_their_repos`; new frame (Fable) |
+| 2d | RV-7 base menus anchor right | `base_menu` :1880, `repo_base_menu` :2265 | `the_base_menu_stays_inside_a_narrow_panel` |
+| 2e | DS-80 call sites via `full_text` | the `text_ellipsis()` sites (:256, 265, 591, 605, 1003, 1028, 1103, 1369, 1605, 1835, 2086, 2097, 2203, 3004) | `a_shortened_path_shows_in_full_on_hover` (label-based) |
+| 2f | ⌥Z context check | `keys.rs:276` binds in DIFF; check text box and terminal | `option_z_in_the_comment_box_types_and_does_not_flip_wrap` |
+| 2g | DS-83 focus back after Show the terminal | features/app overlay/full-screen + pages focus | `show_the_terminal_returns_focus_to_the_terminal` |
+| 2h | RV-8 budgets with DV-14 (main tracks DV-14) | bench rig via Bazel, numbers "proposed" until accepted | P-1..P-9 recorded |

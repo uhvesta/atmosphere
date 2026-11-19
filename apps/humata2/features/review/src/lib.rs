@@ -7,17 +7,23 @@
 //! replaces an older one still in flight.
 
 pub mod comments;
+pub mod file_filter;
 pub mod order;
+pub mod stack;
+mod reopen;
+
+use stack::{StackRows, Tier};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use humata2_clients::views::PlanView;
+use humata2_clients::model::FileTier;
+use humata2_clients::views::{PlanView, StackView};
 use humata2_clients::{Daemon, DaemonError, Workspace};
 use humata2_clients::model::{
-    Comment, DiffBase, DiffLine, DiffTargets, PushChoice, RepoBase, RepoBases, RepoDiff,
-    SessionId, Status,
+    Comment, DiffBase, DiffLine, DiffTargets, FileDiff, LineKind, PushChoice, RepoBase, RepoBases,
+    RepoDiff, SessionId, Status,
 };
 use serde::{Deserialize, Serialize};
 use tca::{Clock, Effect, Reducer};
@@ -66,6 +72,29 @@ pub enum PlanRow {
         /// What the agent says about it, in the plan's order.
         notes: Vec<PlanRowNote>,
     },
+}
+
+/// A review plan's list as the Diff panel draws it (RV-32, D802): its rows,
+/// then each repository's skim files folded into one row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanLayout {
+    /// The groups and the key and normal files, in reading order.
+    pub rows: Vec<PlanRow>,
+    /// One folded row per repository with skim files, in the order the
+    /// repositories first have one.
+    pub skims: Vec<PlanSkim>,
+}
+
+/// One repository's skim files in a plan's list (D802, DS-67).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanSkim {
+    /// The repository, as the diff names it.
+    pub repo: String,
+    /// Its skim files, in reading order.
+    pub paths: Vec<String>,
+    /// The folded row draws before `rows[after]`: just after the
+    /// repository's last row, or at the end when it has none.
+    pub after: usize,
 }
 
 /// A note of the agent's under a file of a review plan (RV-32, RV-34).
@@ -143,6 +172,27 @@ pub struct Fetch {
     pub finding: bool,
     /// Why the last Find the default branch failed.
     pub find_error: Option<String>,
+    /// Repositories of a session with several whose read failed while the
+    /// others were read (DS-35): repository to why, as the panel says it.
+    /// The panel puts each message and Try again under that repository's row.
+    /// Empty when every repository was read, or the whole read failed (then
+    /// `error` says why).
+    pub repo_errors: BTreeMap<String, String>,
+}
+
+/// Where the keyboard cursor stands in a session's file list (DS-84): the
+/// row the focus ring is drawn on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListCursor {
+    /// A repository's row.
+    Repo(String),
+    /// A file's row.
+    File {
+        /// The repository the file is in, as `owner/name`.
+        repo: String,
+        /// The file's path.
+        path: String,
+    },
 }
 
 /// Where pushing one repository of a session's changes stands (RV-2).
@@ -215,6 +265,8 @@ pub struct ReviewState {
     pub fetch: HashMap<SessionId, Fetch>,
     /// Whether the base menu under the Diff header is open (RV-1).
     pub base_menu: bool,
+    /// Whether the Push & PR menu in the footer is open. Not saved.
+    pub push_menu: bool,
     /// The one repository base menu open, if any (RV-31).
     pub repo_picker: Option<RepoPicker>,
     /// Where each repository's push of a session's changes stands.
@@ -224,15 +276,155 @@ pub struct ReviewState {
     /// The repositories folded per session, as `(session, repo)`: their
     /// files are hidden while they are in here. Not saved (DV-7).
     pub collapsed: HashSet<(SessionId, String)>,
+    /// The stack layer each session shows, by title; `None` (or no entry)
+    /// is Whole stack (D800). Not saved.
+    pub layer: HashMap<SessionId, Option<String>>,
+    /// The repositories whose skim files are open, as `(session, repo)`;
+    /// they are folded into one row otherwise (D802). Not saved.
+    pub skim_open: HashSet<(SessionId, String)>,
+    /// Why asking the agent to send its stack again failed, by session
+    /// (DS-65); cleared by the next ask. Not saved.
+    pub ask_again_error: HashMap<SessionId, String>,
+    /// The change (hunk) each session's open file is stepped to, counted
+    /// from 0; a session with no entry is on its first. Reset whenever the
+    /// open file changes (DS-27). Not saved.
+    pub change: HashMap<SessionId, usize>,
+    /// The sessions whose narrow file list is open over the file bar (DS-3).
+    /// Not saved.
+    pub file_list_open: HashSet<SessionId>,
+    /// What each session's "Filter files" field holds (RV-6); kept while the
+    /// panel is closed. Not saved.
+    pub file_filter: HashMap<SessionId, String>,
+    /// The row each session's file list has its keyboard cursor on (DS-84).
+    /// Not saved.
+    pub list_cursor: HashMap<SessionId, ListCursor>,
+}
+
+/// The changes (hunks) of a file: its hunk headers, or one when it has none.
+#[must_use]
+pub fn change_count(file: &humata2_clients::model::FileDiff) -> usize {
+    file.lines
+        .iter()
+        .filter(|line| line.kind == LineKind::Hunk)
+        .count()
+        .max(1)
 }
 
 impl ReviewState {
+    /// The row `session`'s file list has its keyboard cursor on, if the
+    /// keys have placed it (DS-84).
+    #[must_use]
+    pub fn list_cursor(&self, session: &SessionId) -> Option<&ListCursor> {
+        self.list_cursor.get(session)
+    }
+
+    /// What `session`'s "Filter files" field holds.
+    #[must_use]
+    pub fn file_filter(&self, session: &SessionId) -> &str {
+        self.file_filter.get(session).map_or("", String::as_str)
+    }
+
+    /// Whether `session` has enough changed files to get the field.
+    #[must_use]
+    pub fn file_filter_shown(&self, session: &SessionId) -> bool {
+        file_filter::shown_for(self.panel_files(session).len())
+    }
+
+    /// Whether the filter lets `path` of `session` show. A session too short
+    /// for the field is never filtered.
+    #[must_use]
+    pub fn file_visible(&self, session: &SessionId, path: &str) -> bool {
+        !self.file_filter_shown(session) || file_filter::matches(path, self.file_filter(session))
+    }
+
+    /// `session`'s files as `(repo, path)` that the filter lets show; a
+    /// repository with no match has none.
+    #[must_use]
+    pub fn visible_files(&self, session: &SessionId) -> Vec<(String, String)> {
+        let shown = self.file_filter_shown(session);
+        let query = self.file_filter(session);
+        self.panel_files(session)
+            .into_iter()
+            .filter(|(_, path)| !shown || file_filter::matches(path, query))
+            .collect()
+    }
+
+    /// Every file of `session`'s changes in panel order, as `(repo, path)`.
+    fn panel_files(&self, session: &SessionId) -> Vec<(String, String)> {
+        self.workspace
+            .diffs
+            .iter()
+            .filter(|diff| &diff.session == session)
+            .flat_map(|diff| {
+                diff.files
+                    .iter()
+                    .map(move |file| (diff.repo.clone(), file.path.clone()))
+            })
+            .collect()
+    }
+
+    /// The file `session` shows: the one picked, or the first when none is
+    /// picked or the picked one is gone.
+    fn open_file(&self, session: &SessionId) -> Option<(String, String)> {
+        let files = self.panel_files(session);
+        self.saved
+            .selected
+            .get(session)
+            .filter(|picked| files.contains(picked))
+            .cloned()
+            .or_else(|| files.into_iter().next())
+    }
+
+    /// The change `session`'s open file is stepped to, within its count.
+    #[must_use]
+    pub fn current_change(&self, session: &SessionId) -> usize {
+        let Some((repo, path)) = self.open_file(session) else {
+            return 0;
+        };
+        let count = self
+            .workspace
+            .diffs
+            .iter()
+            .filter(|diff| &diff.session == session && diff.repo == repo)
+            .flat_map(|diff| diff.files.iter())
+            .find(|file| file.path == path)
+            .map_or(1, change_count);
+        self.change
+            .get(session)
+            .copied()
+            .unwrap_or(0)
+            .min(count - 1)
+    }
+
     /// The rows of `session`'s changes in its review plan's order, or `None`
     /// when it has no plan. A group's title and note come before its first
     /// file; files the order leaves out come last; entries the diff lacks
-    /// are skipped.
+    /// are skipped. Skim files are left out: they are in
+    /// [`Self::plan_layout`]'s folded rows.
     #[must_use]
     pub fn plan_rows(&self, session: &SessionId) -> Option<Vec<PlanRow>> {
+        self.plan_layout(session).map(|layout| layout.rows)
+    }
+
+    /// `session`'s plan list with each file at the tier [`Self::tier_of`]
+    /// gives it, or `None` when it has no plan.
+    #[must_use]
+    pub fn plan_layout(&self, session: &SessionId) -> Option<PlanLayout> {
+        self.plan_layout_with(session, |repo, file| self.tier_of(session, repo, file))
+    }
+
+    /// `session`'s plan list with each file at `tier(repo, file)` (D802),
+    /// or `None` when it has no plan. As [`Self::plan_rows`], and: skim
+    /// files leave the rows and their groups (a group left without files
+    /// draws no header) and fold into one row per repository after its
+    /// last row; with no order sent, key files come first in their
+    /// repository.
+    #[must_use]
+    pub fn plan_layout_with(
+        &self,
+        session: &SessionId,
+        tier: impl Fn(&str, &FileDiff) -> Tier,
+    ) -> Option<PlanLayout> {
         let plan = self.plans.get(session)?;
         let read = self.fetch.get(session).and_then(|fetch| fetch.diffs.as_ref());
         let diffs: Vec<&RepoDiff> = match read {
@@ -244,14 +436,11 @@ impl ReviewState {
                 .filter(|diff| &diff.session == session)
                 .collect(),
         };
-        let files: Vec<(&str, &str)> = diffs
+        let files: Vec<(&str, &FileDiff)> = diffs
             .iter()
-            .flat_map(|diff| {
-                diff.files
-                    .iter()
-                    .map(move |file| (diff.repo.as_str(), file.path.as_str()))
-            })
+            .flat_map(|diff| diff.files.iter().map(move |file| (diff.repo.as_str(), file)))
             .collect();
+        let tiers: Vec<Tier> = files.iter().map(|(repo, file)| tier(repo, file)).collect();
         let notes_of = |repo: &str, path: &str| -> Vec<PlanRowNote> {
             plan.notes
                 .iter()
@@ -263,51 +452,166 @@ impl ReviewState {
                 })
                 .collect()
         };
+        let row_of = |at: usize| {
+            let (repo, file) = files[at];
+            PlanRow::File {
+                repo: repo.to_owned(),
+                path: file.path.clone(),
+                notes: notes_of(repo, &file.path),
+            }
+        };
         let mut used = vec![false; files.len()];
         let mut met: Vec<(&str, &str)> = Vec::new();
         let mut pending: Vec<PlanRow> = Vec::new();
+        // Whether a skim file left the pending groups since they were met:
+        // a group that then starts drops them, as they have no files.
+        let mut skimmed = false;
         let mut rows = Vec::new();
+        let mut skims: Vec<usize> = Vec::new();
         for (repo, path) in &plan.order {
             if met.contains(&(repo.as_str(), path.as_str())) {
                 continue;
             }
             met.push((repo.as_str(), path.as_str()));
-            for group in plan
+            let mut starts = plan
                 .groups
                 .iter()
                 .filter(|group| group.first.0 == *repo && group.first.1 == *path)
-            {
-                pending.push(PlanRow::Group {
-                    title: group.title.clone(),
-                    note: group.note.clone(),
-                });
+                .peekable();
+            if skimmed && starts.peek().is_some() {
+                pending.clear();
+                skimmed = false;
             }
-            let at = files
-                .iter()
-                .enumerate()
-                .position(|(index, (held, file))| {
-                    !used[index] && *file == path.as_str() && same_repo(repo, held)
-                });
+            pending.extend(starts.map(|group| PlanRow::Group {
+                title: group.title.clone(),
+                note: group.note.clone(),
+            }));
+            let at = files.iter().enumerate().position(|(index, (held, file))| {
+                !used[index] && file.path == path.as_str() && same_repo(repo, held)
+            });
             if let Some(at) = at {
                 used[at] = true;
+                if tiers[at] == Tier::Skim {
+                    skims.push(at);
+                    skimmed = true;
+                    continue;
+                }
                 rows.append(&mut pending);
-                rows.push(PlanRow::File {
-                    repo: files[at].0.to_owned(),
-                    path: path.clone(),
-                    notes: notes_of(repo, path),
-                });
+                skimmed = false;
+                rows.push(row_of(at));
             }
         }
-        for (index, (repo, path)) in files.iter().enumerate() {
-            if !used[index] {
-                rows.push(PlanRow::File {
-                    repo: (*repo).to_owned(),
-                    path: (*path).to_owned(),
-                    notes: notes_of(repo, path),
-                });
+        let mut index = 0;
+        while index < files.len() {
+            let repo = files[index].0;
+            let end = files[index..]
+                .iter()
+                .position(|(held, _)| *held != repo)
+                .map_or(files.len(), |run| index + run);
+            let mut key = Vec::new();
+            let mut normal = Vec::new();
+            for at in index..end {
+                if used[at] {
+                    continue;
+                }
+                match tiers[at] {
+                    Tier::Skim => skims.push(at),
+                    Tier::Key if plan.order.is_empty() => key.push(at),
+                    _ => normal.push(at),
+                }
+            }
+            rows.extend(key.into_iter().chain(normal).map(&row_of));
+            index = end;
+        }
+        let mut folded: Vec<PlanSkim> = Vec::new();
+        for at in skims {
+            let (repo, file) = files[at];
+            match folded.iter_mut().find(|skim| skim.repo == repo) {
+                Some(skim) => skim.paths.push(file.path.clone()),
+                None => folded.push(PlanSkim {
+                    repo: repo.to_owned(),
+                    paths: vec![file.path.clone()],
+                    after: rows
+                        .iter()
+                        .rposition(|row| matches!(row, PlanRow::File { repo: held, .. } if held == repo))
+                        .map_or(rows.len(), |last| last + 1),
+                }),
             }
         }
-        Some(rows)
+        Some(PlanLayout { rows, skims: folded })
+    }
+
+    /// How much `file` of `repo` matters in `session`'s review (D802): the
+    /// agent's tier from the plan, else the one its diff was served with.
+    /// A plan can arrive before the diffs are read again, so the plan's
+    /// list comes first.
+    #[must_use]
+    pub fn tier_of(&self, session: &SessionId, repo: &str, file: &FileDiff) -> Tier {
+        match self.agent_tier(session, repo, &file.path).unwrap_or(file.tier) {
+            FileTier::Key => Tier::Key,
+            FileTier::Normal => Tier::Normal,
+            FileTier::Skim => Tier::Skim,
+        }
+    }
+
+    /// The tier the agent gave `path` of `repo`: the picked layer's list,
+    /// else the plan's (for a stack's Whole view, the layers' joined).
+    fn agent_tier(&self, session: &SessionId, repo: &str, path: &str) -> Option<FileTier> {
+        let plan = self.plans.get(session)?;
+        let list = match (plan.stack.as_ref(), self.layer_of(session)) {
+            (Some(stack), Some(title)) => &stack.layers.iter().find(|layer| layer.title == title)?.importance,
+            _ => &plan.importance,
+        };
+        list.iter()
+            .find(|entry| entry.repo == repo && entry.path == path)
+            .map(|entry| entry.tier)
+    }
+
+    /// The stack `session`'s plan carries, if any.
+    fn stack_of(&self, session: &SessionId) -> Option<&StackView> {
+        self.plans.get(session)?.stack.as_ref()
+    }
+
+    /// The layer `session` shows, by title; `None` is Whole stack.
+    #[must_use]
+    pub fn layer_of(&self, session: &SessionId) -> Option<&str> {
+        self.layer.get(session)?.as_deref()
+    }
+
+    /// The layer list of the open session, when its plan carries a stack.
+    #[must_use]
+    pub fn stack_rows(&self) -> Option<StackRows> {
+        let session = self.session.as_ref()?;
+        let stack = self.stack_of(session)?;
+        let picked = self.layer_of(session);
+        let whole_files = if picked.is_none() {
+            self.fetch
+                .get(session)
+                .and_then(|fetch| fetch.diffs.as_ref())
+                .map(|diffs| {
+                    diffs
+                        .iter()
+                        .map(|diff| u32::try_from(diff.files.len()).unwrap_or(u32::MAX))
+                        .sum()
+                })
+        } else {
+            None
+        };
+        Some(stack::rows(stack, picked, &repos_of(self, session), whole_files))
+    }
+
+    /// What `session` reads: the picked layer's repositories while a stack
+    /// shows, else its diff targets.
+    fn current_base(&self, session: &SessionId) -> DiffBase {
+        match self.stack_of(session) {
+            Some(stack) => stack::layer_base(stack, self.layer_of(session)),
+            None => self.targets_of(session).base(&repos_of(self, session)),
+        }
+    }
+
+    /// Whether a stack shows for `session`: its base menus stay shut.
+    fn shows_stack(&self, session: &SessionId) -> bool {
+        self.stack_of(session).is_some()
     }
 
     /// The diff targets of `session`: the bases its changes are compared
@@ -376,6 +680,39 @@ pub enum Delegate {
 pub enum ReviewAction {
     /// Show a file from the open session's comparison.
     SelectFile { repo: String, path: String },
+    /// Step to the next file in panel order, opening its repository if it
+    /// is folded; stays on the last (DS-2, DS-78).
+    NextFile,
+    /// Step to the previous file in panel order; stays on the first.
+    PrevFile,
+    /// Step to the next change (hunk) of the open file; stays on the last
+    /// (DS-27).
+    NextChange,
+    /// Step to the previous change of the open file; stays on the first.
+    PrevChange,
+    /// Open the narrow file list over the file bar, or fold it (DS-3).
+    ToggleFileList,
+    /// Down (↓) while the file list has focus: the cursor moves to
+    /// the next row, stopping at the last. The first press with no cursor
+    /// only places it, on the open file or the first row (DS-84).
+    ListDown,
+    /// Up (↑) while the file list has focus: the cursor moves to the
+    /// previous row, stopping at the first. The first press with no cursor
+    /// only places it (DS-84).
+    ListUp,
+    /// Return (↩) while the file list has focus: opens the file under
+    /// the cursor, or folds or unfolds the repository under it (DS-84).
+    ListOpen,
+    /// Left (←) while the file list has focus: from a file the cursor
+    /// goes to its repository; an open repository folds; a folded one stays
+    /// (DS-84).
+    ListCollapse,
+    /// Right (→) while the file list has focus: a folded repository
+    /// opens; an open one moves the cursor to its first file; a file stays
+    /// (DS-84).
+    ListExpand,
+    /// The session's "Filter files" field changed (RV-6); empty clears it.
+    FilterFiles(SessionId, String),
     /// The data changed.
     Show(Arc<Workspace>),
     /// Saved folds and older comments came back at launch.
@@ -433,6 +770,39 @@ pub enum ReviewAction {
     ToggleBaseMenu,
     /// Close the base menu.
     CloseBaseMenu,
+    /// Show this layer of the open session's stack, by title; `None` is
+    /// Whole stack (D800).
+    PickLayer(Option<String>),
+    /// Step to the next layer: Whole stack, then 1 (the bottom) up to the
+    /// top. Stays at the top.
+    NextLayer,
+    /// Step back toward Whole stack. Stays at Whole stack.
+    PrevLayer,
+    /// Open or fold a repository's skim files in the open session (D802).
+    ToggleSkim {
+        /// The repository, as `owner/name`.
+        repo: String,
+    },
+    /// Ask the open session's agent to send its stack again because `repo`
+    /// moved after it sent `layer` (DS-65).
+    AskAgain {
+        /// The layer's title.
+        layer: String,
+        /// The repository that moved, as `owner/name`.
+        repo: String,
+    },
+    /// Typing the ask into the agent's terminal ended.
+    AskedAgain {
+        /// The session asked.
+        session: SessionId,
+        /// Whether the terminal took it.
+        result: Result<(), DaemonError>,
+    },
+    /// Open the footer's Push & PR menu, or close it if it is open; the base
+    /// menus close.
+    TogglePushMenu,
+    /// Close the Push & PR menu.
+    ClosePushMenu,
     /// Mark the open session's changes reviewed (RV-6).
     MarkReviewed,
     /// Read the open session's changes again.
@@ -471,6 +841,20 @@ pub enum ReviewAction {
         base: DiffBase,
         result: Result<Vec<RepoDiff>, DaemonError>,
     },
+    /// The whole read failed, so each repository of the session was read on
+    /// its own and at least one worked (DS-35): the changes of those that
+    /// did, and why each of the others failed.
+    FetchedByRepo {
+        /// The session.
+        session: SessionId,
+        /// The base the reads were made against.
+        base: DiffBase,
+        /// The changes of the repositories that were read, in repository
+        /// order.
+        diffs: Vec<RepoDiff>,
+        /// The repositories that failed, each with why, as the panel says it.
+        errors: Vec<(String, String)>,
+    },
     /// Marking a session reviewed ended.
     Reviewed {
         session: SessionId,
@@ -502,16 +886,127 @@ impl Review {
             return Effect::none();
         }
         fetch.loading = true;
-        let base = state.targets_of(session).base(&repos_of(state, session));
+        let base = state.current_base(session);
         let reply = self.daemon.diffs(session, &base);
+        let repos = repos_of(state, session);
+        let daemon = Arc::clone(&self.daemon);
         let session = session.clone();
         Effect::future(async move {
+            let error = match reply.await {
+                Ok(diffs) => {
+                    return ReviewAction::Fetched {
+                        session,
+                        base,
+                        result: Ok(diffs),
+                    };
+                }
+                Err(error) => error,
+            };
+            // DS-35: one repository failing shouldn't hide the others. A
+            // missing default branch has its own fix, so it stays whole.
+            if repos.len() >= 2 && !matches!(error, DaemonError::NoDefaultBranch { .. }) {
+                let mut diffs = Vec::new();
+                let mut errors = Vec::new();
+                for repo in &repos {
+                    match daemon.repo_diff(&session, &base, repo).await {
+                        Ok(read) => diffs.extend(read),
+                        Err(failed) => errors.push((repo.clone(), failed.to_string())),
+                    }
+                }
+                // Only a split outcome is one repository's fault: when every
+                // repository read fine, or none did, the whole read failed.
+                if !errors.is_empty() && errors.len() < repos.len() {
+                    return ReviewAction::FetchedByRepo {
+                        session,
+                        base,
+                        diffs,
+                        errors,
+                    };
+                }
+            }
             ReviewAction::Fetched {
                 session,
                 base,
-                result: reply.await,
+                result: Err(error),
             }
         })
+    }
+
+    /// A read of `session`'s changes against `base` ended with `outcome`:
+    /// the diffs and the repositories that failed beside them, or why the
+    /// whole read failed. A read against a base no longer in use is dropped.
+    fn finish_read(
+        &self,
+        state: &mut ReviewState,
+        session: SessionId,
+        base: DiffBase,
+        outcome: Result<(Vec<RepoDiff>, BTreeMap<String, String>), DaemonError>,
+    ) -> Effect<ReviewAction> {
+        let current = state.current_base(&session);
+        let fetch = state.fetch.entry(session.clone()).or_default();
+        fetch.loading = false;
+        let queued = std::mem::take(&mut fetch.queued);
+        let mut effects = Vec::new();
+        if base == current {
+            match outcome {
+                Ok((diffs, repo_errors)) => {
+                    fetch.error = None;
+                    fetch.no_default = None;
+                    fetch.repo_errors = repo_errors;
+                    fetch.read_at = Some(self.clock.now());
+                    fetch.diffs = Some(diffs.clone());
+                    replace_diffs(&mut state.workspace, &session, &diffs);
+                    effects.push(prepare(state));
+                    effects.push(Effect::send(ReviewAction::Delegate(Delegate::Fetched(
+                        session.clone(),
+                        diffs,
+                    ))));
+                }
+                Err(error) => {
+                    fetch.no_default = match &error {
+                        DaemonError::NoDefaultBranch { repo } => Some(repo.clone()),
+                        _ => None,
+                    };
+                    fetch.repo_errors.clear();
+                    fetch.error = Some(error.to_string());
+                }
+            }
+        }
+        if queued {
+            effects.push(self.fetch(state, &session));
+        }
+        Effect::merge(effects)
+    }
+
+    /// Shows `layer` of the open session's stack and reads its diff. A pick
+    /// of the layer already showing, or with no stack, does nothing; the
+    /// session's own diff targets are never touched.
+    fn pick_layer(&self, state: &mut ReviewState, layer: Option<String>) -> Effect<ReviewAction> {
+        let Some(session) = state.session.clone() else {
+            return Effect::none();
+        };
+        let Some(stack) = state.stack_of(&session) else {
+            return Effect::none();
+        };
+        // A title the stack doesn't have is Whole stack.
+        let layer = layer.filter(|title| stack.layers.iter().any(|each| &each.title == title));
+        if state.layer_of(&session) == layer.as_deref() {
+            return Effect::none();
+        }
+        state.layer.insert(session.clone(), layer);
+        self.fetch(state, &session)
+    }
+
+    /// Steps the open session's stack one layer.
+    fn step_layer(&self, state: &mut ReviewState, way: stack::Step) -> Effect<ReviewAction> {
+        let Some(session) = state.session.clone() else {
+            return Effect::none();
+        };
+        let Some(stack) = state.stack_of(&session) else {
+            return Effect::none();
+        };
+        let to = stack::step(stack, state.layer_of(&session), way);
+        self.pick_layer(state, to)
     }
 
     /// Reads the branches of the open repository menu's repository.
@@ -675,15 +1170,23 @@ impl Reducer for Review {
 
     fn reduce(&self, state: &mut ReviewState, action: ReviewAction) -> Effect<ReviewAction> {
         match action {
-            ReviewAction::SelectFile { repo, path } => {
+            ReviewAction::SelectFile { repo, path } => select_file(state, repo, path),
+            ReviewAction::NextFile => step_file(state, true),
+            ReviewAction::PrevFile => step_file(state, false),
+            ReviewAction::NextChange => step_change(state, true),
+            ReviewAction::PrevChange => step_change(state, false),
+            ReviewAction::ToggleFileList => {
                 if let Some(session) = state.session.clone()
-                    && state.workspace.diffs.iter().any(|diff| {
-                        diff.session == session
-                            && diff.repo == repo
-                            && diff.files.iter().any(|file| file.path == path)
-                    })
+                    && !state.file_list_open.remove(&session)
                 {
-                    state.saved.selected.insert(session, (repo, path));
+                    state.file_list_open.insert(session);
+                }
+            }
+            ReviewAction::FilterFiles(session, query) => {
+                if query.is_empty() {
+                    state.file_filter.remove(&session);
+                } else {
+                    state.file_filter.insert(session, query);
                 }
             }
             ReviewAction::Show(workspace) => {
@@ -708,7 +1211,9 @@ impl Reducer for Review {
             ReviewAction::PickBase(base) => {
                 state.base_menu = false;
                 state.repo_picker = None;
-                if let Some(session) = state.session.clone() {
+                if let Some(session) = state.session.clone()
+                    && !state.shows_stack(&session)
+                {
                     state
                         .targets
                         .entry(session.clone())
@@ -724,6 +1229,9 @@ impl Reducer for Review {
                 base,
             } => {
                 state.repo_picker = None;
+                if state.shows_stack(&session) {
+                    return Effect::none();
+                }
                 // The others keep what they were compared with before the
                 // pick: a pull request's base for a review (PR-10).
                 let before = state.targets_of(&session);
@@ -775,8 +1283,13 @@ impl Reducer for Review {
             ReviewAction::ToggleRepoBase { repo } => {
                 if state.repo_picker.as_ref().is_some_and(|picker| picker.repo == repo) {
                     state.repo_picker = None;
-                } else if state.session.is_some() {
+                } else if state
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| !state.shows_stack(session))
+                {
                     state.base_menu = false;
+                    state.push_menu = false;
                     state.repo_picker = Some(RepoPicker {
                         repo,
                         bases: None,
@@ -805,10 +1318,56 @@ impl Reducer for Review {
                 }
             }
             ReviewAction::ToggleBaseMenu => {
-                state.base_menu = !state.base_menu;
+                let stacked = state
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| state.shows_stack(session));
+                state.base_menu = !state.base_menu && !stacked;
                 state.repo_picker = None;
+                state.push_menu = false;
             }
             ReviewAction::CloseBaseMenu => state.base_menu = false,
+            ReviewAction::PickLayer(layer) => return self.pick_layer(state, layer),
+            ReviewAction::NextLayer => return self.step_layer(state, stack::Step::Next),
+            ReviewAction::PrevLayer => return self.step_layer(state, stack::Step::Previous),
+            ReviewAction::ToggleSkim { repo } => {
+                if let Some(session) = state.session.clone() {
+                    let key = (session, repo);
+                    if !state.skim_open.remove(&key) {
+                        state.skim_open.insert(key);
+                    }
+                }
+            }
+            ReviewAction::AskAgain { layer, repo } => {
+                let Some(session) = state.session.clone() else {
+                    return Effect::none();
+                };
+                state.ask_again_error.remove(&session);
+                let key = format!(
+                    "stack-again/{session}/{layer}/{repo}/{}",
+                    self.clock.now().as_millis()
+                );
+                let call = self
+                    .daemon
+                    .send_keyed(&session, &stack::ask_again_text(&layer, &repo), &key);
+                return Effect::future(async move {
+                    ReviewAction::AskedAgain { session, result: call.await }
+                });
+            }
+            ReviewAction::AskedAgain { session, result } => match result {
+                Ok(()) => {
+                    state.ask_again_error.remove(&session);
+                }
+                Err(error) => {
+                    state.ask_again_error.insert(session, error.to_string());
+                }
+            },
+            ReviewAction::TogglePushMenu => {
+                state.push_menu = !state.push_menu;
+                state.base_menu = false;
+                state.repo_picker = None;
+            }
+            ReviewAction::ClosePushMenu => state.push_menu = false,
             ReviewAction::MarkReviewed => {
                 state.base_menu = false;
                 if let Some(session) = state.session.clone() {
@@ -847,38 +1406,17 @@ impl Reducer for Review {
                 state.pushes.insert((session, repo), outcome);
             }
             ReviewAction::Fetched { session, base, result } => {
-                let current = state.targets_of(&session).base(&repos_of(state, &session));
-                let fetch = state.fetch.entry(session.clone()).or_default();
-                fetch.loading = false;
-                let queued = std::mem::take(&mut fetch.queued);
-                let mut effects = Vec::new();
-                if base == current {
-                    match result {
-                        Ok(diffs) => {
-                            fetch.error = None;
-                            fetch.no_default = None;
-                            fetch.read_at = Some(self.clock.now());
-                            fetch.diffs = Some(diffs.clone());
-                            replace_diffs(&mut state.workspace, &session, &diffs);
-                            effects.push(prepare(state));
-                            effects.push(Effect::send(ReviewAction::Delegate(Delegate::Fetched(
-                                session.clone(),
-                                diffs,
-                            ))));
-                        }
-                        Err(error) => {
-                            fetch.no_default = match &error {
-                                DaemonError::NoDefaultBranch { repo } => Some(repo.clone()),
-                                _ => None,
-                            };
-                            fetch.error = Some(error.to_string());
-                        }
-                    }
-                }
-                if queued {
-                    effects.push(self.fetch(state, &session));
-                }
-                return Effect::merge(effects);
+                let outcome = result.map(|diffs| (diffs, BTreeMap::new()));
+                return self.finish_read(state, session, base, outcome);
+            }
+            ReviewAction::FetchedByRepo {
+                session,
+                base,
+                diffs,
+                errors,
+            } => {
+                let outcome = Ok((diffs, errors.into_iter().collect()));
+                return self.finish_read(state, session, base, outcome);
             }
             ReviewAction::Restore(saved) => {
                 state.load_saved(saved);
@@ -895,16 +1433,22 @@ impl Reducer for Review {
                 }
             }
             ReviewAction::Open(session) => {
-                if state.session.as_ref() != Some(&session) {
+                let same = state.session.as_ref() == Some(&session);
+                if !same {
                     state.session = Some(session.clone());
                     state.rows = None;
                     state.base_menu = false;
+                    state.push_menu = false;
                     state.repo_picker = None;
                 }
                 // Opening again while its read is in flight asks for
                 // nothing new: the files may not have changed since it
                 // started, unlike a turn end or Mark reviewed.
                 if state.fetch.get(&session).is_some_and(|fetch| fetch.loading) {
+                    return prepare(state);
+                }
+                // DS-76: opening the panel again keeps the diff it holds.
+                if !reopen::reads_again(same, state.fetch.get(&session), self.clock.now()) {
                     return prepare(state);
                 }
                 return Effect::merge(vec![prepare(state), self.fetch(state, &session)]);
@@ -923,20 +1467,202 @@ impl Reducer for Review {
                     return prepare(state);
                 }
             }
-            ReviewAction::ToggleRepo { repo } => {
-                if let Some(session) = state.session.clone() {
-                    let key = (session, repo);
-                    if !state.collapsed.remove(&key) {
-                        state.collapsed.insert(key);
+            ReviewAction::ToggleRepo { repo } => toggle_repo(state, repo),
+            ReviewAction::ListDown => move_cursor(state, true),
+            ReviewAction::ListUp => move_cursor(state, false),
+            ReviewAction::ListOpen => match cursor_row(state) {
+                Some((_, ListCursor::File { repo, path })) => select_file(state, repo, path),
+                Some((_, ListCursor::Repo(repo))) => toggle_repo(state, repo),
+                None => {}
+            },
+            ReviewAction::ListCollapse => match cursor_row(state) {
+                Some((session, ListCursor::File { repo, .. })) => {
+                    state.list_cursor.insert(session, ListCursor::Repo(repo));
+                }
+                Some((session, ListCursor::Repo(repo))) => {
+                    state.collapsed.insert((session, repo));
+                }
+                None => {}
+            },
+            ReviewAction::ListExpand => match cursor_row(state) {
+                Some((session, ListCursor::Repo(repo))) => {
+                    if !state.collapsed.remove(&(session.clone(), repo.clone())) {
+                        let first = list_rows(state, &session).into_iter().find(|row| {
+                            matches!(row, ListCursor::File { repo: of, .. } if *of == repo)
+                        });
+                        if let Some(first) = first {
+                            state.list_cursor.insert(session, first);
+                        }
                     }
                 }
-            }
+                Some((_, ListCursor::File { .. })) | None => {}
+            },
             ReviewAction::ToggleWrap => state.wrap = !state.wrap,
             ReviewAction::HandedOver(session, comment) => forget(state, &session, &comment),
             ReviewAction::Delegate(_) => {}
         }
         Effect::none()
     }
+}
+
+/// Shows `path` of `repo` in the open session if its diff has it: opens its
+/// repository if folded (DS-78), folds the file list (DS-3) and starts on its
+/// first change when the file is a different one.
+fn select_file(state: &mut ReviewState, repo: String, path: String) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let has = state.workspace.diffs.iter().any(|diff| {
+        diff.session == session
+            && diff.repo == repo
+            && diff.files.iter().any(|file| file.path == path)
+    });
+    if !has {
+        return;
+    }
+    if state.open_file(&session).as_ref() != Some(&(repo.clone(), path.clone())) {
+        state.change.remove(&session);
+    }
+    state.file_list_open.remove(&session);
+    state.collapsed.remove(&(session.clone(), repo.clone()));
+    state.saved.selected.insert(session.clone(), (repo, path));
+    settle_cursor(state, &session);
+}
+
+/// Folds `repo` of the open session's file list, or unfolds it if folded
+/// (DV-7).
+fn toggle_repo(state: &mut ReviewState, repo: String) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let key = (session.clone(), repo);
+    if !state.collapsed.remove(&key) {
+        state.collapsed.insert(key);
+    }
+    settle_cursor(state, &session);
+}
+
+/// The rows of `session`'s file list in order (DS-84): each repository's
+/// row, then its files unless it is folded.
+fn list_rows(state: &ReviewState, session: &SessionId) -> Vec<ListCursor> {
+    let mut rows = Vec::new();
+    for diff in state.workspace.diffs.iter().filter(|diff| &diff.session == session) {
+        rows.push(ListCursor::Repo(diff.repo.clone()));
+        if state.collapsed.contains(&(session.clone(), diff.repo.clone())) {
+            continue;
+        }
+        rows.extend(diff.files.iter().map(|file| ListCursor::File {
+            repo: diff.repo.clone(),
+            path: file.path.clone(),
+        }));
+    }
+    rows
+}
+
+/// The open session and the row its cursor is on, when it is on a row the
+/// list still shows.
+fn cursor_row(state: &ReviewState) -> Option<(SessionId, ListCursor)> {
+    let session = state.session.clone()?;
+    let cursor = state.list_cursor.get(&session)?.clone();
+    list_rows(state, &session)
+        .contains(&cursor)
+        .then_some((session, cursor))
+}
+
+/// Moves the open session's list cursor one row, stopping at the ends. With
+/// no cursor on a row, only places it: on the open file, else the first row.
+fn move_cursor(state: &mut ReviewState, forward: bool) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let rows = list_rows(state, &session);
+    let Some(last) = rows.len().checked_sub(1) else {
+        return;
+    };
+    let at_cursor = state
+        .list_cursor
+        .get(&session)
+        .and_then(|cursor| rows.iter().position(|row| row == cursor));
+    let to = match at_cursor {
+        Some(at) if forward => (at + 1).min(last),
+        Some(at) => at.saturating_sub(1),
+        None => state
+            .open_file(&session)
+            .and_then(|(repo, path)| {
+                let repo_row = ListCursor::Repo(repo.clone());
+                let file_row = ListCursor::File { repo, path };
+                rows.iter()
+                    .position(|row| *row == file_row)
+                    .or_else(|| rows.iter().position(|row| *row == repo_row))
+            })
+            .unwrap_or(0),
+    };
+    if let Some(row) = rows.into_iter().nth(to) {
+        state.list_cursor.insert(session, row);
+    }
+}
+
+/// A cursor on a file whose repository is folded moves to the repository's
+/// row, so it never rests on a row that isn't drawn.
+fn settle_cursor(state: &mut ReviewState, session: &SessionId) {
+    let hidden = match state.list_cursor.get(session) {
+        Some(ListCursor::File { repo, .. }) => state
+            .collapsed
+            .contains(&(session.clone(), repo.clone()))
+            .then(|| repo.clone()),
+        _ => None,
+    };
+    if let Some(repo) = hidden {
+        state.list_cursor.insert(session.clone(), ListCursor::Repo(repo));
+    }
+}
+
+/// Moves the open session's file one step in panel order, stopping at the
+/// ends.
+fn step_file(state: &mut ReviewState, forward: bool) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let files = state.panel_files(&session);
+    let Some(open) = state.open_file(&session) else {
+        return;
+    };
+    let Some(at) = files.iter().position(|file| *file == open) else {
+        return;
+    };
+    let to = if forward {
+        files.get(at + 1)
+    } else {
+        at.checked_sub(1).and_then(|before| files.get(before))
+    };
+    if let Some((repo, path)) = to.cloned() {
+        select_file(state, repo, path);
+    }
+}
+
+/// Moves the open file's current change one step, within its count.
+fn step_change(state: &mut ReviewState, forward: bool) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let Some((repo, path)) = state.open_file(&session) else {
+        return;
+    };
+    let count = state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|diff| diff.session == session && diff.repo == repo)
+        .flat_map(|diff| diff.files.iter())
+        .find(|file| file.path == path)
+        .map_or(1, change_count);
+    let now = state.current_change(&session);
+    let to = if forward {
+        (now + 1).min(count - 1)
+    } else {
+        now.saturating_sub(1)
+    };
+    state.change.insert(session, to);
 }
 
 /// What older builds saved, one hand-over per session: its unsent comments

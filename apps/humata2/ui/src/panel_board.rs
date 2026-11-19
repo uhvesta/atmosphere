@@ -36,8 +36,9 @@ pub(super) fn board(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool
     };
     col()
         .size_full()
-        .child(header(
+        .child(panel_header(
             ui,
+            state,
             Panel::Board,
             full,
             channel.map(|channel| secondary(look, channel.name.clone())),

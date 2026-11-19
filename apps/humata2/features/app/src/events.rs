@@ -89,6 +89,14 @@ impl App {
             }
             Event::Restart(restart) => return self.heard_restart(state, restart),
             Event::ChannelSetup(setup) => return self.heard_setup(state, setup),
+            Event::Operation(update) => {
+                self.new_session_operation(state, update.clone());
+                self.add_repo_operation(state, update.clone());
+                return self.child(
+                    state,
+                    AppAction::Session(SessionAction::OperationMoved(update)),
+                );
+            }
             Event::Resync => return self.load(),
         }
         let mut effects = vec![self.show(state)];

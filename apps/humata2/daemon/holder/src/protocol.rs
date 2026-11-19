@@ -8,6 +8,9 @@
 //! doesn't know by closing the connection, which is how a client finds
 //! out it can't do keyed input. Older clients never send these frames,
 //! and a newer holder only sends them in reply, so nothing else changes.
+//! `Freeze`, `Thaw` and `FrozenQuery` (and their reply `Frozen`) came the
+//! same way: an older holder closes the connection on them, and older
+//! clients never send them.
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -30,6 +33,9 @@ const KEYED_INPUT: u8 = 5;
 const KEY_QUERY: u8 = 6;
 const AWAIT_KEYS: u8 = 7;
 const MOVE_TO: u8 = 8;
+const FREEZE: u8 = 9;
+const THAW: u8 = 10;
+const FROZEN_QUERY: u8 = 11;
 
 const WELCOME: u8 = 101;
 const OUTPUT: u8 = 102;
@@ -41,6 +47,7 @@ const KEYED_WRITTEN: u8 = 107;
 const KEY_ANSWER: u8 = 108;
 const KEYS_READ: u8 = 109;
 const MOVING: u8 = 110;
+const FROZEN: u8 = 111;
 
 /// Where the terminal stands when a client attaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +79,14 @@ pub(crate) enum ClientFrame {
     /// Asks the holder to move onto the build at this path (bytes of the
     /// path), in place. An older holder closes the connection.
     MoveTo { path: Vec<u8> },
+    /// Asks to stop the program (SIGSTOP to its process groups) while the
+    /// holder keeps serving its screen. Answered `Frozen`. An older holder
+    /// closes the connection.
+    Freeze,
+    /// Asks to let a frozen program run again (SIGCONT). Answered `Frozen`.
+    Thaw,
+    /// Asks whether the program is frozen. Answered `Frozen`.
+    FrozenQuery,
 }
 
 pub(crate) enum ServerFrame {
@@ -94,6 +109,9 @@ pub(crate) enum ServerFrame {
     /// The holder is about to run the new build in place: this connection
     /// ends, and the socket answers again once it has.
     Moving,
+    /// The answer to `Freeze`, `Thaw` and `FrozenQuery`: whether the
+    /// program is frozen now.
+    Frozen { frozen: bool },
 }
 
 #[derive(Debug)]
@@ -229,6 +247,9 @@ impl ClientFrame {
             Self::KeyQuery { key } => Frame::new(KEY_QUERY).key(key),
             Self::AwaitKeys { starting_ms } => Frame::new(AWAIT_KEYS).u32(*starting_ms),
             Self::MoveTo { path } => Frame::new(MOVE_TO).rest(path),
+            Self::Freeze => Frame::new(FREEZE),
+            Self::Thaw => Frame::new(THAW),
+            Self::FrozenQuery => Frame::new(FROZEN_QUERY),
         }
         .finish()
     }
@@ -268,6 +289,9 @@ impl ClientFrame {
                     path: body.rest().to_vec(),
                 });
             }
+            FREEZE => Self::Freeze,
+            THAW => Self::Thaw,
+            FROZEN_QUERY => Self::FrozenQuery,
             _ => return Err(FrameError::Malformed("a client sent a frame of no known kind")),
         };
         body.end()?;
@@ -301,6 +325,7 @@ impl ServerFrame {
             }
             Self::KeysRead { ready } => Frame::new(KEYS_READ).u8(u8::from(*ready)),
             Self::Moving => Frame::new(MOVING),
+            Self::Frozen { frozen } => Frame::new(FROZEN).u8(u8::from(*frozen)),
         }
         .finish()
     }
@@ -345,6 +370,9 @@ impl ServerFrame {
                 ready: body.u8()? != 0,
             },
             MOVING => Self::Moving,
+            FROZEN => Self::Frozen {
+                frozen: body.u8()? != 0,
+            },
             REFUSED => {
                 return Ok(Self::Refused {
                     message: String::from_utf8_lossy(body.rest()).into_owned(),
@@ -434,6 +462,19 @@ mod tests {
         assert!(matches!(
             ClientFrame::decode(&frame),
             Err(FrameError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn freezing_frames_survive_the_wire() {
+        for frame in [ClientFrame::Freeze, ClientFrame::Thaw, ClientFrame::FrozenQuery] {
+            let sent = frame.encode();
+            let back = ClientFrame::decode(body(&sent)).map(|decoded| decoded.encode());
+            assert_eq!(back.ok(), Some(sent));
+        }
+        assert!(matches!(
+            ServerFrame::decode(body(&ServerFrame::Frozen { frozen: true }.encode())),
+            Ok(ServerFrame::Frozen { frozen: true })
         ));
     }
 

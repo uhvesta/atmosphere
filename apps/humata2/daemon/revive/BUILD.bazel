@@ -73,6 +73,26 @@ rust_test(
     ],
 )
 
+# A holder lost mid-move is reported lost and its marker removed; one with
+# no marker is not reported lost. Both bring the session back.
+rust_test(
+    name = "lost_in_move_test",
+    size = "medium",
+    srcs = ["tests/lost_in_move.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    deps = [
+        ":revive",
+        "//apps/humata2/daemon/holder",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/testing/tmp_folder",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

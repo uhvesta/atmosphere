@@ -15,7 +15,8 @@ use humata2_clients::model::{
     ChannelId, DiffTargets, RepoBase, RepoDiffSpec, Scope, SessionId, ViewId, ViewState,
 };
 use humata2_clients::views::{
-    FakeViews, PlanGroup, PlanNote, PlanView, ViewContent, ViewsClient, WalkthroughStep,
+    FakeViews, LayerView, PlanGroup, PlanNote, PlanView, StackView, ViewContent, ViewsClient,
+    WalkthroughStep,
 };
 use humata2_clients::{Clients, fixture};
 use humata2_review::ReviewAction;
@@ -373,6 +374,7 @@ fn a_review_plan_opens_the_diff_panel_with_a_base_per_repository() {
             "The migration first, then the client",
             "Claude Code",
             ViewContent::ReviewPlan(PlanView {
+                importance: Vec::new(),
                 targets: vec![
                     RepoDiffSpec {
                         repo: "acme/ledger".to_owned(),
@@ -405,6 +407,7 @@ fn a_review_plan_opens_the_diff_panel_with_a_base_per_repository() {
                     lines: None,
                     outdated: false,
                 }],
+                stack: None,
             }),
         )
     });
@@ -729,6 +732,7 @@ fn a_board_view_of_a_session_the_workspace_does_not_know_opens_as_a_summary() {
 fn opening_a_review_plan_shows_its_notes_as_read_now() {
     let plan = |outdated: bool, lines: (u32, u32)| {
         ViewContent::ReviewPlan(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![("acme/api".to_owned(), "src/client.rs".to_owned())],
             groups: Vec::new(),
@@ -739,6 +743,7 @@ fn opening_a_review_plan_shows_its_notes_as_read_now() {
                 lines: Some(lines),
                 outdated,
             }],
+            stack: None,
         })
     };
     let (mut rig, id) = rig(|views| {
@@ -795,4 +800,68 @@ fn a_walkthrough_step_opens_its_file_when_the_sessions_files_arrive_later() {
         .map(|(_, path, _)| path)
         .collect();
     assert_eq!(stepped, vec!["src/client.rs".to_owned()]);
+}
+
+/// A plan whose stack has these layers, bottom first.
+fn stacked_plan(titles: &[&str]) -> ViewContent {
+    ViewContent::ReviewPlan(PlanView {
+        stack: Some(StackView {
+            layers: titles
+                .iter()
+                .map(|title| LayerView {
+                    title: (*title).to_owned(),
+                    ..LayerView::default()
+                })
+                .collect(),
+            whole: Vec::new(),
+        }),
+        ..PlanView::default()
+    })
+}
+
+/// D800: opening a stack starts at Whole stack, and Revert puts back the
+/// plan, its stack and the layer the person had as one unit.
+#[test]
+fn a_stack_opens_at_whole_stack_and_revert_restores_the_stack_and_layer_together() {
+    let mut second = None;
+    let (mut rig, first) = rig(|views| {
+        second = Some(views.offer_view(
+            &ledger(),
+            "Stack: two",
+            "Two layers",
+            "Claude Code",
+            stacked_plan(&["api", "web", "docs"]),
+        ));
+        views.offer_view(
+            &ledger(),
+            "Stack: one",
+            "Two layers",
+            "Claude Code",
+            stacked_plan(&["api", "web"]),
+        )
+    });
+    let Some(second) = second else {
+        panic!("the second view was offered");
+    };
+    rig.act(A::Views(ViewsAction::Open(first)));
+    rig.act(A::Review(ReviewAction::PickLayer(Some("web".to_owned()))));
+    let titles = |rig: &Rig| -> Vec<String> {
+        rig.state()
+            .review
+            .plans
+            .get(&ledger())
+            .and_then(|plan| plan.stack.as_ref())
+            .map(|stack| stack.layers.iter().map(|layer| layer.title.clone()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(rig.state().review.layer_of(&ledger()), Some("web"));
+    assert_eq!(titles(&rig), vec!["api", "web"]);
+
+    rig.act(A::Views(ViewsAction::Open(second)));
+    assert_eq!(rig.state().review.layer_of(&ledger()), None);
+    assert_eq!(titles(&rig), vec!["api", "web", "docs"]);
+
+    rig.act(A::Views(ViewsAction::Revert));
+    assert_eq!(rig.state().review.layer_of(&ledger()), Some("web"));
+    assert_eq!(titles(&rig), vec!["api", "web"]);
 }

@@ -763,6 +763,7 @@ async fn deleting_a_channel_closes_its_desk_session_on_box_2_into_box_2_s_bin() 
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .expect("the host deletes the channel")
@@ -869,6 +870,7 @@ async fn archive_target(rig: &Rig, target: &pb::SessionId) {
             id: Some(target.clone()),
             choice: choice as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .expect("the archive starts")
@@ -958,6 +960,7 @@ async fn a_box_2_channel_desk_session_closes_on_box_2_when_its_channel_is_delete
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .expect("the host deletes the channel")
@@ -974,8 +977,9 @@ async fn a_box_2_channel_desk_session_closes_on_box_2_when_its_channel_is_delete
 }
 
 /// CD-5, MV-17: a channel Desk session on box-2 whose folder holds Markdown
-/// stops, and does not close, once its target is archived past its undo
-/// window. box-2's agent stops; its folder and Markdown file stay on box-2;
+/// shows its target gone, and does not close, once its target is archived
+/// past its undo window. box-2's agent keeps running (D801 I: the watch
+/// never ends a live holder); its folder and Markdown file stay on box-2;
 /// box-2's Bin doesn't grow; the host lists the session stopped, with its
 /// target gone, and not closed.
 #[tokio::test(flavor = "multi_thread")]
@@ -999,7 +1003,7 @@ async fn a_box_2_channel_desk_session_with_markdown_stops_on_box_2_once_its_targ
     {
         next_change(&mut feed, "box-2 stopping the Desk session").await;
     }
-    assert_eq!(live_agents(&rig, &id), 0, "box-2's agent stopped");
+    assert_eq!(live_agents(&rig, &id), 1, "box-2's agent keeps running");
     assert_eq!(std::fs::read_to_string(folder.join("NOTES.md")).unwrap(), NOTES, "box-2 keeps the Markdown file");
     assert!(folder.is_dir(), "box-2 keeps the session's folder");
     assert_eq!(bin_of(&rig, &two).await.len(), items_before, "box-2's Bin didn't grow");
@@ -1007,8 +1011,9 @@ async fn a_box_2_channel_desk_session_with_markdown_stops_on_box_2_once_its_targ
     assert!(!closed_on_host(&rig, &id), "the host shows it stopped, not closed");
 }
 
-/// CD-5, MV-17: a new target runs a channel Desk session the watch stopped
-/// on box-2 again on box-2, in its own folder, and ends its target gone.
+/// CD-5, MV-17: a new target ends a box-2 channel Desk session's target
+/// gone; its agent, which the watch left running (D801 I), runs on on
+/// box-2, in its own folder.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_target_runs_a_stopped_box_2_channel_desk_session_again_on_box_2() {
     let rig = Rig::start_with_env(&["box-1", "box-2"], &[REPO], &[NO_UNDO], &[]).await;
@@ -1028,7 +1033,7 @@ async fn a_new_target_runs_a_stopped_box_2_channel_desk_session_again_on_box_2()
     {
         next_change(&mut feed, "box-2 stopping the Desk session").await;
     }
-    assert_eq!(live_agents(&rig, &id), 0, "box-2's agent stopped");
+    assert_eq!(live_agents(&rig, &id), 1, "box-2's agent keeps running");
 
     let answered = desks(&rig)
         .await

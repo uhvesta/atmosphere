@@ -51,4 +51,8 @@ focus_tests! {
         Cut::Host, Operation::RemoteFork, Side::Host, "transfer.committing";
     a_move_cut_on_the_host_while_its_copy_commits_is_whole:
         Cut::Host, Operation::Move, Side::Host, "transfer.committing";
+    // The box cut alone, while it keeps the moved session: the host redials
+    // it and the move finishes or is undone (power_cut_machine's path).
+    a_move_cut_on_the_box_while_it_keeps_the_session_finishes_or_undoes:
+        Cut::Machine, Operation::Move, Side::Box, "store.session.put.committing";
 }

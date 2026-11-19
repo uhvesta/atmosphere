@@ -32,6 +32,7 @@ rust_library(
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
         "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/daemon/codex",
         "//apps/humata2/daemon/opencode",
         "//apps/humata2/report",
         "@crates//:clap",
@@ -79,10 +80,12 @@ rust_test(
             "//apps/humata2/api/proto:humata2_rust",
             "//apps/humata2/chunk:humata2_chunk",
             "//apps/humata2/report",
+            "@crates//:futures-util",
             "@crates//:prost",
             "@crates//:serde_json",
             "@crates//:tempfile",
             "@crates//:tokio",
+            "@crates//:tokio-tungstenite",
         ],
     )
     for src in glob(

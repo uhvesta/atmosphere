@@ -2,6 +2,7 @@ use humata2_clients::DaemonError;
 use humata2_clients::model::{
     Agent, ChannelId, ItemId, MachineId, SessionId, SessionOptions,
 };
+use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
 use tca::{Effect, Reducer};
 
 use crate::{App, AppAction, AppState, Overlay, Route};
@@ -27,6 +28,10 @@ pub struct NewSession {
     pub picker: Option<NewSessionPicker>,
     /// Waiting for the daemon.
     pub creating: bool,
+    /// The running step of the operation while `creating`.
+    pub progress: Option<OpProgress>,
+    /// The operation id `progress` follows; latched by the first update.
+    pub op: Option<String>,
     /// Why it couldn't be made.
     pub error: Option<String>,
 }
@@ -122,6 +127,8 @@ impl App {
             item: None,
             picker: None,
             creating: false,
+            progress: None,
+            op: None,
             error: None,
         }));
         Effect::none()
@@ -219,6 +226,8 @@ impl App {
                     sheet.title.trim().to_owned()
                 };
                 sheet.creating = true;
+                sheet.progress = None;
+                sheet.op = None;
                 sheet.error = None;
                 if !state
                     .workspace
@@ -226,6 +235,8 @@ impl App {
                     .any(|m| m.online && m.id == machine)
                 {
                     sheet.creating = false;
+                    sheet.progress = None;
+                    sheet.op = None;
                     sheet.error=Some("Choose a machine connected to this channel, or add the machine to the channel first.".into());
                     return Effect::none();
                 }
@@ -282,10 +293,28 @@ impl App {
             Err(error) => {
                 if let Some(sheet) = sheet {
                     sheet.creating = false;
+                    sheet.progress = None;
+                    sheet.op = None;
                     sheet.error = Some(error.to_string());
                 }
                 Effect::none()
             }
+        }
+    }
+}
+
+impl App {
+    /// A watched operation moved on: the waiting sheet keeps its progress.
+    pub(super) fn new_session_operation(&self, state: &mut AppState, update: OpUpdate) {
+        if update.kind != OpKind::StartSession {
+            return;
+        }
+        let sheet = state.overlays.iter_mut().rev().find_map(|overlay| match overlay {
+            Overlay::NewSession(sheet) => Some(sheet),
+            _ => None,
+        });
+        if let Some(sheet) = sheet.filter(|sheet| sheet.creating) {
+            humata2_session::follow_operation(&mut sheet.op, &mut sheet.progress, update);
         }
     }
 }

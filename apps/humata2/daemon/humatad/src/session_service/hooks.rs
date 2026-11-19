@@ -40,6 +40,11 @@ const PERMISSION: &str = "permission";
 const QUESTION: &str = "question";
 /// The event of a hook that says which conversation its CLI is in.
 const CONVERSATION: &str = "conversation";
+/// The event `humata codex` sends when its link to Codex's thread dropped
+/// (D798): the session's screen is read for asks again until it is heard.
+const LOST: &str = "lost";
+/// The event of Claude's Notification hook (D798): a prompt waits in its terminal.
+const NOTIFICATION: &str = "notification";
 
 impl SessionSvc {
     pub(super) async fn hook_of(
@@ -77,6 +82,22 @@ impl SessionSvc {
             let _ = sender.try_send(Ok(final_reply(Vec::new())));
             return Ok(Response::new(ReceiverStream::new(receiver)));
         }
+        if request.event == LOST {
+            crate::start_ready::unheard(&agent.session.id.to_string());
+            let _ = sender.try_send(Ok(final_reply(Vec::new())));
+            return Ok(Response::new(ReceiverStream::new(receiver)));
+        }
+        if request.event == NOTIFICATION {
+            let _ = sender.try_send(Ok(final_reply(Vec::new())));
+            if kind == Some(Agent::Claude)
+                && let Some(message) = waiting_message(&request.payload)
+                && !self.inbox.asks_in_agent(&agent.agent)
+                && !super::turns::asking(&agent.session.id.to_string())
+            {
+                self.raise_notice(caller, agent, message);
+            }
+            return Ok(Response::new(ReceiverStream::new(receiver)));
+        }
         let hooked = match (request.event.as_str(), kind) {
             (PERMISSION, Some(kind)) => agent_hooks::parse_permission(kind, &request.payload)
                 .ok()
@@ -107,6 +128,7 @@ impl SessionSvc {
         };
         match hooked {
             Hooked::Permission(kind, ask) => {
+                self.inbox.withdraw_notice(&agent.session.id.to_string()).await;
                 let ask = Ask {
                     tool: ask.tool,
                     command: ask.command,
@@ -127,6 +149,7 @@ impl SessionSvc {
                 });
             }
             Hooked::Question(kind, asked, payload) => {
+                self.inbox.withdraw_notice(&agent.session.id.to_string()).await;
                 let asked = Question {
                     question: asked.question,
                     choices: asked.choices,
@@ -151,6 +174,47 @@ impl SessionSvc {
 }
 
 impl SessionSvc {
+    /// D798: raises the "waiting in its terminal" card for a Claude prompt
+    /// the agent shows, without holding the hook: the card lives in its own
+    /// task, which lets it go when the session reports a turn, a held ask
+    /// is raised, or the agent exits. The session needs you meanwhile.
+    fn raise_notice(&self, caller: Caller, agent: crate::identity::AgentCaller, message: String) {
+        let inbox = self.inbox.clone();
+        let name = self.starter.agents.person_name(&agent.agent);
+        let session = agent.session.id.to_string();
+        tokio::spawn(async move {
+            let mut wait = match inbox.raise_notice(&caller, &agent, &name, message).await {
+                Ok(wait) => wait,
+                Err(error) => {
+                    crate::log::say!(
+                        "humatad2: couldn't say in the Inbox that session {session}'s agent is waiting in its terminal ({}); answer it there",
+                        status::chain(&error)
+                    );
+                    return;
+                }
+            };
+            let _asking = super::Asking::hold(&session);
+            let mut changes = super::turns::changes();
+            let mut seen_up = super::turns::is_up(&session);
+            loop {
+                tokio::select! {
+                    _ = wait.decided() => break,
+                    changed = changes.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let up = super::turns::is_up(&session);
+                        if seen_up && !up {
+                            break;
+                        }
+                        seen_up |= up;
+                    }
+                }
+            }
+            drop(wait);
+        });
+    }
+
     /// Session `session`'s agent says its CLI is in conversation `id`: the
     /// session's agent record follows it there when it moved, and the feed
     /// is told, so a resume takes up the conversation the person was in.
@@ -172,6 +236,21 @@ impl SessionSvc {
         }
         Ok(())
     }
+}
+
+/// What Claude's Notification payload shows, when it is a prompt that waits
+/// in its terminal; `None` for an idle prompt or a payload that isn't one.
+fn waiting_message(payload: &[u8]) -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let waiting = matches!(
+        payload.get("notification_type").and_then(|kind| kind.as_str()),
+        Some("permission_prompt" | "elicitation_dialog")
+    );
+    if !waiting {
+        return None;
+    }
+    let message = payload.get("message").and_then(|message| message.as_str()).unwrap_or("");
+    Some(message.to_owned())
 }
 
 /// What a hook holds a card for.

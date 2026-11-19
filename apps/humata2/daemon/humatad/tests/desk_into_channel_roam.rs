@@ -1,8 +1,9 @@
 //! DK-15, MV-16, MV-17: a Desk session on another machine moves into a
 //! channel on that machine. It lands in the channel's `sessions/<name>`
-//! there, its agent resumes the whole conversation in it, and the Desk
-//! folder it left is gone. The host keeps no folder of it, and one agent
-//! is live.
+//! there by a rename (D801 E): its agent keeps running, started once and
+//! never again, the Desk folder it left is a link to the new one, and its
+//! conversation is still whole. The host keeps no folder of it, and one
+//! agent is live.
 //!
 //! Every wait is on the host's feeds (the rig's `wait_session`, `ended`).
 
@@ -11,7 +12,7 @@ mod common;
 mod remote_rig;
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use common::{holder_answers, stored_tabs};
 use humata2_grpc::humata::v1 as pb;
@@ -29,15 +30,6 @@ async fn desks(rig: &Rig) -> pb::desk_service_client::DeskServiceClient<tonic::t
 
 fn key(value: &str) -> Option<pb::IdempotencyKey> {
     Some(pb::IdempotencyKey { value: value.to_owned() })
-}
-
-/// The names in `dir`, sorted; none when it isn't there.
-fn entries(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|found| found.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect())
-        .unwrap_or_default();
-    names.sort();
-    names
 }
 
 /// How many agents of `id` are live on all the rig's machines together.
@@ -70,7 +62,7 @@ fn talk_on_box_2(rig: &Rig, id: &pb::SessionId) -> (PathBuf, String) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_desk_session_on_another_machine_moves_into_a_channel_there_and_leaves_nothing_behind() {
+async fn a_desk_session_on_another_machine_moves_into_a_channel_there_and_keeps_running() {
     let rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
     let box_2 = Rig::box_id("box-2");
     let payments = rig.create_channel("Payments", &[REPO], &[box_2.clone()]).await;
@@ -140,10 +132,13 @@ async fn a_desk_session_on_another_machine_moves_into_a_channel_there_and_leaves
     let record = rig.the("box-2").store().session(&id.value).unwrap().expect("box-2 holds the session");
     assert_eq!(record.folder, new);
     assert!(rig.the("box-2").store().desk(&id.value).unwrap().is_none(), "it left box-2's Desk");
-    assert!(!old.exists(), "its Desk folder on box-2 is gone");
-    assert_eq!(entries(&old.parent().map(Path::to_owned).unwrap_or_default()), Vec::<String>::new());
+    assert_eq!(std::fs::read_link(&old).ok(), Some(new.clone()), "its Desk folder on box-2 is a link to the new one");
     let (works_in, said) = talk_on_box_2(&rig, &id);
-    assert_eq!(works_in, new, "its agent works in its new folder");
+    assert_eq!(
+        std::fs::canonicalize(&works_in).ok(),
+        std::fs::canonicalize(&new).ok(),
+        "its agent, started under the old name, works in the new folder"
+    );
     for line in SAID {
         assert!(said.lines().any(|kept| kept.contains(line)), "it holds {line:?}: {said:?}");
     }

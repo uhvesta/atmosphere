@@ -739,7 +739,7 @@ impl Migrations {
     /// a holder other than the release `build` names (D373). One pending item
     /// lists them; a second detection updates it (same id, a new revision)
     /// when the list or the lines changed, and an item being migrated stays
-    /// so. `detail.waiting` must not be empty: with none waiting the item is
+    /// so. `detail.rows` must hold an [`outstanding`] row: with none the item is
     /// finished by [`Self::resolved`].
     pub(crate) async fn observe_holders(
         &self,
@@ -981,6 +981,28 @@ impl Migrations {
     }
 }
 
+/// The sessions of the rows, sorted: the agents and Terminal-session shells
+/// that wait for a move or a restart.
+pub(super) fn waiting_sessions(rows: &[pb::HolderSession]) -> Vec<String> {
+    let mut sessions: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.session.as_ref())
+        .filter(|session| !session.value.is_empty())
+        .map(|session| session.value.clone())
+        .collect();
+    sessions.sort();
+    sessions
+}
+
+/// Whether the rows hold the Holders item open: one has a session, or is
+/// noted Moves or Moving. Shells that stay until they are closed don't.
+pub(super) fn outstanding(rows: &[pb::HolderSession]) -> bool {
+    rows.iter().any(|row| {
+        row.session.as_ref().is_some_and(|session| !session.value.is_empty())
+            || matches!(row.note(), pb::HolderNote::Moves | pb::HolderNote::Moving)
+    })
+}
+
 /// What each link-up does about releases: compares the machine's build
 /// with this host's and posts, updates or withdraws its Migrate item.
 #[derive(Clone)]
@@ -1060,16 +1082,14 @@ impl Watch {
         let id = pb::MachineId {
             value: machine.to_owned(),
         };
-        let waiting: Vec<String> = report
+        let waiting = waiting_sessions(&report.holders);
+        let shells = report
             .holders
             .iter()
-            .filter_map(|row| row.session.as_ref())
-            .filter(|session| !session.value.is_empty())
-            .map(|session| session.value.clone())
-            .collect();
-        let shells = report.holders.len() - waiting.len();
+            .filter(|row| row.note() == pb::HolderNote::StaysUntilClosed)
+            .count();
         let migrations = &self.migrations;
-        if waiting.is_empty() {
+        if !outstanding(&report.holders) {
             if let Err(error) = migrations.resolved(pb::MigrateThing::Holders, &id).await {
                 crate::log::say!("humatad2: warning: {}", status::chain(&error));
             }
@@ -1303,14 +1323,46 @@ fn show_holders(
     detail: &Detail,
     cleared: bool,
 ) {
-    let count = detail.waiting.len();
+    let movers = detail
+        .rows
+        .iter()
+        .filter(|row| matches!(row.note(), pb::HolderNote::Moves | pb::HolderNote::Moving))
+        .count();
+    let restarters = detail
+        .rows
+        .iter()
+        .filter(|row| {
+            row.session.is_some()
+                && matches!(
+                    row.note(),
+                    pb::HolderNote::RestartsWhenIdle | pb::HolderNote::Restarting | pb::HolderNote::NoIdleMoment
+                )
+        })
+        .count();
+    let count = movers + restarters;
+    let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
     request.action_title = format!("Migrate the holders on {name}");
     request.reason = format!(
-        "{count} agent session{} on {name} still run{} on a holder from an earlier release than {}.",
-        if count == 1 { "" } else { "s" },
-        if count == 1 { "s" } else { "" },
+        "{count} terminal{} on {name} still run{} on a holder from an earlier release than {}.",
+        plural(count, "", "s"),
+        plural(count, "s", ""),
         shown(build)
     );
+    let mut lines = Vec::new();
+    if movers > 0 {
+        lines.push(format!(
+            "Move {movers} terminal{} onto release {}'s holder in place: each keeps running with its screen, and nothing restarts",
+            plural(movers, "", "s"),
+            shown(build)
+        ));
+    }
+    if restarters > 0 {
+        lines.push(format!(
+            "Restart {restarters} agent session{} whose holder is too old to move onto release {}'s holder, each when it is next idle; the same conversation continues",
+            plural(restarters, "", "s"),
+            shown(build)
+        ));
+    }
     // A machine's reported failure shows the item Failed; the report after it
     // that carries none (`cleared`) puts a Failed item back to waiting.
     let phase = match request.preview.as_ref().and_then(|preview| preview.preview.as_ref()) {
@@ -1330,11 +1382,7 @@ fn show_holders(
             machine: Some(machine.clone()),
             from: Some(build.clone()),
             to: Some(build.clone()),
-            changes: vec![format!(
-                "Restart {count} agent session{} on release {}'s holder, each when it is next idle; the same conversation continues",
-                if count == 1 { "" } else { "s" },
-                shown(build)
-            )],
+            changes: lines,
             keeps_running: detail.keeps_running.clone(),
             phase,
             last_error: detail.failed.clone(),
@@ -2028,6 +2076,42 @@ mod tests {
                 .collect(),
             failed: None,
         }
+    }
+
+    fn row(session: Option<&str>, note: pb::HolderNote) -> pb::HolderSession {
+        pb::HolderSession {
+            session: session.map(|session| pb::SessionId { value: session.to_owned() }),
+            title: String::new(),
+            note: note as i32,
+        }
+    }
+
+    #[test]
+    fn a_row_with_a_session_or_a_move_to_make_holds_the_item_open_and_a_shell_that_stays_does_not() {
+        assert!(!outstanding(&[]));
+        assert!(!outstanding(&[row(None, pb::HolderNote::StaysUntilClosed)]));
+        assert!(outstanding(&[row(Some("ss_1"), pb::HolderNote::RestartsWhenIdle)]));
+        assert!(outstanding(&[row(None, pb::HolderNote::Moves)]));
+        assert!(outstanding(&[row(None, pb::HolderNote::Moving)]));
+    }
+
+    #[tokio::test]
+    async fn a_holders_item_with_a_shell_to_move_lists_it_though_it_has_no_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = inbox(directory.path());
+        let migrations = Migrations::new(inbox.clone(), idle());
+        let detail = Detail {
+            rows: vec![row(None, pb::HolderNote::Moves), row(Some("ss_1"), pb::HolderNote::Moves)],
+            waiting: vec!["ss_1".to_owned()],
+            ..Default::default()
+        };
+
+        migrations.observe_holders(&gpu(), build("2.0.5", "bbbbbbbb"), detail).await.unwrap();
+
+        let id = migrations.pending(pb::MigrateThing::Holders, &gpu()).unwrap();
+        let shown = held(&inbox, &id).await;
+        assert_eq!(card(&shown).holders.len(), 2);
+        assert_eq!(card(&shown).changes.len(), 1, "one line for the moves, none for restarts");
     }
 
     #[tokio::test]

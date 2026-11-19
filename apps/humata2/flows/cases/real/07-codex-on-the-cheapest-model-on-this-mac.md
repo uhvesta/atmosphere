@@ -4,7 +4,7 @@ Layer: real (real Codex CLI, real `humatad2`, this Mac). Platforms: macOS. The V
 
 ## Starting state
 
-- This Mac runs a real `humatad2` in a temp state folder. It was started with an `--agents` JSON file that defines a custom kind `codex` (`conversation_format` `codex-rollout`, `turn_end` `hooks`, `-c hooks={codex_hooks}` in its start and resume arguments). A built-in `codex` kind does not exist (see the branch on built-in kinds).
+- This Mac runs a real `humatad2` in a temp state folder. It was started with an `--agents` JSON file that defines a custom kind `codex` (`conversation_format` `codex-rollout`, `turn_end` `hooks`, `-c hooks={codex_hooks}` in its start and resume arguments). This case uses a custom kind on purpose; the built-in `codex` kind runs through `humata codex` (D806).
 - The channel `acme/api` has this Mac as a machine and one clone. `README.md` is clean.
 - The Inbox is empty. Permission asks wait in the Inbox (the default, D199).
 - The Codex CLI is the installed one, version 0.169.0, the version the terminal experiment used.

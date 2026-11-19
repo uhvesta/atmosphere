@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use humata2_access::Refusal;
 use humata2_grpc::humata::v1 as pb;
@@ -78,6 +79,17 @@ pub(crate) struct Origin {
 /// Runs an operation's work again with the handle given (Retry).
 pub(crate) type Rerun = Arc<dyn Fn(Progress) + Send + Sync>;
 
+/// How often a step's units are published: at most once per window, with
+/// the latest value trailing at the window's end (4 a second per step).
+const UNITS_EVERY: Duration = Duration::from_millis(250);
+
+/// When a step's units were last published, and whether a trailing publish
+/// is already scheduled for the end of the window.
+struct Gate {
+    last_published: Instant,
+    flush_armed: bool,
+}
+
 struct Tracked {
     owner: Owner,
     /// Where the feed files it: the starting agent's channel and session;
@@ -93,6 +105,8 @@ struct Tracked {
     rerun: Mutex<Option<Rerun>>,
     /// The key of the retry that started the current run.
     retry_key: Mutex<Option<String>>,
+    /// The publish window of each step's units, by step key.
+    units_gate: Mutex<HashMap<String, Gate>>,
 }
 
 /// Whether CancelOperation asked the run to stop, and whether the run is
@@ -238,6 +252,7 @@ impl Operations {
             cancel: Mutex::default(),
             rerun: Mutex::new(None),
             retry_key: Mutex::new(None),
+            units_gate: Mutex::default(),
         });
         table.by_id.insert(id.clone(), tracked.clone());
         if let Some(key) = key {
@@ -273,6 +288,7 @@ impl Operations {
             cancel: Mutex::default(),
             rerun: Mutex::new(None),
             retry_key: Mutex::new(None),
+            units_gate: Mutex::default(),
         });
         table.by_id.insert(id.clone(), tracked.clone());
         if let Some(key) = operation.idempotency_key.as_ref().filter(|key| !key.value.is_empty()) {
@@ -469,15 +485,45 @@ impl Progress {
         });
     }
 
-    /// How far step `key` is, in units: neither count goes down, and done
-    /// never passes total (GRPC.md section 7).
+    /// How far step `key` is, in units. Published at most once per
+    /// [`UNITS_EVERY`] for each step: a value inside the window is kept in
+    /// the operation silently, and the latest one is published when the
+    /// window ends. Every other change publishes the units with it.
     fn set_units(&self, key: &str, done: u64, total: u64) {
-        self.change(|operation| {
-            if let Some(shown) = operation.steps.iter_mut().find(|shown| shown.key == key) {
-                shown.total_units = shown.total_units.max(total);
-                shown.done_units = shown.done_units.max(done).min(shown.total_units);
-            }
+        let now = Instant::now();
+        let mut gates = lock(&self.tracked.units_gate);
+        let open = gates
+            .get(key)
+            .is_some_and(|gate| now.saturating_duration_since(gate.last_published) < UNITS_EVERY);
+        if !open {
+            gates.insert(
+                key.to_owned(),
+                Gate {
+                    last_published: now,
+                    flush_armed: false,
+                },
+            );
+            // The gate lock is not held while publishing: publishing tells
+            // the watchers, which may come back to the operation.
+            drop(gates);
+            self.change(|operation| apply_units(operation, key, done, total));
+            return;
+        }
+        self.tracked.operation.send_if_modified(|operation| {
+            apply_units(operation, key, done, total);
+            false
         });
+        let flush_at = match gates.get_mut(key) {
+            Some(gate) if !gate.flush_armed => {
+                gate.flush_armed = true;
+                Some(gate.last_published + UNITS_EVERY)
+            }
+            _ => None,
+        };
+        drop(gates);
+        if let Some(at) = flush_at {
+            schedule_units_flush(self.tracked.clone(), key.to_owned(), at);
+        }
     }
 
     /// Adds `more` to the decimal fact `name` of step `key`.
@@ -668,6 +714,51 @@ fn not_retryable(id: &str, operation: &pb::Operation) -> Status {
 
 fn finished(operation: &pb::Operation) -> bool {
     operation.state != pb::OperationState::Running as i32
+}
+
+/// Sets step `key`'s units: neither count goes down, and done never passes
+/// total (GRPC.md section 7).
+fn apply_units(operation: &mut pb::Operation, key: &str, done: u64, total: u64) {
+    if let Some(shown) = operation.steps.iter_mut().find(|shown| shown.key == key) {
+        shown.total_units = shown.total_units.max(total);
+        shown.done_units = shown.done_units.max(done).min(shown.total_units);
+    }
+}
+
+/// Publishes the latest units of step `key` at the end of its window, on
+/// a runtime's timer when there is one and on a thread of its own when not.
+fn schedule_units_flush(tracked: Arc<Tracked>, key: String, at: Instant) {
+    let wait = at.saturating_duration_since(Instant::now());
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                tokio::time::sleep(wait).await;
+                flush_units(&tracked, &key);
+            });
+        }
+        Err(_) => {
+            std::thread::spawn(move || {
+                std::thread::sleep(wait);
+                flush_units(&tracked, &key);
+            });
+        }
+    }
+}
+
+/// Closes step `key`'s window and publishes the operation as it is now,
+/// unless it has already ended (its end published everything).
+fn flush_units(tracked: &Arc<Tracked>, key: &str) {
+    if let Some(gate) = lock(&tracked.units_gate).get_mut(key) {
+        gate.flush_armed = false;
+        gate.last_published = Instant::now();
+    }
+    if finished(&tracked.operation.borrow()) {
+        return;
+    }
+    Progress {
+        tracked: tracked.clone(),
+    }
+    .change(|_| {});
 }
 
 fn no_operation(id: &str) -> Status {
@@ -870,5 +961,113 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         let operation = progress.operation();
         rerun(progress);
         Ok(Response::new(operation))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{Operations, Progress, Started};
+    use crate::events::Feed;
+    use crate::identity::{Caller, UserVia};
+    use humata2_grpc::humata::v1 as pb;
+
+    /// A running operation whose steps are `keys`, as its work names them.
+    fn running(keys: &[&str]) -> Progress {
+        let operations = Operations::new(Arc::new(Feed::default()));
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: "ch".to_owned(),
+            })),
+        };
+        let steps: Vec<(String, String)> = keys
+            .iter()
+            .map(|key| ((*key).to_owned(), format!("Cloning {key}")))
+            .collect();
+        let started = operations.start_steps(
+            &Caller::User(UserVia::App),
+            pb::OperationKind::StartSession,
+            target,
+            &steps,
+            false,
+            None,
+        );
+        let Ok(Started::New(progress)) = started else {
+            panic!("the operation started");
+        };
+        progress
+    }
+
+    fn step(operation: &pb::Operation, key: &str) -> pb::OperationStep {
+        operation
+            .steps
+            .iter()
+            .find(|shown| shown.key == key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_unit_updates_publishes_a_few_versions_and_ends_on_the_last() {
+        let progress = running(&["clone:app"]);
+        let units = progress.units();
+        let before = progress.operation().version;
+        for done in 0..1000 {
+            units.set("clone:app", done, 1000);
+        }
+        let after_burst = progress.operation().version;
+        assert!(
+            after_burst <= before + 3,
+            "a burst published {} versions",
+            after_burst - before
+        );
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let settled = progress.operation();
+        assert!(
+            settled.version > after_burst,
+            "the trailing value was published"
+        );
+        let shown = step(&settled, "clone:app");
+        assert_eq!(shown.done_units, 999);
+        assert_eq!(shown.total_units, 1000);
+    }
+
+    #[tokio::test]
+    async fn a_step_change_after_a_burst_publishes_at_once_with_the_latest_units() {
+        let progress = running(&["clone:app"]);
+        let units = progress.units();
+        for done in 0..1000 {
+            units.set("clone:app", done, 1000);
+        }
+        let before = progress.operation().version;
+
+        progress.set_step("clone:app", pb::StepState::Done, None);
+
+        let operation = progress.operation();
+        assert_eq!(operation.version, before + 1);
+        let shown = step(&operation, "clone:app");
+        assert_eq!(shown.state, pb::StepState::Done as i32);
+        assert_eq!(shown.done_units, 999);
+    }
+
+    #[tokio::test]
+    async fn units_of_two_steps_each_publish_when_first_set() {
+        let progress = running(&["clone:app", "clone:lib"]);
+        let units = progress.units();
+        let before = progress.operation().version;
+
+        units.set("clone:app", 1, 10);
+        let after_app = progress.operation().version;
+        units.set("clone:lib", 2, 20);
+        let after_lib = progress.operation().version;
+
+        assert_eq!(after_app, before + 1);
+        assert_eq!(after_lib, after_app + 1);
+        let operation = progress.operation();
+        assert_eq!(step(&operation, "clone:app").done_units, 1);
+        assert_eq!(step(&operation, "clone:lib").done_units, 2);
     }
 }

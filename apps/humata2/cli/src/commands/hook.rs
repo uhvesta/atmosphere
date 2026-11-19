@@ -41,6 +41,7 @@ pub(super) async fn hook<D: Daemon, C: Console>(
         HookEventArg::Permission => "permission",
         HookEventArg::Question => "question",
         HookEventArg::Conversation => "conversation",
+        HookEventArg::Notification => "notification",
     };
     let Ok(payload) = ctx.console.stdin() else {
         return Ok(Done::printed());

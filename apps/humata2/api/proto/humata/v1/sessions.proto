@@ -24,6 +24,11 @@ service SessionService {
   rpc RenameSession(RenameSessionRequest) returns (Session);
   // Stops the agent; the session stays (SE-14 then offers Resume).
   rpc StopSession(StopSessionRequest) returns (Session);
+  // D801 J: the host asks a machine to pause (SIGSTOP) or let run again
+  // the agent of a session a move is taking away. A separate call, not a
+  // flag on StopSession: a machine from a build before it answers
+  // UNIMPLEMENTED and stops nothing.
+  rpc FreezeSession(FreezeSessionRequest) returns (FreezeSessionResponse);
   // SE-15, PER-15.
   rpc ResumeSession(ResumeSessionRequest) returns (Operation);
   // FK-3: the turns a fork may start before. From the agent's adapter.
@@ -218,6 +223,10 @@ message Session {
   // The session's own folder on its machine, absolute (PL-10). Empty for a
   // session that has none yet. Its repos' `path` are the clones inside it.
   string folder = 34;
+  // P8: when the session's status last changed to what it is now, as the
+  // daemon saw it; kept across daemon restarts. The session tab header
+  // shows "Working · 2m 10s" from it. Unset when not known.
+  google.protobuf.Timestamp status_since = 35;
 
   enum SummarySource {
     SUMMARY_SOURCE_UNSPECIFIED = 0;
@@ -363,6 +372,17 @@ message StopSessionRequest {
   bool for_move = 3;
 }
 
+message FreezeSessionRequest {
+  SessionId id = 1;
+  // false freezes; true lets a frozen agent run again.
+  bool thaw = 2;
+}
+
+message FreezeSessionResponse {
+  // An agent ran there, and was frozen (or thawed).
+  bool ran = 1;
+}
+
 message ResumeSessionRequest {
   enum Mode {
     MODE_UNSPECIFIED = 0;
@@ -467,6 +487,10 @@ message ArchiveSessionRequest {
   SessionId id = 2;
   ArchiveChoice choice = 3;
   PlanToken plan = 4;
+  // D801 F: unset or false keeps the session's agent and shells running
+  // (archived, listed on the machine page as "archived"); true ends them.
+  // An agent caller needs the machine-destroy switch for true.
+  optional bool end = 5;
 }
 
 message RestoreSessionRequest {

@@ -45,6 +45,9 @@ case "$mode" in
   --session-id) mkdir -p "$CONV_DIR/$key"; printf '{"cwd":"%s"}\n' "$place" > "$f" ;;
   --resume) [ -f "$f" ] || { echo "no conversation at $f"; exit 3; } ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#;
@@ -69,6 +72,9 @@ case "$mode" in
     mv "$f.partial" "$f" ;;
   --resume) grep -qF "\"cwd\":\"$place\"" "$f" || { echo "no session state naming $place at $f"; exit 3; } ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; done
 "#;
@@ -528,12 +534,13 @@ fn picked_folder(world: &World) -> PathBuf {
     std::fs::canonicalize(picked).unwrap()
 }
 
-/// DK-15, MV-16: a scratch Desk session moved into Payments lands in
-/// `<root>/payments/sessions/<name>`, resumes there with every turn of its
-/// conversation, and leaves the Desk. Nothing is left at its Desk folder
-/// or its old conversation key, and nothing names them.
+/// DK-15, D801 E: a scratch Desk session moved into Payments is renamed to
+/// `<root>/payments/sessions/<name>`, not copied: its agent is not started
+/// again, and its old folder is a link to the new one while it runs. Its
+/// next resume (a stop and resume here) takes up its conversation under the
+/// new folder's key with every turn of it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_scratch_desk_session_moved_into_a_channel_resumes_in_its_session_folder_and_leaves_nothing_behind() {
+async fn a_scratch_desk_session_moved_into_a_channel_keeps_running_and_resumes_in_its_session_folder_later() {
     let fixture = Fixture::new().await;
     let session = fixture.desk_session(None, None).await;
     fixture.say_three(&session.id).await;
@@ -541,14 +548,42 @@ async fn a_scratch_desk_session_moved_into_a_channel_resumes_in_its_session_fold
     let plan = fixture.plan(&session.id).await.unwrap();
     let new = PathBuf::from(&plan.folder);
     assert_eq!(new.parent(), Some(fixture.sessions_dir().as_path()), "it lands among the channel's sessions");
-    let moved = fixture.move_in(&session.id, &plan, false, true).await.unwrap();
+    let moved = fixture.move_in(&session.id, &plan, false, false).await.unwrap();
 
     assert!(succeeded(&moved), "{:?}", moved.error);
-    fixture.resumed_in(&session, &new).await;
     assert_eq!(fixture.folder_of(&session.id), new);
     assert_eq!(get_session(&fixture.daemon, &session.id).await.channel, Some(fixture.channel_id()));
     assert!(!fixture.on_desk(&session.id), "it left the Desk");
+    assert_eq!(fixture.starts(&session.conversation).len(), 1, "the agent was not started again");
+    assert_eq!(std::fs::read_link(&session.folder).unwrap(), new, "the old name is a link to the new folder");
+
+    let mut sessions = fixture.daemon.session_service().await;
+    sessions
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(session.id.clone()), for_move: false })
+        .await
+        .expect("the agent stops");
+    sessions
+        .resume_session(pb::ResumeSessionRequest { id: Some(session.id.clone()), ..Default::default() })
+        .await
+        .expect("the agent resumes");
+    fixture.resumed_in(&session, &new).await;
     fixture.nothing_names(&session.folder, &new).await;
+}
+
+/// D801 E: a rename needs no confirming however busy the agent is, since it
+/// does not stop it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scratch_session_in_a_turn_is_renamed_into_the_channel_with_no_confirming() {
+    let fixture = Fixture::with_turn_end(Some("hooks")).await;
+    let session = fixture.desk_session(None, None).await;
+    let plan = fixture.plan(&session.id).await.unwrap();
+    let new = PathBuf::from(&plan.folder);
+
+    let moved = fixture.move_in(&session.id, &plan, false, false).await.expect("no confirming is asked for");
+
+    assert!(succeeded(&moved), "{:?}", moved.error);
+    assert_eq!(fixture.folder_of(&session.id), new);
+    assert_eq!(fixture.starts(&session.conversation).len(), 1, "the agent was not stopped");
 }
 
 /// D461, DK-17: a picked folder (one picked before new sessions stopped
@@ -604,7 +639,10 @@ async fn the_old_tick_is_ignored_and_a_picked_folder_still_stays_where_it_was() 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_move_that_would_cut_off_a_running_turn_asks_first_and_changes_nothing() {
     let fixture = Fixture::with_turn_end(Some("hooks")).await;
-    let session = fixture.desk_session(None, None).await;
+    // A picked folder is copied, which stops the agent; a scratch one is
+    // renamed, which doesn't.
+    let picked = picked_folder(&fixture.world);
+    let session = fixture.desk_session(Some(&picked), None).await;
     assert!(is_running(&get_session(&fixture.daemon, &session.id).await));
     let plan = fixture.plan(&session.id).await.unwrap();
     let new = PathBuf::from(&plan.folder);
@@ -640,7 +678,9 @@ async fn a_move_that_would_cut_off_a_running_turn_asks_first_and_changes_nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_copilot_desk_session_moved_into_a_channel_resumes_its_session_state_in_the_new_folder() {
     let fixture = Fixture::new().await;
-    let session = fixture.desk_session(None, Some(COPILOT)).await;
+    // A picked folder is copied; a scratch one is renamed and its agent not restarted.
+    let picked = picked_folder(&fixture.world);
+    let session = fixture.desk_session(Some(&picked), Some(COPILOT)).await;
     let events = copilot_state(&fixture.world).join(&session.conversation).join("events.jsonl");
     until("the agent to write its session state", || events.is_file()).await;
 
@@ -670,7 +710,8 @@ async fn a_copilot_desk_session_moved_into_a_channel_resumes_its_session_state_i
 async fn a_move_cut_after_the_copy_is_undone_at_the_next_start() {
     let mut fixture = Fixture::new().await;
     fixture.restart_with(&[("HUMATA2_STOP_AT", "move-copied")]).await;
-    let session = fixture.desk_session(None, None).await;
+    let picked = picked_folder(&fixture.world);
+    let session = fixture.desk_session(Some(&picked), None).await;
     fixture.say_three(&session.id).await;
     let plan = fixture.plan(&session.id).await.unwrap();
     let new = PathBuf::from(&plan.folder);
@@ -704,7 +745,8 @@ async fn what_the_session_wrote_while_it_was_copied_moves_with_it() {
     assert!(std::process::Command::new("mkfifo").arg(&hold).status().unwrap().success());
     let fifo = hold.display().to_string();
     fixture.restart_with(&[("HUMATA2_HOLD_AT", "move-copied"), ("HUMATA2_HOLD_FIFO", &fifo)]).await;
-    let session = fixture.desk_session(None, None).await;
+    let picked = picked_folder(&fixture.world);
+    let session = fixture.desk_session(Some(&picked), None).await;
     fixture.say_three(&session.id).await;
     std::fs::write(session.folder.join("gone.md"), "removed after the copy\n").unwrap();
     let plan = fixture.plan(&session.id).await.unwrap();
@@ -728,7 +770,6 @@ async fn what_the_session_wrote_while_it_was_copied_moves_with_it() {
     assert!(!new.join("gone.md").exists(), "a file removed from the session's folder is not in the channel's");
     let kept = std::fs::read_to_string(fixture.conversation_at(&new, &session.conversation)).unwrap();
     assert!(kept.lines().any(|line| line == "said while it was copied"), "{kept:?}");
-    fixture.nothing_names(&session.folder, &new).await;
 }
 
 /// MV-4's power-cut rule for this move: cut after the switch, the move is
@@ -738,7 +779,8 @@ async fn what_the_session_wrote_while_it_was_copied_moves_with_it() {
 async fn a_move_cut_after_the_switch_is_finished_at_the_next_start() {
     let mut fixture = Fixture::new().await;
     fixture.restart_with(&[("HUMATA2_STOP_AT", "move-switched")]).await;
-    let session = fixture.desk_session(None, None).await;
+    let picked = picked_folder(&fixture.world);
+    let session = fixture.desk_session(Some(&picked), None).await;
     fixture.say_three(&session.id).await;
     let plan = fixture.plan(&session.id).await.unwrap();
     let new = PathBuf::from(&plan.folder);
@@ -752,5 +794,4 @@ async fn a_move_cut_after_the_switch_is_finished_at_the_next_start() {
     assert!(!fixture.on_desk(&session.id));
     assert_eq!(fixture.folder_of(&session.id), new);
     fixture.resumed_in(&session, &new).await;
-    fixture.nothing_names(&session.folder, &new).await;
 }

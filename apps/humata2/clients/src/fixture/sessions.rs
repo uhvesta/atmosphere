@@ -81,6 +81,7 @@ pub(super) fn session(
         moving: None,
         folder: format!("/Users/me/Humata/{channel}/sessions/{id}"),
         clones: Vec::new(),
+        status_since_ms: None,
     }
 }
 

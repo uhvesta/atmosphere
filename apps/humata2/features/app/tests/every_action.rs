@@ -39,6 +39,7 @@ fn opened(workspace: &Arc<Workspace>) -> PaletteState {
         workspace: workspace.clone(),
         context: Some(here()),
         split: true,
+        stack: true,
         report: ReportStatus {
             recording: false,
             last: true,
@@ -217,8 +218,16 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
             path: s.file.1.clone(),
         },
         Some(Command::File { .. }) => Command::TerminalFullScreen,
-        Some(Command::TerminalFullScreen) => Command::JoinTabGroups,
-        Some(Command::JoinTabGroups) => Command::Record,
+        Some(Command::TerminalFullScreen) => Command::PanelFullScreen,
+        Some(Command::PanelFullScreen) => Command::JoinTabGroups,
+        Some(Command::JoinTabGroups) => Command::NextLayer,
+        Some(Command::NextLayer) => Command::PrevLayer,
+        Some(Command::PrevLayer) => Command::WholeStack,
+        Some(Command::WholeStack) => Command::NextFile,
+        Some(Command::NextFile) => Command::PrevFile,
+        Some(Command::PrevFile) => Command::NextChange,
+        Some(Command::NextChange) => Command::PrevChange,
+        Some(Command::PrevChange) => Command::Record,
         Some(Command::Record) => Command::Snapshot,
         Some(Command::Snapshot) => Command::ReportBug,
         Some(Command::ReportBug) => Command::OpenLastReport,
@@ -333,7 +342,15 @@ fn reach(command: &Command) -> Reach {
         | Command::Terminal { .. }
         | Command::File { .. }
         | Command::TerminalFullScreen
+        | Command::PanelFullScreen
         | Command::JoinTabGroups
+        | Command::NextLayer
+        | Command::PrevLayer
+        | Command::WholeStack
+        | Command::NextFile
+        | Command::PrevFile
+        | Command::NextChange
+        | Command::PrevChange
         | Command::Record
         | Command::Snapshot
         | Command::ReportBug
@@ -487,6 +504,16 @@ fn key(name: &str) -> Option<Key> {
         // Tab in the Inbox's list moving focus into its item's terminal
         // (D781): focus, like the sidebar's keys, not a command.
         "FocusInboxTerminal" => Key::Not,
+        // ⌥Z in the diff's own key context flips the same Wrap / Scroll
+        // preference as Settings and the file header's switch (DS-40); it is
+        // not an app-wide key, so it has no palette entry.
+        "ToggleDiffWrap" => Key::Not,
+        // The arrows and Enter in the Diff's focused file list move its
+        // cursor, open a file or fold a repository (DS-84): focus-scoped like
+        // the sidebar's keys, so no palette entry.
+        "FileListDown" | "FileListUp" | "FileListOpen" | "FileListCollapse" | "FileListExpand" => {
+            Key::Not
+        }
         "NewSession" => Key::Runs(Command::NewSession),
         "NewChannel" => Key::Runs(Command::NewChannel),
         "Back" => Key::Runs(Command::Back),
@@ -505,6 +532,13 @@ fn key(name: &str) -> Option<Key> {
         "GoHosts" => Key::Runs(Command::Hosts),
         "GoFiles" => Key::Runs(Command::Files),
         "TerminalFullScreen" => Key::Runs(Command::TerminalFullScreen),
+        "PanelFullScreen" => Key::Runs(Command::PanelFullScreen),
+        "NextLayer" => Key::Runs(Command::NextLayer),
+        "PrevLayer" => Key::Runs(Command::PrevLayer),
+        "NextFile" => Key::Runs(Command::NextFile),
+        "PrevFile" => Key::Runs(Command::PrevFile),
+        "NextChange" => Key::Runs(Command::NextChange),
+        "PrevChange" => Key::Runs(Command::PrevChange),
         "ForkSession" => Key::Runs(Command::Fork),
         _ => return None,
     })

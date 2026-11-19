@@ -568,6 +568,90 @@ fn diff_spec() -> Schema {
     )])
 }
 
+/// A stack layer's title (D800); compared ignoring case.
+fn layer() -> Schema {
+    string().max_length(60)
+}
+
+/// Files marked key or skim (D802); unlisted files are normal.
+fn importance() -> Schema {
+    array(object(vec![
+        req("repo", repo()),
+        req("path", relative_path()),
+        req(
+            "tier",
+            one_of_strings(["key", "normal", "skim"])
+                .describe("key: read first; skim: folded at the end; normal un-skims a lockfile or generated file"),
+        ),
+    ]))
+    .describe("Each file once")
+}
+
+/// A stack of layers, bottom first (D800, `humata.v1.ReviewStack`).
+fn stack() -> Schema {
+    object(vec![req(
+        "layers",
+        array(object(vec![
+            req("title", layer().describe("Short; unique in the stack")),
+            opt("purpose", string().max_length(120).describe("One line, for navigating")),
+            req(
+                "repos",
+                array(
+                    object(vec![
+                        req("repo", repo()),
+                        opt(
+                            "range",
+                            object(vec![
+                                req("base", string().describe("The layer below's head, or the trunk")),
+                                req("head", string().describe("A commit, branch or tag")),
+                            ]),
+                        ),
+                        opt(
+                            "worktree",
+                            object(vec![req(
+                                "include_paths",
+                                array(string().describe("A git pathspec; \".\" for everything")),
+                            )])
+                            .describe("Uncommitted work on top of HEAD"),
+                        ),
+                        opt("pull_request", string().describe("owner/repo#number")),
+                    ])
+                    .exactly_one_of(&["range", "worktree"]),
+                ),
+            ),
+            opt("order", array(file_ref()).describe("This layer's reading order")),
+            opt(
+                "groups",
+                array(object(vec![
+                    req("title", title()),
+                    opt("note", string()),
+                    req("first", file_ref()),
+                ])),
+            ),
+            opt("importance", importance()),
+        ]))
+        .max_items(50)
+        .describe("Bottom of the stack first; after from_stack's layers when both are sent"),
+    )])
+}
+
+/// A stack read from the repo's own stack metadata (D803).
+fn from_stack() -> Schema {
+    object(vec![
+        req("repo", repo().describe("The daemon reads `stack status` in this session's checkout of it")),
+        opt("tip", string().describe("The topic to end at; needed when the stack forks")),
+        opt(
+            "topics",
+            array(object(vec![
+                req("topic", string()),
+                opt("title", layer()),
+                opt("purpose", string().max_length(120)),
+            ]))
+            .describe("Your title or purpose for some topics"),
+        ),
+    ])
+}
+
 fn when() -> Schema {
     one_of_strings(["now", "turn_end"]).describe("Default: now")
 }
@@ -865,11 +949,12 @@ fn definition(operation: Operation) -> Definition {
             object(Vec::new()),
         ),
         Op::ReviewFocus => define(
-            "Show the user a place in the review: open a file, scroll to and select lines, and highlight ranges with a short label. It applies once the user stops scrolling or typing; they can Undo it or go Back.",
+            "Show the user a place in the review: open a file, scroll to and select lines, and highlight ranges with a short label, or move a stack review to one layer. It applies once the user stops scrolling or typing; they can Undo it or go Back.",
             Effect::Change,
             object(vec![
-                req("repo", repo()),
-                req("path", relative_path()),
+                opt("layer", layer().describe("Move to this stack layer, by title; \"\" for Whole stack. With no repo and path, only the layer changes")),
+                opt("repo", repo()),
+                opt("path", relative_path()),
                 opt("lines", lines()),
                 opt("side", side()),
                 opt(
@@ -901,6 +986,7 @@ fn definition(operation: Operation) -> Definition {
                 ),
                 opt("side", side()),
                 opt("quoted", string().describe("The lines, as you read them")),
+                opt("layer", layer().describe("The stack layer the note is on, by title; leave out for Whole stack")),
                 req("text", string().max_length(4000)),
             ]),
         ),
@@ -918,11 +1004,14 @@ fn definition(operation: Operation) -> Definition {
             object(vec![req("note_id", string())]),
         ),
         Op::ReviewPrepare => define(
-            "Arrange a review for the user: what it compares (a diff spec), the order to read the files in, groups with titles, and notes on files, hunks and lines. In a review chat it applies at once; elsewhere it is a draft view the user opens.",
+            "Arrange a review for the user: what it compares (a diff spec, or a stack of layers the user steps through), the order to read the files in, groups with titles, which files are key or skim, and notes on files, hunks and lines. Send spec, or stack and/or from_stack, never both kinds. In a review chat it applies at once; elsewhere it is a draft view the user opens.",
             Effect::Create,
             asks(vec![
                 req("title", title()),
-                req("spec", diff_spec()),
+                opt("spec", diff_spec()),
+                opt("stack", stack()),
+                opt("from_stack", from_stack()),
+                opt("importance", importance()),
                 opt("order", array(file_ref()).describe("Files in reading order; the rest follow")),
                 opt(
                     "groups",
@@ -940,6 +1029,7 @@ fn definition(operation: Operation) -> Definition {
                         opt("lines", lines()),
                         opt("hunk_at", integer().at_least(1)),
                         opt("side", side()),
+                        opt("layer", layer().describe("The stack layer the note is on; leave out for Whole stack")),
                         req("text", string().max_length(4000)),
                     ])),
                 ),

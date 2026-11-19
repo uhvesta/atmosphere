@@ -213,7 +213,7 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
         .then(|| review_switches(ui, state, look));
     col()
         .size_full()
-        .child(header(ui, Panel::Info, full, None, look))
+        .child(panel_header(ui, state, Panel::Info, full, None, look))
         .child(
             col()
                 .id(SharedString::from(format!("session-info {}", session.id)))

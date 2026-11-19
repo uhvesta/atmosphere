@@ -7,6 +7,8 @@ use humata2_clients::model::{SessionFile, SessionId};
 use humata2_clients::{DaemonError, FileChange, SESSION_FILES_CAP, fair_share};
 use tca::Effect;
 
+use crate::layout::FullScreen;
+use humata2_review::ReviewAction;
 use crate::{App, AppAction, AppState, NewChannel, NewSession, ReportAction, Route};
 
 /// Something over the screen. The top one takes the keyboard and Escape
@@ -198,6 +200,17 @@ impl App {
         {
             return self.child(state, AppAction::Comments(CommentsAction::Cancel(id)));
         }
+        // Last of all: Escape leaves a full-screen panel. An open menu takes
+        // the key first (the base menu closes; the others own their keys).
+        if state.full_screen() == Some(FullScreen::Panel) {
+            if state.review.base_menu {
+                return self.child(state, AppAction::Review(ReviewAction::ToggleBaseMenu));
+            }
+            if state.review.repo_picker.is_some() || state.review.push_menu {
+                return Effect::none();
+            }
+            return self.child(state, AppAction::Session(SessionAction::ToggleWiden));
+        }
         Effect::none()
     }
 
@@ -213,6 +226,7 @@ impl App {
         let in_session = matches!(state.route, Route::Session(_));
         state.palette.split =
             in_session && state.session.view().is_some_and(|view| view.groups.len() > 1);
+        state.palette.stack = in_session && state.review.stack_rows().is_some();
         state.palette.context = match &state.route {
             Route::Session(id) => Some(id.clone()),
             _ => None,

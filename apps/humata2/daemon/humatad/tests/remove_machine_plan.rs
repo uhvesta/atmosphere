@@ -83,6 +83,7 @@ impl Fixture {
                 id: Some(id.clone()),
                 choice: pb::ArchiveChoice::Archive as i32,
                 plan: plan.token,
+                end: Some(true),
             })
             .await
             .unwrap()

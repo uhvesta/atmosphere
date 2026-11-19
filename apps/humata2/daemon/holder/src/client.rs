@@ -790,6 +790,7 @@ impl Events {
                 ServerFrame::KeyedWritten { .. }
                 | ServerFrame::KeyAnswer { .. }
                 | ServerFrame::KeysRead { .. }
+                | ServerFrame::Frozen { .. }
                 | ServerFrame::Moving,
             ) => {
                 return Err(self.protocol("it answered keyed input on the events connection"));
@@ -978,5 +979,54 @@ pub async fn move_to(socket: &Path, holder: &Path) -> Result<Moved, HolderError>
             });
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Stops the program in the holder at `socket` (SIGSTOP to its process
+/// groups) for a move to another machine, D801 J. The holder keeps serving
+/// the screen as it was; typing is refused until [`thaw`]. Freezing a
+/// frozen program is fine. A holder from a build before freezing is
+/// [`HolderError::TooOldToFreeze`]: nothing was stopped.
+pub async fn freeze(socket: &Path) -> Result<(), HolderError> {
+    frozen_ask(socket, ClientFrame::Freeze).await.map(|_| ())
+}
+
+/// Lets the program in the holder at `socket` run again after [`freeze`].
+/// Thawing one that isn't frozen is fine.
+pub async fn thaw(socket: &Path) -> Result<(), HolderError> {
+    frozen_ask(socket, ClientFrame::Thaw).await.map(|_| ())
+}
+
+/// Whether the program in the holder at `socket` is frozen. A holder from
+/// a build before freezing is [`HolderError::TooOldToFreeze`].
+pub async fn is_frozen(socket: &Path) -> Result<bool, HolderError> {
+    frozen_ask(socket, ClientFrame::FrozenQuery).await
+}
+
+async fn frozen_ask(socket: &Path, frame: ClientFrame) -> Result<bool, HolderError> {
+    let Attachment {
+        mut events,
+        mut control,
+        ..
+    } = attach(socket, u64::MAX).await?;
+    let asked = control.send(frame).await;
+    let first = match asked {
+        Ok(()) => events.reply().await,
+        Err(_) => Ok(None),
+    };
+    match first {
+        Ok(Some(ServerFrame::Frozen { frozen })) => Ok(frozen),
+        Ok(Some(ServerFrame::Refused { message })) => Err(HolderError::Refused {
+            socket: socket.to_owned(),
+            message,
+        }),
+        Ok(Some(_)) => Err(events.protocol("it answered a freeze with something else")),
+        Ok(None) | Err(HolderError::Lost { .. }) => {
+            older_holder(socket).await?;
+            Err(HolderError::TooOldToFreeze {
+                socket: socket.to_owned(),
+            })
+        }
+        Err(error) => Err(error),
     }
 }

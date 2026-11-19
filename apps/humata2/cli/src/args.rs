@@ -279,6 +279,21 @@ pub enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Run Codex for a Humata session: its TUI on an app-server of its own,
+    /// with turns, the conversation and asks going to Humata. The built-in
+    /// Codex agent runs this; exits as Codex's TUI does.
+    Codex {
+        /// The Codex to run.
+        #[arg(long, default_value = "codex")]
+        program: std::path::PathBuf,
+        /// Codex's hooks (a TOML table), for when it runs without an
+        /// app-server.
+        #[arg(long)]
+        hooks: Option<String>,
+        /// Codex's own arguments, after `--`.
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -525,6 +540,9 @@ pub enum SessionCommand {
         push_first: bool,
         #[arg(long)]
         delete_work: bool,
+        /// Also end its agent and shells. Without it they keep running.
+        #[arg(long)]
+        end: bool,
     },
     Delete { session: String },
     Restore {
@@ -1207,6 +1225,9 @@ pub enum HookEventArg {
     /// Which conversation the agent's CLI is in now, so a `/clear` that
     /// starts another one is the one a resume takes up.
     Conversation,
+    /// A prompt the agent waits on in its own terminal (Claude's
+    /// Notification hook).
+    Notification,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

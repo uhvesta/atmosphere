@@ -376,6 +376,7 @@ async fn commit_push_pr_then_archive_archives_after_the_pull_request() {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::CommitPushPrThenArchive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()
@@ -417,6 +418,7 @@ async fn commit_push_pr_then_archive_archives_nothing_when_the_pull_request_fail
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::CommitPushPrThenArchive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()

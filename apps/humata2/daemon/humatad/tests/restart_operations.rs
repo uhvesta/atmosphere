@@ -100,6 +100,7 @@ async fn an_archive_cut_short_is_named_in_the_restart_report_with_how_it_ended()
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await;
     daemon.stopped(common::WAIT * 8).await;
@@ -230,6 +231,7 @@ async fn a_channel_delete_cut_short_is_named_in_the_restart_report_with_how_it_e
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await;
     daemon.stopped(common::WAIT * 8).await;
@@ -443,6 +445,7 @@ async fn a_channel_restore_cut_short_is_named_in_the_restart_report_with_how_it_
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .expect("the channel is deleted")

@@ -188,7 +188,7 @@ fn board_lists_the_channels_items_and_expands_without_losing_the_session() {
     app.click("expand-panel");
     assert!(app.contains("panel-full-screen"));
     assert!(!app.contains("terminal"));
-    app.click("expand-panel");
+    app.click("show-terminal");
     assert!(app.contains("terminal"));
     assert!(app.contains(&format!("board-item {item}")));
 }

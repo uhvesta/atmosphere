@@ -73,6 +73,9 @@ impl Fixture {
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: delete_work,
+            // These tests are about ending a channel's sessions; keeping them
+            // running is tests/channel_delete_live.rs's (D801 H).
+            end_live: Some(true),
         }
     }
 
@@ -225,6 +228,7 @@ async fn archive(daemon: &Daemon, id: &pb::SessionId) {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()

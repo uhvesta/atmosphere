@@ -473,6 +473,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .clone()
         .unwrap_or_else(|| beside_this_binary("humata"));
     let humata = std::fs::canonicalize(&humata).unwrap_or(humata);
+    crate::session_service::status_since::open(&state);
     let hooks = crate::session_service::install_hooks(
         state.join("claude-hooks.json"),
         humata.clone(),

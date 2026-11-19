@@ -343,6 +343,10 @@ fn listed(
         // its session: the running-holder calls refuse it (`shell_tab`).
         let agent_tab = record.is_some()
             && (tab.kind == TabKind::Agent || agents.get(&holder.socket).is_some_and(|agent| agent.tab == tab.id));
+        let archived = match &record {
+            Some(record) => store.archive(&record.id).map_err(read("read an archive"))?.is_some(),
+            None => false,
+        };
         let entry = pb::RunningHolder {
             tab: Some(pb::TabId { value: tab.id.clone() }),
             session: record.as_ref().map(|record| pb::SessionId { value: record.id.clone() }),
@@ -367,6 +371,8 @@ fn listed(
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: false,
             agent_tab,
+            archived,
+            paused_for_move: crate::session_service::paused_for_move(&holder.socket, holder.pid),
         };
         match record {
             Some(record) => sessions.push((record.title, entry)),
@@ -410,6 +416,8 @@ fn listed(
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: true,
             agent_tab: false,
+            archived: false,
+            paused_for_move: false,
         });
     }
     sessions.sort_by(|a, b| a.0.cmp(&b.0));
@@ -457,6 +465,8 @@ fn stopped_sessions(
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: true,
             agent_tab: true,
+            archived: false,
+            paused_for_move: false,
             title: record.title,
         });
     }

@@ -107,20 +107,6 @@ impl DeskSvc {
             .unwrap_or_default())
     }
 
-    /// Stops `session`'s agent and shells where it works, for the channel
-    /// Desk watch: on its machine when it isn't this one.
-    pub(super) async fn stop_for_watch(&self, session: &SessionRecord) -> Result<(), Status> {
-        if let (Some(machine), Some(remote)) = (self.elsewhere(session), &self.remote) {
-            return remote
-                .stop_session_on(&machine, &session.id)
-                .await
-                .map(|_| ())
-                .map_err(Status::from);
-        }
-        self.stop_agent(&session.id).await?;
-        self.stop_shells(&session.id).await
-    }
-
     /// The host's Bin view restored `item`, an item of another machine's
     /// Bin, on that machine. When it is a channel Desk session's folder, the
     /// host's row opens again: no longer closed, and its folder as the

@@ -299,6 +299,10 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("114-inbox-screen-question", LIGHT, screen_question::unfocused),
     ("115-inbox-screen-question-dark", DARK, screen_question::focused),
     ("116-inbox-screen-question-no-terminal", LIGHT, screen_question::offline_screen),
+    // PROGRESS: the shared progress line and run time.
+    ("122-new-session-cloning", LIGHT, |look| overlays::new_session_cloning(look, board::kanban(look))),
+    ("123-session-moving-unmeasured-step", LIGHT, fork_move::moving_unmeasured),
+    ("124-session-working-elapsed", LIGHT, session::working_elapsed),
 ];
 
 /// Frames not yet approved: drawn into the test's undeclared outputs

@@ -102,6 +102,7 @@ async fn deleting_a_channel_trashes_its_versioned_desk_folder_on_a_box() {
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .expect("the host deletes the channel")

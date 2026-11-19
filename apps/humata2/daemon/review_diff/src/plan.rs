@@ -9,6 +9,7 @@ use crate::checkout::Checkout;
 use crate::error::{DiffError, PlanError};
 use crate::model::{FileChunk, FileSummary, RepoDiff, Side};
 use crate::spec::DiffSpec;
+use crate::from_stack::FromStack;
 use crate::stack::Stack;
 
 /// What `review_prepare` carries.
@@ -24,6 +25,30 @@ pub struct ReviewPlan {
     pub notes: Vec<Note>,
     /// The layers the change is told as (D800), if it is a stack.
     pub stack: Option<Stack>,
+    /// The stack read from a repo's stack metadata (D803), as sent; its
+    /// layers sit at the bottom of `stack`.
+    pub from_stack: Option<FromStack>,
+    /// Files the agent marked key or skim (D802); unlisted files are
+    /// normal.
+    pub importance: Vec<Importance>,
+}
+
+/// How much a file matters for reading it (D802).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Tier {
+    /// Marked with a dot and, with no order sent, read first in its repo.
+    Key,
+    #[default]
+    Normal,
+    /// Folded into one row at the end of its repo.
+    Skim,
+}
+
+/// The agent's tier for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Importance {
+    pub file: FileRef,
+    pub tier: Tier,
 }
 
 /// A file of one repo.
@@ -102,6 +127,9 @@ pub struct Section {
     pub title: Option<String>,
     pub note: String,
     pub files: Vec<FileRef>,
+    /// The one folded section of a repo's skim files (D802), after its
+    /// other files; it has no title.
+    pub skim: bool,
 }
 
 impl ReviewPlan {
@@ -149,16 +177,51 @@ impl ReviewPlan {
         Ok(())
     }
 
-    /// The sections the UI shows: the order cut at each group, then every
-    /// other file of the diff under no title.
+    /// Refuses an importance list that names a file twice. A file not in
+    /// the diff is not an error here; it is ignored, as `arrange` ignores
+    /// a gone file of the order.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::ImportanceError::Duplicate`].
+    pub fn check_importance(&self) -> Result<(), crate::importance::ImportanceError> {
+        crate::importance::check_importance(&self.importance)
+    }
+
+    /// The tiers the agent sent for this plan, by file; unlisted files are
+    /// normal. The daemon's own skims are not here: see
+    /// [`crate::tiers_blocking`].
+    #[must_use]
+    pub fn agent_tiers(&self) -> HashMap<FileRef, Tier> {
+        self.importance
+            .iter()
+            .map(|entry| (entry.file.clone(), entry.tier))
+            .collect()
+    }
+
+    /// As [`Self::arrange_with`], with only the agent's tiers.
     #[must_use]
     pub fn arrange(&self, diffs: &[RepoDiff]) -> Arrangement {
+        self.arrange_with(diffs, &self.agent_tiers())
+    }
+
+    /// The sections the UI shows: the order cut at each group, then every
+    /// other file of the diff under no title (D802). Skim files leave their
+    /// groups and come last in their repo as one skim section; a group left
+    /// without files draws no header. With no order sent, key files come
+    /// first within each repo; with one, they stay where it put them.
+    /// `tiers` are the final tiers; a file not in it is normal.
+    #[must_use]
+    pub fn arrange_with(&self, diffs: &[RepoDiff], tiers: &HashMap<FileRef, Tier>) -> Arrangement {
         let shown = shown_files(diffs);
+        let tier_of = |file: &FileRef| tiers.get(file).copied().unwrap_or_default();
         let starts: HashMap<&FileRef, &Group> =
             self.groups.iter().map(|group| (&group.first, group)).collect();
         let mut arrangement = Arrangement::default();
         let mut current = Section::default();
+        let mut pending: Option<&Group> = None;
         let mut placed = HashSet::new();
+        let mut skims: Vec<FileRef> = Vec::new();
         for file in &self.order {
             if !shown.contains_key(file) {
                 arrangement.gone.push(file.clone());
@@ -171,30 +234,84 @@ impl ReviewPlan {
                 if !current.files.is_empty() || current.title.is_some() {
                     arrangement.sections.push(std::mem::take(&mut current));
                 }
+                pending = Some(group);
+            }
+            if tier_of(file) == Tier::Skim {
+                skims.push(file.clone());
+                continue;
+            }
+            if let Some(group) = pending.take() {
                 current.title = Some(group.title.clone());
                 current.note = group.note.clone();
             }
             current.files.push(file.clone());
         }
-        if !current.files.is_empty() {
-            arrangement.sections.push(current);
-        }
-        let rest: Vec<FileRef> = diffs
-            .iter()
-            .flat_map(|diff| {
-                diff.files.iter().map(|file| FileRef {
+        let mut rest: Vec<FileRef> = Vec::new();
+        for diff in diffs {
+            let mut key = Vec::new();
+            let mut normal = Vec::new();
+            for summary in &diff.files {
+                let file = FileRef {
                     repo: diff.repo.clone(),
-                    path: file.path.clone(),
-                })
+                    path: summary.path.clone(),
+                };
+                if placed.contains(&file) {
+                    continue;
+                }
+                match tier_of(&file) {
+                    Tier::Skim => skims.push(file),
+                    Tier::Key if self.order.is_empty() => key.push(file),
+                    _ => normal.push(file),
+                }
+            }
+            rest.extend(key);
+            rest.extend(normal);
+        }
+        // Files the order left out follow it; they join the order's last
+        // section unless a group heads it.
+        if current.title.is_none() {
+            current.files.extend(rest);
+            if !current.files.is_empty() {
+                arrangement.sections.push(current);
+            }
+        } else {
+            if !current.files.is_empty() {
+                arrangement.sections.push(current);
+            }
+            if !rest.is_empty() {
+                arrangement.sections.push(Section {
+                    files: rest,
+                    ..Section::default()
+                });
+            }
+        }
+        // One skim section per repo, right after the repo's last section.
+        let mut repos: Vec<&str> = Vec::new();
+        for file in &skims {
+            if !repos.contains(&file.repo.as_str()) {
+                repos.push(&file.repo);
+            }
+        }
+        let mut inserts: Vec<(usize, Section)> = repos
+            .into_iter()
+            .map(|repo| {
+                let section = Section {
+                    files: skims.iter().filter(|file| file.repo == repo).cloned().collect(),
+                    skim: true,
+                    ..Section::default()
+                };
+                let at = arrangement
+                    .sections
+                    .iter()
+                    .rposition(|other| other.files.iter().any(|file| file.repo == repo))
+                    .map_or(arrangement.sections.len(), |last| last + 1);
+                (at, section)
             })
-            .filter(|file| !placed.contains(file))
             .collect();
-        if !rest.is_empty() {
-            arrangement.sections.push(Section {
-                title: None,
-                note: String::new(),
-                files: rest,
-            });
+        // Insert from the back so earlier positions stay valid; repos that
+        // share a position keep their repo order.
+        while let Some((at, section)) = inserts.pop() {
+            arrangement.sections.insert(at, section);
         }
         arrangement
     }

@@ -131,7 +131,11 @@ pub fn rows(diff: Option<&FileDiff>, current: &str, view: &CodeView) -> Vec<Row>
     let mut rows = Vec::new();
     // The next new and old line numbers not yet shown.
     let (mut next_new, mut next_old) = (1u32, 1u32);
-    for line in diff.lines.iter().filter(|line| line.kind != LineKind::Hunk) {
+    for line in diff
+        .lines
+        .iter()
+        .filter(|line| !matches!(line.kind, LineKind::Hunk | LineKind::Note))
+    {
         match line.kind {
             LineKind::Context | LineKind::Added => {
                 let new = line.new.unwrap_or(next_new);
@@ -152,7 +156,7 @@ pub fn rows(diff: Option<&FileDiff>, current: &str, view: &CodeView) -> Vec<Row>
                 rows.push(Row::Line(line.clone()));
                 next_old = old.saturating_add(1);
             }
-            LineKind::Hunk => {}
+            LineKind::Hunk | LineKind::Note => {}
         }
     }
     let count = (total + 1).saturating_sub(next_new);

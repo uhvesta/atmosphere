@@ -46,6 +46,9 @@ layer with a `Topic:` trailer and the layer below with `Relative:`.
   stack from the commits alone.
 - A restack in progress shows in `restack`. Say so: the layers are moving.
 
+The daemon reads this same metadata itself when you send `from_stack`
+(section 4a), so you don't need to list the topics for the view.
+
 **Chained pull requests.** A pull request whose base branch is another
 open pull request's head branch sits on top of it.
 
@@ -104,76 +107,123 @@ The layer list you give the owner looks like this:
     2. journal      acme/api #413                    4 files
     3. settings-ui  acme/web #89  (needs upload)     9 files
 
-## 4. Send it to the view: what works today
+## 4. Send it to the view
 
-The review view has no layers of its own yet (see "Not built"). The
-closest thing it has is **groups**: titled sections over the files, in an
-order you give. So today you send one `review_prepare` (an MCP tool) with:
+Send one `review_prepare` (an MCP tool) per review. Use the cheapest form
+that fits:
 
-- `spec`: per repo, the whole stack as one diff. The base is the merge
-  base with the trunk; the new side is the checkout
-  (`shared/diff-spec.md`).
-- `order`: every changed file, layer by layer from the bottom, each file
-  under the **lowest layer that changes it**.
-- `groups`: one per layer, in order: `title` is "1. codec" (the number,
-  then the layer's title), `note` is the layer's purpose or its pull
-  request, and `first` is the layer's first file in the order.
-- no `notes`.
+- **a. `from_stack`**: the repo has a `tools/stack` stack. Send only its
+  repo. Use this whenever section 2a applies.
+- **b. `stack.layers`**: spell the layers out. Use this for a cross-repo
+  stack, chained pull requests, one layer per commit, a split of
+  uncommitted work, or uncommitted work on top of a stack.
 
-```json
-{ "title": "Journal compression: 3 layers, 2 repos",
-  "spec": { "repos": [
-    { "repo": "acme/api", "base": { "merge_base_with": "origin/main" }, "upto": "commits", "untracked": "none" },
-    { "repo": "acme/web", "base": { "merge_base_with": "origin/main" }, "upto": "commits", "untracked": "none" } ] },
-  "order": [
-    { "repo": "acme/api", "path": "src/codec/zstd.rs" },
-    { "repo": "acme/web", "path": "src/api/codec.ts" },
-    { "repo": "acme/api", "path": "src/journal/segment.rs" },
-    { "repo": "acme/web", "path": "src/settings/Compression.tsx" } ],
-  "groups": [
-    { "title": "1. codec", "note": "Adds the zstd codec. acme/api #412, acme/web #88",
-      "first": { "repo": "acme/api", "path": "src/codec/zstd.rs" } },
-    { "title": "2. journal", "note": "Journal segments use it. acme/api #413",
-      "first": { "repo": "acme/api", "path": "src/journal/segment.rs" } },
-    { "title": "3. settings-ui", "note": "A setting to turn it on. acme/web #89",
-      "first": { "repo": "acme/web", "path": "src/settings/Compression.tsx" } } ] }
-```
+Send `spec` only for a narrow ask (`render-humata-review`, step 4). Never
+send `spec` with `stack` or `from_stack`.
 
-Use `"upto": "unstaged"` when the stack includes work that is not
-committed (always, for a split as in 2c).
+### a. A `tools/stack` stack: send the repo
 
-What this does and doesn't give the owner, which you tell them in a line:
+    { "title": "Journal compression",
+      "from_stack": { "repo": "acme/api" } }
 
-- They see the whole stack, in every repo, and can go through it layer by
-  layer as sections.
-- A file that more than one layer changes appears once, under its lowest
-  layer, showing all its changes together. Name those files.
-- The view can't yet show one layer's own diff, or step between layers as
-  separate diffs. That stepped view is being built.
+The daemon reads the stack in your checkout of that repo (`stack status
+--json --offline`, no network and no GitHub login). It makes one layer per
+topic, bottom first, titled with the topic's first commit's subject. The
+topic's name shows beside the title. You name nothing else.
 
-To show the **top layer alone** today: a spec with
-`"base": { "rev": "<head of the layer below>" }` per repo. Any other
-single layer can't be shown alone; `git diff <base>..<head>` reads it.
+- **Forks.** When the stack forks, the daemon refuses and names the leaf
+  topics. Add `tip` with the topic you mean; the layers are then the chain
+  from the root to that tip. Send one review per branch.
+- **Titles and purposes.** Add `topics` only to give a layer a better title
+  or a purpose:
 
-If the clone is not checked out at the top of the stack, the view ends
-where the checkout is. Say which layers are above it and not shown. Never
-check out another commit, restack or rebase to show a layer.
+      { "from_stack": { "repo": "acme/api",
+          "topics": [ { "topic": "codec", "title": "zstd codec",
+                        "purpose": "Adds the zstd codec" } ] } }
 
-## Not built
+  An unknown topic name is refused, and the error lists the real ones.
+- **Commits need a `Topic:` trailer.** If no commit between trunk and HEAD
+  has one, the daemon refuses. Send explicit layers instead (section 4b).
+- **A restack in progress** is refused: finish or abort it, then send again.
+- **A missing or old stack tool** is refused. Don't guess the layers from
+  git in its place; tell the owner that the tool needs upgrading.
+- **Refresh is automatic.** When the stack moves (a rebase, a new topic), the
+  daemon re-reads it and updates the review. Don't send it again for that.
 
-The stepped stack view (milestone STACKVIEW). The payload it will take is
-the list this file has you work out:
+### b. Explicit `stack.layers`
 
-```json
-{ "stack": { "layers": [
-  { "title": "codec", "purpose": "Adds the zstd codec",
-    "repos": [
-      { "repo": "acme/api", "base": "<rev>", "head": "<rev>", "pull_request": "acme/api#412" },
-      { "repo": "acme/web", "base": "<rev>", "head": "<rev>", "pull_request": "acme/web#88" } ] },
-  { "title": "Not committed yet",
-    "repos": [ { "repo": "acme/api", "worktree_paths": ["src/journal/"] } ] } ] } }
-```
+    { "title": "Journal compression: 3 layers, 2 repos",
+      "stack": { "layers": [
+        { "title": "codec", "purpose": "Adds the zstd codec",
+          "repos": [
+            { "repo": "acme/api", "range": { "base": "origin/main", "head": "9f2c1ab" },
+              "pull_request": "acme/api#412" },
+            { "repo": "acme/web", "range": { "base": "origin/main", "head": "51de07e" },
+              "pull_request": "acme/web#88" } ] },
+        { "title": "journal", "purpose": "Journal segments use it",
+          "repos": [
+            { "repo": "acme/api", "range": { "base": "9f2c1ab", "head": "c04e7b2" },
+              "pull_request": "acme/api#413" } ] },
+        { "title": "Not committed yet",
+          "repos": [
+            { "repo": "acme/api", "worktree": { "include_paths": ["src/settings/"] } } ] } ] } }
 
-With it the view lists the layers, shows the whole stack or one layer's
-own diff across its repos, and `review_focus` steps to a layer. Until then
-`review_prepare` takes no `stack`: send groups as above.
+Rules the daemon checks, all at once:
+
+- Layers are bottom first, at most 50. A layer's title is unique (ignoring
+  case), at most 60 characters. A purpose is one line, at most 120.
+- Each repo in a layer has a `range` or a `worktree`, not both.
+- A `range` is `base..head`. Both must resolve, and base must be an
+  ancestor of head.
+- In one repo, each range layer's base is the previous range layer's head.
+  That is how a chain shows. One layer per commit gives a chain for free:
+  each commit's `^` is the commit below it.
+- A `worktree` layer goes on top. It takes `include_paths` (git pathspecs;
+  `"."` for everything) and HEAD must be the top range head. An empty
+  worktree layer is accepted and shows "No changes".
+- A forked stack is refused: send one review per branch.
+- Send commit ids rather than branch names. A branch that moves makes the
+  layer drift.
+
+**Mixing.** Explicit layers may follow a `from_stack`: other repos, or
+uncommitted work on top. The same checks run over the whole list. An explicit
+range layer in the `from_stack` repo is refused: make that step a topic, or
+send that repo as explicit layers.
+
+**Drift.** When a kept commit moves so the chain breaks, or HEAD leaves the
+top, the view shows that layer's repo as "Moved since it was sent". Send the
+stack again. A wrong diff is never shown.
+
+## 5. Key and skim files
+
+Mark only the files that matter to the reading, and say nothing else. Paths
+and a tier, no prose:
+
+    "importance": [
+      { "repo": "acme/api", "path": "src/codec/zstd.rs", "tier": "key" },
+      { "repo": "acme/web", "path": "src/api/codec.generated.ts", "tier": "skim" } ]
+
+- `key`: read first. It gets a dot in the list and keeps its place.
+- `skim`: drawn last in its repo as one folded row. Opening it shows the
+  file dimmed.
+- `normal`: un-skims a file the daemon would skim by itself.
+- Lockfiles (Cargo.lock, MODULE.bazel.lock, package-lock.json, yarn.lock,
+  pnpm-lock.yaml, go.sum, Podfile.lock and similar), files that
+  `.gitattributes` marks `linguist-generated`, and renames with no content
+  change are skimmed already. **Don't list them.**
+- Each file once, and only paths that are in the diff. A file listed twice
+  is refused.
+- Put `importance` at the top level for the whole review. A layer can carry
+  its own `importance` for that layer's view. Whole stack uses the top-level
+  list; with none sent, a file is key if any layer marks it key, and skim
+  only if every layer that touches it marks it skim.
+- `order` is optional. Send it only when you want a reading order; the rest
+  follow. A key file is not moved when you send an order.
+
+## Not built yet
+
+- Ordering the hunks inside a file. Hunks stay in file order; point at one
+  with a note (`hunk_at`).
+- The stepped stack view is being built (milestone STACKVIEW): each layer's
+  own diff, and `review_focus` stepping to a layer. Send the stack in the
+  shape above either way, and say to the owner what the view shows today.

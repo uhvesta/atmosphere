@@ -128,6 +128,9 @@ pub enum CliError {
     /// `humata opencode` couldn't run OpenCode; the message says how to fix it.
     #[error(transparent)]
     OpenCode(#[from] humata2_opencode::WrapperError),
+    /// `humata codex` couldn't run Codex; the message says how to fix it.
+    #[error(transparent)]
+    Codex(#[from] humata2_codex::WrapperError),
     /// `humata machine script check` found the rules file or a script name
     /// unusable (MACHINESCRIPTS, D687).
     #[error("the machine scripts rules have {} problem(s):\n{}", .problems.len(), .problems.join("\n"))]
@@ -312,6 +315,7 @@ impl CliError {
                 )
             },
             Self::OpenCode(_) => plain("tool_failed", exit::TOOL_FAILED, String::new()),
+            Self::Codex(_) => plain("tool_failed", exit::TOOL_FAILED, String::new()),
             Self::Doctor(error) => {
                 let (kind, code, fix) = error.how();
                 plain(kind, code, fix)

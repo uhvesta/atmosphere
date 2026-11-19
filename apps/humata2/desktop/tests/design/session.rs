@@ -451,58 +451,87 @@ pub fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>, diff: Op
         .child(item(IconName::Info, Panel::Info, "Info", None))
 }
 
-fn diff_file(look: Look, name: &'static str, add: &'static str, del: &'static str, on: bool, comments: Option<&'static str>) -> Div {
+/// One changed file as the Diff panel lists it: a 14 px status column (empty
+/// for a modified file), the name, then its directory dimmed, the comment
+/// count, and +a −r. `path` is the directory, then the name.
+fn diff_file(
+    look: Look,
+    path: (&'static str, &'static str),
+    mark: Option<&'static str>,
+    add: &'static str,
+    del: &'static str,
+    on: bool,
+    comments: Option<&'static str>,
+) -> Div {
+    let (dir, name) = path;
+    let letter = mark.map(|mark| (mark, if mark == "A" { GREEN } else if mark == "D" { RED } else { look.secondary }));
     div()
         .flex()
         .items_center()
         .gap(px(6.))
-        .h(px(24.))
-        .px(px(8.))
+        .h(px(25.))
+        .pl(px(22.))
+        .pr(px(8.))
         .rounded(px(5.))
         .when(on, |row| row.bg(c(look.fill)))
-        .child(small_icon(IconName::FileCode, look.secondary))
-        .child(div().flex_1().whitespace_nowrap().child(name))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .children(letter.map(|(letter, hex)| div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(hex)).child(letter))),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .gap(px(6.))
+                .child(div().flex_shrink_0().max_w_full().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(c(look.tertiary)).child(dir)),
+        )
         .children(comments.map(|count| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(2.))
+                .flex_shrink_0()
+                .gap(px(3.))
                 .text_size(px(11.))
-                .text_color(c(look.accent))
-                .child(small_icon(IconName::MessageSquare, look.accent))
+                .text_color(c(look.secondary))
+                .child(small_icon(IconName::MessageSquare, look.secondary))
                 .child(count)
         }))
-        .child(div().text_size(px(11.)).text_color(c(GREEN)).child(add))
-        .child(div().text_size(px(11.)).text_color(c(RED)).child(del))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-fn repo(look: Look, name: &'static str, branch: &'static str) -> Div {
+/// A repo's one row: the fold chevron, its name, the quiet base chip (its
+/// chevron only: every repo shares the header's base and the session's
+/// branch), a spacer and the repo's totals.
+fn repo(look: Look, name: &'static str, add: &'static str, del: &'static str) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(6.))
         .h(px(26.))
         .px(px(4.))
-        .child(small_icon(IconName::ChevronDown, look.tertiary))
-        .child(small_icon(IconName::FolderGit2, look.secondary))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+        .pr(px(8.))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronDown, look.tertiary)))
+        .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+        .child(div().w(px(24.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
         .child(div().flex_1())
-        .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child(branch))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-/// The line under a repo while every repo shares the header's base (D510
-/// as amended by D739): the base menu's chevron alone, and Push & PR.
-fn repo_actions(look: Look) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .h(px(26.))
-        .pl(px(40.))
-        .pr(px(4.))
-        .child(div().w(px(24.)).flex().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
-        .child(div().flex_1())
-        .child(div().px(px(6.)).text_size(px(11.5)).text_color(c(look.accent)).child("Push & PR"))
+/// The header's base chip: "against" and the picker, as the narrow header
+/// carries it and the full-screen title bar carries it beside "Diff".
+pub fn base_chip(look: Look) -> Div {
+    div().flex().items_center().gap(px(6.)).child(secondary(look, "against")).child(popup(look, "main"))
 }
 
 fn diff_lines(look: Look) -> Div {
@@ -576,25 +605,11 @@ fn diff_panel(look: Look, full: bool) -> Div {
         .gap(px(1.))
         .text_size(px(12.5))
         .when(full, |list| list.w(px(300.)).h_full().border_r_1().border_color(c(look.line)))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(4.))
-                .pb(px(6.))
-                .child(secondary(look, "3 files · 2 repos"))
-                .child(div().flex_1())
-                .child(div().text_size(px(11.)).text_color(c(GREEN)).child("+184"))
-                .child(div().text_size(px(11.)).text_color(c(RED)).child("−24")),
-        )
-        .child(repo(look, "ledger", "ledger-schema"))
-        .child(repo_actions(look))
-        .child(diff_file(look, "migrations/0042_accounts.sql", "+41", "−0", false, None))
-        .child(repo(look, "api", "ledger-schema"))
-        .child(repo_actions(look))
-        .child(diff_file(look, "src/client.rs", "+62", "−21", true, Some("2")))
-        .child(diff_file(look, "src/entry.rs", "+81", "−3", false, None));
+        .child(repo(look, "ledger", "+41", "−0"))
+        .child(diff_file(look, ("migrations/", "0042_accounts.sql"), Some("A"), "+41", "−0", false, None))
+        .child(repo(look, "api", "+143", "−24"))
+        .child(diff_file(look, ("src/", "client.rs"), None, "+62", "−21", true, Some("2")))
+        .child(diff_file(look, ("src/", "entry.rs"), None, "+81", "−3", false, None));
     let view = div()
         .flex_1()
         .min_w_0()
@@ -611,9 +626,19 @@ fn diff_panel(look: Look, full: bool) -> Div {
                 .border_color(c(look.line))
                 .text_size(px(12.))
                 .child(small_icon(IconName::FileCode, look.secondary))
-                .child(div().font_weight(FontWeight::MEDIUM).child("api/src/client.rs"))
-                .child(div().flex_1())
-                .child(secondary(look, "Open in editor")),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap(px(4.))
+                        .child(secondary(look, "api ·").flex_shrink_0())
+                        .child(secondary(look, "src/").min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
+                        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
+                )
+                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
         )
         .child(diff_lines(look))
         .child(comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
@@ -623,12 +648,8 @@ fn diff_panel(look: Look, full: bool) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .child(panel_header(
-            look,
-            "Diff",
-            full,
-            Some(div().flex().items_center().gap(px(6.)).child(secondary(look, "against")).child(popup(look, "main"))),
-        ))
+        // Full screen has one title bar (the shell's), carrying the base chip.
+        .when(!full, |panel| panel.child(panel_header(look, "Diff", false, Some(base_chip(look)))))
         .child(if full { div().flex_1().flex().child(list).child(view) } else { div().flex_1().flex().flex_col().child(list).child(view) })
         .child(
             div()
@@ -638,10 +659,27 @@ fn diff_panel(look: Look, full: bool) -> Div {
                 .p(px(10.))
                 .border_t_1()
                 .border_color(c(look.line))
+                .child(quiet(look, "Push & PR…"))
+                .child(quiet(look, "Add repo…"))
                 .child(secondary(look, "1 draft comment"))
                 .child(div().flex_1())
                 .child(button(look, Kind::Primary, "Send 1 comment")),
         )
+}
+
+/// A quiet footer text button: secondary text, never the accent.
+pub fn quiet(look: Look, text: &'static str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .h(px(18.))
+        .px(px(6.))
+        .rounded(px(5.))
+        .whitespace_nowrap()
+        .text_size(px(11.5))
+        .text_color(c(look.secondary))
+        .child(text)
 }
 
 fn inbox_panel(look: Look, full: bool) -> Div {
@@ -912,12 +950,14 @@ pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
         Panel::Board => board_panel(look, full),
         Panel::Journal => journal_panel(look, full),
     };
-    panel_shell(look, full, title(which), body)
+    // Full screen, the Diff's base chip sits beside its title in the one bar.
+    let extra = (full && which == Panel::Diff).then(|| base_chip(look));
+    panel_shell(look, full, title(which), extra, body)
 }
 
 /// The right panel's column around `body`; full screen, it carries the
-/// window's own title bar.
-fn panel_shell(look: Look, full: bool, title: &'static str, body: Div) -> Div {
+/// window's own title bar, with `extra` beside the title.
+fn panel_shell(look: Look, full: bool, title: &'static str, extra: Option<Div>, body: Div) -> Div {
     div()
         .when(full, |panel| panel.flex_1())
         .when(!full, |panel| panel.w(px(PANEL_WIDTH)).flex_shrink_0())
@@ -941,7 +981,20 @@ fn panel_shell(look: Look, full: bool, title: &'static str, body: Div) -> Div {
                     .child(traffic_lights())
                     .child(div().w(px(4.)))
                     .child(icon(IconName::PanelLeftOpen, look.secondary))
-                    .child(div().flex().flex_col().child(secondary(look, "# payments-rewrite › Ledger schema migration")).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(title)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(secondary(look, "# payments-rewrite › Ledger schema migration"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(title))
+                                    .children(extra),
+                            ),
+                    )
                     .child(div().flex_1())
                     .child(button(look, Kind::Secondary, "Show the terminal")),
             )
@@ -1016,15 +1069,22 @@ pub fn session(look: Look, screen: Screen) -> Div {
 /// strip and `title` over it when it fills the window (`Fill::PanelFull`).
 /// For the frames whose panel shows a state the stock panels don't.
 pub fn session_with(look: Look, screen: Screen, on: Panel, title: &'static str, body: Div) -> Div {
+    session_with_extra(look, screen, on, title, None, body)
+}
+
+/// `session_with`, with `extra` (the Diff's base chip) beside the title in
+/// the one full-screen title bar. Beside the terminal the panel's own header
+/// carries it, so `extra` is unused there.
+pub fn session_with_extra(look: Look, screen: Screen, on: Panel, title: &'static str, extra: Option<Div>, body: Div) -> Div {
     let root = div().size_full().flex();
     if screen.fill == Fill::PanelFull {
-        return root.child(panel_shell(look, true, title, body));
+        return root.child(panel_shell(look, true, title, extra, body));
     }
     root.child(sidebar::sidebar(look, side(screen)))
         .child(handle(look, true))
         .child(middle(look, screen))
         .child(handle(look, true))
-        .child(panel_shell(look, false, title, body))
+        .child(panel_shell(look, false, title, None, body))
         .child(ledger_strip(look, Some(on), side(screen)))
 }
 
@@ -1040,7 +1100,7 @@ pub fn shell(look: Look, side: Side, middle: Div, panel: Option<(Panel, &'static
         .child(sidebar::sidebar(look, side))
         .child(handle(look, true))
         .child(middle.flex_1().min_w_0().h_full().flex().flex_col())
-        .when_some(panel, |root, (_, title, body)| root.child(handle(look, true)).child(panel_shell(look, false, title, body)))
+        .when_some(panel, |root, (_, title, body)| root.child(handle(look, true)).child(panel_shell(look, false, title, None, body)))
         .child(strip(look, on))
 }
 
@@ -1170,4 +1230,22 @@ pub fn split(look: Look) -> Div {
                 .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right)),
         )
         .child(ledger_strip(look, None, Side::at("Ledger schema migration")))
+}
+
+/// Frame 124: a Working session's header with its run time after the
+/// title, "Working · 2m 10s" (PROGRESS; `pages::working_note`).
+pub fn working_elapsed(look: Look) -> Div {
+    let screen = Screen::new(None, Term::Working);
+    let middle = div()
+        .child(header_with(
+            look,
+            "# payments-rewrite",
+            St::Working,
+            "Ledger schema migration",
+            Some(("Working · 2m 10s", look.secondary)),
+            vec![secondary(look, "Claude Code · devbox-1")],
+        ))
+        .child(tabs(look, screen))
+        .child(terminal(look, Term::Working));
+    shell(look, Side::at("Ledger schema migration"), middle, None)
 }

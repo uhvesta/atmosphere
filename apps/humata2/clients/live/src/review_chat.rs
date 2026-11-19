@@ -177,6 +177,8 @@ fn view(wire: Option<&pb::ReviewViewState>) -> ReviewView {
             })
             .collect(),
         highlights: wire.highlights.iter().filter_map(highlight).collect(),
+        stack: wire.stack.as_ref().map(views::stack),
+        layer: (wire.stack.is_some() && !wire.layer.is_empty()).then(|| wire.layer.clone()),
     }
 }
 
@@ -207,8 +209,10 @@ fn view_to_wire(view: &ReviewView) -> pb::ReviewViewState {
             })
             .collect(),
         highlights: view.highlights.iter().map(highlight_to_wire).collect(),
-        stack: None,
-        layer: String::new(),
+        stack: view.stack.as_ref().map(views::stack_to_wire),
+        layer: view.layer.clone().unwrap_or_default(),
+        // The daemon keeps the plan's tiers itself (D802).
+        importance: Vec::new(),
     }
 }
 
@@ -273,6 +277,10 @@ fn change_kind(wire: &pb::review_change::Change) -> Option<ReviewChangeKind> {
         Change::Note(comment) => note(comment).map(ReviewChangeKind::Note),
         Change::NoteDropped(id) => Some(ReviewChangeKind::NoteDropped(CommentId::new(id.value.clone()))),
         Change::Plan(plan) => Some(ReviewChangeKind::Plan(views::plan(plan))),
+        // D800: empty is Whole stack.
+        Change::Layer(title) => Some(ReviewChangeKind::Layer(
+            (!title.is_empty()).then(|| title.clone()),
+        )),
     }
 }
 
@@ -359,8 +367,8 @@ impl ReviewChatClient for LiveReviewChat {
                     lines: lines_to_wire(request.lines),
                     side: side_to_wire(request.side),
                     highlights: request.highlights.iter().map(highlight_to_wire).collect(),
-                    layer: String::new(),
-                    whole_stack: false,
+                    layer: request.layer.clone().unwrap_or_default(),
+                    whole_stack: request.whole_stack,
                 })
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
@@ -536,7 +544,79 @@ mod tests {
                 side: Side::Old,
                 label: "here".to_owned(),
             }],
+            stack: None,
+            layer: None,
         };
         assert_eq!(view(Some(&view_to_wire(&original))), original);
+    }
+
+    #[test]
+    fn a_stack_and_its_layer_survive_the_round_trip() {
+        use humata2_clients::model::RepoBase;
+        use humata2_clients::views::{LayerRepoView, LayerView, StackView};
+        let spec = |base| RepoDiffSpec {
+            repo: "acme/api".to_owned(),
+            base,
+        };
+        let range = RepoBase::Range {
+            base: "m".to_owned(),
+            head: "x1".to_owned(),
+        };
+        let overlay = RepoBase::Overlay {
+            base: "x1".to_owned(),
+            paths: vec!["src".to_owned()],
+        };
+        let part = |base: RepoBase, pr: &str| LayerRepoView {
+            repo: "acme/api".to_owned(),
+            spec: spec(base),
+            pull_request: pr.to_owned(),
+            files: 2,
+            drift: None,
+        };
+        let layers = vec![
+            LayerView {
+                title: "one".to_owned(),
+                purpose: "first".to_owned(),
+                repos: vec![part(range.clone(), "acme/api#1")],
+                order: vec![("acme/api".to_owned(), "a.rs".to_owned())],
+                ..LayerView::default()
+            },
+            LayerView {
+                title: "wip".to_owned(),
+                repos: vec![part(overlay.clone(), "")],
+                ..LayerView::default()
+            },
+        ];
+        let stack = StackView {
+            layers,
+            whole: vec![spec(RepoBase::Overlay {
+                base: "m".to_owned(),
+                paths: vec!["src".to_owned()],
+            })],
+        };
+        let original = ReviewView {
+            stack: Some(stack),
+            layer: Some("wip".to_owned()),
+            ..ReviewView::default()
+        };
+        assert_eq!(view(Some(&view_to_wire(&original))), original);
+        let whole = ReviewView {
+            layer: None,
+            ..original
+        };
+        assert_eq!(view(Some(&view_to_wire(&whole))).layer, None);
+    }
+
+    #[test]
+    fn a_layer_change_with_no_title_is_the_whole_stack() {
+        let wire = |title: &str| pb::ReviewChange {
+            change: Some(pb::review_change::Change::Layer(title.to_owned())),
+            ..pb::ReviewChange::default()
+        };
+        assert_eq!(change(&wire("")).change, Some(ReviewChangeKind::Layer(None)));
+        assert_eq!(
+            change(&wire("api")).change,
+            Some(ReviewChangeKind::Layer(Some("api".to_owned())))
+        );
     }
 }

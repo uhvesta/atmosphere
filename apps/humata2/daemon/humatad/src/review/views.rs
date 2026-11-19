@@ -87,6 +87,13 @@ impl Review {
         let title = checked_title(&request.title)?.ok_or_else(|| status::missing("title"))?;
         let content = request.content.map(from_prepare).ok_or_else(|| status::missing("content"))?;
         let content = self.checked_content(caller, record, session, content).await?;
+        // An offered stack with no summary says what it is.
+        let summary = match &content {
+            pb::prepared_view::Content::ReviewPlan(plan) if request.summary.is_empty() => {
+                super::stack::offer_text(plan).unwrap_or_default()
+            }
+            _ => request.summary,
+        };
         let (at, at_ms) = now();
         let view = pb::PreparedView {
             id: Some(pb::ViewId {
@@ -96,7 +103,7 @@ impl Review {
                 value: record.id.clone(),
             }),
             title,
-            summary: request.summary,
+            summary,
             content: Some(content),
             prepared_by: Some(pb::AgentActor {
                 session: Some(pb::SessionId {

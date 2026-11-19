@@ -9,6 +9,9 @@ use humata2_review::{PlanRow, PlanRowNote, PushState, RepoPicker};
 use gpui_kit::component::button::ButtonCustomVariant;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// A quiet text action of the Diff panel: Push & PR, Add repo… and a lone
 /// base chevron. Its colour stays as drawn on hover and press, where a ghost
@@ -30,6 +33,20 @@ impl RenderOnce for Quiet {
                 .hover(fill)
                 .active(fill),
         )
+    }
+}
+
+/// A repository as it reads: a local repository's leading `/` is not drawn.
+fn repo_label(repo: &str) -> &str {
+    repo.strip_prefix('/').unwrap_or(repo)
+}
+
+/// A path split into its directory, with the trailing `/` (empty when there
+/// is none), and its file name.
+fn split_path(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(at) => path.split_at(at + 1),
+        None => ("", path),
     }
 }
 
@@ -63,6 +80,65 @@ pub(super) fn file_comments(state: &AppState, diff: &RepoDiff, path: &str) -> us
     sent + held
 }
 
+/// Whether `line` is code (shown with a number, and open to comments), as
+/// opposed to a hunk header or a note such as "No newline at end of file".
+fn is_code(line: &DiffLine) -> bool {
+    matches!(line.kind, LineKind::Context | LineKind::Added | LineKind::Removed)
+}
+
+/// Whether the file's mode changed (both sides have one, and they differ).
+fn mode_changed(file: &humata2_clients::model::FileDiff) -> bool {
+    file.old_mode != 0 && file.new_mode != 0 && file.old_mode != file.new_mode
+}
+
+/// "644 → 755" when only the permission digits changed, else the full modes.
+fn mode_words(file: &humata2_clients::model::FileDiff) -> String {
+    let (old, new) = (file.old_mode, file.new_mode);
+    if old / 1000 == new / 1000 {
+        format!("Mode {:03} → {:03}", old % 1000, new % 1000)
+    } else {
+        format!("Mode {old} → {new}")
+    }
+}
+
+/// The one dim line a file's header carries when there is something to say
+/// about it (DS-24): binary, renamed, mode change, new, deleted, or why its
+/// lines could not be read (DS-36).
+fn file_note(file: &humata2_clients::model::FileDiff) -> Option<String> {
+    use humata2_clients::model::FileChange;
+    let coded = file.lines.iter().any(is_code);
+    let mut parts: Vec<String> = Vec::new();
+    if file.binary {
+        parts.push("Binary file".to_owned());
+    }
+    if file.change == FileChange::Renamed {
+        parts.push(match (&file.old_path, file.similarity) {
+            (Some(old), similarity) if similarity < 100 => {
+                format!("Renamed from {old} ({similarity}% alike)")
+            }
+            (Some(old), _) => format!("Renamed from {old}"),
+            (None, _) => "Renamed".to_owned(),
+        });
+    }
+    if mode_changed(file) {
+        parts.push(mode_words(file));
+    }
+    if !coded && !file.binary {
+        match file.change {
+            FileChange::Added => {
+                let words = if file.added == 0 { "Empty file" } else { "New file" };
+                parts.push(words.to_owned());
+            }
+            FileChange::Deleted => parts.push("Deleted".to_owned()),
+            FileChange::Modified | FileChange::Renamed => {}
+        }
+    }
+    if let Some(error) = &file.error {
+        parts.push(error.clone());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// One changed file of `diff`: its row, which picks it when clicked.
 fn file_row(
     ui: &Rc<Ui>,
@@ -78,6 +154,14 @@ fn file_row(
     let path = file.path.clone();
     let comments = file_comments(state, diff, &file.path);
     let group = SharedString::from(format!("change-file-group {repo}/{path}"));
+    // "bin" or "mode" stands where +a −r would be (DS-8).
+    let stat_word = if file.binary {
+        Some("bin")
+    } else if mode_changed(file) && !file.lines.iter().any(is_code) {
+        Some("mode")
+    } else {
+        None
+    };
     // PR-19: a review's file row offers Ask about the whole file on hover.
     let ask = reviewing(state, &diff.session)
         .then(|| span(&file.lines))
@@ -124,41 +208,100 @@ fn file_row(
         .rounded(px(5.))
         .cursor_pointer()
         .when(on, |row| row.bg(rgb(look.fill)))
-        .child(icon(IconName::FileCode, look.secondary, 12.))
-        .child(
-            text(if short {
-                path.rsplit('/').next().unwrap_or(path.as_str()).to_owned()
-            } else {
-                path.clone()
-            })
+        // DS-8, DS-82: a letter, never colour alone; a modified file's
+        // column stays empty so the names line up.
+        .child({
+            let letter = match file.change {
+                humata2_clients::model::FileChange::Added => Some(("A", GREEN)),
+                humata2_clients::model::FileChange::Deleted => Some(("D", RED)),
+                humata2_clients::model::FileChange::Renamed => Some(("R", look.secondary)),
+                humata2_clients::model::FileChange::Modified => None,
+            };
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .children(letter.map(|(letter, color)| {
+                    text(letter)
+                        .id(SharedString::from(format!("change-file-mark {repo}/{path}")))
+                        .test_support()
+                        .text_size(px(11.))
+                        .text_color(rgb(color))
+                }))
+        })
+        .child(if short {
+            text(path.rsplit('/').next().unwrap_or(path.as_str()).to_owned())
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
-                .whitespace_nowrap(),
-        )
+                .whitespace_nowrap()
+                .into_any_element()
+        } else {
+            // The name comes first and keeps its room; the directory,
+            // dimmed, gives way before it does (DS-7, DS-47).
+            let (dir, name) = split_path(&path);
+            row()
+                .flex_1()
+                .min_w_0()
+                .gap(px(6.))
+                .when(
+                    crate::panel_stack::tier_of(&state.review, diff, file) == humata2_review::stack::Tier::Key,
+                    |line| line.child(crate::panel_stack::key_dot(look, &diff.repo, &file.path)),
+                )
+                .child(
+                    text(name.to_owned())
+                        .id(SharedString::from(format!("change-file-name {repo}/{path}")))
+                        .test_support()
+                        .flex_shrink_0()
+                        .max_w_full()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis(),
+                )
+                .child(
+                    text(dir.to_owned())
+                        .text_color(rgb(look.tertiary))
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis(),
+                )
+                .into_any_element()
+        })
         .when(comments > 0 && !short, |row| {
             row.child(
                 widgets::row()
                     .gap(px(3.))
                     .flex_shrink_0()
-                    .child(icon(IconName::MessageSquare, look.accent, 11.))
+                    .child(icon(IconName::MessageSquare, look.secondary, 11.))
                     .child(
                         text(comments.to_string())
                             .text_size(px(11.))
-                            .text_color(rgb(look.accent)),
+                            .text_color(rgb(look.secondary)),
                     ),
             )
         })
-        .child(
-            text(format!("+{}", file.added))
-                .text_size(px(11.))
-                .text_color(rgb(GREEN)),
-        )
-        .child(
-            text(format!("−{}", file.removed))
-                .text_size(px(11.))
-                .text_color(rgb(RED)),
-        )
+        .when_some(stat_word, |row, word| {
+            row.child(
+                text(word)
+                    .text_size(px(11.))
+                    .text_color(rgb(look.secondary)),
+            )
+        })
+        .when(stat_word.is_none(), |row| {
+            row.child(
+                text(format!("+{}", file.added))
+                    .text_size(px(11.))
+                    .text_color(rgb(GREEN)),
+            )
+            .child(
+                text(format!("−{}", file.removed))
+                    .text_size(px(11.))
+                    .text_color(rgb(RED)),
+            )
+        })
         .children(ask)
         .on_click(move |_, _, cx| {
             ui.send(
@@ -190,10 +333,33 @@ fn plan_list(
     documents: &Documents,
     diffs: &[&RepoDiff],
     picked: Option<(&RepoDiff, &humata2_clients::model::FileDiff)>,
-    plan: Vec<PlanRow>,
+    plan: humata2_review::PlanLayout,
 ) -> Vec<AnyElement> {
     let mut groups = 0_usize;
     let mut outdated = 0_usize;
+    let humata2_review::PlanLayout { rows: plan, skims } = plan;
+    let send = &crate::panel_stack::sender(ui);
+    // DS-67: one folded row per repository's skim files, which open in
+    // place under it.
+    let draw_skim = |skim: &humata2_review::PlanSkim| -> Vec<AnyElement> {
+        let open = crate::panel_stack::skim_open(&state.review, &skim.repo);
+        let paths: Vec<&str> = skim.paths.iter().map(String::as_str).collect();
+        let mut drawn: Vec<AnyElement> =
+            crate::panel_stack::skim_row(look, &skim.repo, &paths, open, send).into_iter().collect();
+        if open && let Some(diff) = diffs.iter().find(|diff| diff.repo == skim.repo) {
+            drawn.extend(
+                skim.paths
+                    .iter()
+                    .filter_map(|path| diff.files.iter().find(|file| &file.path == path))
+                    .map(|file| {
+                        let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == file.path);
+                        file_row(ui, state, look, diff, file, on, false).into_any_element()
+                    }),
+            );
+        }
+        drawn
+    };
+    let mut skims = skims.into_iter().peekable();
     let mut out = Vec::with_capacity(diffs.len() + plan.len());
     out.extend(
         diffs
@@ -201,7 +367,10 @@ fn plan_list(
             .enumerate()
             .map(|(index, diff)| plan_repo_line(ui, state, look, documents, index, diff).into_any_element()),
     );
-    for entry in plan {
+    for (at, entry) in plan.into_iter().enumerate() {
+        while let Some(skim) = skims.next_if(|skim| skim.after == at) {
+            out.extend(draw_skim(&skim));
+        }
         match entry {
             PlanRow::Group { title, note } => {
                 let n = groups;
@@ -264,7 +433,271 @@ fn plan_list(
             }
         }
     }
+    for skim in skims {
+        out.extend(draw_skim(&skim));
+    }
     out
+}
+
+thread_local! {
+    /// The change each file was last drawn at, by session and file, so a
+    /// step scrolls once and a first draw does not scroll at all.
+    static STEPPED: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+}
+
+/// Notes that `key`'s file is drawn at `change`; true when that differs
+/// from the last draw.
+fn change_moved(key: &str, change: usize) -> bool {
+    STEPPED.with(|held| {
+        held.borrow_mut()
+            .insert(key.to_owned(), change)
+            .is_some_and(|before| before != change)
+    })
+}
+
+/// Scrolls `handle` so `item` (as drawn now) sits at the top of its view.
+fn put_at_top(handle: &ScrollHandle, item: &Bounds<Pixels>, cx: &mut App) {
+    let view = handle.bounds();
+    if view.size.height <= px(0.) {
+        cx.refresh_windows();
+        return;
+    }
+    let mut offset = handle.offset();
+    offset.y = offset.y + (view.top() - item.top());
+    offset.y = offset.y.min(px(0.)).max(-handle.max_offset().y);
+    handle.set_offset(offset);
+    cx.refresh_windows();
+}
+
+/// A small ghost icon button of the file bar and the file header.
+fn step_button(
+    ui: &Rc<Ui>,
+    look: Look,
+    id: &'static str,
+    label: &'static str,
+    tooltip: &'static str,
+    glyph: IconName,
+    action: ReviewAction,
+) -> Button {
+    let ui = ui.clone();
+    Button::new(id)
+        .ghost()
+        .small()
+        .w(px(20.))
+        .h(px(20.))
+        .p_0()
+        .flex_shrink_0()
+        .icon(icon(glyph, look.secondary, 12.))
+        .tooltip(tooltip)
+        .accessibility_label(label)
+        .on_click(move |_, _, cx| {
+            // A click on a control of the bar is not a click on the bar.
+            cx.stop_propagation();
+            ui.send(AppAction::Review(action.clone()), cx);
+        })
+}
+
+/// Open in editor: drawn dimmed and inert, as no editor client exists yet.
+fn open_in_editor(look: Look) -> Button {
+    Button::new("change-open-editor")
+        .ghost()
+        .small()
+        .w(px(20.))
+        .h(px(20.))
+        .p_0()
+        .flex_shrink_0()
+        .opacity(0.5)
+        .icon(icon(IconName::ArrowUpRight, look.secondary, 12.))
+        .tooltip("Open in editor")
+        .accessibility_label("Open in editor")
+}
+
+/// Wrap / Scroll for a file's header (DS-40): it flips the preference
+/// Settings › Long lines sets, and the label names what a click switches to.
+fn wrap_switch(ui: &Rc<Ui>, look: Look, wrapping: bool) -> Quiet {
+    let ui = ui.clone();
+    Quiet {
+        button: Button::new("diff-wrap")
+            .small()
+            .h(px(18.))
+            .text_size(px(11.5))
+            .label(if wrapping { "Scroll" } else { "Wrap" })
+            .accessibility_label(if wrapping { "Scroll long lines" } else { "Wrap long lines" })
+            .tooltip("Wrap long lines  ⌥Z")
+            .flex_shrink_0()
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                ui.send(AppAction::Settings(humata2_settings::SettingsAction::ToggleWrap), cx);
+            }),
+        color: look.secondary,
+        fill: look.fill,
+    }
+}
+
+/// "Change N of M ‹ ›" for a long file's header (DS-27).
+fn change_stepper(ui: &Rc<Ui>, look: Look, change: usize, changes: usize) -> Div {
+    row()
+        .gap(px(2.))
+        .flex_shrink_0()
+        .child(
+            secondary(look, format!("Change {} of {changes}", change + 1))
+                .id("diff-change-count")
+                .test_support()
+                .flex_shrink_0()
+                .whitespace_nowrap(),
+        )
+        .child(step_button(
+            ui,
+            look,
+            "diff-prev-change",
+            "Previous change",
+            "Previous change  ⌃⌘↑",
+            IconName::ChevronLeft,
+            ReviewAction::PrevChange,
+        ))
+        .child(step_button(
+            ui,
+            look,
+            "diff-next-change",
+            "Next change",
+            "Next change  ⌃⌘↓",
+            IconName::ChevronRight,
+            ReviewAction::NextChange,
+        ))
+}
+
+/// The one-row file bar that stands in for the narrow list while a file is
+/// open (DS-2, DS-3): chevron, `repo · name` and its folder, "N of M", the
+/// step buttons and Open in editor. A click on it opens the list.
+fn file_bar(
+    ui: &Rc<Ui>,
+    look: Look,
+    diffs: &[&RepoDiff],
+    diff: &RepoDiff,
+    file: &humata2_clients::model::FileDiff,
+    open: bool,
+) -> AnyElement {
+    let order: Vec<(&str, &str)> = diffs
+        .iter()
+        .flat_map(|each| each.files.iter().map(move |f| (each.repo.as_str(), f.path.as_str())))
+        .collect();
+    let at = order
+        .iter()
+        .position(|(repo, path)| *repo == diff.repo && *path == file.path)
+        .map_or(1, |at| at + 1);
+    let (dir, file_name) = split_path(&file.path);
+    let toggle = ui.clone();
+    row()
+        .id("diff-file-bar")
+        .role(Role::Button)
+        .aria_label("Files")
+        .aria_expanded(open)
+        .h(px(30.))
+        .px(px(8.))
+        .gap(px(6.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(rgb(look.line))
+        .text_size(px(12.))
+        .cursor_pointer()
+        .on_click(move |_, _, cx| {
+            toggle.send(AppAction::Review(ReviewAction::ToggleFileList), cx)
+        })
+        .child(div().flex_shrink_0().child(icon(
+            if open { IconName::ChevronDown } else { IconName::ChevronRight },
+            look.secondary,
+            12.,
+        )))
+        .child(
+            // The folder gives way first, then the repo; the name keeps its room.
+            row()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .gap(px(4.))
+                .child(secondary(look, format!("{} ·", repo_label(&diff.repo)))
+                        .id("diff-file-bar-repo")
+                        .min_w_0()
+                        .flex_shrink(4.)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis())
+                .child(
+                    text(file_name.to_owned())
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .font_weight(FontWeight::MEDIUM),
+                )
+                .child(
+                    secondary(look, dir.to_owned())
+                            .id("diff-file-bar-dir")
+                            .min_w_0()
+                            .flex_shrink(8.)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                ),
+        )
+        .child(
+            secondary(look, format!("{at} of {}", order.len()))
+                .id("diff-file-count")
+                .test_support()
+                .flex_shrink_0()
+                .whitespace_nowrap(),
+        )
+        .child(step_button(
+            ui,
+            look,
+            "diff-prev-file",
+            "Previous file",
+            "Previous file  ⌥⌘↑",
+            IconName::ChevronLeft,
+            ReviewAction::PrevFile,
+        ))
+        .child(step_button(
+            ui,
+            look,
+            "diff-next-file",
+            "Next file",
+            "Next file  ⌥⌘↓",
+            IconName::ChevronRight,
+            ReviewAction::NextFile,
+        ))
+        .child(open_in_editor(look))
+        .test_support()
+        .into_any_element()
+}
+
+/// The "Filter files" field above a long list (RV-6). Esc clears it; with
+/// nothing typed Esc goes on to do what it did before.
+fn file_filter_field(ui: &Rc<Ui>, look: Look, documents: &Documents, session: &SessionId) -> AnyElement {
+    let clear = ui.clone();
+    let session = session.clone();
+    div()
+        .id("changes-file-filter")
+        .test_support()
+        .pb(px(4.))
+        .on_action(move |_: &crate::keys::Dismiss, _, cx| {
+            let typed = clear.read(|state| !state.review.file_filter(&session).is_empty());
+            if typed {
+                clear.send(
+                    AppAction::Review(ReviewAction::FilterFiles(session.clone(), String::new())),
+                    cx,
+                );
+            } else {
+                cx.propagate();
+            }
+        })
+        .child(
+            gpui_kit::component::input::Input::new(&documents.file_filter())
+                .aria_label("Filter files")
+                .small()
+                .min_h(px(26.))
+                .bg(rgb(look.card))
+                .border_color(rgb(look.line))
+                .text_color(rgb(look.text)),
+        )
+        .into_any_element()
 }
 
 pub(super) fn changes(
@@ -312,12 +745,6 @@ pub(super) fn changes(
         .filter(|diff| Some(&diff.session) == state.session.open.as_ref())
         .collect();
     let picked = selected(state, &diffs);
-    let (files, added, removed) = diffs
-        .iter()
-        .flat_map(|diff| &diff.files)
-        .fold((0_usize, 0_u64, 0_u64), |(n, a, r), f| {
-            (n + 1, a + u64::from(f.added), r + u64::from(f.removed))
-        });
     let branch = state
         .session
         .open
@@ -330,7 +757,7 @@ pub(super) fn changes(
         .session
         .open
         .as_ref()
-        .and_then(|session| state.review.plan_rows(session));
+        .and_then(|session| state.review.plan_layout(session));
     // A pull request review (PR-6): the panel names its pull requests and
     // counts its drafts for GitHub instead of offering Push & PR.
     let review = state
@@ -347,6 +774,8 @@ pub(super) fn changes(
         .and_then(|id| state.review.fetch.get(id));
     // A missing default branch (frame 98) always takes the body: the last
     // diff was against another base.
+    // DS-35: a repo whose read failed would show its message and Try again
+    // under its own row here; a read is all-or-nothing today, so no state says which.
     let read_error = fetch.and_then(|fetch| {
         fetch
             .error
@@ -368,13 +797,45 @@ pub(super) fn changes(
     let refresh_failed = refresh_error.is_some();
     let inline_handle = shown
         .filter(|_| inline)
-        .map(|(diff, file)| documents.diff_view(&format!("{}/{}", diff.repo, file.path)).handle);
+        .map(|(diff, file)| {
+            documents
+                .session_diff_view(&diff.session, &format!("{}/{}", diff.repo, file.path))
+                .handle
+        });
+    // DS-2: with a file picked, the narrow list folds into the file bar.
+    // Full screen keeps its list column and the inline review its own list.
+    let file_open = session_id
+        .as_ref()
+        .and_then(|id| state.review.saved.selected.get(id))
+        .is_some_and(|(repo, path)| {
+            diffs
+                .iter()
+                .any(|diff| diff.repo == *repo && diff.files.iter().any(|file| file.path == *path))
+        });
+    let bar = !full && !inline && file_open && shown.is_some();
+    let list_open = bar
+        && session_id
+            .as_ref()
+            .is_some_and(|id| state.review.file_list_open.contains(id));
+    // D800: the stack's rows send through this.
+    let stack_send = crate::panel_stack::sender(ui);
+    let has_plan = plan.is_some();
     let rows: Vec<AnyElement> = match plan {
         Some(plan) => plan_list(ui, state, look, documents, &diffs, picked, plan),
         None => diffs
             .iter()
             .enumerate()
+            // RV-6: a repository with no matching file has no row.
+            .filter(|(_, diff)| {
+                session_id.as_ref().is_none_or(|id| {
+                    diff.files.is_empty()
+                        || diff.files.iter().any(|file| state.review.file_visible(id, &file.path))
+                })
+            })
             .map(|(index, diff)| {
+                let folded = session_id
+                    .as_ref()
+                    .is_some_and(|id| state.review.collapsed.contains(&(id.clone(), diff.repo.clone())));
                 if let (Some(session), true) = (review, inline) {
                     return review_repo(
                         ui,
@@ -391,68 +852,59 @@ pub(super) fn changes(
                 col()
                     .child(match review {
                         Some(session) => review_repo_head(state, look, session, diff, true),
-                        None => repo_head(ui, state, look, documents, index, diff, branch).into_any_element(),
+                        None => repo_head(ui, state, look, documents, index, diff, branch, folded),
                     })
-                    .children(diff.files.iter().map(|file| {
-                        let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == file.path);
-                        file_row(ui, state, look, diff, file, on, false)
-                    }))
+                    .children({
+                        // DS-67: skim files fold into one row at the end.
+                        let split = humata2_review::stack::fold_skims(&diff.files, |file| {
+                            crate::panel_stack::tier_of(&state.review, diff, file)
+                        });
+                        let visible = |file: &&humata2_clients::model::FileDiff| {
+                            session_id
+                                .as_ref()
+                                .is_none_or(|id| state.review.file_visible(id, &file.path))
+                        };
+                        let skims_open = crate::panel_stack::skim_open(&state.review, &diff.repo);
+                        let skim_paths: Vec<&str> = split.skims.iter().filter(|file| visible(file)).map(|file| file.path.as_str()).collect();
+                        let row_of = |file: &humata2_clients::model::FileDiff| {
+                            let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == file.path);
+                            file_row(ui, state, look, diff, file, on, false).into_any_element()
+                        };
+                        let mut files: Vec<AnyElement> = Vec::new();
+                        if !folded {
+                            files.extend(split.shown.iter().filter(|file| visible(file)).map(|file| row_of(*file)));
+                            files.extend(crate::panel_stack::skim_row(
+                                look,
+                                &diff.repo,
+                                &skim_paths,
+                                skims_open,
+                                &stack_send,
+                            ));
+                            if skims_open {
+                                files.extend(split.skims.iter().filter(|file| visible(file)).map(|file| row_of(*file)));
+                            }
+                        }
+                        files
+                    })
                     .into_any_element()
             })
             .collect(),
     };
+    // DS-28, DS-34: the files stay, dimmed, until the new diff arrives.
+    let loading = fetch.is_some_and(|fetch| fetch.loading);
+    // RV-6: above 20 changed files a field filters the list.
+    let filter_field = session_id
+        .as_ref()
+        .filter(|id| !has_plan && !inline && state.review.file_filter_shown(id))
+        .map(|id| file_filter_field(ui, look, documents, id));
     let list = col()
         .p(px(8.))
+        .when(loading, |list| list.opacity(0.5))
         // An inline review spaces its PR line and repositories 4 apart
         // (frame 68).
         .gap(px(if inline { 4. } else { 1. }))
         .text_size(px(12.5))
-        .when(review.is_none(), |list| list.child(
-            row()
-                .gap(px(6.))
-                .px(px(4.))
-                .pb(px(6.))
-                .child(secondary(
-                    look,
-                    format!(
-                        "{files} file{} · {} repo{}",
-                        if files == 1 { "" } else { "s" },
-                        diffs.len(),
-                        if diffs.len() == 1 { "" } else { "s" }
-                    ),
-                ))
-                // REPOS (CH-21): Add repo to this session. A quiet text
-                // action like Push & PR, so the summary line keeps the
-                // goldens' height (frames 11, 85).
-                .children(state.session.open.clone().map(|session| {
-                    let ui = ui.clone();
-                    let button = Button::new("changes-add-repo")
-                        .small()
-                        .h(px(18.))
-                        .text_size(px(11.5))
-                        .label("Add repo…")
-                        .accessibility_label("Add repo…")
-                        .flex_shrink_0()
-                        .on_click(move |_, _, cx| {
-                            ui.send(
-                                AppAction::SessionAddRepo(humata2_app::SessionAddRepoAction::Open(session.clone())),
-                                cx,
-                            )
-                        });
-                    Quiet { button, color: look.accent, fill: look.fill }
-                }))
-                .child(div().flex_1())
-                .child(
-                    text(format!("+{added}"))
-                        .text_size(px(11.))
-                        .text_color(rgb(GREEN)),
-                )
-                .child(
-                    text(format!("−{removed}"))
-                        .text_size(px(11.))
-                        .text_color(rgb(RED)),
-                ),
-        ))
+        .children(filter_field)
         .children(rows);
     let sendable = session_id
         .as_ref()
@@ -472,24 +924,45 @@ pub(super) fn changes(
             view.child(refresh_failed_row(ui, error, look))
         })
         .when_some(shown.filter(|_| !inline), |view, (diff, file)| {
+            // DS-40: ⌥Z flips Wrap and Scroll while focus is in the file's
+            // header or code. DS-15: full screen is the code's colour from
+            // top to bottom.
+            let view = view
+                .key_context(crate::keys::DIFF)
+                .when(full, |view| view.bg(rgb(look.term)));
             let name = format!("{}/{}", diff.repo, file.path);
-            let scroll = documents.diff_view(&name);
+            let scroll = documents.session_diff_view(&diff.session, &name);
             let wrap = state.review.wrap;
+            // DS-27: the change stepped to, and whether it moved since the
+            // last frame, so the code scrolls its hunk to the top once.
+            let changes = humata2_review::change_count(file);
+            let change = state.review.current_change(&diff.session);
+            let hunk_line = file
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.kind == humata2_clients::model::LineKind::Hunk)
+                .map(|(at, _)| at)
+                .nth(change);
+            let moved = change_moved(&format!("{}:{name}", diff.session), change);
+            let stepper = changes > 1 && file.lines.len() > 60;
             // Counted once per read of the file, not on every frame.
             let LineFacts { digits, widest } = scroll.facts(&file.lines, line_facts);
             // The numbers take their digits, an 8 pt left inset, the 4 pt right pad
             // and the 8 pt the code overlaps, so 20000 is never clipped or flush.
             let gutter_width = 34_f32.max(digits as f32 * cell_width + 20.);
             let view_width = width - if full { 300. } else { 0. };
-            let code_width = view_width - gutter_width - cell_width - 2. + 8.;
+            // DS-19: full screen draws an old and a new number column,
+            // beside the terminal one.
+            let start = code_start_of(gutter_width, cell_width, full, false);
+            let code_width = view_width - start - 2.;
             let columns = ((code_width / cell_width).floor().max(4.)) as usize;
             // On Scroll only the code column moves sideways, as far as the
             // widest line needs.
             let max_shift = if wrap {
                 0.
             } else {
-                (widest as f32 * cell_width + cell_width)
-                    - (view_width - (gutter_width - 8.) - cell_width)
+                (widest as f32 * cell_width + cell_width) - (view_width - start)
             };
             let shift = scroll.shift(max_shift);
             let rows = CodeRows::new(
@@ -506,6 +979,7 @@ pub(super) fn changes(
                     line_height,
                     view_width,
                     review: false,
+                    old: full,
                 },
                 None,
                 shift,
@@ -523,6 +997,12 @@ pub(super) fn changes(
                 // DV-5: a long file builds only the lines in view. The list
                 // keeps its top line across a rewrap by itself.
                 let state = scroll.rows(&file.lines, wrap, view_width, line_height);
+                if moved {
+                    state.scroll_to(ListOffset {
+                        item_ix: hunk_line.unwrap_or(0),
+                        offset_in_item: px(0.),
+                    });
+                }
                 let rows = Rc::new(rows);
                 let (session, repo, path) = (diff.session.clone(), diff.repo.clone(), file.path.clone());
                 let guess = scroll.clone();
@@ -557,6 +1037,7 @@ pub(super) fn changes(
             } else {
                 let items: Vec<AnyElement> =
                     (0..file.lines.len()).map(|index| rows.item(&file.lines, index)).collect();
+                let handle = scroll.handle.clone();
                 col()
                     .on_scroll_wheel(sideways)
                     .id(SharedString::from(format!("change-code {name}")))
@@ -568,6 +1049,8 @@ pub(super) fn changes(
                     .track_scroll(&scroll.handle)
                     .overflow_y_scroll()
                     .overflow_x_hidden()
+                    // DS-15: the code's colour below the last line too.
+                    .bg(rgb(look.term))
                     .child(
                         col()
                             .py(px(6.))
@@ -576,9 +1059,32 @@ pub(super) fn changes(
                             .line_height(px(line_height))
                             .bg(rgb(look.term))
                             .on_children_prepainted(move |children, _, cx| {
-                                scroll.keep_top(width, wrap, &children, cx)
+                                scroll.keep_top(width, wrap, &children, cx);
+                                if moved && let Some(child) = children.get(hunk_line.unwrap_or(0)) {
+                                    put_at_top(&handle, child, cx);
+                                }
                             })
                             .children(items),
+                    )
+                    .into_any_element()
+            };
+            // DS-24, DS-36: a file with nothing to draw shows its note as
+            // its body.
+            let note = file_note(file);
+            let code = if file.lines.iter().any(is_code) {
+                code
+            } else {
+                col()
+                    .id("change-file-empty")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .p(px(12.))
+                    .child(
+                        secondary(look, note.clone().unwrap_or_else(|| "No changes to show".to_owned()))
+                            .text_size(px(12.)),
                     )
                     .into_any_element()
             };
@@ -592,29 +1098,72 @@ pub(super) fn changes(
                     .border_color(rgb(look.line))
                     .text_size(px(12.))
                     .child(icon(IconName::FileCode, look.secondary, 12.))
-                    .child(text(name).font_weight(FontWeight::MEDIUM))
-                    .child(div().flex_1())
-                    .child(
-                        // No editor client exists yet: drawn, but dimmed and inert.
-                        secondary(look, "Open in editor")
-                            .id("change-open-editor")
-                            .opacity(0.5),
-                    ),
+                    .child({
+                        // `repo · dir/name`: the directory gives way first and
+                        // the name stays; the block ends before "Open in editor".
+                        let (dir, file_name) = split_path(&file.path);
+                        row()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .gap(px(4.))
+                            .child(secondary(look, format!("{} ·", repo_label(&diff.repo))).flex_shrink_0())
+                            .child(secondary(look, dir.to_owned())
+                                    .id("diff-file-header-dir")
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis())
+                            .child(
+                                text(file_name.to_owned())
+                                    .flex_shrink_0()
+                                    .font_weight(FontWeight::MEDIUM),
+                            )
+                    })
+                    .child(wrap_switch(ui, look, wrap))
+                    .when(stepper, |header| {
+                        header.child(change_stepper(ui, look, change, changes))
+                    })
+                    // With the file bar showing, Open in editor sits there.
+                    .when(!bar, |header| header.child(open_in_editor(look))),
             )
+            .children(note.map(|note| {
+                secondary(look, note)
+                    .id("change-file-note")
+                    .test_support()
+                    .flex_shrink_0()
+                    .text_size(px(12.))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+            }))
             .child(code)
         })
         .when(picked.is_none() && !failed, |view| {
-            view.child(nothing_against(look, &current_base))
+            // DS-33: before the first diff arrives the panel is reading, not empty.
+            if loading && diffs.is_empty() {
+                view.child(
+                    secondary(look, "Reading changes…")
+                        .p(px(12.))
+                        .id("changes-reading")
+                        .test_support(),
+                )
+            } else {
+                view.child(nothing_against(ui, look, &current_base))
+            }
         });
     // Before the first diff arrives the chip names the picked base, never
     // an empty one.
+    // DS-34: while a read is under way the chip names the base just picked.
     let base = diffs
         .first()
         .map(|diff| diff.base.clone())
-        .filter(|base| !base.is_empty())
+        .filter(|base| !base.is_empty() && !loading)
         .unwrap_or_else(|| picked_base_name(state, &current_base));
     let review_base = diffs.first().map_or_else(String::new, |diff| diff.base.clone());
-    let menu_open = state.review.base_menu;
+    let menu_open = state.review.base_menu && !crate::panel_stack::hides_base_picker(&state.review);
     // The repositories are compared with different bases: the header says
     // so instead of naming one (frames 84, 85).
     let per_repo = session_id
@@ -690,7 +1239,7 @@ pub(super) fn changes(
             ),
             look,
         );
-    col()
+    crate::panel_stack::stack_keys(col(), &state.review)
         .size_full()
         // A pull request review's header names the pull request instead
         // of a base to pick (a pull request's base is GitHub's); Full screen
@@ -703,25 +1252,50 @@ pub(super) fn changes(
                 Some(review_line(state, look, session, &review_base, diffs.len())),
                 look,
             ),
-            None => head,
+            None => match crate::panel_stack::header_line(&state.review) {
+                Some(line) => header(
+                    ui,
+                    Panel::Changes,
+                    full,
+                    Some(row().min_w_0().child(
+                        secondary(look, line).id("stack-header").test_support(),
+                    )),
+                    look,
+                ),
+                None => head,
+            },
         })
+        // D800, DS-60 to DS-65: the layer list sits above the files.
+        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send))
         .child(
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
+                // D807: the loading sweep lies over the body's top edge.
+                .relative()
                 .when(!full, |body| body.flex_col())
-                .child(match inline_handle {
-                    Some(handle) => div()
-                        .id("review-diff")
-                        .flex_1()
-                        .min_h_0()
-                        .track_scroll(&handle)
-                        .overflow_y_scroll()
-                        .child(list)
-                        .test_support()
-                        .into_any_element(),
-                    None => div()
+                .children(
+                    shown
+                        .filter(|_| bar)
+                        .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, list_open)),
+                )
+                .children(match inline_handle {
+                    Some(handle) => Some(
+                        div()
+                            .id("review-diff")
+                            .flex_1()
+                            .min_h_0()
+                            .track_scroll(&handle)
+                            .overflow_y_scroll()
+                            .child(list)
+                            .test_support()
+                            .into_any_element(),
+                    ),
+                    // Folded into the file bar: no list box.
+                    None if bar && !list_open => None,
+                    None => Some(
+                        div()
                         .id("changes-files")
                         .overflow_y_scroll()
                         .min_h_0()
@@ -741,8 +1315,14 @@ pub(super) fn changes(
                         .when(!full, |files| files.flex_shrink_0().max_h(px(220.)))
                         .child(list)
                         .into_any_element(),
+                    ),
                 })
-                .when(!inline || refresh_failed, |body| body.child(view)),
+                .when(!inline || refresh_failed, |body| body.child(view))
+                .children(crate::changes_loading::changes_loading(
+                    look,
+                    &state.review.fetch,
+                    session_id.as_ref(),
+                )),
         )
         .child(
             row()
@@ -760,22 +1340,88 @@ pub(super) fn changes(
                         // The id carries the counts the line shows.
                         secondary(
                             look,
-                            format!("Drafts: {} ({agent} by agent, {you} by you)", agent + you),
+                            drafts_line(state, id, agent, you),
                         )
                         .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
                         .test_support()
                         .into_any_element()
                     }
-                    _ => secondary(
-                        look,
-                        format!(
-                            "{sendable} draft comment{}",
-                            if sendable == 1 { "" } else { "s" }
-                        ),
-                    )
-                    .into_any_element(),
+                    _ => {
+                        // Push & PR… opens one menu of every repo (DS-10);
+                        // Add repo… stays here, quiet like it.
+                        let menu = ui.clone();
+                        let add = ui.clone();
+                        row()
+                            .gap(px(8.))
+                            .when(!diffs.is_empty(), |line| {
+                                line.child(
+                                    div()
+                                        .relative()
+                                        .flex_shrink_0()
+                                        .child(Quiet {
+                                            button: Button::new("changes-push-menu")
+                                                .small()
+                                                .h(px(18.))
+                                                .text_size(px(11.5))
+                                                .label("Push & PR…")
+                                                .accessibility_label("Push & PR…")
+                                                .flex_shrink_0()
+                                                .on_click(move |_, _, cx| {
+                                                    menu.send(
+                                                        AppAction::Review(ReviewAction::TogglePushMenu),
+                                                        cx,
+                                                    )
+                                                }),
+                                            color: look.secondary,
+                                            fill: look.fill,
+                                        })
+                                        .when(state.review.push_menu, |wrap| {
+                                            wrap.child(deferred(push_scrim(ui)))
+                                                .child(deferred(push_menu(ui, state, look, &diffs)))
+                                        }),
+                                )
+                            })
+                            .children(session_id.clone().map(|session| Quiet {
+                                button: Button::new("changes-add-repo")
+                                    .small()
+                                    .h(px(18.))
+                                    .text_size(px(11.5))
+                                    .label("Add repo…")
+                                    .accessibility_label("Add repo…")
+                                    .flex_shrink_0()
+                                    .on_click(move |_, _, cx| {
+                                        add.send(
+                                            AppAction::SessionAddRepo(humata2_app::SessionAddRepoAction::Open(
+                                                session.clone(),
+                                            )),
+                                            cx,
+                                        )
+                                    }),
+                                color: look.secondary,
+                                fill: look.fill,
+                            }))
+                            .into_any_element()
+                    }
                 })
                 .child(div().flex_1())
+                // DS-16: Submit review… sits in the footer, beside the
+                // terminal and in full screen.
+                .when_some(session_id.clone().filter(|_| review.is_some()), |footer, id| {
+                    footer.child(
+                        widgets::primary_in(
+                            look,
+                            ui,
+                            "diff-submit-review",
+                            "Submit review…",
+                            AppAction::PrSubmit(humata2_pr_review::submit::SubmitAction::Open(id)),
+                        )
+                        .small()
+                        .h(px(24.))
+                        .flex_shrink_0()
+                        .bg(rgb(look.accent))
+                        .text_color(rgb(0xffffff)),
+                    )
+                })
                 .when_some(
                     session_id.clone().filter(|_| sendable > 0),
                     |footer, session| {
@@ -793,6 +1439,32 @@ pub(super) fn changes(
                     },
                 ),
         )
+}
+
+/// The footer's count of drafts for GitHub (DS-55): "4 drafts · 3 by
+/// Copilot, 1 by you", naming the session's agent.
+fn drafts_line(state: &AppState, session: &SessionId, agent: usize, you: usize) -> String {
+    let total = agent + you;
+    if total == 0 {
+        return "No drafts".to_owned();
+    }
+    let name = state
+        .workspace
+        .sessions
+        .iter()
+        .find(|each| &each.id == session)
+        .map_or("the agent", |each| match each.agent {
+            humata2_clients::model::Agent::Claude => "Claude Code",
+            other => other.name(),
+        });
+    let mut by = Vec::new();
+    if agent > 0 {
+        by.push(format!("{agent} by {name}"));
+    }
+    if you > 0 {
+        by.push(format!("{you} by you"));
+    }
+    format!("{total} draft{} · {}", if total == 1 { "" } else { "s" }, by.join(", "))
 }
 
 /// The drafts for GitHub of `session`, by the agent and by the person.
@@ -831,19 +1503,18 @@ fn review_line(state: &AppState, look: Look, session: &Session, base: &str, repo
         .min_w_0()
         .overflow_hidden()
         .child(div().flex_shrink_0().child(icon(IconName::GitPullRequest, look.secondary, 12.)))
-        .child(
-            secondary(
-                look,
-                format!(
-                    "{name} against {base} · {repos} repo{}",
-                    if repos == 1 { "" } else { "s" }
-                ),
-            )
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis(),
-        ))
+        .child({
+            let line = format!(
+                "{name} against {base} · {repos} repo{}",
+                if repos == 1 { "" } else { "s" }
+            );
+            secondary(look, line.clone())
+                    .id("review-pr-line-text")
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+        }))
 }
 
 thread_local! {
@@ -911,7 +1582,7 @@ fn review_repo(
         .map(|file| {
             file.lines
                 .iter()
-                .filter(|line| line.kind != LineKind::Hunk)
+                .filter(|line| is_code(line))
                 .map(|line| line.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -923,11 +1594,32 @@ fn review_repo(
         .zip(&texts)
         .map(|(file, text)| OrderFile { path: &file.path, text })
         .collect();
+    // DS-26: the open file's head stays at the top of the review's view
+    // while its lines scroll, and leaves with the file's last line.
+    let mut pinned: Option<(usize, usize, (String, ScrollHandle, f32))> = None;
+    let mut children = 1;
     for index in bottom_up(&ordered) {
         let file = &diff.files[index];
         let on = picked.is_some_and(|(held, f)| held.repo == diff.repo && f.path == file.path);
-        group = group.child(file_row(ui, state, look, diff, file, on, true));
         if on {
+            let name = format!("{}/{}", diff.repo, file.path);
+            let handle = documents.session_diff_view(&diff.session, &name).handle;
+            let shift = pinned_shift(&name, &handle);
+            let head = div()
+                .when(shift > 0., |head| head.relative().top(px(shift)).bg(rgb(look.panel)))
+                .child(file_row(ui, state, look, diff, file, on, true));
+            group = group.child(if shift > 0. {
+                deferred(head).into_any_element()
+            } else {
+                head.into_any_element()
+            });
+            pinned = Some((children, children + 1, (name, handle, shift)));
+        } else {
+            group = group.child(file_row(ui, state, look, diff, file, on, true));
+        }
+        children += 1;
+        if on {
+            children += 1;
             group = group.child(review_code(
                 ui,
                 state,
@@ -941,7 +1633,49 @@ fn review_repo(
             ));
         }
     }
+    if let Some((head, code, (name, handle, shift))) = pinned {
+        group = group.on_children_prepainted(move |bounds, _, _| {
+            if let (Some(head), Some(code)) = (bounds.get(head), bounds.get(code)) {
+                note_pinned(&name, &handle, shift, head, code);
+            }
+        });
+    }
     group.into_any_element()
+}
+
+thread_local! {
+    /// Per review file: where its head sits in the list's content when not
+    /// pinned (its top, its height) and where its code ends.
+    static PINNED: RefCell<HashMap<String, (f32, f32, f32)>> = RefCell::new(HashMap::new());
+}
+
+/// How far the open file's head is moved down so it stays at the top of the
+/// review's view: none until its natural place scrolls off, and never past
+/// the end of the file's code. Read from the last frame's place.
+fn pinned_shift(name: &str, handle: &ScrollHandle) -> f32 {
+    let Some((top, height, bottom)) = PINNED.with(|held| held.borrow().get(name).copied()) else {
+        return 0.;
+    };
+    let scrolled = -f32::from(handle.offset().y);
+    (scrolled - top).clamp(0., (bottom - height - top).max(0.))
+}
+
+/// Notes where the head and the code ended up this frame, in the list's own
+/// coordinates, with the shift the head was drawn with taken back out.
+fn note_pinned(
+    name: &str,
+    handle: &ScrollHandle,
+    shift: f32,
+    head: &Bounds<Pixels>,
+    code: &Bounds<Pixels>,
+) {
+    let origin = f32::from(handle.bounds().origin.y) + f32::from(handle.offset().y);
+    let top = f32::from(head.origin.y) - shift - origin;
+    let bottom = f32::from(code.bottom()) - origin;
+    PINNED.with(|held| {
+        held.borrow_mut()
+            .insert(name.to_owned(), (top, f32::from(head.size.height), bottom));
+    });
 }
 
 /// The picked file's code in a review, with the agent's focus marked and
@@ -960,8 +1694,8 @@ fn review_code(
 ) -> AnyElement {
     let avail = width - 16.;
     let name = format!("{}/{}", diff.repo, file.path);
-    let scroll = documents.diff_view(&name);
-    let LineFacts { digits, .. } = scroll.facts(&file.lines, line_facts);
+    let scroll = documents.session_diff_view(&diff.session, &name);
+    let LineFacts { digits, widest } = scroll.facts(&file.lines, line_facts);
     // Frame 68's code starts 36 in (wider only for longer numbers), the
     // number ending 8 before it. The sign keeps its own cell, taken from
     // the number column, so the number column is 36 less a cell. Metrics
@@ -971,6 +1705,24 @@ fn review_code(
     let gutter_width = numbers - cell_width + 8.;
     let code_width = avail - numbers;
     let columns = ((code_width / cell_width).floor().max(4.)) as usize;
+    // Scroll (DS-42): the number and sign stay put, only the code slides,
+    // as far as the widest line needs.
+    let max_shift = if state.review.wrap {
+        0.
+    } else {
+        let start = code_start_of(gutter_width, cell_width, false, true);
+        (widest as f32 * cell_width + cell_width) - (avail - start)
+    };
+    let shift = scroll.shift(max_shift);
+    let sideways = {
+        let scroll = scroll.clone();
+        move |event: &ScrollEvent, _: &mut Window, cx: &mut App| {
+            let delta = event.delta.pixel_delta(px(line_height));
+            if delta.x != px(0.) && scroll.scroll_sideways(f32::from(delta.x), max_shift) {
+                cx.refresh_windows();
+            }
+        }
+    };
     let focus = state.pr_follower.focus.as_ref().filter(|focus| {
         focus.place.path == file.path
             && (focus.place.repo == diff.repo || focus.place.repo.rsplit('/').next() == Some(diff.repo.as_str()))
@@ -989,9 +1741,10 @@ fn review_code(
             line_height,
             view_width: avail,
             review: true,
+            old: false,
         },
         focus.and_then(|focus| focus.line().map(|line| (focus.place.side, line))),
-        0.,
+        shift,
     );
     // Frame 68 draws each run of code lines as its own block and the cards
     // between the blocks, 4 apart; a card keeps the panel's line height.
@@ -1032,6 +1785,7 @@ fn review_code(
                 reveal_focus(&scroll.handle, key, row, &children, cx);
             }
         })
+        .on_scroll_wheel(sideways)
         .id(SharedString::from(format!("change-code {name}")))
         .role(Role::Code)
         .aria_label(name)
@@ -1073,10 +1827,12 @@ fn review_repo_head(
         .children(number.map(|number| text(format!("#{number}")).text_color(rgb(look.accent))))
         .child(
             div()
+                .id(SharedString::from(format!("review-repo-branch-{}", diff.repo)))
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
+                .text_ellipsis()
                 .text_size(px(11.))
                 .text_color(rgb(look.tertiary))
                 .child(branch.to_owned()),
@@ -1102,7 +1858,7 @@ fn picked_base_name(state: &AppState, base: &DiffBase) -> String {
     }
 }
 
-fn nothing_against(look: Look, base: &DiffBase) -> impl IntoElement {
+fn nothing_against(ui: &Rc<Ui>, look: Look, base: &DiffBase) -> impl IntoElement {
     let (id, message) = match base {
         DiffBase::OriginMain => ("diff-no-changes-yet", "No changes yet"),
         DiffBase::UncommittedOnly => ("diff-none-against-base", "Nothing uncommitted"),
@@ -1116,7 +1872,22 @@ fn nothing_against(look: Look, base: &DiffBase) -> impl IntoElement {
         }
         DiffBase::Spec(_) => ("diff-none-against-base", "No changes against each repository's base"),
     };
-    secondary(look, message).p(px(12.)).id(id).test_support()
+    // DS-32: centred, with the one way out: pick another base.
+    col()
+        .flex_1()
+        .min_h_0()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .child(secondary(look, message).p(px(12.)).id(id).test_support())
+        .child(action(
+            ui,
+            "diff-compare-with",
+            "Compare with…",
+            AppAction::Review(ReviewAction::ToggleBaseMenu),
+            look,
+            false,
+        ))
 }
 
 /// The panel when the open session's first read failed: what failed, and
@@ -1243,6 +2014,59 @@ fn base_scrim(ui: &Rc<Ui>) -> impl IntoElement {
         .h(px(8000.))
         .occlude()
         .on_click(move |_, _, cx| ui.send(AppAction::Review(ReviewAction::CloseBaseMenu), cx))
+}
+
+/// The layer behind the Push & PR menu: a click on it closes the menu and
+/// reaches nothing else.
+fn push_scrim(ui: &Rc<Ui>) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id("changes-push-scrim")
+        .absolute()
+        .top(px(-4000.))
+        .left(px(-4000.))
+        .w(px(8000.))
+        .h(px(8000.))
+        .occlude()
+        .on_click(move |_, _, cx| ui.send(AppAction::Review(ReviewAction::ClosePushMenu), cx))
+        .test_support()
+}
+
+/// The Push & PR menu above the footer: one row per repository with its own
+/// push button, which pushes that repository only.
+fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&RepoDiff]) -> impl IntoElement {
+    col()
+        .id("changes-push-list")
+        .role(Role::ListBox)
+        .aria_label("Push & PR")
+        .absolute()
+        .bottom(px(28.))
+        .left(px(0.))
+        .w(px(280.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.5))
+        .children(diffs.iter().map(|diff| {
+            row()
+                .gap(px(8.))
+                .h(px(28.))
+                .px(px(8.))
+                .child(text(repo_label(&diff.repo).to_owned())
+                        .id(SharedString::from(format!("push-list-repo-{}", diff.repo)))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis())
+                .child(div().flex_1())
+                .child(push_control(ui, state, look, &diff.repo))
+        }))
+        .test_support()
 }
 
 /// One base in the menu: its label, a tick when it is the current base, and
@@ -1421,9 +2245,11 @@ fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
         .test_support()
 }
 
-/// A repository's header in the Diff panel (frames 84, 85): its name, the
-/// session's branch and its totals, then the base it is compared with,
-/// which opens its own base menu, and Push & PR.
+/// A repository's one row in the Diff panel (DS-5): the chevron that folds
+/// its files, its name, its clone's branch when that isn't the session's, the
+/// base it is compared with when that differs from the header's, and its
+/// totals at the right. Push & PR lives in the footer.
+#[allow(clippy::too_many_arguments)]
 fn repo_head(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -1432,41 +2258,102 @@ fn repo_head(
     index: usize,
     diff: &RepoDiff,
     branch: &str,
-) -> Div {
+    folded: bool,
+) -> AnyElement {
     let (added, removed) = diff.files.iter().fold((0_u64, 0_u64), |(a, r), file| {
         (a + u64::from(file.added), r + u64::from(file.removed))
     });
-    col()
+    let own = state
+        .workspace
+        .session(&diff.session)
+        .and_then(|session| {
+            session.clones.iter().find(|clone| {
+                clone.repo == diff.repo || clone.repo.rsplit('/').next() == Some(diff.repo.as_str())
+            })
+        })
+        .map(|clone| clone.branch.clone())
+        .filter(|own| !own.is_empty() && own != branch);
+    let toggle = ui.clone();
+    let repo = diff.repo.clone();
+    let label = if folded { "Expand" } else { "Collapse" };
+    // One line: when space runs out the branch gives way first, then the
+    // base chip, then the repo name; the totals never shrink.
+    row()
+        .id(SharedString::from(format!("repo-row-{index}")))
+        .gap(px(6.))
+        .h(px(26.))
+        .px(px(4.))
+        .pr(px(8.))
+        .min_w_0()
+        .whitespace_nowrap()
+        .child(
+            Button::new(SharedString::from(format!("repo-toggle-{index}")))
+                .ghost()
+                .small()
+                .w(px(20.))
+                .h(px(20.))
+                .flex_shrink_0()
+                .icon(icon(
+                    if folded { IconName::ChevronRight } else { IconName::ChevronDown },
+                    look.tertiary,
+                    12.,
+                ))
+                .accessibility_label(format!("{label} {}", diff.repo))
+                .on_click(move |_, _, cx| {
+                    toggle.send(
+                        AppAction::Review(ReviewAction::ToggleRepo { repo: repo.clone() }),
+                        cx,
+                    )
+                }),
+        )
+        .child(text(repo_label(&diff.repo).to_owned())
+                .id(SharedString::from(format!("repo-name-{index}")))
+                .font_weight(FontWeight::SEMIBOLD)
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis())
+        .children(own.map(|own| {
+            secondary(look, own.clone())
+                    .id(SharedString::from(format!("repo-branch-{index}")))
+                    .test_support()
+                    .text_color(rgb(look.tertiary))
+                    .min_w_0()
+                    .flex_shrink(8.)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+        }))
+        .child(repo_base(ui, state, look, documents, index, diff))
+        .child(div().flex_1())
         .child(
             row()
+                .id(SharedString::from(format!("repo-totals-{index}")))
                 .gap(px(6.))
-                .h(px(26.))
-                .px(px(4.))
-                .pr(px(8.))
-                .child(icon(IconName::ChevronDown, look.tertiary, 12.))
-                .child(icon(IconName::FolderGit2, look.secondary, 12.))
-                .child(text(diff.repo.clone()).font_weight(FontWeight::SEMIBOLD))
-                .child(div().flex_1())
-                .child(secondary(look, branch.to_owned()).text_color(rgb(look.tertiary)))
-                .child(text(format!("+{added}")).text_size(px(11.)).text_color(rgb(GREEN)))
-                .child(text(format!("−{removed}")).text_size(px(11.)).text_color(rgb(RED))),
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(
+                    text(format!("+{added}"))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_size(px(11.))
+                        .text_color(rgb(GREEN)),
+                )
+                .child(
+                    text(format!("−{removed}"))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_size(px(11.))
+                        .text_color(rgb(RED)),
+                )
+                .test_support(),
         )
-        .child(
-            row()
-                .gap(px(8.))
-                .h(px(26.))
-                .pl(px(40.))
-                // The head row's inset, so a pull request's number ends
-                // where the totals above it do.
-                .pr(px(8.))
-                .child(repo_base(ui, state, look, documents, index, diff))
-                .child(div().flex_1())
-                .child(push_control(ui, state, look, &diff.repo)),
-        )
+        .test_support()
+        .into_any_element()
 }
 
 /// A plan's line for one repository (RV-31 with RV-32): the plan's groups can
-/// mix repositories, so each repository's base and push sit once above them.
+/// mix repositories, so each repository's base sits once above them.
 fn plan_repo_line(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -1481,10 +2368,9 @@ fn plan_repo_line(
         .px(px(4.))
         .pr(px(4.))
         .child(icon(IconName::FolderGit2, look.secondary, 12.))
-        .child(text(diff.repo.clone()).font_weight(FontWeight::SEMIBOLD))
+        .child(text(repo_label(&diff.repo).to_owned()).font_weight(FontWeight::SEMIBOLD))
         .child(repo_base(ui, state, look, documents, index, diff))
         .child(div().flex_1())
-        .child(push_control(ui, state, look, &diff.repo))
 }
 
 /// A repository's "against X" chip and, while it is open, its menu.
@@ -1565,6 +2451,7 @@ fn repo_base(
                 .small()
                 .w(px(24.))
                 .h(px(20.))
+                .flex_shrink_0()
                 .icon(icon(IconName::ChevronsUpDown, tone, 12.))
                 .tooltip(format!("{}: against {} · change", diff.repo, diff.base))
                 .accessibility_label(spoken)
@@ -1574,7 +2461,9 @@ fn repo_base(
         }
         .into_any_element()
     };
-    div().relative().min_w_0().child(against).when_some(picker, |wrap, picker| {
+    // Not clipped: the menu below is a deferred child that must draw past it.
+    // The chip's text ellipsizes, and it gives way before the repo name.
+    div().relative().min_w_0().flex_shrink(4.).child(against).when_some(picker, |wrap, picker| {
         // Deferred, so the menu paints over the panel and takes the clicks
         // there; the scrim first, then the menu.
         wrap.child(deferred(repo_base_scrim(ui)))
@@ -1768,7 +2657,9 @@ fn repo_base_menu(
         .aria_label(format!("Compare {} with", picker.repo))
         .absolute()
         .top(px(24.))
-        .left(px(0.))
+        // RV-7, DS-50: anchored by its right edge to the chip, so a chip near
+        // the panel's edge never pushes the menu past it.
+        .right(px(0.))
         .w(px(240.))
         .p(px(6.))
         .gap(px(1.))
@@ -1886,6 +2777,24 @@ struct Metrics {
     /// where the design's does, 36 in, so the sign's cell is taken from the
     /// number column and the space after the number.
     review: bool,
+    /// Two number columns, old then new (DS-19): full screen only.
+    old: bool,
+}
+
+impl Metrics {
+    /// How far in from the row's left edge the code starts.
+    fn code_start(&self) -> f32 {
+        code_start_of(self.gutter_width, self.cell_width, self.old, self.review)
+    }
+}
+
+/// Where the code starts in a row (DS-19, DS-20): the number column, or two,
+/// then the sign's cell and, outside a review, one space after it. A
+/// review's rows keep frame 68's geometry, the sign in a cell of its own.
+fn code_start_of(gutter_width: f32, cell_width: f32, old: bool, review: bool) -> f32 {
+    let one = (gutter_width - 8.).max(0.);
+    let numbers = if old { one * 2. } else { one };
+    numbers + if review { cell_width } else { cell_width * 2. }
 }
 
 /// The side a line's comments are on and its number there: a removed line
@@ -1906,7 +2815,7 @@ fn span(lines: &[DiffLine]) -> Option<(Side, u32, u32)> {
     [Side::New, Side::Old].into_iter().find_map(|side| {
         lines
             .iter()
-            .filter(|line| line.kind != LineKind::Hunk)
+            .filter(|line| is_code(line))
             .filter_map(|line| match (side, line.kind) {
                 (Side::New, LineKind::Removed) | (Side::Old, LineKind::Added) => None,
                 (Side::New, _) => line.new,
@@ -1997,15 +2906,15 @@ fn at(line: &DiffLine, side: Side, number: u32) -> bool {
 fn under(lines: &[DiffLine], side: Side, last: u32) -> Option<usize> {
     lines
         .iter()
-        .position(|line| line.kind != LineKind::Hunk && at(line, side, last))
-        .or_else(|| lines.iter().rposition(|line| line.kind != LineKind::Hunk))
+        .position(|line| is_code(line) && at(line, side, last))
+        .or_else(|| lines.iter().rposition(is_code))
 }
 
 /// The index of the line numbered `last` on `side`, when it is shown.
 fn exactly_on(lines: &[DiffLine], side: Side, last: u32) -> Option<usize> {
     lines
         .iter()
-        .position(|line| line.kind != LineKind::Hunk && at(line, side, last))
+        .position(|line| is_code(line) && at(line, side, last))
 }
 
 /// Everything a click on a line number needs. The file's lines are looked up
@@ -2035,7 +2944,7 @@ impl Target {
     fn anchor(&self, lines: &[DiffLine], side: Side, first: u32, last: u32) -> Anchor {
         let quoted = lines
             .iter()
-            .filter(|line| line.kind != LineKind::Hunk)
+            .filter(|line| is_code(line))
             .filter(|line| (first..=last).any(|n| at(line, side, n)))
             .map(|line| line.text.clone())
             .collect();
@@ -2238,7 +3147,7 @@ impl CodeRows {
         let focus_index = focus.and_then(|(side, n)| {
             file.lines
                 .iter()
-                .position(|line| line.kind != LineKind::Hunk && at(line, side, n))
+                .position(|line| is_code(line) && at(line, side, n))
         });
         Self {
             ui: ui.clone(),
@@ -2273,9 +3182,21 @@ impl CodeRows {
         }
     }
 
-    /// A card kept inside what can be seen of the code view.
+    /// A card kept inside what can be seen of the code view. Outside a
+    /// review it starts at the code column, not under the numbers (DS-15);
+    /// the card's own 10 pt margin is part of that inset. A review keeps
+    /// frame 68's cards.
     fn fit(&self, card: AnyElement) -> AnyElement {
-        div().max_w(px(self.metrics.view_width)).child(card).into_any_element()
+        let inset = if self.metrics.review {
+            0.
+        } else {
+            (self.metrics.code_start() - 10.).max(0.)
+        };
+        div()
+            .max_w(px(self.metrics.view_width))
+            .pl(px(inset))
+            .child(card)
+            .into_any_element()
     }
 
     /// The line at `index` of `lines` (a code line or a hunk header) and the
@@ -2288,21 +3209,43 @@ impl CodeRows {
             cell_width,
             line_height,
             review,
+            old,
             ..
         } = self.metrics;
         let Some(line) = lines.get(index) else {
             return (div().into_any_element(), Vec::new());
         };
-        let (sign, bg) = match line.kind {
-            LineKind::Added => ("+", Some(look.add)),
-            LineKind::Removed => ("−", Some(look.del)),
-            _ => (" ", None),
+        let sign = match line.kind {
+            LineKind::Added => "+",
+            LineKind::Removed => "−",
+            _ => " ",
         };
+        let bg = tint(look, line.kind);
         if line.kind == LineKind::Hunk {
-            let header = text(line.text.clone())
-                .px(px(10.))
-                .whitespace_nowrap()
-                .text_color(rgb(look.term_dim));
+            // DS-22: a 24 pt band in the panel's colour with only the
+            // section text, or a thin line when there is none. The `@@`
+            // numbers are never drawn: the gutter has them.
+            let section = hunk_section(&line.text);
+            let header = if section.is_empty() {
+                div().w_full().h(px(1.)).flex_shrink_0().bg(rgb(look.line))
+            } else {
+                row()
+                    .w_full()
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .items_center()
+                    .px(px(10.))
+                    .overflow_hidden()
+                    .bg(rgb(look.panel))
+                    .text_color(rgb(look.term_dim))
+                    .child(
+                        text(section.to_owned())
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                    )
+            };
             // PR-19: a review's hunk header offers Ask about the hunk.
             let ask = self
                 .target
@@ -2332,9 +3275,22 @@ impl CodeRows {
                     .child(ask)
                     .test_support()
                     .into_any_element(),
-                None => header.into_any_element(),
+                None => header
+                    .id(SharedString::from(format!("change-hunk-{index}")))
+                    .test_support()
+                    .into_any_element(),
             };
             return (header, Vec::new());
+        }
+        if line.kind == LineKind::Note {
+            // DS-23: dim, no number, no click target; it starts at the code.
+            let note = text(line.text.clone())
+                .id(SharedString::from(format!("change-note-{index}")))
+                .test_support()
+                .pl(px(self.metrics.code_start()))
+                .whitespace_nowrap()
+                .text_color(rgb(look.term_dim));
+            return (note.into_any_element(), Vec::new());
         }
         let (side, number) = side_of(line);
         let focused = self.focus_index == Some(index);
@@ -2348,42 +3304,88 @@ impl CodeRows {
         } else {
             vec![code_wrap::unwrapped(&line.text)]
         };
-        let mut gutter = text(number.map_or_else(String::new, |n| n.to_string()))
-            .w(px((gutter_width - 8.).max(0.)))
-            .h(px(line_height))
-            .flex()
-            .justify_end()
-            .pr(px(if review { (8. - cell_width).max(1.) } else { 4. }))
-            .text_color(rgb(look.term_dim))
-            .flex_shrink_0()
-            .id(SharedString::from(format!("change-gutter-{index}")))
-            .when(lit || focused, |gutter| gutter.border_l_2().border_color(rgb(look.accent)))
-            .when(focused, |gutter| {
-                gutter.font_weight(FontWeight::BOLD).text_color(rgb(look.accent))
-            });
-        if let (Some(target), Some(n)) = (self.target.clone(), number) {
-            gutter = gutter
-                .role(Role::Button)
-                .aria_label(format!("Comment on line {n}"))
-                .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    target.click(side, n, event.modifiers.shift, cx);
+        // DS-19: the number that is the comment target keeps `change-gutter-<n>`;
+        // the other column of a full-screen row gets `-old-` or `-new-`.
+        let number_width = (gutter_width - 8.).max(0.);
+        let column = |shown: Option<u32>, id: String, first: bool| -> AnyElement {
+            let mut cell = text(shown.map_or_else(String::new, |n| n.to_string()))
+                .w(px(number_width))
+                .h(px(line_height))
+                .flex()
+                .justify_end()
+                .pr(px(if review { (8. - cell_width).max(1.) } else { 4. }))
+                .text_color(rgb(look.term_dim))
+                .flex_shrink_0()
+                .id(SharedString::from(id))
+                .when(first && (lit || focused), |gutter| {
+                    gutter.border_l_2().border_color(rgb(look.accent))
+                })
+                .when(focused, |gutter| {
+                    gutter.font_weight(FontWeight::BOLD).text_color(rgb(look.accent))
                 });
-        }
+            if let (Some(target), Some(n), Some(_)) = (self.target.clone(), number, shown) {
+                cell = cell
+                    .role(Role::Button)
+                    .aria_label(format!("Comment on line {n}"))
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        target.click(side, n, event.modifiers.shift, cx);
+                    });
+            }
+            cell.test_support().into_any_element()
+        };
+        let target_id = format!("change-gutter-{index}");
+        let gutters: Vec<AnyElement> = if old {
+            let (old_id, new_id) = if side == Side::Old {
+                (target_id, format!("change-gutter-new-{index}"))
+            } else {
+                (format!("change-gutter-old-{index}"), target_id)
+            };
+            vec![column(line.old, old_id, true), column(line.new, new_id, false)]
+        } else {
+            vec![column(number, target_id, true)]
+        };
+        // DS-21: the span of this line that differs from its partner.
+        let mark = paired(lines, index)
+            .and_then(|other| {
+                let other = &lines.get(other)?.text;
+                let removed = line.kind == LineKind::Removed;
+                let (before, after) = if removed { (&line.text, other) } else { (other, &line.text) };
+                let (before_span, after_span) = changed_span(before, after)?;
+                Some(if removed {
+                    (before_span, crate::theme::RED)
+                } else {
+                    (after_span, crate::theme::GREEN)
+                })
+            })
+            .filter(|(span, _)| !span.is_empty());
         let code = col().children(fragments.into_iter().enumerate().map(|(part, fragment)| {
-            div()
+            let marked = mark.as_ref().and_then(|(span, color)| {
+                Some((display_range(&line.text, &fragment, self.wrap, span)?, *color))
+            });
+            let cell = div()
                 .id(SharedString::from(format!("change-code-{index}-{part}")))
                 .h(px(line_height))
                 .whitespace_nowrap()
-                .text_color(rgb(look.term_text))
-                .child(fragment.display)
-                .test_text(line.text[fragment.source].to_owned())
-                .test_support()
+                .text_color(rgb(look.term_text));
+            let cell = match marked {
+                Some((range, color)) => {
+                    let style = HighlightStyle {
+                        background_color: Some(rgb(blend(look.term, color, 0.28)).into()),
+                        ..Default::default()
+                    };
+                    cell.child(
+                        StyledText::new(fragment.display.clone()).with_highlights([(range, style)]),
+                    )
+                }
+                None => cell.child(fragment.display.clone()),
+            };
+            cell.test_text(line.text[fragment.source].to_owned()).test_support()
         }));
         // On Scroll the number and sign stay put and only the code column
         // moves sideways (DIFFVIEW-design › Long lines and the way back).
-        let code = if self.wrap || review {
+        let code = if self.wrap {
             code.flex_1().min_w_0()
         } else {
             col()
@@ -2392,6 +3394,8 @@ impl CodeRows {
                 .overflow_hidden()
                 .child(code.relative().left(px(-self.shift)))
         };
+        // DS-20: numbers, a sign cell, one space, then the code; added and
+        // removed rows share it, tinted full bleed with no borders.
         let line_row = row()
             .id(SharedString::from(format!("change-line-{index}")))
             .items_start()
@@ -2399,10 +3403,10 @@ impl CodeRows {
             .min_h(px(line_height))
             .when_some(bg, |row, bg| row.bg(rgb(bg)))
             .when(lit, |row| row.bg(rgb(self.lit_color)))
-            .child(gutter.test_support())
+            .children(gutters)
             .child(
                 text(sign)
-                    .w(px(cell_width))
+                    .w(px(if review { cell_width } else { cell_width * 2. }))
                     .h(px(line_height))
                     .flex_shrink_0()
                     // Frame 68 draws the sign in the code's first
@@ -2460,6 +3464,165 @@ impl CodeRows {
     }
 }
 
+/// `over` laid on `under` at `alpha`, as one solid colour.
+fn blend(under: u32, over: u32, alpha: f32) -> u32 {
+    let channel = |shift: u32| {
+        let below = ((under >> shift) & 0xff) as f32;
+        let above = ((over >> shift) & 0xff) as f32;
+        ((below + (above - below) * alpha).round().clamp(0., 255.)) as u32
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
+/// The tint of an added or removed row (DS-20): the status green or red at
+/// about 12% in light and 16% in dark, laid on the code's colour.
+fn tint(look: Look, kind: LineKind) -> Option<u32> {
+    let base = match kind {
+        LineKind::Added => crate::theme::GREEN,
+        LineKind::Removed => crate::theme::RED,
+        _ => return None,
+    };
+    let dark = ((look.term >> 8) & 0xff) < 0x80;
+    Some(blend(look.term, base, if dark { 0.16 } else { 0.12 }))
+}
+
+/// The section text of a hunk header, after its second `@@` ("impl Client {"),
+/// or nothing when it has none.
+fn hunk_section(header: &str) -> &str {
+    header
+        .strip_prefix("@@")
+        .and_then(|rest| rest.split_once("@@"))
+        .map_or("", |(_, section)| section.trim())
+}
+
+/// The lines around `index` that are of its kind: the run it is in.
+fn run_of(lines: &[DiffLine], index: usize) -> Option<Range<usize>> {
+    let kind = lines.get(index)?.kind;
+    let start = lines
+        .get(..index)?
+        .iter()
+        .rposition(|line| line.kind != kind)
+        .map_or(0, |at| at + 1);
+    let end = lines
+        .get(index..)?
+        .iter()
+        .position(|line| line.kind != kind)
+        .map_or(lines.len(), |at| index + at);
+    Some(start..end)
+}
+
+/// The line `index` is paired with for the word highlight (DS-21): where a
+/// run of k removed lines is followed directly by k added lines, the n-th of
+/// one is the partner of the n-th of the other.
+fn paired(lines: &[DiffLine], index: usize) -> Option<usize> {
+    let kind = lines.get(index)?.kind;
+    let this = run_of(lines, index)?;
+    let (removed, added) = match kind {
+        LineKind::Removed => {
+            if lines.get(this.end)?.kind != LineKind::Added {
+                return None;
+            }
+            let added = run_of(lines, this.end)?;
+            (this.clone(), added)
+        }
+        LineKind::Added => {
+            let before = this.start.checked_sub(1)?;
+            if lines.get(before)?.kind != LineKind::Removed {
+                return None;
+            }
+            (run_of(lines, before)?, this.clone())
+        }
+        _ => return None,
+    };
+    if removed.len() != added.len() {
+        return None;
+    }
+    let offset = index - this.start;
+    Some(if kind == LineKind::Removed { added.start + offset } else { removed.start + offset })
+}
+
+/// The middle of two paired lines that differs (DS-21), as byte ranges of
+/// `old` and `new` on char boundaries: what is left once their common start
+/// and common end are taken off. `None` when the lines are equal or when the
+/// common parts are not more than half of the longer line, where the whole
+/// line is simply changed.
+fn changed_span(old: &str, new: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let (mut prefix_bytes, mut prefix_chars) = (0, 0);
+    for (a, b) in old.chars().zip(new.chars()) {
+        if a != b {
+            break;
+        }
+        prefix_bytes += a.len_utf8();
+        prefix_chars += 1;
+    }
+    let (old_rest, new_rest) = (old.get(prefix_bytes..)?, new.get(prefix_bytes..)?);
+    let (mut suffix_bytes, mut suffix_chars) = (0, 0);
+    for (a, b) in old_rest.chars().rev().zip(new_rest.chars().rev()) {
+        if a != b {
+            break;
+        }
+        suffix_bytes += a.len_utf8();
+        suffix_chars += 1;
+    }
+    let old_middle = prefix_bytes..old.len() - suffix_bytes;
+    let new_middle = prefix_bytes..new.len() - suffix_bytes;
+    if old_middle.is_empty() && new_middle.is_empty() {
+        return None;
+    }
+    let longer = old.chars().count().max(new.chars().count());
+    if (prefix_chars + suffix_chars) * 2 <= longer {
+        return None;
+    }
+    Some((old_middle, new_middle))
+}
+
+/// The bytes `text` takes once drawn from `column`, and the column after it:
+/// a tab fills to the next four-column stop, as `code_wrap` draws it.
+fn drawn(text: &str, column: usize) -> (usize, usize) {
+    let (mut bytes, mut column) = (0, column);
+    for grapheme in text.graphemes(true) {
+        if grapheme == "\t" {
+            let count = 4 - column % 4;
+            bytes += count;
+            column += count;
+        } else {
+            bytes += grapheme.len();
+            column += grapheme.width();
+        }
+    }
+    (bytes, column)
+}
+
+/// Where `marked`, a span of the line `text` in source bytes, lies in the
+/// text `fragment` draws: tabs are spaces there, and a wrapped line's first
+/// row draws its indentation as spaces of its own and each later row an
+/// indent. `None` when the fragment shows none of the span.
+fn display_range(
+    text: &str,
+    fragment: &code_wrap::Fragment,
+    wrapped: bool,
+    marked: &Range<usize>,
+) -> Option<Range<usize>> {
+    let source = &fragment.source;
+    // From here on the fragment draws the source itself.
+    let body = if wrapped && source.start == 0 {
+        text.len() - text.trim_start_matches([' ', '\t']).len()
+    } else {
+        source.start
+    };
+    let from = marked.start.max(body);
+    let to = marked.end.min(source.end);
+    if from >= to {
+        return None;
+    }
+    let (_, column) = drawn(text.get(..body)?, 0);
+    let (body_len, _) = drawn(text.get(body..source.end)?, column);
+    let indent = fragment.display.len().checked_sub(body_len)?;
+    let (lead, column) = drawn(text.get(body..from)?, column);
+    let (length, _) = drawn(text.get(from..to)?, column);
+    Some(indent + lead..indent + lead + length)
+}
+
 /// The digits of a file's widest line number and its widest line in cells,
 /// as drawn on Scroll (tabs to four-column stops).
 fn line_facts(lines: &[DiffLine]) -> LineFacts {
@@ -2473,9 +3636,126 @@ fn line_facts(lines: &[DiffLine]) -> LineFacts {
         .len();
     let widest = lines
         .iter()
-        .filter(|l| l.kind != LineKind::Hunk)
+        .filter(|l| is_code(l))
         .map(|l| code_wrap::unwrapped(&l.text).display.width())
         .max()
         .unwrap_or(0);
     LineFacts { digits, widest }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn line(kind: LineKind, text: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            old: None,
+            new: None,
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn equal_lines_have_no_changed_span() {
+        assert_eq!(changed_span("let x = 1;", "let x = 1;"), None);
+    }
+
+    #[test]
+    fn one_changed_word_is_the_span_on_both_lines() {
+        let old = "let total = price + tax;";
+        let new = "let total = price + fee;";
+        let (before, after) = changed_span(old, new).expect("a span");
+        assert_eq!(&old[before], "tax");
+        assert_eq!(&new[after], "fee");
+    }
+
+    #[test]
+    fn an_insertion_leaves_an_empty_span_on_the_old_line() {
+        let old = "foo(a)";
+        let new = "foo(a, b)";
+        let (before, after) = changed_span(old, new).expect("a span");
+        assert!(before.is_empty());
+        assert_eq!(&new[after], ", b");
+    }
+
+    #[test]
+    fn lines_mostly_different_have_no_changed_span() {
+        assert_eq!(changed_span("abcdefgh", "abxyzwvu"), None);
+        assert_eq!(changed_span("fn a() {}", "struct B;"), None);
+    }
+
+    #[test]
+    fn multibyte_spans_stay_on_char_boundaries() {
+        let old = "naïve café ☕ ok";
+        let new = "naïve café ☃ ok";
+        let (before, after) = changed_span(old, new).expect("a span");
+        assert!(old.is_char_boundary(before.start) && old.is_char_boundary(before.end));
+        assert!(new.is_char_boundary(after.start) && new.is_char_boundary(after.end));
+        assert_eq!(&old[before], "☕");
+        assert_eq!(&new[after], "☃");
+    }
+
+    #[test]
+    fn a_run_of_removed_lines_pairs_with_as_many_added_lines() {
+        let lines = [
+            line(LineKind::Context, "a"),
+            line(LineKind::Removed, "one"),
+            line(LineKind::Removed, "two"),
+            line(LineKind::Added, "uno"),
+            line(LineKind::Added, "dos"),
+            line(LineKind::Context, "b"),
+        ];
+        assert_eq!(paired(&lines, 1), Some(3));
+        assert_eq!(paired(&lines, 2), Some(4));
+        assert_eq!(paired(&lines, 3), Some(1));
+        assert_eq!(paired(&lines, 4), Some(2));
+        assert_eq!(paired(&lines, 0), None);
+        assert_eq!(paired(&lines, 5), None);
+    }
+
+    #[test]
+    fn runs_of_different_lengths_or_alone_have_no_partner() {
+        let lines = [
+            line(LineKind::Removed, "one"),
+            line(LineKind::Removed, "two"),
+            line(LineKind::Added, "uno"),
+            line(LineKind::Context, "b"),
+            line(LineKind::Added, "tres"),
+        ];
+        for index in 0..lines.len() {
+            assert_eq!(paired(&lines, index), None, "line {index}");
+        }
+    }
+
+    #[test]
+    fn a_hunk_shows_only_its_section_text() {
+        assert_eq!(hunk_section("@@ -40,7 +40,12 @@ impl Client {"), "impl Client {");
+        assert_eq!(hunk_section("@@ -1 +1 @@"), "");
+    }
+
+    #[test]
+    fn a_marked_span_is_found_in_the_text_a_row_draws() {
+        // A tab draws as spaces up to the next stop of four columns.
+        let text = "\tlet x = 1;";
+        let fragment = code_wrap::unwrapped(text);
+        let marked = 5..6;
+        let shown = display_range(text, &fragment, false, &marked).expect("a range");
+        assert_eq!(&fragment.display[shown], "x");
+    }
+
+    #[test]
+    fn a_marked_span_is_found_on_the_wrapped_row_that_holds_it() {
+        let text = "    let total = price + tax;";
+        let marked = text.find("tax").map(|at| at..at + 3).expect("tax");
+        let found: Vec<String> = code_wrap::wrapped(text, 12)
+            .iter()
+            .filter_map(|fragment| {
+                let shown = display_range(text, fragment, true, &marked)?;
+                Some(fragment.display[shown].to_owned())
+            })
+            .collect();
+        assert_eq!(found.concat(), "tax");
+    }
 }

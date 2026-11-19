@@ -128,6 +128,7 @@ async fn a_restores_holder_is_listed_as_the_sessions_and_goes_when_the_resume_fa
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .expect("the archive is taken")

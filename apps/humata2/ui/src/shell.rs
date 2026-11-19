@@ -644,6 +644,14 @@ impl Render for Shell {
                     this.send(AppAction::ToggleFullScreen(FullScreen::Terminal), cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &keys::PanelFullScreen, _, cx| {
+                if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
+                    let run = humata2_palette::PaletteAction::Delegate(
+                        humata2_palette::Delegate::Run(humata2_palette::Command::PanelFullScreen),
+                    );
+                    this.send(AppAction::Palette(run), cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &keys::ForkSession, _, cx| {
                 // The palette's Fork, which a Desk session doesn't have.
                 if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
@@ -655,6 +663,50 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &keys::TogglePanel, _, cx| {
                 this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), cx);
+            }))
+            // D804: step a stack's layers; the bindings only fire in the
+            // Diff panel while a stack shows.
+            .on_action(cx.listener(|this, _: &keys::NextLayer, _, cx| {
+                this.send(AppAction::Review(humata2_review::ReviewAction::NextLayer), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::PrevLayer, _, cx| {
+                this.send(AppAction::Review(humata2_review::ReviewAction::PrevLayer), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::NextFile, _, cx| {
+                // Runs only while the open session's panel shows the Diff.
+                let run = humata2_palette::PaletteAction::Delegate(
+                    humata2_palette::Delegate::Run(humata2_palette::Command::NextFile),
+                );
+                this.send(AppAction::Palette(run), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::PrevFile, _, cx| {
+                // Runs only while the open session's panel shows the Diff.
+                let run = humata2_palette::PaletteAction::Delegate(
+                    humata2_palette::Delegate::Run(humata2_palette::Command::PrevFile),
+                );
+                this.send(AppAction::Palette(run), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::NextChange, _, cx| {
+                // Runs only while the open session's panel shows the Diff.
+                let run = humata2_palette::PaletteAction::Delegate(
+                    humata2_palette::Delegate::Run(humata2_palette::Command::NextChange),
+                );
+                this.send(AppAction::Palette(run), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::PrevChange, _, cx| {
+                // Runs only while the open session's panel shows the Diff.
+                let run = humata2_palette::PaletteAction::Delegate(
+                    humata2_palette::Delegate::Run(humata2_palette::Command::PrevChange),
+                );
+                this.send(AppAction::Palette(run), cx);
+            }))
+            // DS-40: ⌥Z, bound only while the diff has focus, flips the same
+            // preference as Settings › Long lines.
+            .on_action(cx.listener(|this, _: &keys::ToggleDiffWrap, _, cx| {
+                this.send(
+                    AppAction::Settings(humata2_settings::SettingsAction::ToggleWrap),
+                    cx,
+                );
             }))
             .on_action(cx.listener(|this, _: &keys::MoveSession, _, cx| {
                 // ⌥⌘M asks for a machine only when a session is open.

@@ -435,6 +435,67 @@ async fn what_the_agent_changed_in_its_clone_is_in_its_diff() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_mode_only_change_has_both_modes_and_no_lines() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = Host::start().await;
+    let daemon = host.connect().await;
+    let session = host.session(&daemon, "Fix the ledger").await;
+    let clone = clone_of(&host, "ledger").await;
+    std::fs::set_permissions(
+        clone.join("README.md"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("make README.md executable");
+
+    let diff = diff_of(&daemon, &session, "owner/ledger")
+        .await
+        .expect("the session's diff of owner/ledger is loaded");
+    let readme = diff
+        .files
+        .iter()
+        .find(|file| file.path == "README.md")
+        .expect("README.md's mode changed");
+    assert_eq!((readme.old_mode, readme.new_mode), (100_644, 100_755));
+    assert!(
+        readme
+            .lines
+            .iter()
+            .all(|line| !matches!(line.kind, LineKind::Context | LineKind::Added | LineKind::Removed)),
+        "a mode-only change has no code lines: {:?}",
+        readme.lines
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_that_loses_its_final_newline_has_a_note_after_its_last_line() {
+    let host = Host::start().await;
+    let daemon = host.connect().await;
+    let session = host.session(&daemon, "Fix the ledger").await;
+    let clone = clone_of(&host, "ledger").await;
+    std::fs::write(clone.join("README.md"), "owner/ledger\nsecond line").expect("edit");
+
+    let diff = diff_of(&daemon, &session, "owner/ledger")
+        .await
+        .expect("the session's diff of owner/ledger is loaded");
+    let readme = diff
+        .files
+        .iter()
+        .find(|file| file.path == "README.md")
+        .expect("README.md changed");
+    let at = readme
+        .lines
+        .iter()
+        .position(|line| line.kind == LineKind::Note)
+        .expect("the file's lines carry a note about the missing newline");
+    let last = &readme.lines[at - 1];
+    assert_eq!((last.kind, last.new), (LineKind::Added, Some(2)));
+    let note = &readme.lines[at];
+    assert_eq!((note.old, note.new), (None, None));
+    assert_eq!(readme.added, 1, "the note is not counted as a line");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_commit_the_agent_made_on_its_branch_stays_in_the_diff() {
     let host = Host::start().await;
     let daemon = host.connect().await;

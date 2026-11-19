@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tca::{BoxFuture, Clock};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::daemon::{
     AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, Operation, PastTurn, Reply,
@@ -52,6 +52,8 @@ pub use views::FakeViews;
 #[derive(Clone)]
 pub struct FakeDaemon {
     shared: Arc<Mutex<Inner>>,
+    /// The operations held, each with the latch its replies wait on.
+    holds: Arc<Mutex<HashMap<Operation, watch::Sender<bool>>>>,
     clock: Arc<dyn Clock>,
     latency: Duration,
     step: Duration,
@@ -88,6 +90,8 @@ struct Inner {
     viewing: Option<SessionId>,
     links: Vec<terminal_link::LinkTap>,
     diffs: HashMap<SessionId, Vec<RepoDiff>>,
+    /// Repositories whose read fails, with the message (DS-35).
+    failing_repos: HashMap<(SessionId, String), String>,
     reviewed: HashMap<SessionId, Vec<RepoDiff>>,
     pushes: Vec<(SessionId, PushChoice)>,
     pull_requests: HashMap<(SessionId, String), u32>,
@@ -147,6 +151,7 @@ impl FakeDaemon {
                 viewing: None,
                 links: Vec::new(),
                 diffs: HashMap::new(),
+                failing_repos: HashMap::new(),
                 reviewed: HashMap::new(),
                 pushes: Vec::new(),
                 pull_requests: HashMap::new(),
@@ -168,6 +173,7 @@ impl FakeDaemon {
                 repos: repos::State::default(),
                 running: Vec::new(),
             })),
+            holds: Arc::new(Mutex::new(HashMap::new())),
             clock,
             latency: Duration::ZERO,
             step: Duration::ZERO,
@@ -192,6 +198,44 @@ impl FakeDaemon {
     pub fn fail_next(&self, operation: Operation, message: impl Into<String>) {
         let error = DaemonError::Scripted { operation, message: message.into() };
         self.inner().failures.insert(operation, error);
+    }
+
+    /// Holds every reply of `operation` until [`Self::release`], for tests
+    /// that need a read still in flight while they look. Holding twice is the
+    /// same as once.
+    pub fn hold(&self, operation: Operation) {
+        let mut holds = match self.holds.lock() {
+            Ok(holds) => holds,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        holds.entry(operation).or_insert_with(|| watch::channel(false).0).send_replace(false);
+    }
+
+    /// Lets every reply of `operation` go, those already waiting and those
+    /// that come later. Does nothing when it isn't held.
+    pub fn release(&self, operation: Operation) {
+        let mut holds = match self.holds.lock() {
+            Ok(holds) => holds,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(latch) = holds.remove(&operation) {
+            latch.send_replace(true);
+        }
+    }
+
+    /// Makes `repo`'s read in `session` fail with `message` until
+    /// [`Self::heal_repo`] (DS-35). The daemon reads every repository at
+    /// once, so every `diffs` call for the session fails meanwhile, while
+    /// `repo_diff` fails for this repository only.
+    pub fn fail_repo(&self, session: &SessionId, repo: &str, message: impl Into<String>) {
+        self.inner()
+            .failing_repos
+            .insert((session.clone(), repo.to_owned()), message.into());
+    }
+
+    /// Ends [`Self::fail_repo`] for `repo` in `session`.
+    pub fn heal_repo(&self, session: &SessionId, repo: &str) {
+        self.inner().failing_repos.remove(&(session.clone(), repo.to_owned()));
     }
 
     /// Makes the next call of `operation` fail with exactly `error`.
@@ -374,8 +418,19 @@ impl FakeDaemon {
     ) -> Reply<T> {
         let shared = self.shared.clone();
         let wait = self.wait(self.latency);
+        let holds = self.holds.clone();
         Box::pin(async move {
             wait.await;
+            if let Some(operation) = operation {
+                let latch = match holds.lock() {
+                    Ok(holds) => holds.get(&operation).map(watch::Sender::subscribe),
+                    Err(poisoned) => poisoned.into_inner().get(&operation).map(watch::Sender::subscribe),
+                };
+                if let Some(mut latch) = latch {
+                    // A dropped latch is a release too.
+                    let _ = latch.wait_for(|released| *released).await;
+                }
+            }
             let mut inner = match shared.lock() {
                 Ok(inner) => inner,
                 Err(poisoned) => poisoned.into_inner(),
@@ -811,6 +866,10 @@ impl Daemon for FakeDaemon {
 
     fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
         review::diffs(self, session, base)
+    }
+
+    fn repo_diff(&self, session: &SessionId, base: &DiffBase, repo: &str) -> Reply<Vec<RepoDiff>> {
+        review::repo_diff(self, session, base, repo)
     }
 
     fn bases(&self, session: &SessionId, repo: &str) -> Reply<RepoBases> {

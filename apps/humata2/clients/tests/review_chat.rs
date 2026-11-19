@@ -26,6 +26,8 @@ fn session() -> SessionId {
 
 fn refund_view() -> ReviewView {
     ReviewView {
+        stack: None,
+        layer: None,
         targets: vec![RepoDiffSpec {
             repo: "acme/api".to_owned(),
             base: RepoBase::Branch("main".to_owned()),
@@ -61,6 +63,8 @@ fn focus_on(path: &str, first: u32) -> FocusRequest {
             side: Side::New,
             label: "rounds here".to_owned(),
         }],
+        layer: None,
+        whole_stack: false,
     }
 }
 
@@ -160,4 +164,18 @@ fn watching_from_a_sequence_number_sends_only_the_later_changes() {
     let heard: Vec<ReviewChange> = std::iter::from_fn(|| feed.try_recv().ok()).collect();
     assert_eq!(heard.len(), 1);
     assert!(heard[0].seq > first.seq);
+}
+
+#[test]
+fn the_agent_moving_to_a_layer_shows_in_the_view_and_the_feed() {
+    let fake = FakeReviewChat::new();
+    let mut feed = block_on(fake.watch_changes(&session(), 0)).expect("followed");
+    let change = fake.move_to_layer(&session(), Some("Schema".to_owned()));
+    assert_eq!(change.change, Some(ReviewChangeKind::Layer(Some("Schema".to_owned()))));
+    assert_eq!(feed.try_recv().expect("the feed carries the move"), change);
+    let context = block_on(fake.context(&session())).expect("context");
+    assert_eq!(context.view.layer, Some("Schema".to_owned()));
+    fake.move_to_layer(&session(), None);
+    let context = block_on(fake.context(&session())).expect("context");
+    assert_eq!(context.view.layer, None);
 }

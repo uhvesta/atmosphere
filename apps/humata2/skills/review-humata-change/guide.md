@@ -100,13 +100,15 @@ For each finding, call the MCP tool `review_note`:
   layer of a stack, name the layer in the text ("Layer `codec`: ...") and
   check the lines still read the same at the top; if a later layer rewrote
   them, put the note on the file and quote the layer's lines in the text.
+  A note on a lower layer's lines carries `layer` (the layer's title) in
+  `review_note`; leave it out for Whole stack.
 - Notes are for the user and are never posted. `review_note_edit` and
   `review_note_drop` change or remove one of yours.
 
 If `review_note` is refused because this session has no review to put
 notes in, deliver the same findings as the `notes` of one `review_prepare`
-call, with the `spec` from step 1 and the stack's `order` and `groups`
-(`shared/stacks.md`, section 4). The user gets an offer to open the change
+call, with the `spec` from step 1, or for a stack its `from_stack` or
+`stack` (`shared/stacks.md`, section 4), each note with its `layer`. The user gets an offer to open the change
 with your notes on it.
 
 If the tool says the user turned Notes off, don't work around it: give the
@@ -179,6 +181,3 @@ Don't pad it with praise or a summary of what the code does.
 - `review_context`, `review_note`, `review_draft`, `review_summary_draft`
   and `review_prepare` are MCP tools; the CLI has no command for them.
   `humata review drafts <session> --json` lists the drafts.
-- The review view can't show a stack's layers (`shared/stacks.md`, "Not
-  built"), so a note can't be pinned to a layer: it sits on the file as
-  checked out and names its layer in its text.

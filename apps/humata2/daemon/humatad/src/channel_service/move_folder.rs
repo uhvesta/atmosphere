@@ -163,7 +163,7 @@ fn rewrite_git(placement: &Placement, known: &[PathBuf], clone: &Path) -> Result
 /// The folders inside the channel's new folder (its clones, its sessions
 /// and their clones, its Desk sessions), each as it was under the old
 /// path: the ones whose conversation keys the text of a file can name.
-fn known_folders(placement: &Placement) -> Result<Vec<PathBuf>, MoveError> {
+pub(super) fn known_folders(placement: &Placement) -> Result<Vec<PathBuf>, MoveError> {
     let channel = &placement.new_path;
     let mut folders = Vec::new();
     for group in ["main", "sessions", "desk"] {
@@ -204,6 +204,36 @@ pub(crate) fn rewrite_folders(placement: &Placement) -> Result<(), MoveError> {
     }
     for desk in folders_in(&channel.join("desk"))? {
         rewrite_tree(placement, &known, &desk, false, 0)?;
+    }
+    Ok(())
+}
+
+/// Makes what a session's own folder names of its old place name the new,
+/// after the folder moved from `from` to `to` (a deleted channel's session
+/// put on the Desk, D801 H): the notes Humata keeps in its `.humata` and
+/// its clones' git files. The people's own working files are left as they
+/// are. Runs again harmlessly.
+pub(crate) fn rewrite_session_folder(from: &Path, to: &Path) -> Result<(), MoveError> {
+    if from == to {
+        return Ok(());
+    }
+    let placement = Placement {
+        name: String::new(),
+        folder: String::new(),
+        old_path: from.to_owned(),
+        new_path: to.to_owned(),
+        now_unix_ms: 0,
+    };
+    let mut clones = folders_in(to)?;
+    clones.retain(|clone| !clone.file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b".")));
+    let known: Vec<PathBuf> = clones
+        .iter()
+        .filter_map(|clone| clone.strip_prefix(to).ok())
+        .map(|rest| from.join(rest))
+        .collect();
+    rewrite_tree(&placement, &known, &to.join(".humata"), false, 0)?;
+    for clone in &clones {
+        rewrite_git(&placement, &known, clone)?;
     }
     Ok(())
 }

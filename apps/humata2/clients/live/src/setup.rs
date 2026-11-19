@@ -4,6 +4,8 @@
 use humata2_clients::model::{ChannelSetup, MachineId, SetupId, SetupState, SetupStep};
 use humata2_grpc::humata::v1 as pb;
 
+use crate::map::percent;
+
 /// The prefix of a step that clones one repository.
 const CLONE: &str = "clone_main:";
 /// The step that saves the channel's record and makes its folders.
@@ -76,14 +78,6 @@ fn state_of(step: &pb::OperationStep) -> SetupState {
         },
         S::Waiting | S::Undone | S::Unspecified => SetupState::Waiting,
     }
-}
-
-fn percent(done: u64, total: u64) -> u8 {
-    if total == 0 {
-        return 0;
-    }
-    let value = (u128::from(done) * 100 / u128::from(total)).min(100);
-    u8::try_from(value).unwrap_or(100)
 }
 
 #[cfg(test)]

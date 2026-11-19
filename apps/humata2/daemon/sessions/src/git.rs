@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 
 use crate::error::GitError;
 use crate::layout::{make_dirs, partial};
@@ -41,6 +42,101 @@ pub(crate) fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError>
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Where a clone is, 0 to 1000, from one line of git's progress on stderr:
+/// receiving objects fills 0..=900, resolving deltas 900..=1000, and a local
+/// clone's checkout ("Updating files") 0..=1000. Any other line is None.
+pub(crate) fn clone_permille(line: &str) -> Option<u64> {
+    let line = line.trim();
+    let (phase, rest) = line.split_once(':')?;
+    let percent = rest.trim_start().split_once('%')?.0.trim();
+    let percent: u64 = percent.parse().ok().filter(|p| *p <= 100)?;
+    match phase {
+        "Receiving objects" => Some(percent * 9),
+        "Resolving deltas" => Some(900 + percent),
+        "Updating files" => Some(percent * 10),
+        _ => None,
+    }
+}
+
+/// Runs a clone-like git command, reporting how far it is through `on_units`
+/// as git prints progress. Only values higher than the last are reported. The
+/// lines that aren't progress are what a failure says.
+fn git_with_progress(
+    dir: Option<&Path>,
+    args: &[&str],
+    on_units: &mut dyn FnMut(u64),
+) -> Result<(), GitError> {
+    let mut cmd = Command::new("git");
+    cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"]);
+    match args.split_first() {
+        Some((first, rest)) if *first == "clone" => cmd.arg("clone").arg("--progress").args(rest),
+        _ => cmd.args(args),
+    };
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let shown = args.join(" ");
+    let mut child = cmd.spawn().map_err(|source| GitError::Spawn {
+        args: shown.clone(),
+        source,
+    })?;
+    let mut kept = String::new();
+    let mut last = 0;
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut pending = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut line = |bytes: &[u8], kept: &mut String| {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.trim();
+            if text.is_empty() {
+                return;
+            }
+            match clone_permille(text) {
+                Some(at) if at > last => {
+                    last = at;
+                    on_units(at);
+                }
+                Some(_) => {}
+                None => {
+                    kept.push_str(text);
+                    kept.push('\n');
+                }
+            }
+        };
+        // A read that fails ends the reading; the wait below still decides.
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            for &byte in &chunk[..n] {
+                if byte == b'\r' || byte == b'\n' {
+                    line(&pending, &mut kept);
+                    pending.clear();
+                } else {
+                    pending.push(byte);
+                }
+            }
+        }
+        line(&pending, &mut kept);
+    }
+    let status = child.wait().map_err(|source| GitError::Spawn {
+        args: shown.clone(),
+        source,
+    })?;
+    if !status.success() {
+        return Err(GitError::Failed {
+            args: shown,
+            status: status.to_string(),
+            stderr: kept.trim().to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> GitError + '_ {
@@ -118,8 +214,20 @@ pub(crate) fn text(path: &Path) -> Result<&str, GitError> {
 
 /// Clones `remote_url` into `dest` through `<dest>.partial`.
 pub fn clone_main(remote_url: &str, dest: &Path) -> Result<(), GitError> {
+    clone_main_with(remote_url, dest, &mut |_| {})
+}
+
+/// [`clone_main`] telling `on_units` how far the clone is, 0 to 1000; the last
+/// report of a clone that worked is 1000.
+pub fn clone_main_with(
+    remote_url: &str,
+    dest: &Path,
+    on_units: &mut dyn FnMut(u64),
+) -> Result<(), GitError> {
     in_partial(dest, |tmp| {
-        git(None, &["clone", "--", remote_url, text(tmp)?]).map(|_| ())
+        git_with_progress(None, &["clone", "--", remote_url, text(tmp)?], on_units)?;
+        on_units(1000);
+        Ok(())
     })
 }
 
@@ -131,9 +239,21 @@ pub fn clone_session(
     dest: &Path,
     branch: &str,
 ) -> Result<(), GitError> {
+    clone_session_with(main_clone, remote_url, dest, branch, &mut |_| {})
+}
+
+/// [`clone_session`] telling `on_units` how far the clone is, 0 to 1000; the
+/// last report of a clone that worked is 1000.
+pub fn clone_session_with(
+    main_clone: &Path,
+    remote_url: &str,
+    dest: &Path,
+    branch: &str,
+    on_units: &mut dyn FnMut(u64),
+) -> Result<(), GitError> {
     let base = default_branch(main_clone)?;
     in_partial(dest, |tmp| {
-        git(None, &["clone", "--", text(main_clone)?, text(tmp)?])?;
+        git_with_progress(None, &["clone", "--", text(main_clone)?, text(tmp)?], on_units)?;
         git(Some(tmp), &["remote", "set-url", "origin", remote_url])?;
         copy_remote_branches(main_clone, tmp)?;
         // No upstream: the new branch is pushed to the real remote, not the base.
@@ -147,26 +267,31 @@ pub fn clone_session(
                 &format!("origin/{base}"),
             ],
         )?;
+        on_units(1000);
         Ok(())
     })
 }
 
 /// Clones the main clone into `dest`, points origin at the remote, fetches the
 /// head GitHub keeps for pull request `number` (`refs/pull/<n>/head`, so a
-/// fork's own repository is never asked) and checks out `branch` at it.
-pub fn clone_pull_head(
+/// fork's own repository is never asked) and checks out `branch` at it,
+/// telling `on_units` how far the clone is, 0 to 1000; the last report of a
+/// clone that worked is 1000.
+pub fn clone_pull_head_with(
     main_clone: &Path,
     remote_url: &str,
     dest: &Path,
     branch: &str,
     number: u32,
+    on_units: &mut dyn FnMut(u64),
 ) -> Result<(), GitError> {
     in_partial(dest, |tmp| {
-        git(None, &["clone", "--", text(main_clone)?, text(tmp)?])?;
+        git_with_progress(None, &["clone", "--", text(main_clone)?, text(tmp)?], on_units)?;
         git(Some(tmp), &["remote", "set-url", "origin", remote_url])?;
         copy_remote_branches(main_clone, tmp)?;
         git(Some(tmp), &["fetch", "origin", &format!("refs/pull/{number}/head")])?;
         git(Some(tmp), &["checkout", "--no-track", "-B", branch, "FETCH_HEAD"])?;
+        on_units(1000);
         Ok(())
     })
 }
@@ -321,6 +446,58 @@ mod tests {
         let dest = t.path().join("main/api");
         let bad = url(&t.path().join("missing"));
         assert!(clone_main(&bad, &dest).is_err());
+        assert!(!dest.exists());
+        assert!(!partial(&dest).exists());
+    }
+
+    #[test]
+    fn parses_git_progress_lines() {
+        let blob = "Cloning into 'x'...\rReceiving objects:   0% (0/10)\rReceiving objects:  42% (4/10), 1 MiB | 2 MiB/s\rReceiving objects: 100% (10/10), done.\nResolving deltas:   0% (0/5)\rResolving deltas: 100% (5/5), done.\n";
+        let seen: Vec<u64> = blob
+            .split(['\r', '\n'])
+            .filter_map(clone_permille)
+            .collect();
+        assert_eq!(seen, [0, 378, 900, 900, 1000]);
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(clone_permille("Updating files:  50% (5/10)"), Some(500));
+    }
+
+    #[test]
+    fn other_lines_are_not_progress() {
+        for line in [
+            "remote: Counting objects: 100% (5/5), done.",
+            "Counting objects: 100% (5/5), done.",
+            "Compressing objects:  50% (1/2)",
+            "Receiving objects: lots",
+            "Receiving objects: 400% (1/2)",
+            "Empfange Objekte:  42% (4/10)",
+            "\u{0}\u{1} garbled % %",
+            "fatal: repository 'x' not found",
+            "",
+        ] {
+            assert_eq!(clone_permille(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_local_clone_reports_rising_units_ending_at_1000() {
+        let t = tempfile::tempdir().unwrap();
+        let o = origin(t.path());
+        let mut seen = Vec::new();
+        clone_main_with(&url(&o), &t.path().join("main/api"), &mut |at| seen.push(at)).unwrap();
+        assert_eq!(seen.last(), Some(&1000));
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    }
+
+    #[test]
+    fn a_failed_clone_with_progress_says_why_and_leaves_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let dest = t.path().join("main/api");
+        let bad = url(&t.path().join("missing"));
+        let mut seen = Vec::new();
+        let failed = clone_main_with(&bad, &dest, &mut |at| seen.push(at));
+        assert!(matches!(failed, Err(GitError::Failed { .. })), "{failed:?}");
+        assert!(!seen.contains(&1000));
         assert!(!dest.exists());
         assert!(!partial(&dest).exists());
     }

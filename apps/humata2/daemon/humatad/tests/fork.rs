@@ -561,6 +561,7 @@ async fn freeing_a_context_only_fork_removes_its_handover_file_and_keeps_its_par
             id: Some(fork_id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .unwrap()

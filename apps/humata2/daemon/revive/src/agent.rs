@@ -16,6 +16,8 @@ use humata2_store::{
 use tokio::time::Instant;
 
 use crate::reconcile::Revived;
+#[path = "rekey.rs"]
+pub(crate) mod rekey;
 use crate::watch::FileWatch;
 use crate::{Env, GateRefusal, ReviveConfig, ReviveError};
 
@@ -268,6 +270,22 @@ pub(crate) async fn resume(
     why: Why<'_>,
 ) -> Result<Revived, ReviveError> {
     let socket = record.launch.holder_socket.clone();
+    // D801 D: a channel renamed under this agent while it ran. Its
+    // conversation is carried to the new folder's key and its launch points
+    // at the new folder before anything below looks for either.
+    let rekeyed = match rekey::apply(config, &mut record).await {
+        Ok(done) => done,
+        Err(error) => {
+            let mut chain = error.to_string();
+            let mut cause = std::error::Error::source(&error);
+            while let Some(next) = cause {
+                chain.push_str(&format!(": {next}"));
+                cause = next.source();
+            }
+            eprintln!("humatad2: session {}'s agent can't be resumed yet: {chain}", record.session);
+            return failed(store, record, ResumeFailure::ConversationFileMissing, None).await;
+        }
+    };
     let saved = read_saved(&socket, &record.session).await?;
     let already_told = match why {
         Why::Interrupted => already_told(&record).await?,
@@ -292,6 +310,10 @@ pub(crate) async fn resume(
     record.state = AgentState::Resuming;
     record.updated_unix_ms = unix_ms();
     save(store, &record, "save that the agent is resuming").await?;
+    if rekeyed {
+        // The record names the new folder now: the note has done its work.
+        rekey::remove_note(&socket);
+    }
     point("revive.resume.recorded");
 
     match cannot_resume(&record.launch) {

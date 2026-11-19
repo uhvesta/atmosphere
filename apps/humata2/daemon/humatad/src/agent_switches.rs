@@ -185,9 +185,14 @@ pub(crate) enum CliToFind {
 /// neither an assignment nor an option.
 pub(crate) fn cli_to_find(kind: &str, program: &Path, start_args: &[String]) -> CliToFind {
     if kind == "opencode" {
-        return CliToFind::Name("opencode".to_owned());
+        return CliToFind::Name(kind.to_owned());
     }
     if is_env_wrapper(program) {
+        // The built-in Codex runs under `humata codex` (D795); the CLI to
+        // find is Codex itself, not the `humata` it names first.
+        if kind == "codex" {
+            return CliToFind::Name(kind.to_owned());
+        }
         if let Some(name) = start_args
             .iter()
             .find(|arg| !arg.contains('=') && !arg.starts_with('-'))
@@ -515,6 +520,22 @@ mod tests {
                 &args(&["FOO=1", "-i", "codex", "--x"])
             ),
             CliToFind::Name("codex".to_owned())
+        );
+        // The built-in Codex runs under `humata codex` (D795): the CLI to
+        // find is still Codex, not the `humata` beside the daemon.
+        assert_eq!(
+            cli_to_find(
+                "codex",
+                Path::new("/usr/bin/env"),
+                &args(&["HUMATA_SOCKET=/run/h.sock", "/bin/humata", "codex", "--hooks", "{ Stop = [] }", "--"])
+            ),
+            CliToFind::Name("codex".to_owned())
+        );
+        // A custom kind named codex that runs its own program is found by
+        // that program, as test rigs and scripted stand-ins do.
+        assert_eq!(
+            cli_to_find("codex", Path::new("/bin/sh"), &args(&["/rig/cli-agent.sh", "--session-id", "x"])),
+            CliToFind::Path(PathBuf::from("/bin/sh"))
         );
         assert_eq!(
             cli_to_find("copilot", Path::new("/opt/bin/copilot"), &args(&[])),

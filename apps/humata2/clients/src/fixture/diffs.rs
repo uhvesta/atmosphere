@@ -6,7 +6,7 @@ pub(super) fn lines(spec: &[(LineKind, &str)], start: u32) -> Vec<DiffLine> {
     spec.iter()
         .map(|(kind, text)| {
             let (o, n) = match kind {
-                LineKind::Hunk => (None, None),
+                LineKind::Hunk | LineKind::Note => (None, None),
                 LineKind::Context => {
                     old += 1;
                     new += 1;

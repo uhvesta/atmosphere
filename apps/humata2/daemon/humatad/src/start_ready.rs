@@ -54,11 +54,85 @@ pub(crate) fn is_heard(session: &str) -> bool {
     heard.get(session).is_some_and(|sender| *sender.borrow())
 }
 
+/// D798: `session`'s structured channel dropped (the Codex link lost its
+/// thread). The screen fallback reads its asks again until it is heard.
+pub(crate) fn unheard(session: &str) {
+    let heard = HEARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(sender) = heard.get(session) {
+        sender.send_replace(false);
+    }
+}
+
 /// `session`'s agent exited: the next one launched must be heard again
 /// before the screen fallback goes quiet or a first message is sent.
 pub(crate) fn forget(session: &str) {
     let mut heard = HEARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     heard.remove(session);
+    drop(heard);
+    release_sends(session);
+}
+
+/// D797: how long one of Humata's own sends waits behind a held first
+/// message before it is refused.
+const SEND_WAITS: Duration = Duration::from_secs(30);
+
+/// Sessions whose held first message hasn't been typed yet, as a watch
+/// each that turns true once it has.
+static PENDING: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn hold_sends(session: &str) {
+    let mut pending = PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.insert(session.to_owned(), watch::channel(false).0);
+}
+
+fn release_sends(session: &str) {
+    let mut pending = PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(sender) = pending.remove(session) {
+        sender.send_replace(true);
+    }
+}
+
+/// One of Humata's own sends to `session` waited [`SEND_WAITS`] behind the
+/// first message, which still waits for the agent. Nothing was typed.
+#[derive(Debug, thiserror::Error)]
+#[error("session {session}'s agent hasn't said it is ready, and its start message still waits for it")]
+pub(crate) struct StillStarting {
+    session: String,
+}
+
+/// The refusal a caller gets for `still`.
+pub(crate) fn refusal(still: &StillStarting) -> tonic::Status {
+    status::failure(
+        tonic::Code::FailedPrecondition,
+        humata2_grpc::humata::v1::Error {
+            message: format!(
+                "{still}, so nothing was typed: the text would have gone in ahead of the start message, or into a screen the agent shows before it is up"
+            ),
+            fix: "look at the session's terminal: if the agent waits there (a trust or login screen), answer it, or pick Send it now on its \"waiting in its terminal\" card in the Inbox. Then send again".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// D797: waits, at most [`SEND_WAITS`], while `session`'s first message is
+/// held for the ready signal, so one of Humata's own sends goes after it.
+/// A session with nothing held passes at once.
+pub(crate) async fn behind_start(session: &str) -> Result<(), StillStarting> {
+    let rx = {
+        let pending = PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.get(session).map(watch::Sender::subscribe)
+    };
+    let Some(mut rx) = rx else {
+        return Ok(());
+    };
+    match tokio::time::timeout(SEND_WAITS, rx.wait_for(|sent| *sent)).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err(StillStarting {
+            session: session.to_owned(),
+        }),
+    }
 }
 
 /// Resolves once `rx` says the session was heard.
@@ -99,14 +173,25 @@ impl StartSignal for Ready {
             return Box::pin(async { false });
         };
         let (store, agents, id) = (told.store.clone(), told.agents.clone(), session.to_owned());
+        let id_for_sends = session.to_owned();
         Box::pin(async move {
             let found = tokio::task::spawn_blocking(move || {
                 let record = store.session(&id).ok().flatten()?;
                 agents.get(&record.agent).ok().map(|kind| kind.conversation_format)
             })
             .await;
-            matches!(found, Ok(Some(format)) if has_signal(format))
+            let expects = matches!(found, Ok(Some(format)) if has_signal(format));
+            // Set before the first message is held, so a send that comes
+            // right after the start already waits behind it.
+            if expects {
+                hold_sends(&id_for_sends);
+            }
+            expects
         })
+    }
+
+    fn delivered(&self, session: &str) {
+        release_sends(session);
     }
 
     fn released(&self, session: &str, text: &str) -> Boxed<()> {

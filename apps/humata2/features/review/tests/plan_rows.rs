@@ -130,6 +130,7 @@ fn rows_follow_the_order_with_each_groups_title_and_each_files_notes() {
             diff("acme/api", &["src/client.rs"]),
         ],
         Some(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![
                 entry("acme/api", "src/client.rs"),
@@ -149,6 +150,7 @@ fn rows_follow_the_order_with_each_groups_title_and_each_files_notes() {
                 note("acme/ledger", "migrations/0043_index.sql", "Built concurrently."),
                 note("acme/api", "src/client.rs", "The retry is safe."),
             ],
+            stack: None,
         }),
     );
 
@@ -180,6 +182,7 @@ fn files_the_order_leaves_out_come_last() {
             diff("acme/api", &["src/client.rs", "src/entry.rs"]),
         ],
         Some(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![
                 entry("acme/api", "src/client.rs"),
@@ -187,6 +190,7 @@ fn files_the_order_leaves_out_come_last() {
             ],
             groups: Vec::new(),
             notes: Vec::new(),
+            stack: None,
         }),
     );
 
@@ -208,6 +212,7 @@ fn order_entries_missing_from_the_diff_are_skipped() {
             diff("acme/api", &["src/client.rs"]),
         ],
         Some(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![
                 entry("acme/ledger", "migrations/0042_accounts.sql"),
@@ -217,6 +222,7 @@ fn order_entries_missing_from_the_diff_are_skipped() {
             ],
             groups: Vec::new(),
             notes: vec![note("acme/api", "src/gone.rs", "Deleted upstream.")],
+            stack: None,
         }),
     );
 
@@ -237,10 +243,12 @@ fn a_session_without_a_plan_has_no_rows() {
     let planned = page(
         diffs,
         Some(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![entry("acme/api", "src/client.rs")],
             groups: Vec::new(),
             notes: Vec::new(),
+            stack: None,
         }),
     );
     assert_eq!(planned.plan_rows(&SessionId::new("brin")), None);
@@ -251,6 +259,7 @@ fn a_line_note_carries_its_lines_and_an_outdated_one_is_marked() {
     let state = page(
         vec![diff("acme/api", &["src/client.rs"])],
         Some(PlanView {
+            importance: Vec::new(),
             targets: Vec::new(),
             order: vec![entry("acme/api", "src/client.rs")],
             groups: Vec::new(),
@@ -259,6 +268,7 @@ fn a_line_note_carries_its_lines_and_an_outdated_one_is_marked() {
                 line_note("acme/api", "src/client.rs", "Rewritten since.", (3, 3), true),
                 note("acme/api", "src/client.rs", "About the file."),
             ],
+            stack: None,
         }),
     );
 

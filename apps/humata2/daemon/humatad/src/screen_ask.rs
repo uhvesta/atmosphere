@@ -216,8 +216,10 @@ impl Asks {
 
     async fn look(self: &Arc<Self>, session: &str, holder_pid: u32) {
         // D798: an agent heard on its structured channel asks there; its
-        // screen raises nothing.
-        if crate::start_ready::is_heard(session) {
+        // screen raises nothing. A card raised while the channel was down
+        // stays until its screen stops asking.
+        let heard = crate::start_ready::is_heard(session);
+        if heard && !self.open.lock().await.contains_key(session) {
             return;
         }
         let Some((record, tab, index)) = self.agent_of(session, holder_pid).await else {
@@ -227,6 +229,12 @@ impl Asks {
             return;
         };
         let mut open = self.open.lock().await;
+        if heard {
+            if seen.is_none() {
+                self.withdraw_gone(&mut open, session).await;
+            }
+            return;
+        }
         let Some((question, asked)) = seen else {
             self.withdraw_gone(&mut open, session).await;
             return;

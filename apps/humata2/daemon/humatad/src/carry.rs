@@ -636,7 +636,8 @@ impl Carry {
                 ) {
                     (Some(operation), Some(session), Some(from), Some(to), Some(phase)) => {
                         let agent_ran = value.get("agent_ran").and_then(serde_json::Value::as_bool).unwrap_or(true);
-                        found.push(Journaled { operation, session, from, to, phase, agent_ran });
+                        let frozen = value.get("frozen").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                        found.push(Journaled { operation, session, from, to, phase, agent_ran, frozen });
                     }
                     _ => crate::log::say!(
                         "humatad2: the journal {} of a move names no session or machines, so that move isn't recovered. Nothing was deleted; delete the file if the session is where you want it",
@@ -782,6 +783,10 @@ pub(crate) struct Journaled {
     /// starts it again there; a session the user had stopped stays stopped.
     /// A journal from before this was kept says true.
     pub(crate) agent_ran: bool,
+    /// The old agent's program was frozen (SIGSTOP) for the move and may
+    /// still be: a restart thaws it, or finishes the move (D801 J). A
+    /// journal from before this says false.
+    pub(crate) frozen: bool,
 }
 
 type Ear = Arc<dyn Fn(&tr::Snapshot) + Send + Sync>;

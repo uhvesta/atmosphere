@@ -73,6 +73,8 @@ fn pending_forks_ignore_repeated_create_and_edits() {
             branch: "uhvesta/fresh-attempt".into(),
             turns: None,
             picker: None,
+            progress: None,
+            op: None,
         }),
         forking: true,
         ..Default::default()

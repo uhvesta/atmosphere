@@ -53,28 +53,83 @@ pub(super) fn diffs(
         Some(Operation::Diffs),
         format!("diffs {session} {base:?}"),
         move |inner| {
-            let home = inner.session_mut(&session)?.repo.clone();
-            if let Some(repo) = missing_default(inner, &session, &base) {
-                return Err(DaemonError::NoDefaultBranch { repo });
+            inner.session_mut(&session)?;
+            // The daemon reads every repository at once, so one failing
+            // repository fails the whole read (DS-35).
+            let mut failing: Vec<(&String, &String)> = inner
+                .failing_repos
+                .iter()
+                .filter(|((held, _), _)| *held == session)
+                .map(|((_, repo), message)| (repo, message))
+                .collect();
+            failing.sort();
+            if let Some((_, message)) = failing.first() {
+                return Err(scripted(message));
             }
-            if let DiffBase::Spec(specs) = &base {
-                return spec_diffs(inner, &session, &home, specs);
+            read_diffs(inner, &session, &base)
+        },
+    )
+}
+
+/// One repository's changes against `base` (DS-35): what [`diffs`] reads,
+/// for that repository alone. Empty when it has no changes.
+pub(super) fn repo_diff(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    base: &DiffBase,
+    repo: &str,
+) -> Reply<Vec<RepoDiff>> {
+    let session = session.clone();
+    let base = base.clone();
+    let repo = repo.to_owned();
+    daemon.reply(
+        Some(Operation::Diffs),
+        format!("repo diff {session} {repo} {base:?}"),
+        move |inner| {
+            inner.session_mut(&session)?;
+            if let Some(message) = inner.failing_repos.get(&(session.clone(), repo.clone())) {
+                return Err(scripted(message));
             }
-            let mut diffs = current(inner, &session);
-            if base == DiffBase::SinceLastReviewed
-                && let Some(seen) = inner.reviewed.get(&session)
-            {
-                for diff in &mut diffs {
-                    diff.base = "last reviewed".to_owned();
-                    let before = seen.iter().find(|old| old.repo == diff.repo);
-                    diff.files.retain(|file| {
-                        before.is_none_or(|old| !old.files.iter().any(|same| same == file))
-                    });
-                }
-            }
+            let mut diffs = read_diffs(inner, &session, &base)?;
+            diffs.retain(|diff| diff.repo == repo);
             Ok(diffs)
         },
     )
+}
+
+fn scripted(message: &str) -> DaemonError {
+    DaemonError::Scripted {
+        operation: Operation::Diffs,
+        message: message.to_owned(),
+    }
+}
+
+/// Every repository's changes in the session against `base`.
+fn read_diffs(
+    inner: &mut super::Inner,
+    session: &SessionId,
+    base: &DiffBase,
+) -> Result<Vec<RepoDiff>, DaemonError> {
+    let home = inner.session_mut(session)?.repo.clone();
+    if let Some(repo) = missing_default(inner, session, base) {
+        return Err(DaemonError::NoDefaultBranch { repo });
+    }
+    if let DiffBase::Spec(specs) = base {
+        return spec_diffs(inner, session, &home, specs);
+    }
+    let mut diffs = current(inner, session);
+    if *base == DiffBase::SinceLastReviewed
+        && let Some(seen) = inner.reviewed.get(session)
+    {
+        for diff in &mut diffs {
+            diff.base = "last reviewed".to_owned();
+            let before = seen.iter().find(|old| old.repo == diff.repo);
+            diff.files.retain(|file| {
+                before.is_none_or(|old| !old.files.iter().any(|same| same == file))
+            });
+        }
+    }
+    Ok(diffs)
 }
 
 /// A spec gives each repository of the session its own base (VIEWS C1). A
@@ -114,6 +169,13 @@ fn spec_diffs(
             });
         }
     }
+    // D800: a stack layer or the Whole stack shows exactly its repositories.
+    let stack = specs
+        .iter()
+        .any(|spec| matches!(spec.base, RepoBase::Range { .. } | RepoBase::Overlay { .. }));
+    if stack {
+        repos.retain(|repo| specs.iter().any(|spec| spec.repo == *repo));
+    }
     Ok(repos
         .iter()
         .map(|repo| {
@@ -121,7 +183,7 @@ fn spec_diffs(
                 .iter()
                 .find(|spec| spec.repo == *repo)
                 .map_or(RepoBase::DefaultBranch, |spec| spec.base.clone());
-            repo_diff(inner, session, repo, &mine, &base)
+            one_repo_diff(inner, session, repo, &mine, &base)
         })
         .collect())
 }
@@ -130,7 +192,7 @@ fn spec_diffs(
 /// `main` are the dummy changes as they are. Other branches have the changes
 /// the fixture models (acme/api against release/2.4) and none otherwise.
 /// Comments stay with the changes they were made on.
-fn repo_diff(
+fn one_repo_diff(
     inner: &super::Inner,
     session: &SessionId,
     repo: &str,
@@ -171,6 +233,14 @@ fn repo_diff(
         RepoBase::Rev(rev) => (rev.clone(), Vec::new(), Vec::new()),
         RepoBase::ForkPoint => ("since fork".to_owned(), Vec::new(), Vec::new()),
         RepoBase::Uncommitted => ("uncommitted changes".to_owned(), Vec::new(), Vec::new()),
+        // The fixture models no history between revs: a range is empty, and
+        // an overlay is the changes on disk.
+        RepoBase::Range { base, head } => (format!("{base}..{head}"), Vec::new(), Vec::new()),
+        RepoBase::Overlay { base, .. } => (
+            format!("{base} and uncommitted changes"),
+            own_files,
+            own_comments,
+        ),
         // The fixture's pull requests merge into main, so their base is the
         // changes as they are.
         RepoBase::PullRequestBase => (

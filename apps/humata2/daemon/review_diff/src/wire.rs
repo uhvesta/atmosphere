@@ -19,7 +19,8 @@ use crate::model::{
     Budget, Cursor, DiffLine, FileChunk, FileStatus, FileSummary, Hunk, LineKind, RepoDiff, Side,
     Snapshot, Trees, Viewed,
 };
-use crate::plan::{Anchor, FileRef, Group, Note, NoteTarget, ReviewPlan};
+use crate::from_stack::{FromStack, TopicOverride};
+use crate::plan::{Anchor, FileRef, Group, Importance, Note, NoteTarget, ReviewPlan, Tier};
 use crate::spec::{
     Base, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace, default_repo_spec,
 };
@@ -467,9 +468,59 @@ fn change_kind(status: &FileStatus) -> pb::ChangeKind {
     }
 }
 
-/// A file's summary for the wire.
+/// A file's summary for the wire, with no tier worked out (unspecified,
+/// which readers take as normal).
 #[must_use]
 pub fn file_summary_to_pb(file: &FileSummary) -> pb::FileSummary {
+    summary_to_pb(file, pb::review_importance::Tier::Unspecified)
+}
+
+/// A file's summary with the tier the daemon worked out for it (D802).
+#[must_use]
+pub fn file_summary_to_pb_with(file: &FileSummary, tier: Tier) -> pb::FileSummary {
+    summary_to_pb(file, tier_to_pb(tier))
+}
+
+fn tier_to_pb(tier: Tier) -> pb::review_importance::Tier {
+    match tier {
+        Tier::Key => pb::review_importance::Tier::Key,
+        Tier::Normal => pb::review_importance::Tier::Normal,
+        Tier::Skim => pb::review_importance::Tier::Skim,
+    }
+}
+
+/// An unspecified or unknown tier is normal.
+fn tier_from_pb(tier: i32) -> Tier {
+    if tier == pb::review_importance::Tier::Key as i32 {
+        Tier::Key
+    } else if tier == pb::review_importance::Tier::Skim as i32 {
+        Tier::Skim
+    } else {
+        Tier::Normal
+    }
+}
+
+fn importance_from_pb(list: &[pb::ReviewImportance], field: &'static str) -> Result<Vec<Importance>, WireError> {
+    list.iter()
+        .map(|entry| {
+            Ok(Importance {
+                file: file_ref(entry.file.as_ref(), field)?,
+                tier: tier_from_pb(entry.tier),
+            })
+        })
+        .collect()
+}
+
+fn importance_to_pb(list: &[Importance]) -> Vec<pb::ReviewImportance> {
+    list.iter()
+        .map(|entry| pb::ReviewImportance {
+            file: Some(repo_path(&entry.file)),
+            tier: tier_to_pb(entry.tier) as i32,
+        })
+        .collect()
+}
+
+fn summary_to_pb(file: &FileSummary, tier: pb::review_importance::Tier) -> pb::FileSummary {
     pb::FileSummary {
         path: file.path.clone(),
         old_path: match &file.status {
@@ -488,12 +539,26 @@ pub fn file_summary_to_pb(file: &FileSummary) -> pb::FileSummary {
         },
         old_mode: file.old_mode,
         new_mode: file.new_mode,
+        tier: tier as i32,
     }
 }
 
 /// A repo's diff for GetDiffResponse. The PR, if any, is the caller's.
 #[must_use]
 pub fn repo_diff_to_pb(diff: &RepoDiff) -> pb::RepoDiff {
+    repo_diff_with(diff, file_summary_to_pb)
+}
+
+/// As [`repo_diff_to_pb`], each file carrying its tier (D802); `tiers` is
+/// by path and a missing path is normal.
+#[must_use]
+pub fn repo_diff_to_pb_with_tiers(diff: &RepoDiff, tiers: &std::collections::HashMap<String, Tier>) -> pb::RepoDiff {
+    repo_diff_with(diff, |file| {
+        file_summary_to_pb_with(file, tiers.get(&file.path).copied().unwrap_or_default())
+    })
+}
+
+fn repo_diff_with(diff: &RepoDiff, summary: impl Fn(&FileSummary) -> pb::FileSummary) -> pb::RepoDiff {
     let (added, removed) = diff.totals();
     pb::RepoDiff {
         repo: Some(repo_ref(&diff.repo)),
@@ -501,7 +566,7 @@ pub fn repo_diff_to_pb(diff: &RepoDiff) -> pb::RepoDiff {
         pull_request: None,
         added: u32::try_from(added).unwrap_or(u32::MAX),
         removed: u32::try_from(removed).unwrap_or(u32::MAX),
-        files: diff.files.iter().map(file_summary_to_pb).collect(),
+        files: diff.files.iter().map(summary).collect(),
         label: diff.label.clone(),
         trees: Some(trees_to_pb(&diff.trees)),
         head: diff.head.clone().unwrap_or_default(),
@@ -689,6 +754,8 @@ pub fn plan_from_pb(plan: &pb::ReviewPlan) -> Result<ReviewPlan, WireError> {
             .map(note_from_pb)
             .collect::<Result<_, _>>()?,
         stack: plan.stack.as_ref().map(stack_from_pb).transpose()?,
+        from_stack: plan.from_stack.as_ref().map(from_stack_from_pb).transpose()?,
+        importance: importance_from_pb(&plan.importance, "importance.file")?,
     })
 }
 
@@ -779,6 +846,8 @@ pub fn plan_to_pb(plan: &ReviewPlan, outdated: &[bool]) -> pb::ReviewPlan {
             .map(|(index, note)| note_to_pb(note, outdated.get(index).copied().unwrap_or(false)))
             .collect(),
         stack: plan.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+        from_stack: plan.from_stack.as_ref().map(from_stack_to_pb),
+        importance: importance_to_pb(&plan.importance),
     }
 }
 
@@ -904,6 +973,7 @@ pub fn view_from_pb(view: &pb::ReviewViewState) -> Result<ViewState, WireError> 
             .collect::<Result<_, _>>()?,
         stack: view.stack.as_ref().map(stack_from_pb).transpose()?,
         layer: layer_from_wire(&view.layer),
+        importance: importance_from_pb(&view.importance, "importance")?,
     })
 }
 
@@ -926,6 +996,7 @@ pub fn view_to_pb(view: &ViewState) -> pb::ReviewViewState {
         highlights: view.highlights.iter().map(highlight_to_pb).collect(),
         stack: view.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
         layer: view.layer.clone().unwrap_or_default(),
+        importance: importance_to_pb(&view.importance),
     }
 }
 
@@ -1064,6 +1135,7 @@ pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
             order,
             groups,
             stack,
+            importance,
             ..
         } => Some(C::Plan(pb::ReviewPlan {
             spec: None,
@@ -1071,9 +1143,10 @@ pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
             groups: groups.iter().map(group_to_pb).collect(),
             notes: Vec::new(),
             stack: stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+            importance: importance_to_pb(importance),
+            ..pb::ReviewPlan::default()
         })),
-        // D800: needs a ReviewChange arm (seam)
-        ChangeKind::Layer(_) => None,
+        ChangeKind::Layer(layer) => Some(C::Layer(layer.clone().unwrap_or_default())),
     };
     pb::ReviewChange {
         undo_id: change.undo_id.clone(),
@@ -1122,6 +1195,10 @@ fn layer_to_pb(layer: &Layer, resolved: Option<&CheckedStack>) -> pb::ReviewLaye
             .iter()
             .map(|repo| layer_repo_to_pb(&layer.title, repo, resolved))
             .collect(),
+        topic: layer.topic.clone().unwrap_or_default(),
+        order: layer.order.iter().map(repo_path).collect(),
+        groups: layer.groups.iter().map(group_to_pb).collect(),
+        importance: importance_to_pb(&layer.importance),
     }
 }
 
@@ -1149,6 +1226,8 @@ fn layer_repo_to_pb(
             .map(|found| pb::ReviewLayerResolved {
                 base_commit: found.base_commit.clone(),
                 head_commit: found.head_commit.clone(),
+                // Resolved and checked: no drift until the daemon finds some.
+                drift: pb::review_layer_resolved::Drift::None as i32,
                 ..Default::default()
             }),
     }
@@ -1178,6 +1257,18 @@ fn layer_from_pb(layer: &pb::ReviewLayer) -> Result<Layer, WireError> {
         title: layer.title.clone(),
         purpose: (!layer.purpose.is_empty()).then(|| layer.purpose.clone()),
         repos,
+        topic: (!layer.topic.is_empty()).then(|| layer.topic.clone()),
+        order: layer
+            .order
+            .iter()
+            .map(|path| file_ref(Some(path), "layers.order"))
+            .collect::<Result<_, _>>()?,
+        groups: layer
+            .groups
+            .iter()
+            .map(group_from_pb)
+            .collect::<Result<_, _>>()?,
+        importance: importance_from_pb(&layer.importance, "layers.importance.file")?,
     })
 }
 
@@ -1208,6 +1299,54 @@ fn layer_repo_from_pb(repo: &pb::ReviewLayerRepo) -> Result<LayerRepo, WireError
         repo: key,
         part,
         pull_request: (!repo.pull_request.is_empty()).then(|| repo.pull_request.clone()),
+    })
+}
+
+/// A `from_stack` request for the wire (D803).
+#[must_use]
+pub fn from_stack_to_pb(from: &FromStack) -> pb::ReviewFromStack {
+    pb::ReviewFromStack {
+        repo: Some(repo_ref(&from.repo)),
+        tip: from.tip.clone().unwrap_or_default(),
+        topics: from
+            .topics
+            .iter()
+            .map(|(name, topic)| {
+                (
+                    name.clone(),
+                    pb::ReviewTopicOverride {
+                        title: topic.title.clone().unwrap_or_default(),
+                        purpose: topic.purpose.clone().unwrap_or_default(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+/// A `from_stack` request from the wire (D803).
+///
+/// # Errors
+///
+/// [`WireError`] for a request without its repo.
+pub fn from_stack_from_pb(from: &pb::ReviewFromStack) -> Result<FromStack, WireError> {
+    let some = |value: &str| (!value.is_empty()).then(|| value.to_owned());
+    Ok(FromStack {
+        repo: repo_key(from.repo.as_ref().ok_or_else(|| missing("from_stack.repo"))?),
+        tip: some(&from.tip),
+        topics: from
+            .topics
+            .iter()
+            .map(|(name, topic)| {
+                (
+                    name.clone(),
+                    TopicOverride {
+                        title: some(&topic.title),
+                        purpose: some(&topic.purpose),
+                    },
+                )
+            })
+            .collect(),
     })
 }
 
@@ -1500,6 +1639,7 @@ mod tests {
                         pull_request: None,
                     },
                 ],
+                ..Layer::default()
             },
             Layer {
                 title: "Not committed yet".to_owned(),
@@ -1511,6 +1651,7 @@ mod tests {
                     },
                     pull_request: None,
                 }],
+                ..Layer::default()
             },
         ])
     }

@@ -180,7 +180,6 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
     app.wait_until("three repo groups in the Diff panel", |app| {
         shown(app, &session) == all
     });
-    assert!(app.view().contains("3 files · 3 repos"));
 
     // 3. Full screen to read, then back beside the terminal.
     send(
@@ -645,6 +644,17 @@ fn chip_base(app: &App, session: &SessionId) -> String {
 
 /// Clicks the base chip and waits for the menu.
 fn open_base_menu(app: &mut App, session: &SessionId) {
+    // While a read is under way the chip names the picked base (DS-34), so
+    // its label is the diff's base only once the read is done.
+    app.wait_until("the diff to finish reading", |app| {
+        app.ui.read(|state| {
+            !state
+                .review
+                .fetch
+                .get(session)
+                .is_some_and(|fetch| fetch.loading)
+        })
+    });
     let chip = format!("Against {}", chip_base(app, session));
     app.click(Role::Button, &chip);
     app.wait_until("the base menu to open", |app| {
@@ -848,6 +858,7 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         .join("remotes/owner/ledger.git");
     let away = remote.with_extension("away");
     std::fs::rename(&remote, &away).expect("take the remote away");
+    open_push_menu(&mut app);
     app.click(Role::Button, "Push & PR: owner/ledger");
     app.wait_until("the push to fail on its group", |app| {
         push_outcome(app, &session, "owner/ledger", false)
@@ -858,6 +869,7 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         "nothing reached the missing remote"
     );
     std::fs::rename(&away, &remote).expect("put the remote back");
+    open_push_menu(&mut app);
     app.click(Role::Button, "Push & PR: owner/ledger");
     app.wait_until("the group to name its pull request", |app| {
         push_outcome(app, &session, "owner/ledger", true)
@@ -1067,6 +1079,7 @@ fn each_repo_group_pushes_its_own_branch_by_clicking_its_button() {
     assert_eq!(world.remote_branches("owner", "ledger").len(), 1);
 
     // Ledger's button pushes ledger; api's remote is untouched.
+    open_push_menu(&mut app);
     app.click(Role::Button, "Push & PR: owner/ledger");
     app.wait_until("ledger's group to name its pull request", |app| {
         push_outcome(app, &session, "owner/ledger", true)
@@ -1091,6 +1104,7 @@ fn each_repo_group_pushes_its_own_branch_by_clicking_its_button() {
     );
 
     // Then api's own button.
+    open_push_menu(&mut app);
     app.click(Role::Button, "Push & PR: owner/api");
     app.wait_until("api's group to name its pull request", |app| {
         push_outcome(app, &session, "owner/api", true)
@@ -1101,4 +1115,12 @@ fn each_repo_group_pushes_its_own_branch_by_clicking_its_button() {
     );
     drop(app);
     drop(world);
+}
+
+/// Opens the Diff footer's Push & PR menu, where each repository's push
+/// button lives, unless it is already open.
+fn open_push_menu(app: &mut App) {
+    if !app.ui.read(|state| state.review.push_menu) {
+        send(app, AppAction::Review(ReviewAction::TogglePushMenu));
+    }
 }

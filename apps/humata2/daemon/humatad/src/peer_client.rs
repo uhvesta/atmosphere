@@ -54,6 +54,22 @@ const RETRY_FIRST: Duration = Duration::from_secs(5);
 /// The longest wait between dials (HO-5: every 5–30 s).
 const RETRY_MOST: Duration = Duration::from_secs(30);
 
+/// The first and longest waits between dials: [`RETRY_FIRST`] and
+/// [`RETRY_MOST`], or, in a test daemon (`admin`), the milliseconds
+/// `HUMATA2_PEER_RETRY_MS` names for both, so a test's machine restart is
+/// dialled again as soon as its daemon listens. Releases always wait HO-5's.
+fn retry_waits() -> (Duration, Duration) {
+    #[cfg(feature = "admin")]
+    if let Some(wait) = std::env::var("HUMATA2_PEER_RETRY_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map(Duration::from_millis)
+    {
+        return (wait, wait);
+    }
+    (RETRY_FIRST, RETRY_MOST)
+}
+
 /// How long the host waits after its store fails to take a journal entry
 /// before it asks the machine for the entries again (D226).
 const HELD_RETRY: Duration = Duration::from_secs(30);
@@ -664,7 +680,8 @@ pub(crate) async fn supervise(
     sink: Sink,
     host: Option<HostSide>,
 ) -> LinkError {
-    let mut wait = RETRY_FIRST;
+    let (first, most) = retry_waits();
+    let mut wait = first;
     loop {
         let error = match connect(&*dial, &key_file, &machine, host.as_ref()).await {
             Ok(up) => {
@@ -676,7 +693,7 @@ pub(crate) async fn supervise(
                     channel: up.channel(),
                     stopped: up.stopped(),
                 });
-                wait = RETRY_FIRST;
+                wait = first;
                 up.closed(&sink, host.as_ref()).await
             }
             Err(error) => error,
@@ -690,7 +707,7 @@ pub(crate) async fn supervise(
             return error;
         }
         tokio::time::sleep(wait).await;
-        wait = (wait * 2).min(RETRY_MOST);
+        wait = (wait * 2).min(most);
     }
 }
 

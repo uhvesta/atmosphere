@@ -276,6 +276,8 @@ message FileSummary {
   // 100755, 120000). 0 for a missing side.
   uint32 old_mode = 10;
   uint32 new_mode = 11;
+  // The tier the view draws (D802): the agent's, else the daemon's skim.
+  ReviewImportance.Tier tier = 12;
 }
 
 message RepoDiff {
@@ -955,6 +957,40 @@ message ReviewPlan {
   // A stack of layers (RV-36, D800): sent instead of spec, which the
   // daemon fills with the Whole stack.
   ReviewStack stack = 5;
+  // Build the stack's layers from the repo's stack metadata (D803):
+  // the daemon reads `stack status`. Explicit `stack` layers may follow.
+  ReviewFromStack from_stack = 6;
+  // Files the agent marks key or skim (D802); unlisted files are normal.
+  repeated ReviewImportance importance = 7;
+}
+
+// How much a file matters for reading it (D802). Only what the agent sent;
+// the daemon adds its own skims (lockfiles, generated, pure renames) when
+// it serves the files.
+message ReviewImportance {
+  enum Tier {
+    TIER_UNSPECIFIED = 0;  // as NORMAL
+    TIER_KEY = 1;
+    TIER_SKIM = 2;
+    // Un-skims a file the daemon would mark skim.
+    TIER_NORMAL = 3;
+  }
+  RepoPath file = 1;
+  Tier tier = 2;
+}
+
+// One repo's stack, read by the daemon (D803).
+message ReviewFromStack {
+  RepoRef repo = 1;
+  // The topic the layers end at; needed when the stack forks.
+  string tip = 2;
+  // Per topic name: the agent's title and purpose, both optional.
+  map<string, ReviewTopicOverride> topics = 3;
+}
+
+message ReviewTopicOverride {
+  string title = 1;
+  string purpose = 2;
 }
 
 // The layers of a change, bottom of the stack first (D800).
@@ -968,6 +1004,13 @@ message ReviewLayer {
   // At most one line, for navigating, never a finding.
   string purpose = 2;
   repeated ReviewLayerRepo repos = 3;
+  // The stack topic this layer was read from (D803); its identity then.
+  string topic = 4;
+  // This layer's reading order, groups and importance (D802); a picked
+  // layer uses these and nothing from the plan.
+  repeated RepoPath order = 5;
+  repeated ReviewGroup groups = 6;
+  repeated ReviewImportance importance = 7;
 }
 
 message ReviewLayerRepo {
@@ -1163,6 +1206,9 @@ message ReviewViewState {
   ReviewStack stack = 7;
   // The layer showing; empty for Whole stack.
   string layer = 8;
+  // The plan's tiers (D802), kept by the daemon across restarts. The app
+  // sends it empty; the daemon keeps its own.
+  repeated ReviewImportance importance = 9;
 }
 
 message ReportReviewViewRequest {
@@ -1219,6 +1265,9 @@ message ReviewChange {
     Comment note = 6;
     CommentId note_dropped = 7;
     ReviewPlan plan = 8;
+    // review_focus moved the view to this layer (D800); empty is Whole
+    // stack.
+    string layer = 12;
   }
   repeated Highlight highlights = 9;
   // The change this one undid, for "undo".

@@ -181,6 +181,7 @@ mod tests {
             machine: MachineId::new("devbox-1"),
             stopped: false,
             agent_tab: false,
+            paused_for_move: false,
         }
     }
 

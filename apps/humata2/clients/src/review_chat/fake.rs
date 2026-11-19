@@ -141,6 +141,16 @@ impl FakeReviewChat {
         state.record("review_note", summary, Some(ReviewChangeKind::Note(note)), Vec::new(), true, String::new())
     }
 
+    /// The agent moves the view to a stack layer (D800), `None` for Whole
+    /// stack: the view keeps it and the feed hears a `review_layer` change.
+    pub fn move_to_layer(&self, session: &SessionId, layer: Option<String>) -> ReviewChange {
+        let mut inner = self.inner();
+        let state = inner.session_mut(session);
+        state.view.layer = layer.clone();
+        let summary = layer.clone().unwrap_or_else(|| "Whole stack".to_owned());
+        state.record("review_layer", summary, Some(ReviewChangeKind::Layer(layer)), Vec::new(), true, String::new())
+    }
+
     /// The code moved the lines a diff is about: the feed hears a `diff` change,
     /// which has no undo (D88).
     pub fn diff_changed(&self, session: &SessionId, summary: &str) -> ReviewChange {

@@ -24,7 +24,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
     AnchorError, Base, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, CommentLedger, Compare,
     DiffError, DiffSpec, FileRef, FileSummary, Matching, PlanError, Replaced, RepoDiff, RepoSpec,
-    ReviewChat, Side, Undoable, UserNote, ViewState, Viewed, Whitespace, wire,
+    ReviewChat, Side, StackBinary, StackStatus, Undoable, UserNote, ViewState, Viewed, Whitespace, wire,
 };
 use humata2_store::{ReviewRecord, SessionRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;
@@ -45,6 +45,7 @@ mod default_branch;
 mod pull_requests;
 mod replay;
 mod sink;
+mod stack;
 mod views;
 
 pub(crate) use pull_requests::{PR_REVIEWS_FOLDER, PullRequests, binding};
@@ -81,6 +82,8 @@ struct Inner {
     views: tokio::sync::Mutex<()>,
     /// Where batches of the user's comments are typed (SM-9).
     sink: Arc<dyn CommentSink>,
+    /// Reads a repo's stack metadata for `from_stack` reviews (D803).
+    stack_status: Arc<dyn StackStatus>,
 }
 
 /// What a call with an idempotency key answered, so a repeat answers the
@@ -124,6 +127,8 @@ struct SessionReview {
     answers: Mutex<Answers>,
     /// The last change's seq, for WatchReviewChanges.
     changed: watch::Sender<u64>,
+    /// The stack as it resolved at prepare, and where it was read from.
+    stacked: Mutex<stack::Stacked>,
     /// Held while the review is saved, so saves land in order.
     saving: tokio::sync::Mutex<()>,
     /// The notes as the event feed was last told of them, by id.
@@ -172,6 +177,19 @@ impl Review {
         feed: Arc<Feed>,
         sink: Arc<dyn CommentSink>,
     ) -> Self {
+        Self::with_stack_status(store, guard, machine, feed, sink, Arc::new(StackBinary))
+    }
+
+    /// As [`Self::new`], reading stacks through `stack_status` instead of
+    /// the `stack` tool on PATH.
+    pub(crate) fn with_stack_status(
+        store: Arc<Store>,
+        guard: Arc<Guard>,
+        machine: String,
+        feed: Arc<Feed>,
+        sink: Arc<dyn CommentSink>,
+        stack_status: Arc<dyn StackStatus>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
@@ -181,6 +199,7 @@ impl Review {
                 sessions: Mutex::default(),
                 views: tokio::sync::Mutex::default(),
                 sink,
+                stack_status,
             }),
         }
     }
@@ -381,7 +400,39 @@ impl Review {
         session: &SessionRef,
         plan: &pb::ReviewPlan,
     ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>), Status> {
-        let mut plan = wire::plan_from_pb(plan).map_err(|error| wire_failed("review_plan", &error))?;
+        let (plan, diffs, _) = self.checked_plan_with_stack(caller, record, session, plan).await?;
+        Ok((plan, diffs))
+    }
+
+    /// As [`Self::checked_plan`], with the checked stack when the plan sent
+    /// `stack` or `from_stack` (D800, D803).
+    async fn checked_plan_with_stack(
+        &self,
+        caller: &Caller,
+        record: &SessionRecord,
+        session: &SessionRef,
+        plan: &pb::ReviewPlan,
+    ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>, Option<humata2_review_diff::CheckedStack>), Status> {
+        let stacked = plan.stack.is_some() || plan.from_stack.is_some();
+        let mut sent = plan.clone();
+        if stacked {
+            if sent.spec.as_ref().is_some_and(|spec| !spec.repos.is_empty()) {
+                return Err(status::invalid_field(
+                    "spec",
+                    pb::invalid_field::Problem::NotAllowedHere,
+                    "a review plan sends a stack or a spec, not both",
+                    "drop `spec`; the daemon shows the whole stack",
+                ));
+            }
+            sent.spec = Some(pb::DiffSpec::default());
+        }
+        let mut plan = wire::plan_from_pb(&sent).map_err(|error| wire_failed("review_plan", &error))?;
+        plan.check_importance()
+            .map_err(|error| importance_failed("review_plan.importance", &error))?;
+        if stacked {
+            let (plan, diffs, checked) = self.checked_stack_plan(caller, record, session, plan).await?;
+            return Ok((plan, diffs, Some(checked)));
+        }
         let asked_repos: Vec<pb::RepoRef> = plan.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
         let keys = repo_keys(&self.inner, record, &asked_repos).await?;
         self.require_read(caller, session, &keys)?;
@@ -399,7 +450,7 @@ impl Review {
                 .await
                 .map_err(|error| anchor_failed(&error))?;
         }
-        Ok((plan, diffs))
+        Ok((plan, diffs, None))
     }
 }
 
@@ -598,9 +649,15 @@ impl pb::diff_service_server::DiffService for Review {
             None => {}
         }
         self.refreshed_comments(&record, &review).await?;
+        let agent = lock(&review.chat).chat.view().agent_importance();
+        let (diffs, tiers) = served_tiers(&clones, diffs, agent).await?;
         Ok(Response::new(pb::GetDiffResponse {
             any_changes: diffs.iter().any(|diff| !diff.files.is_empty()),
-            repos: diffs.iter().map(wire::repo_diff_to_pb).collect(),
+            repos: diffs
+                .iter()
+                .zip(&tiers)
+                .map(|(diff, tiers)| wire::repo_diff_to_pb_with_tiers(diff, tiers))
+                .collect(),
         }))
     }
 
@@ -827,7 +884,14 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             Some(place) => selected_text(&record.folder, place).await,
             None => Vec::new(),
         };
-        Ok(Response::new(wire::context_to_pb(&context, selected)))
+        let mut answer = wire::context_to_pb(&context, selected);
+        if let Some(stack) = context.view.stack.as_ref()
+            && let Some(told) = self.context_stack(&record, &review, stack).await
+            && let Some(view) = answer.view.as_mut()
+        {
+            view.stack = Some(told);
+        }
+        Ok(Response::new(answer))
     }
 
     async fn report_review_view(
@@ -860,10 +924,23 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         if let Some(Answer::Focused(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
-        let (place, highlights) =
-            wire::focus_from_pb(&request).map_err(|error| wire_failed("file", &error))?;
-        let shown = lock(&review.shown).clone();
-        let change = {
+        let layer = stack::layer_asked(&request)?;
+        // A layer with no file only moves the layer; with a file, the layer
+        // moves first and the file is opened in it.
+        let file_asked = request.file.is_some() || !request.highlights.is_empty();
+        let moved = match layer {
+            Some(layer) => {
+                let mut chat = lock(&review.chat);
+                let change = chat.chat.focus_layer(layer).map_err(|error| chat_failed(&error))?;
+                chat.at.insert(change.seq, now());
+                Some(change)
+            }
+            None => None,
+        };
+        let change = if file_asked || moved.is_none() {
+            let (place, highlights) =
+                wire::focus_from_pb(&request).map_err(|error| wire_failed("file", &error))?;
+            let shown = lock(&review.shown).clone();
             let mut chat = lock(&review.chat);
             let change = chat
                 .chat
@@ -872,6 +949,12 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             let at = now();
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
+        } else if let Some(change) = moved {
+            let chat = lock(&review.chat);
+            let at = chat.at.get(&change.seq).copied().unwrap_or_else(now);
+            wire::change_to_pb(&change, at)
+        } else {
+            return Err(status::missing("file"));
         };
         remember(&review, idempotency, Answer::Focused(change.clone()));
         self.publish(&caller, &record, &review, change.seq).await?;
@@ -1293,7 +1376,10 @@ impl pb::view_service_server::ViewService for Review {
             .switches()
             .allow(ChatTool::Prepare)
             .map_err(|error| chat_failed(&error))?;
-        let (plan, diffs) = self.checked_plan(&caller, &record, &session, &plan).await?;
+        let (plan, diffs, checked) = self.checked_plan_with_stack(&caller, &record, &session, &plan).await?;
+        if let Some(checked) = checked {
+            Self::keep_stack(&review, checked, plan.from_stack.clone());
+        }
         // What the plan compares is what the review shows from now on.
         {
             let mut shown = lock(&review.shown);
@@ -1660,6 +1746,7 @@ fn undo_to_stored(entry: &Undoable, session: &str) -> stored::ReviewUndo {
             added,
             stack,
             layer,
+            importance,
         } => {
             added_notes.clone_from(added);
             Before::Order(view(ViewState {
@@ -1667,6 +1754,7 @@ fn undo_to_stored(entry: &Undoable, session: &str) -> stored::ReviewUndo {
                 groups: groups.clone(),
                 stack: stack.clone(),
                 layer: layer.clone(),
+                importance: importance.clone(),
                 ..ViewState::default()
             }))
         }
@@ -1720,6 +1808,7 @@ fn undo_from_stored(entry: stored::ReviewUndo) -> Option<Undoable> {
                 added: entry.added_notes,
                 stack: view.stack,
                 layer: view.layer,
+                importance: view.importance,
             }
         }
     };
@@ -1870,6 +1959,16 @@ fn plan_failed(error: &PlanError) -> Status {
                 problem: pb::invalid_field::Problem::NotAllowedHere as i32,
             }),
         ),
+    )
+}
+
+/// A plan or layer that named a file twice in its importance list (D802).
+fn importance_failed(field: &str, error: &humata2_review_diff::ImportanceError) -> Status {
+    status::invalid_field(
+        field,
+        pb::invalid_field::Problem::NotAllowedHere,
+        error.to_string(),
+        "send each file once in `importance`, with the one tier it should have",
     )
 }
 
@@ -2026,6 +2125,31 @@ fn chat_failed(error: &ChatError) -> Status {
             }),
         ),
     )
+}
+
+/// Each diff's file tiers (D802): the agent's `agent` list, else the
+/// daemon's own skims (lockfiles, generated paths, pure renames). Asks git
+/// once per repo off the async threads; hands the diffs back with them.
+async fn served_tiers(
+    clones: &Clones,
+    diffs: Vec<RepoDiff>,
+    agent: Vec<humata2_review_diff::Importance>,
+) -> Result<(Vec<RepoDiff>, Vec<HashMap<String, humata2_review_diff::Tier>>), Status> {
+    let checkouts = diffs
+        .iter()
+        .map(|diff| clones.get(&diff.repo).cloned())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| diff_failed(&error))?;
+    let (diffs, tiers) = blocking(move || {
+        let tiers = diffs
+            .iter()
+            .zip(&checkouts)
+            .map(|(diff, checkout)| humata2_review_diff::tiers_blocking(checkout, diff, &agent))
+            .collect::<Result<Vec<_>, _>>();
+        (diffs, tiers)
+    })
+    .await?;
+    Ok((diffs, tiers.map_err(|error| diff_failed(&error))?))
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, Status> {

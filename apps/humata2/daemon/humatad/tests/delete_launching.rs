@@ -48,6 +48,7 @@ async fn deleting_ends_an_agent_saved_as(state: AgentState) {
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: None,
         })
         .await
         .unwrap()

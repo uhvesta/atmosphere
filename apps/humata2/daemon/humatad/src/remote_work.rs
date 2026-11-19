@@ -1057,6 +1057,32 @@ impl RemoteWork {
         self.stop_on(machine, session, true).await
     }
 
+    /// Freezes (`thaw` false) or thaws the agent of session `session` on
+    /// `machine` for a move (D801 J): its program is stopped with SIGSTOP and
+    /// its holder keeps serving the frozen screen, so it can't overlap the
+    /// copy that starts on the new machine. Answers whether an agent ran
+    /// there to freeze or thaw. A machine whose daemon is older than the
+    /// freeze asks for `Unimplemented`, which the caller turns into Outdated
+    /// naming Migrate; nothing was stopped.
+    pub(crate) async fn freeze_session_on(
+        &self,
+        machine: &str,
+        session: &str,
+        thaw: bool,
+    ) -> Result<bool, RemoteError> {
+        let relayed = self.inner.links.relayed(machine)?;
+        let request = pb::FreezeSessionRequest {
+            id: Some(pb::SessionId { value: session.to_owned() }),
+            thaw,
+        };
+        let answered = relayed
+            .session()
+            .freeze_session(assigned(request, None)?)
+            .await
+            .map_err(|source| call_failed(machine, if thaw { "let the agent run again" } else { "pause the agent" }, source))?;
+        Ok(answered.into_inner().ran)
+    }
+
     async fn stop_on(
         &self,
         machine: &str,
@@ -2326,6 +2352,16 @@ mod tests {
                 status: pb::SessionStatus::Idle as i32,
                 ..pb::Session::default()
             }))
+        }
+
+        async fn freeze_session(
+            &self,
+            request: Request<pb::FreezeSessionRequest>,
+        ) -> Result<Response<pb::FreezeSessionResponse>, Status> {
+            let request = request.into_inner();
+            let id = request.id.map(|id| id.value).unwrap_or_default();
+            lock(&self.state).calls.push(format!("freeze_session:{id}:{}", request.thaw));
+            Ok(Response::new(pb::FreezeSessionResponse { ran: true }))
         }
 
         async fn resume_session(&self, request: Request<pb::ResumeSessionRequest>) -> Result<Response<pb::Operation>, Status> {

@@ -8,6 +8,7 @@ use humata2_clients::model::{
     MachineId, PushChoice, PushPlan, Recovery, RepoBases, RepoDiff, RequestId, Restart,
     RuleSetting, Scope, SessionId, SessionOptions, SetupId, TransferId,
 };
+use humata2_clients::progress::{OpKind, OpUpdate};
 use humata2_clients::{
     AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, HolderTab, PastTurn,
     Reply, RunningHolder, SwitchChange, UnpushedWork,
@@ -29,20 +30,10 @@ impl Shared {
         mut operation: pb::Operation,
         what: &str,
     ) -> Result<pb::Operation, DaemonError> {
-        while operation.state == pb::OperationState::Running as i32 {
-            // On the client's runtime: the caller may be polled elsewhere,
-            // and a tokio sleep needs the runtime from when it is made.
-            let _ = self.spawn(async { tokio::time::sleep(POLL).await }).await;
-            let Some(id) = operation.id.clone() else {
-                break;
-            };
-            operation = self
-                .operations()
-                .get_operation(pb::GetOperationRequest { id: Some(id) })
-                .await
-                .map_err(|status| self.error(&status, what))?
-                .into_inner();
-        }
+        let mut shown = None;
+        let polled = self.poll_until_stopped(&mut operation, &mut shown, what).await;
+        self.clear_progress(shown);
+        polled?;
         if operation.state == pb::OperationState::Succeeded as i32 {
             return Ok(operation);
         }
@@ -54,6 +45,61 @@ impl Shared {
             what: what.to_owned(),
             reason,
         })
+    }
+
+    /// Polls an operation every [`POLL`] until it stops running, publishing
+    /// its running step as it moves (PROGRESS).
+    async fn poll_until_stopped(
+        &self,
+        operation: &mut pb::Operation,
+        shown: &mut Option<OpUpdate>,
+        what: &str,
+    ) -> Result<(), DaemonError> {
+        self.show_progress(operation, shown);
+        while operation.state == pb::OperationState::Running as i32 {
+            // On the client's runtime: the caller may be polled elsewhere,
+            // and a tokio sleep needs the runtime from when it is made.
+            let _ = self.spawn(async { tokio::time::sleep(POLL).await }).await;
+            let Some(id) = operation.id.clone() else {
+                break;
+            };
+            *operation = self
+                .operations()
+                .get_operation(pb::GetOperationRequest { id: Some(id) })
+                .await
+                .map_err(|status| self.error(&status, what))?
+                .into_inner();
+            self.show_progress(operation, shown);
+        }
+        Ok(())
+    }
+
+    /// Publishes an operation's update when it differs from the one last
+    /// published (`shown`). Nothing is published for a kind no dialog
+    /// follows, or for an update with no running step before any was shown.
+    fn show_progress(&self, operation: &pb::Operation, shown: &mut Option<OpUpdate>) {
+        let Some(update) = map::op_update(operation) else {
+            return;
+        };
+        if update.kind == OpKind::Other
+            || (shown.is_none() && update.progress.is_none())
+            || shown.as_ref() == Some(&update)
+        {
+            return;
+        }
+        self.publish(Event::Operation(update.clone()));
+        *shown = Some(update);
+    }
+
+    /// Ends the progress line a dialog draws: when the last published update
+    /// still had a running step, publishes it again without one.
+    fn clear_progress(&self, shown: Option<OpUpdate>) {
+        if let Some(last) = shown.filter(|last| last.progress.is_some()) {
+            self.publish(Event::Operation(OpUpdate {
+                progress: None,
+                ..last
+            }));
+        }
     }
 
     /// The daemon's last start: `None` while it isn't known yet (the
@@ -698,6 +744,7 @@ impl Shared {
                 }),
                 choice: choice as i32,
                 plan: plan.token,
+                end: None,
             })
             .await
             .map_err(|status| self.error(&status, "Archiving the session"))?
@@ -882,6 +929,12 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         let (session, base) = (session.clone(), base.clone());
         Box::pin(async move { shared.session_diffs(&session, &base).await })
+    }
+
+    fn repo_diff(&self, session: &SessionId, base: &DiffBase, repo: &str) -> Reply<Vec<RepoDiff>> {
+        let shared = self.shared.clone();
+        let (session, base, repo) = (session.clone(), base.clone(), repo.to_owned());
+        Box::pin(async move { shared.repo_diff(&session, &base, &repo).await })
     }
 
     fn bases(&self, session: &SessionId, repo: &str) -> Reply<RepoBases> {

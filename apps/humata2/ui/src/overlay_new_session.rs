@@ -356,6 +356,13 @@ impl Overlays {
                         .disabled(sheet_state.creating),
                     ),
             )
+            .children(
+                sheet_state
+                    .progress
+                    .as_ref()
+                    .filter(|_| sheet_state.creating)
+                    .map(|p| widgets::progress_line(look, p, Some(ui.clients().daemon.now_ms()))),
+            )
             .focus_trap("new-session-trap", &self.title.focus_handle(cx))
             .into_any_element()
     }

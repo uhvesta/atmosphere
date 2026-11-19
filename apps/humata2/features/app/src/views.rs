@@ -31,6 +31,8 @@ pub struct Snapshot {
     board: Scope,
     targets: Option<DiffTargets>,
     plan: Option<PlanView>,
+    /// The stack layer showing, by title; goes back with the plan (D800).
+    layer: Option<String>,
 }
 
 impl Snapshot {
@@ -50,6 +52,7 @@ impl Snapshot {
             board: state.board.scope.clone(),
             targets: state.review.targets.get(session).cloned(),
             plan: state.review.plans.get(session).cloned(),
+            layer: state.review.layer.get(session).cloned().flatten(),
         }
     }
 }
@@ -275,14 +278,22 @@ impl App {
             }
             ViewContent::ReviewPlan(plan) => {
                 let targets = plan.targets.clone();
+                let stacked = plan.stack.is_some();
                 state.review.plans.insert(session.clone(), plan);
+                // A stack opens at Whole stack (D800).
+                state.review.layer.remove(&session);
                 let go = self.go_to_session(state, &session);
                 let panel = self.handle(
                     state,
                     AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
                 );
                 let mut effects = vec![go, panel];
-                for RepoDiffSpec { repo, base } in targets {
+                if stacked {
+                    // The layers' repositories decide what is read; the
+                    // plan's own bases are not applied as picks.
+                    effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
+                }
+                for RepoDiffSpec { repo, base } in targets.into_iter().filter(|_| !stacked) {
                     effects.push(self.child(
                         state,
                         AppAction::Review(ReviewAction::PickRepoBase {
@@ -350,6 +361,18 @@ impl App {
                 state.full_screens.remove(&session);
             }
         }
+        let stack_before = (
+            state.review.plans.get(&session).map(|plan| plan.stack.clone()),
+            state.review.layer.get(&session).cloned().flatten(),
+        );
+        match snap.layer.clone() {
+            Some(layer) => {
+                state.review.layer.insert(session.clone(), Some(layer));
+            }
+            None => {
+                state.review.layer.remove(&session);
+            }
+        }
         match snap.plan {
             Some(plan) => {
                 state.review.plans.insert(session.clone(), plan);
@@ -367,6 +390,14 @@ impl App {
         }
         // The diff bases go back as they were, and the diff is read again
         // when they differ. Comments are not touched here.
+        let stack_after = (
+            state.review.plans.get(&session).map(|plan| plan.stack.clone()),
+            snap.layer.clone(),
+        );
+        let stack_changed = stack_before != stack_after;
+        if stack_changed && state.route == Route::Session(session.clone()) {
+            effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
+        }
         if state.review.targets.get(&session) != snap.targets.as_ref() {
             match snap.targets {
                 Some(targets) => {

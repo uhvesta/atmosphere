@@ -80,19 +80,25 @@ fn fingerprint(codex: &str) -> String {
         .collect()
 }
 
-/// The kinds whose args carry `codex`.
+/// The kinds whose args carry `codex`. A value that is only the argument
+/// right after `--hooks` is the `humata codex` wrapper's own flag, not a
+/// hook Codex runs, so it doesn't count.
 fn carrying(agents: &Agents, codex: &str) -> HashSet<String> {
     agents
         .kinds()
         .iter()
-        .filter(|kind| {
-            kind.start_args
-                .iter()
-                .chain(&kind.resume_args)
-                .any(|arg| arg.contains(codex))
-        })
+        .filter(|kind| carries(&kind.start_args, codex) || carries(&kind.resume_args, codex))
         .map(|kind| kind.name.clone())
         .collect()
+}
+
+/// Whether `args` hand Codex `codex` anywhere but as the wrapper's `--hooks`
+/// value.
+fn carries(args: &[String], codex: &str) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        let wrapper_flag = index > 0 && args[index - 1] == "--hooks" && arg == codex;
+        arg.contains(codex) && !wrapper_flag
+    })
 }
 
 fn save_heard(store: &Store, fingerprint: &str) -> Result<(), StoreError> {
@@ -146,5 +152,22 @@ mod tests {
         let kinds = carrying(&agents, "H");
         assert!(kinds.contains("codex"));
         assert!(!kinds.contains("plain"));
+    }
+
+    #[test]
+    fn the_wrapped_codex_needs_no_trust_step() {
+        // `humata codex` reads Codex's app-server (D795) and hands plain
+        // Codex the hooks only when that fails, so its kind shows no step.
+        let agents = Agents::from_json(
+            br#"[
+                {"name":"codex","program":"/usr/bin/env","start_args":["{humata}","codex","--hooks","{codex_hooks}","--"],"resume_args":[],"conversation_file":"x"},
+                {"name":"mine","program":"codex","start_args":["-c","hooks={codex_hooks}"],"resume_args":[],"conversation_file":"x"}
+            ]"#,
+        )
+        .expect("kinds")
+        .with_agent_hooks("H", std::path::Path::new("/p"));
+        let kinds = carrying(&agents, "H");
+        assert!(!kinds.contains("codex"));
+        assert!(kinds.contains("mine"));
     }
 }

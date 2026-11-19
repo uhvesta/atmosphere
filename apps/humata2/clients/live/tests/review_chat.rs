@@ -128,6 +128,8 @@ async fn switches_are_kept_and_focus_is_refused_while_it_is_off(
                 lines: None,
                 side: Side::New,
                 highlights: Vec::new(),
+                layer: None,
+                whole_stack: false,
             },
         ),
     )

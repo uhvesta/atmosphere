@@ -76,6 +76,7 @@ impl Fixture {
                 id: Some(id.clone()),
                 choice: choice as i32,
                 plan: plan.token,
+                end: Some(true),
             })
             .await
             .unwrap()
@@ -243,6 +244,7 @@ async fn plain_archive_is_refused_while_there_is_unpushed_work() {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+                end: Some(true),
         })
         .await
         .unwrap_err();
@@ -421,22 +423,26 @@ async fn an_archive_cut_short_is_finished_at_restart() {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+                end: Some(true),
         })
         .await;
     wait_dead(&fixture.daemon).await;
     fixture.daemon.restart().await;
     last_start(&fixture.daemon).await;
-    wait_gone(&folder_of(&session)).await;
+    // Inside its undo window, so its folder is kept.
     let archived = get_session(&fixture.daemon, &id).await;
     assert_eq!(archived.status, Status::Archived as i32);
     assert!(archived.archive.is_some());
-    // Its agent is not brought back.
+    assert!(folder_of(&session).exists());
+    // It was asked to end its terminals, and the restart that finishes it
+    // keeps that choice (D801 F).
     let tabs = common::stored_tabs(&fixture.daemon.state);
     assert!(
-        tabs.iter()
+        !tabs
+            .iter()
             .filter(|t| t.session.as_deref() == Some(id.value.as_str()))
-            .all(|t| !common::holder_answers(t)),
-        "an archived session's agent is stopped"
+            .any(common::holder_answers),
+        "a cut archive asked to end its terminals left them running"
     );
 }
 
@@ -494,6 +500,7 @@ async fn an_archive_cut_before_it_is_recorded_leaves_the_session_running() {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+                end: Some(true),
         })
         .await;
     wait_dead(&fixture.daemon).await;
@@ -527,22 +534,28 @@ async fn an_archive_cut_at_any_point_is_finished_at_restart() {
                 id: Some(id.clone()),
                 choice: pb::ArchiveChoice::Archive as i32,
                 plan: plan.token,
+                end: Some(true),
             })
             .await;
         wait_dead(&fixture.daemon).await;
         fixture.daemon.restart_env(&[(UNDO_WINDOW, "0")]).await;
         last_start(&fixture.daemon).await;
+        // The choice to end its terminals is kept with the archive, so the
+        // restart ends them wherever it was cut (D801 F), then frees the folder.
+        let still_running = false;
         wait_gone(&folder_of(&session)).await;
         let archived = get_session(&fixture.daemon, &id).await;
         assert_eq!(archived.status, Status::Archived as i32, "cut at {point}");
         assert!(archived.archive.is_some(), "cut at {point}");
         let tabs = common::stored_tabs(&fixture.daemon.state);
-        assert!(
+        assert_eq!(
             tabs.iter()
                 .filter(|t| t.session.as_deref() == Some(id.value.as_str()))
-                .all(|t| !common::holder_answers(t)),
-            "cut at {point}: an archived session's agent is stopped"
+                .any(common::holder_answers),
+            still_running,
+            "cut at {point}"
         );
+        assert_eq!(folder_of(&session).exists(), still_running, "cut at {point}");
     }
 }
 

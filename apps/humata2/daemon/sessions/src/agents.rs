@@ -239,6 +239,24 @@ impl humata2_revive::CliVersions for Agents {
             }
         })
     }
+
+    /// D801 D: a conversation follows its agent's folder, as a rename does
+    /// for an agent that was stopped (`follow_folder`), once the agent that
+    /// kept running under the old folder is resumed.
+    fn follow<'a>(&'a self, step: &'a humata2_revive::FollowStep) -> humata2_revive::Followed<'a> {
+        Box::pin(async move {
+            let (agents, step) = (self.clone(), step.clone());
+            let refused = |reason: String| humata2_revive::FollowFailed { reason };
+            tokio::task::spawn_blocking(move || {
+                let kind = agents.get(&step.agent).map_err(|error| refused(error.to_string()))?;
+                kind.follow_folder(&step.home, &step.id, &step.file, &step.from, &step.to, &step.scratch)
+                    .map(|_| ())
+                    .map_err(|error| refused(error.to_string()))
+            })
+            .await
+            .map_err(|error| refused(format!("the task that moves the conversation stopped: {error}")))?
+        })
+    }
 }
 
 /// Why an agent's conversation gave no turns ([`AgentKind::turns`]).
@@ -646,28 +664,43 @@ fn opencode() -> AgentKind {
     }
 }
 
-/// Codex (codex-cli 0.169.0), with its hooks given as `-c hooks=…`
-/// (HOOKS, D193). It can't be started on a given id, so its conversation is
-/// found once written (D670) and resumed by the id it wrote. Its rollout is
-/// under `{home}/.codex/sessions/YYYY/MM/DD/`; until it is found the file
-/// named here is one that is never there.
+/// Codex (codex-cli 0.169.0), run by the `humata codex` wrapper (D795). The
+/// wrapper reads Codex's app-server, names the thread as the conversation,
+/// and passes asks to the Inbox. It hands Humata's hooks to plain Codex
+/// (`-c hooks=…`, HOOKS, D193) only when the app-server can't be had. Codex
+/// can't be started on a given id, so its conversation is found once written
+/// (D670) and resumed by the id it wrote. Its rollout is under
+/// `{home}/.codex/sessions/YYYY/MM/DD/`; until it is found the file named
+/// here is one that is never there. The version check runs plain `codex`,
+/// not the wrapper.
 fn codex() -> AgentKind {
+    let args: Vec<String> = [
+        "HUMATA_SOCKET={humata_socket}",
+        "{humata}",
+        "codex",
+        "--hooks",
+        "{codex_hooks}",
+        "--",
+    ]
+    .map(String::from)
+    .into();
+    let resume_args: Vec<String> = args
+        .iter()
+        .cloned()
+        .chain(["resume".to_owned(), "{conversation}".to_owned()])
+        .collect();
     AgentKind {
         name: "codex".into(),
         display_name: None,
-        program: "codex".into(),
-        start_args: vec!["-c".into(), "hooks={codex_hooks}".into()],
-        resume_args: vec![
-            "resume".into(),
-            "{conversation}".into(),
-            "-c".into(),
-            "hooks={codex_hooks}".into(),
-        ],
+        // Sets the socket the wrapper talks to, with no shell between.
+        program: "/usr/bin/env".into(),
+        start_args: args,
+        resume_args,
         conversation_file: "{home}/.codex/sessions/{conversation}.jsonl".into(),
         turn_end: TurnEnd::Hooks,
         conversation_format: ConversationFormat::CodexRollout,
         cli_home: None,
-        version_args: None,
+        version_args: Some(vec!["codex".into(), "--version".into()]),
         conversation_id: ConversationId::FoundInFolder,
         model_args: model_flag(),
         builtin: Some(Builtin::Codex),
@@ -1444,10 +1477,17 @@ mod tests {
         assert_eq!(plan.resume_argv, plan.argv, "the same id starts and resumes it");
         assert_eq!(plan.conversation_file, home.join(".copilot/session-state/abc/events.jsonl"));
         assert_eq!(copilot.turn_end, TurnEnd::Hooks);
-        let codex = agents.get("codex").unwrap();
+        // Codex runs under `humata codex` (D795), which reads its app-server
+        // and hands Humata's hooks to plain Codex only when that fails.
+        let wrapped = Agents::builtin()
+            .with_agent_hooks("{ Stop = [] }", Path::new("/state/copilot-plugin"))
+            .with_wrapper(Path::new("/bin/humata"), Path::new("/run/h.sock"), Path::new("/state"));
+        let codex = wrapped.get("codex").unwrap();
         let plan = codex.launch(home, folder, "abc");
-        assert_eq!(plan.argv, ["codex", "-c", "hooks={ Stop = [] }"]);
-        assert_eq!(plan.resume_argv, ["codex", "resume", "abc", "-c", "hooks={ Stop = [] }"]);
+        let wrapper = ["/usr/bin/env", "HUMATA_SOCKET=/run/h.sock", "/bin/humata", "codex", "--hooks", "{ Stop = [] }", "--"];
+        assert_eq!(plan.argv, wrapper);
+        let resume: Vec<&str> = wrapper.iter().copied().chain(["resume", "abc"]).collect();
+        assert_eq!(plan.resume_argv, resume);
         assert_eq!(codex.turn_end, TurnEnd::Hooks);
         assert_eq!(codex.conversation_format, ConversationFormat::CodexRollout);
         let moved = Agents::builtin()

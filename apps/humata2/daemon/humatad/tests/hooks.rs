@@ -36,6 +36,11 @@ const COPILOT_PROVIDER_IMPORT: &str = r#"{"sessionId":"c0p1","timestamp":1763251
 /// Claude's Stop payload: not a permission ask.
 const CLAUDE_STOP: &str = r#"{"session_id":"abc123","hook_event_name":"Stop","stop_hook_active":false}"#;
 
+/// Claude's Notification payload for a permission prompt (D798).
+const CLAUDE_PERMISSION_PROMPT: &str = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/work/api","hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#;
+/// The same hook for a Claude that only sits idle.
+const CLAUDE_IDLE_PROMPT: &str = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/work/api","hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#;
+
 /// The test agent: every line typed to it is answered, except
 /// `run:<command>`, which it runs, as an agent runs a hook's command.
 fn agent_script(world: &World) -> String {
@@ -46,6 +51,9 @@ case "$mode" in
   --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
   --resume) f="$CONV_DIR/$id.jsonl" ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do
   case "$line" in
@@ -698,4 +706,114 @@ async fn a_question_whose_hook_lets_go_is_withdrawn_and_another_tool_raises_none
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     fix.wait_not_needing_you().await;
+}
+
+impl Fixture {
+    /// Sends the session's agent's Notification hook and returns its reply.
+    async fn notify(&self, token: &str, payload: &str) -> Vec<u8> {
+        let mut stream = pb::session_service_client::SessionServiceClient::new(self.daemon.channel().await)
+            .hook(as_agent(
+                pb::HookRequest {
+                    agent: "claude".to_owned(),
+                    event: "notification".to_owned(),
+                    payload: payload.as_bytes().to_vec(),
+                },
+                token,
+            ))
+            .await
+            .expect("the notification hook is taken")
+            .into_inner();
+        last_reply(&mut stream).await
+    }
+
+    /// The session's agent reports its turn, as `humata turn` does.
+    async fn report_turn(&self, token: &str, state: pb::TurnState) {
+        pb::session_service_client::SessionServiceClient::new(self.daemon.channel().await)
+            .report_turn(as_agent(
+                pb::ReportTurnRequest {
+                    state: state as i32,
+                    reported_at_unix_ns: 0,
+                },
+                token,
+            ))
+            .await
+            .expect("the turn is reported");
+    }
+
+    async fn wait_withdrawn(&self, id: &pb::RequestId) -> pb::InboxRequest {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let now = self.request(id).await;
+            if now.state == pb::RequestState::Withdrawn as i32 {
+                return now;
+            }
+            assert!(Instant::now() < deadline, "the card was never withdrawn");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// D798: a Claude Notification of a permission prompt, with no ask held
+/// for the session, raises one card that says what Claude shows; the hook
+/// itself ends at once with no decision.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_permission_prompt_notification_raises_one_card() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    assert!(fix.notify(&token, CLAUDE_PERMISSION_PROMPT).await.is_empty());
+    let card = fix.wait_pending(1).await.remove(0);
+    assert!(command_of(&card).contains("needs your permission"));
+    // A second notice for the same wait is the same card.
+    assert!(fix.notify(&token, CLAUDE_PERMISSION_PROMPT).await.is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fix.pending().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_prompt_or_an_unreadable_notification_raises_no_card() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    for payload in [CLAUDE_IDLE_PROMPT, "not json", CLAUDE_STOP] {
+        assert!(fix.notify(&token, payload).await.is_empty(), "{payload}");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(fix.pending().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notification_raises_no_card_when_the_agents_asks_stay_in_its_terminal() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    fix.asks_in_inbox(common::AGENT_NAME, false).await;
+    assert!(fix.notify(&token, CLAUDE_PERMISSION_PROMPT).await.is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(fix.pending().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notification_card_is_withdrawn_when_the_session_reports_a_turn() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    for state in [pb::TurnState::Working, pb::TurnState::Idle] {
+        fix.notify(&token, CLAUDE_PERMISSION_PROMPT).await;
+        let id = fix.wait_pending(1).await.remove(0).id.expect("card has an id");
+        fix.report_turn(&token, state).await;
+        fix.wait_withdrawn(&id).await;
+        assert!(fix.answer(&id, deny("")).await.is_err());
+    }
+}
+
+/// D798: every held ask goes at a turn's end, though its hook stays; an
+/// answer that comes after does nothing, and the hook gets no decision.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_permission_card_is_withdrawn_as_resolved_when_the_turn_ends() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    let mut stream = fix.hold(&token, "claude", CLAUDE_BASH).await;
+    let id = fix.wait_pending(1).await.remove(0).id.expect("card has an id");
+    fix.report_turn(&token, pb::TurnState::Idle).await;
+    let now = fix.wait_withdrawn(&id).await;
+    assert_eq!(now.withdraw_reason, pb::WithdrawReason::Resolved as i32);
+    assert!(fix.answer(&id, approve()).await.is_err());
+    assert!(last_reply(&mut stream).await.is_empty());
 }

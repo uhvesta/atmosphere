@@ -536,7 +536,15 @@ pub(super) fn forget(session: &str, holder_pid: u32) {
     {
         inner.agents.remove(session);
         inner.pending.remove(session);
+        drop(inner);
+        // Anything waiting on this agent to be up hears it is gone.
+        REGISTRY.bump();
     }
+}
+
+/// Whether `session` has a running agent's turn inputs.
+pub(super) fn is_up(session: &str) -> bool {
+    REGISTRY.lock().agents.contains_key(session)
 }
 
 /// Saves a hook `enter` took up from those heard while the agent launched.
@@ -632,6 +640,14 @@ impl SessionSvc {
         };
         self.inbox.hook_heard(&agent.agent).await;
         let session = agent.session.id.to_string();
+        // D798: a turn that ends settles every ask held for it, though its
+        // hook stays; one that starts only drops the "waiting in its
+        // terminal" card.
+        match hook {
+            Hook::Idle => self.inbox.withdraw_held(&session).await,
+            Hook::Working => self.inbox.withdraw_notice(&session).await,
+            Hook::NeedsInput => {}
+        }
         let timed = source_of(&agent.agent) != pb::TurnEndSource::None;
         let ok = || Ok(Response::new(pb::ReportTurnResponse {}));
         if already_known(&session, hook, at) {
@@ -842,8 +858,14 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
             hooks.push(conversation.clone());
         }
     }
+    // D798: Claude's own "waiting in its terminal" prompts, reported async.
+    let notification = serde_json::json!([{
+        "matcher": "permission_prompt|elicitation_dialog",
+        "hooks": [humata2_agent_hooks::claude_notification_hook(humata, socket)],
+    }]);
     serde_json::json!({
         "hooks": {
+            "Notification": notification,
             "SessionStart": session_start,
             "UserPromptSubmit": prompt,
             "PostToolBatch": group(None, "working"),
@@ -1120,7 +1142,20 @@ mod tests {
         assert!(hooks["SessionStart"][0].get("matcher").is_none());
         assert!(hooks["Stop"][0].get("matcher").is_none());
         assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
-        assert_eq!(hooks.len(), 10);
+        assert_eq!(hooks.len(), 11);
+        // D798: Claude's own "waiting" prompts are reported, without
+        // blocking it.
+        assert_eq!(
+            hooks["Notification"][0]["matcher"],
+            "permission_prompt|elicitation_dialog"
+        );
+        assert_eq!(hooks["Notification"][0]["hooks"][0]["async"], true);
+        assert!(
+            hooks["Notification"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(" hook claude notification ")
+        );
     }
 
     #[test]

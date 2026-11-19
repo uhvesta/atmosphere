@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::comments::{Anchor, CommentId, Side};
 use crate::daemon::Reply;
 use crate::model::{RepoDiffSpec, SessionId};
-use crate::views::{PlanGroup, PlanView};
+use crate::views::{PlanGroup, PlanView, StackView};
 
 pub mod fake;
 
@@ -85,6 +85,10 @@ pub struct ReviewView {
     pub viewed: Vec<ViewedFile>,
     /// What the agent highlighted.
     pub highlights: Vec<Highlight>,
+    /// The stack the review shows (D800); `None` for a plain review.
+    pub stack: Option<StackView>,
+    /// The layer showing, by title; `None` for Whole stack.
+    pub layer: Option<String>,
 }
 
 /// A note the agent left for the person, shown under its lines and never
@@ -147,6 +151,8 @@ pub enum ReviewChangeKind {
     NoteDropped(CommentId),
     /// The plan of how to review was prepared (`review_prepare`).
     Plan(PlanView),
+    /// The view moved to a stack layer (D800); `None` is Whole stack.
+    Layer(Option<String>),
 }
 
 /// One change to the review's view, as the app applies it and the chat shows
@@ -186,6 +192,10 @@ pub struct FocusRequest {
     pub side: Side,
     /// Highlights to set; empty clears them.
     pub highlights: Vec<Highlight>,
+    /// The stack layer to show, by title; `None` keeps the layer showing.
+    pub layer: Option<String>,
+    /// Show the Whole stack (D800); wins over `layer`.
+    pub whole_stack: bool,
 }
 
 /// The stream [`ReviewChatClient::watch_changes`] returns.

@@ -119,7 +119,7 @@ async fn an_agent_started_on_a_box_after_the_value_was_set_there_sees_it() {
     let out = home.join("env-out");
     std::fs::create_dir_all(&out).unwrap();
     let script = format!(
-        "CONV_DIR='{conv}'\nOUT='{out}'\nmode=$1; id=$2\ncase \"$mode\" in\n  --session-id) f=\"$CONV_DIR/$id.jsonl\"; : > \"$f\" ;;\n  --resume) f=\"$CONV_DIR/$id.jsonl\" ;;\nesac\nprintf '%s\\n' \"$@\" > \"$OUT/argv-$id.args\"\nenv > \"$OUT/env-$id.part\" && mv \"$OUT/env-$id.part\" \"$OUT/env-$id.txt\"\necho \"agent up $mode\"\nwhile IFS= read -r line; do echo \"got: $line\"; done\n",
+        "CONV_DIR='{conv}'\nOUT='{out}'\nmode=$1; id=$2\ncase \"$mode\" in\n  --session-id) f=\"$CONV_DIR/$id.jsonl\"; : > \"$f\" ;;\n  --resume) f=\"$CONV_DIR/$id.jsonl\" ;;\nesac\nprintf '%s\\n' \"$@\" > \"$OUT/argv-$id.args\"\nenv > \"$OUT/env-$id.part\" && mv \"$OUT/env-$id.part\" \"$OUT/env-$id.txt\"\nstty -icanon 2>/dev/null\necho \"agent up $mode\"\nwhile IFS= read -r line; do echo \"got: $line\"; done\n",
         conv = home.join("conv").display(),
         out = out.display()
     );

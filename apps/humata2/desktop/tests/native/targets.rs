@@ -17,6 +17,8 @@ fn changes_app() -> App {
         repo: "api".into(),
         path: "src/client.rs".into(),
     }));
+    // A picked file folds the list into the file bar; these tests use its rows.
+    app.send(AppAction::Review(R::ToggleFileList));
     app
 }
 
@@ -106,6 +108,8 @@ fn a_review_plan_keeps_each_repository_base_above_its_groups() {
         "The migration first, then the client",
         "Claude Code",
         ViewContent::ReviewPlan(PlanView {
+            importance: Vec::new(),
+            stack: None,
             targets: Vec::new(),
             order: vec![
                 entry("acme/ledger", "migrations/0042_accounts.sql"),

@@ -21,6 +21,7 @@ fn hosts_and_settings_reference_images() {
         machine: MachineId::new("devbox-1"),
         stopped: false,
         agent_tab: false,
+        paused_for_move: false,
     });
     app.fakes.daemon.set_running_holders(orphans.to_vec());
     app.fold_quiet_channels();

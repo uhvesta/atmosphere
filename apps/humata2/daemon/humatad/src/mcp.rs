@@ -197,15 +197,19 @@ impl GrpcDaemon {
                     .collect()
             })
             .unwrap_or_default();
+        // Only a layer: the file stays unset and the layer moves.
+        let file = (arguments.contains_key("repo") || arguments.contains_key("path"))
+            .then(|| review::repo_path(arguments));
+        let layer = arguments.get("layer").and_then(Value::as_str);
         let request = self.request(pb::FocusReviewRequest {
             idempotency_key: Some(key(&call)),
             session: Some(session),
-            file: Some(review::repo_path(arguments)),
+            file,
             lines: review::lines(arguments.get("lines")),
             side: review::side(arguments),
             highlights,
-            layer: String::new(),
-            whole_stack: false,
+            layer: layer.filter(|title| !title.is_empty()).unwrap_or_default().to_owned(),
+            whole_stack: layer == Some(""),
         })?;
         let change = self
             .review_chat()
@@ -237,6 +241,7 @@ impl GrpcDaemon {
                 lines,
                 side: review::side(arguments),
                 quoted: text(arguments, "quoted"),
+                layer: text(arguments, "layer"),
                 ..pb::CommentAnchor::default()
             }),
             text: text(arguments, "text"),
@@ -304,7 +309,7 @@ impl GrpcDaemon {
             summary: String::new(),
             content: Some(pb::prepare_view_request::Content::ReviewPlan(review::plan(
                 arguments,
-            ))),
+            )?)),
         })?;
         let prepared = self
             .views()
@@ -786,6 +791,7 @@ impl GrpcDaemon {
             id: Some(id),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: None,
         })?;
         let operation = self
             .sessions()
@@ -2109,6 +2115,7 @@ mod access {
 /// The review tools' arguments and answers, as JSON.
 mod review {
     use humata2_grpc::humata::v1 as pb;
+    use humata2_mcp::{ErrorKind, ToolError};
     use serde_json::{Map, Value, json};
 
     /// `repo` (`owner/name`) and `path` of a tool's arguments.
@@ -2159,24 +2166,146 @@ mod review {
             .filter_map(Value::as_object)
     }
 
-    /// `review_prepare`'s arguments as a plan. The server checked them
-    /// against the schema; the daemon checks them against the diff.
-    pub(super) fn plan(arguments: &Map<String, Value>) -> pb::ReviewPlan {
-        let spec = arguments.get("spec");
-        pb::ReviewPlan {
-            spec: Some(pb::DiffSpec {
-                repos: objects(spec.and_then(|spec| spec.get("repos")))
-                    .map(repo_spec)
-                    .collect(),
-            }),
-            order: objects(arguments.get("order")).map(repo_path).collect(),
-            groups: objects(arguments.get("groups"))
-                .map(|group| pb::ReviewGroup {
-                    title: super::text(group, "title"),
-                    note: super::text(group, "note"),
-                    first: group.get("first").and_then(Value::as_object).map(repo_path),
+    fn invalid(field: &str, problem: &str, message: String, fix: &str) -> ToolError {
+        let mut details = Map::new();
+        details.insert("field".to_owned(), json!(field));
+        details.insert("problem".to_owned(), json!(problem));
+        ToolError {
+            kind: ErrorKind::InvalidField,
+            message,
+            fix: fix.to_owned(),
+            retry: None,
+            details,
+        }
+    }
+
+    fn files(value: Option<&Value>) -> Vec<pb::RepoPath> {
+        objects(value).map(repo_path).collect()
+    }
+
+    fn groups(value: Option<&Value>) -> Vec<pb::ReviewGroup> {
+        objects(value)
+            .map(|group| pb::ReviewGroup {
+                title: super::text(group, "title"),
+                note: super::text(group, "note"),
+                first: group.get("first").and_then(Value::as_object).map(repo_path),
+            })
+            .collect()
+    }
+
+    fn importance(value: Option<&Value>) -> Vec<pb::ReviewImportance> {
+        use pb::review_importance::Tier;
+        objects(value)
+            .map(|file| pb::ReviewImportance {
+                file: Some(repo_path(file)),
+                tier: match file.get("tier").and_then(Value::as_str) {
+                    Some("key") => Tier::Key,
+                    Some("skim") => Tier::Skim,
+                    Some("normal") => Tier::Normal,
+                    _ => Tier::Unspecified,
+                } as i32,
+            })
+            .collect()
+    }
+
+    fn layer_repo(repo: &Map<String, Value>) -> pb::ReviewLayerRepo {
+        use pb::review_layer_repo::Part;
+        let part = if let Some(range) = repo.get("range").and_then(Value::as_object) {
+            Some(Part::Range(pb::ReviewLayerRange {
+                base: super::text(range, "base"),
+                head: super::text(range, "head"),
+            }))
+        } else {
+            repo.get("worktree")
+                .and_then(Value::as_object)
+                .map(|worktree| {
+                    Part::Worktree(pb::ReviewLayerWorktree {
+                        include_paths: strings(worktree.get("include_paths")),
+                    })
+                })
+        };
+        pb::ReviewLayerRepo {
+            repo: repo_path(repo).repo,
+            part,
+            pull_request: super::text(repo, "pull_request"),
+            resolved: None,
+        }
+    }
+
+    fn stack(stack: &Map<String, Value>) -> pb::ReviewStack {
+        pb::ReviewStack {
+            layers: objects(stack.get("layers"))
+                .map(|layer| pb::ReviewLayer {
+                    title: super::text(layer, "title"),
+                    purpose: super::text(layer, "purpose"),
+                    repos: objects(layer.get("repos")).map(layer_repo).collect(),
+                    topic: String::new(),
+                    order: files(layer.get("order")),
+                    groups: groups(layer.get("groups")),
+                    importance: importance(layer.get("importance")),
                 })
                 .collect(),
+        }
+    }
+
+    fn from_stack(from: &Map<String, Value>) -> Result<pb::ReviewFromStack, ToolError> {
+        let mut topics = std::collections::HashMap::new();
+        for topic in objects(from.get("topics")) {
+            let name = super::text(topic, "topic");
+            let entry = pb::ReviewTopicOverride {
+                title: super::text(topic, "title"),
+                purpose: super::text(topic, "purpose"),
+            };
+            if topics.insert(name.clone(), entry).is_some() {
+                return Err(invalid(
+                    "from_stack.topics",
+                    "duplicate",
+                    format!("topic {name:?} is listed more than once in from_stack.topics"),
+                    "list each topic once, with the title and purpose you want for it",
+                ));
+            }
+        }
+        Ok(pb::ReviewFromStack {
+            repo: repo_path(from).repo,
+            tip: super::text(from, "tip"),
+            topics,
+        })
+    }
+
+    /// `review_prepare`'s arguments as a plan. The server checked them
+    /// against the schema; the daemon checks them against the diff.
+    pub(super) fn plan(arguments: &Map<String, Value>) -> Result<pb::ReviewPlan, ToolError> {
+        let spec = arguments.get("spec").and_then(Value::as_object);
+        let stack_arg = arguments.get("stack").and_then(Value::as_object);
+        let from_arg = arguments.get("from_stack").and_then(Value::as_object);
+        if spec.is_some() && (stack_arg.is_some() || from_arg.is_some()) {
+            return Err(invalid(
+                "spec",
+                "conflict",
+                "spec and stack or from_stack were both sent, and they describe different reviews".to_owned(),
+                "send spec for one diff, or stack and/or from_stack for layers the user steps through, not both",
+            ));
+        }
+        if spec.is_none() && stack_arg.is_none() && from_arg.is_none() {
+            return Err(invalid(
+                "spec",
+                "missing",
+                "review_prepare needs to know what to compare".to_owned(),
+                "send spec for one diff, or stack and/or from_stack for layers the user steps through",
+            ));
+        }
+        let spec = spec.map(|spec| pb::DiffSpec {
+            repos: objects(spec.get("repos")).map(repo_spec).collect(),
+        });
+        let stack = stack_arg.map(stack);
+        let from_stack = from_arg.map(from_stack).transpose()?;
+        Ok(pb::ReviewPlan {
+            spec,
+            stack,
+            from_stack,
+            importance: importance(arguments.get("importance")),
+            order: files(arguments.get("order")),
+            groups: groups(arguments.get("groups")),
             notes: objects(arguments.get("notes"))
                 .map(|note| {
                     let (target, lines) =
@@ -2197,12 +2326,12 @@ mod review {
                         lines,
                         side: side(note),
                         text: super::text(note, "text"),
+                        layer: super::text(note, "layer"),
                         ..pb::ReviewNote::default()
                     }
                 })
                 .collect(),
-            stack: None,
-        }
+        })
     }
 
     fn repo_spec(repo: &Map<String, Value>) -> pb::RepoDiffSpec {
@@ -2484,5 +2613,82 @@ mod fork_choice_tests {
     #[test]
     fn an_unknown_kind_is_refused() {
         assert!(fork_choices(&arguments(json!({ "kind": "everything" }))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod review_plan_tests {
+    use super::*;
+
+    fn plan(value: Value) -> Result<pb::ReviewPlan, ToolError> {
+        review::plan(value.as_object().unwrap_or(&Map::new()))
+    }
+
+    #[test]
+    fn from_stack_topics_become_the_map() {
+        let plan = plan(json!({ "from_stack": { "repo": "o/r", "tip": "top", "topics": [
+            { "topic": "a", "title": "Schema" },
+            { "topic": "b", "purpose": "Wire it" },
+        ] } }))
+        .unwrap();
+        let from = plan.from_stack.unwrap();
+        assert_eq!(from.tip, "top");
+        assert_eq!(from.topics["a"].title, "Schema");
+        assert_eq!(from.topics["b"].purpose, "Wire it");
+        assert!(plan.spec.is_none());
+    }
+
+    #[test]
+    fn a_topic_listed_twice_is_refused() {
+        let error = plan(json!({ "from_stack": { "repo": "o/r", "topics": [
+            { "topic": "a" }, { "topic": "a", "title": "x" },
+        ] } }))
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn spec_with_stack_is_refused() {
+        let error = plan(json!({ "spec": { "repos": [] }, "stack": { "layers": [] } })).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn none_of_spec_stack_from_stack_is_refused() {
+        assert!(plan(json!({ "title": "x" })).is_err());
+    }
+
+    #[test]
+    fn a_stack_maps_range_and_worktree_layers() {
+        use pb::review_layer_repo::Part;
+        let plan = plan(json!({ "stack": { "layers": [
+            { "title": "One", "repos": [
+                { "repo": "o/r", "range": { "base": "main", "head": "abc" }, "pull_request": "o/r#3" } ] },
+            { "title": "Two", "repos": [
+                { "repo": "o/r", "worktree": { "include_paths": ["."] } } ],
+              "importance": [ { "repo": "o/r", "path": "a.rs", "tier": "key" } ] },
+        ] }, "notes": [ { "repo": "o/r", "path": "a.rs", "text": "hi", "layer": "Two" } ] }))
+        .unwrap();
+        let layers = plan.stack.unwrap().layers;
+        assert_eq!(layers.len(), 2);
+        let first = &layers[0].repos[0];
+        assert_eq!(first.pull_request, "o/r#3");
+        assert!(matches!(&first.part, Some(Part::Range(r)) if r.base == "main" && r.head == "abc"));
+        assert!(matches!(&layers[1].repos[0].part, Some(Part::Worktree(w)) if w.include_paths == ["."]));
+        assert_eq!(layers[1].importance[0].tier, pb::review_importance::Tier::Key as i32);
+        assert_eq!(plan.notes[0].layer, "Two");
+    }
+
+    #[test]
+    fn importance_tiers_map() {
+        use pb::review_importance::Tier;
+        let plan = plan(json!({ "spec": { "repos": [] }, "importance": [
+            { "repo": "o/r", "path": "a", "tier": "key" },
+            { "repo": "o/r", "path": "b", "tier": "normal" },
+            { "repo": "o/r", "path": "c", "tier": "skim" },
+        ] }))
+        .unwrap();
+        let tiers: Vec<i32> = plan.importance.iter().map(|i| i.tier).collect();
+        assert_eq!(tiers, [Tier::Key as i32, Tier::Normal as i32, Tier::Skim as i32]);
     }
 }

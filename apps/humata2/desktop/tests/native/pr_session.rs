@@ -307,6 +307,28 @@ fn a_draft_for_github_has_edit_and_drop_and_the_footer_counts_the_drafts() {
     assert!(app.contains("review-drafts-3-1"));
 }
 
+/// Submit review… in the Diff footer opens the submit sheet over the review.
+#[test]
+fn submit_review_in_the_footer_opens_the_sheet() {
+    let mut app = review();
+    drafts(&app);
+    shown(&mut app);
+    app.click("diff-submit-review");
+    assert!(app.contains("submit-review-dialog"));
+}
+
+/// With the Diff panel open, the session bar's Submit review is hidden while
+/// the footer's stays; closing the panel brings the bar's back.
+#[test]
+fn the_session_bar_hides_submit_review_while_the_diff_shows() {
+    let mut app = review();
+    shown(&mut app);
+    assert!(app.contains("diff-submit-review"));
+    assert!(!app.contains("submit-review"));
+    app.send(AppAction::Session(SessionAction::SetPanel(None)));
+    assert!(app.contains("submit-review"));
+}
+
 /// Drop takes the draft off its line and out of the footer's count.
 #[test]
 fn drop_removes_the_draft_and_the_footer_follows() {
@@ -516,4 +538,94 @@ fn show_the_terminal_returns_the_review_beside_the_terminal() {
         Some(("acme/api".to_owned(), "src/refund.rs".to_owned()))
     );
     app.snapshot("68c-pr-review-after-show-terminal");
+}
+
+/// Scrolls the review's list by `(dx, dy)` pixels (negative scrolls down or
+/// to the right).
+fn scroll_review(app: &mut App, dx: f32, dy: f32) {
+    scroll_over(app, "review-diff", dx, dy);
+}
+
+fn scroll_over(app: &mut App, id: &'static str, dx: f32, dy: f32) {
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.scroll(id, gpui_kit::ScrollDelta::Pixels(point(px(dx), px(dy))), cx);
+        })
+        .expect("window stays open");
+    app.draw();
+    app.draw();
+}
+
+/// DS-26: the open file's head stays at the top of the review while its
+/// lines scroll.
+#[test]
+fn a_review_file_head_stays_while_its_lines_scroll() {
+    let long: Vec<DiffLine> = (1..=200)
+        .map(|n| line(LineKind::Context, Some(n), Some(n), "    let step = next(step);"))
+        .collect();
+    let mut app = review_with(vec![file("src/long.rs", long)]);
+    app.open(REVIEW, Panel::Changes);
+    app.send(AppAction::Review(ReviewAction::SelectFile {
+        repo: "acme/api".to_owned(),
+        path: "src/long.rs".to_owned(),
+    }));
+    app.draw();
+    app.draw();
+    let head = "change-file acme/api/src/long.rs";
+    let top_of = |app: &mut App| {
+        app.cx
+            .update_window(app.window, |_, window, _| {
+                let view = window.find("review-diff").bounds();
+                let head = window.find(head).bounds();
+                (f32::from(head.top() - view.top()), view.top() <= head.top() && head.bottom() <= view.bottom())
+            })
+            .expect("window stays open")
+    };
+    let (before, _) = top_of(&mut app);
+    scroll_review(&mut app, 0., -1500.);
+    let (after, inside) = top_of(&mut app);
+    assert!(inside, "the head is still inside the review's view");
+    assert!(after <= before + 1., "the head stays at the top of the view");
+    assert!(after >= 0.);
+    // Scrolled a long way down, the head stays at the same place under the view.
+    scroll_review(&mut app, 0., -300.);
+    let (later, inside) = top_of(&mut app);
+    assert!(inside);
+    assert!((later - after).abs() < 1.5, "the head does not move as the lines do");
+}
+
+/// DS-42: with Wrap off, a review's numbers stay put and only the code slides.
+#[test]
+fn scroll_in_a_review_keeps_the_gutter_still() {
+    let wide = format!("    let total = {};", "amount + ".repeat(60));
+    let lines = vec![
+        line(LineKind::Context, Some(1), Some(1), &wide),
+        line(LineKind::Context, Some(2), Some(2), "    done();"),
+    ];
+    let mut app = review_with(vec![file("src/wide.rs", lines)]);
+    app.open(REVIEW, Panel::Changes);
+    app.send(AppAction::Review(ReviewAction::SelectFile {
+        repo: "acme/api".to_owned(),
+        path: "src/wide.rs".to_owned(),
+    }));
+    if app.ui.read(|state| state.review.wrap) {
+        app.send(AppAction::Review(ReviewAction::ToggleWrap));
+    }
+    app.draw();
+    app.draw();
+    let x_of = |app: &mut App| {
+        app.cx
+            .update_window(app.window, |_, window, _| {
+                (
+                    f32::from(window.find("change-gutter-0").bounds().left()),
+                    f32::from(window.find("change-code-0-0").bounds().left()),
+                )
+            })
+            .expect("window stays open")
+    };
+    let (gutter, code) = x_of(&mut app);
+    scroll_over(&mut app, "change-code acme/api/src/wide.rs", -120., 0.);
+    let (gutter_after, code_after) = x_of(&mut app);
+    assert!((gutter_after - gutter).abs() < 0.5, "the gutter keeps its x");
+    assert!(code_after < code - 50., "the code slides left");
 }

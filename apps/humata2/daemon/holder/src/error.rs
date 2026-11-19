@@ -51,6 +51,28 @@ pub enum HolderError {
     TooOldToMove { socket: PathBuf },
 
     #[error(
+        "the terminal's holder at {} is from a build too old to pause its program for a move; the holder and the program in it keep running and nothing was carried. Click Migrate on the \"Migrate the holders\" item in the Inbox, then move the session again",
+        socket.display()
+    )]
+    TooOldToFreeze { socket: PathBuf },
+
+    #[error(
+        "the terminal's holder at {} is paused for a move, so nothing was typed or moved; the program is held until the move finishes or is undone. Wait for the move, or cancel it to let the program run again",
+        socket.display()
+    )]
+    Frozen { socket: PathBuf },
+
+    #[error(
+        "couldn't list the running processes with `ps` to pause the program under the holder at {}: {source}; the program was not paused. Check that `ps` runs for this user and try again",
+        socket.display()
+    )]
+    Freeze {
+        socket: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "the terminal's holder at {} started moving onto the new build and didn't answer again within the time allowed, so the move is lost. The program in the tab may still be running, or may be gone with the holder; its output up to the move is saved beside the socket, so open the tab again to see what is left of it",
         socket.display()
     )]

@@ -4409,7 +4409,7 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **Fallback:** a deny that carries the answer as its reason (Copilot's way), used only if a live check shows that `allow` plus `updatedInput` still opens the dialog.
 - **Reverse:** drop the matcher from the Claude hooks file.
 
-## D797: Humata's own sends wait for the agent's structured ready signal instead of reading its screen; after 20 s the Inbox says the agent is waiting in its terminal (AGENTS2, Fable 5.2's ruling, 2026-11-18; amends D762 and D767; uses D781's card form). Decided (by Fable), not built
+## D797: Humata's own sends wait for the agent's structured ready signal instead of reading its screen; after 20 s the Inbox says the agent is waiting in its terminal (AGENTS2, Fable 5.2's ruling, 2026-11-18; amends D762 and D767; uses D781's card form). Decided (by Fable), built (AGENTS2 batch 6)
 
 - **Ready signals:**
   - Claude: a SessionStart hook of any source. It runs only once workspace trust is accepted.
@@ -4421,7 +4421,7 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **Codex:** this rests on a live check that thread/started comes after Codex's trust and first-run screens and before the first prompt. If it doesn't, Codex keeps the screen check for now.
 - **Reverse:** make the gate the screen check again for every kind.
 
-## D798: Once an agent's structured channel is heard, the screen fallback stays quiet for its session; each structured ask is withdrawn where it was answered (AGENTS2, Fable 5.2's ruling, 2026-11-18; narrows D786). Decided (by Fable), not built
+## D798: Once an agent's structured channel is heard, the screen fallback stays quiet for its session; each structured ask is withdrawn where it was answered (AGENTS2, Fable 5.2's ruling, 2026-11-18; narrows D786). Decided (by Fable), built (AGENTS2 batch 6)
 
 - **Suppression follows the link, not a held ask:**
   - Once a session's structured channel has been heard, `screen_ask` raises nothing for that session.
@@ -4666,3 +4666,61 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
   - A new frame, 121-diff-stack-skim-open, shows the fold opened.
   - Fable approves all three once they are rendered.
 - **Reverse:** drop the importance lists, `FileSummary.tier`, and the layers' order and groups. The plan's order and groups are unchanged.
+
+## D804: Stack layer keys and the wire shapes for D800, D802 and D803 (STACKVIEW manager, 2026-11-18; keys picked by Fable 5.2). Decided
+- **Keys (Fable 5.2):** alt-cmd-] is Next layer and alt-cmd-[ is Previous layer. Next goes Whole stack (row 0), then layer 1 (bottom) up to N, with no wrap; Previous stops at Whole stack. Both work only in the Diff panel while a stack shows. "Whole stack" is a palette entry only; cmd-] stays unbound. Both chords are on the shortcuts sheet.
+- **No `DiffBase::Layer` in the app.** A layer or Whole stack is a `DiffBase::Spec` whose specs use the new `RepoBase::Range{base, head}` or `RepoBase::Overlay{base, paths}`. Such a spec shows exactly its repos, so the live client narrows `GetDiffRequest.repos` to them. This keeps the Diff panel's existing base matches unchanged.
+- **Field numbers:** `FileSummary.tier` is 12, because 10 and 11 hold the file modes. `ReviewChange.layer` is 12 (empty means Whole stack).
+- **MCP `from_stack.topics`** is a list of `{topic, title?, purpose?}`, because tool schemas have no map type. humatad turns it into the proto map; a topic listed twice is refused.
+- **Titles read from a stack** are the first commit subject cut to 60 characters. A subject that repeats an earlier layer's title falls back to the topic name.
+- **Reverse:** drop the keys, the two RepoBase variants and the tier and layer fields.
+
+## D805: Where a file's tier comes from in the app, and how the daemon keeps it (STACKVIEW manager, 2026-11-18; amends D802). Decided
+- **Daemon:** GetDiff serves each file's final tier in `FileSummary.tier`: the agent's tier from the review chat's current view, else its own (lockfiles and generated files skim). The view's tiers come from the picked layer's list, else from the plan's. For a stack's Whole view with no order, groups or importance sent, humatad fills the plan's order and importance from the layers joined (D802 rules), filtered to the files the diff has.
+- **App:** a plan can arrive (as a ReviewChange or a draft view) before the diffs are read again, so `ReviewState::tier_of` reads the agent's tier from `PlanView.importance` or the picked `LayerView.importance` first, then `FileDiff.tier`.
+- **Kept:** `ReviewViewState.importance = 9` stores the plan's tiers with the review, so they survive a restart and Undo. The app reports it empty and the daemon keeps its own, as the app never changes tiers.
+- **Refused:** a plan or layer listing a file twice in `importance` is refused with the field named.
+- **Reverse:** drop field 9 and the two `importance` lists in the app; tiers then come from the diff only and lag a plan until the next read.
+
+### D-REVIEWUI-1: reopening a review reads its diff again after 60 s (provisional, 2026-11-18)
+
+- **Rule:** reopening the same session's review reuses the held diff if it was read less than 60 s ago, and reads it again otherwise, so terminal edits made without a turn ending still show.
+- **Reverse:** change the window in `features/review/src/reopen.rs`, or always read again.
+
+## D806: How `humata codex` wraps Codex (AGENTS2 manager, 2026-11-18). Provisional
+
+- **Flags:** the app-server gets only the `-c` config pairs; `--model` and every other flag go only to the TUI.
+- **Socket:** a fresh 0700 folder `h2cx-<16hex>` under the temp dir (or /tmp if the socket path would pass 100 bytes), removed when the session exits.
+- **Hooks:** in remote mode no hooks are passed, so asks never arrive twice, and the wrapped codex shows no D202 trust row. In the plain-codex fallback, Codex itself asks once in /hooks to trust them.
+- **Finding codex:** only the env-wrapped built-in kind is looked up by name on PATH; a custom codex kind is found by its own program path.
+- **Owed live check (O4):** `codex app-server` accepts the `-c` passthrough and `codex --remote unix://S resume <id>` works. If not, drop the config pairs or fall back to plain resume.
+- **Reverse:** point the codex kind back at plain `codex` in `daemon/sessions/src/agents.rs`.
+
+## D807: Progress indicators: one thin bar, where the action was started (PROGRESS manager, 2026-11-18; picks by Fable 5.2). Provisional
+
+- **P1 One thin bar, no spinners.** A 2 px line with three forms (measured, unmeasured sweep, elapsed text). Reason: quiet chrome; one part reused everywhere. Reverse: swap the widget's drawing.
+- **P2 Progress sits where the action was started or on its subject**, never in a global tray. Reason: actionable UIs only; a list of running things the person can't act on is status for its own sake.
+- **P3 300 ms before anything draws; elapsed text after 10 s.** Reason: no flicker on fast operations, no ticking clock on short ones.
+- **P4 The running step's title, not "step 2 of 5".** Reason: step counts change with skipped and undo steps and say less than the title.
+- **P5 Clone units are 0–1000 across git's phases (receive 0–900, deltas 900–1000; local clones use Updating files).** Reason: one rising number per step fits `set_units`' only-rises rule; object counts and file counts can't share a total. If git's output can't be parsed, the step is unmeasured, never an error.
+- **P6 Unit updates are coalesced to 4 per second per step in the daemon.** Reason: performance; a clone prints hundreds of lines.
+- **P7 Archive push, restore download and trash stay unmeasured in this milestone.** Reason: each needs its own honest total; add when someone finds them slow.
+- **P8 A turn's elapsed time comes from a new `Session.status_since`, shown only in the session tab header and only while Working.** Reason: `last_output_at` is not a turn start; the sidebar stays still (no per-second redraws across the list).
+- **P9 A stalled operation shows nothing new.** Elapsed keeps counting and the existing Cancel stays; no "seems stuck" label. Reason: no unfixable detection.
+- **P10 The diff indicator waits for DIFFVIEW; the holder count waits for LIVEHOLDER T6.** PROGRESS can close and release without T6/T7 if either owner is still open, carrying them as follow-ups in those milestones.
+
+## D808: An agent closes a Desk session or deletes a channel only with the destroy switch on (LIVEHOLDER manager, 2026-11-18; follows D801 G and H, PER-32). Provisional
+
+- **Gate:** for an agent, CloseDeskSession, PlanDeleteChannel and DeleteChannel need MachineDestroy on this machine, which is Never by default. The user's own rules (the ChannelDelete tier, present user) stay unchanged, and a peer is still refused.
+- **Why this switch:** closing and deleting with `end_live` end running terminals. Reusing the one destroy switch means the Agent access settings and goldens don't change.
+- **Nothing asks the Inbox:** with the switch off the call is refused (CH-25 still holds), not turned into an approval request.
+- **Reverse:** put `user_only` back in `desk_service.rs` `close_desk_session` and drop the agent branch in `channel_service/delete.rs` `user_deletes`.
+
+## D809: AGENTS2 batch 6 picks for D797/D798 (provisional, 2026-11-18)
+
+- **Send wait:** a Humata send (composer, Inbox reply, MCP `session_type`) waits at most 30 s behind a held start message. After that it is refused with FailedPrecondition and nothing is typed. The person's own keys are never held.
+- **Gap card:** after a Codex link drops, a screen card raised during the gap stays until its screen stops asking. Nobody has checked live whether Codex sends a pending ask again on resume (O4).
+- **Notice card:** "<Agent> is waiting in its terminal" is a plain card with key `notice-in-terminal`, not the D781 form, because hooks.rs has no tab index. The UI should offer only Dismiss for that key.
+- **No notice** when the person keeps that agent's asks in its terminal.
+- **Idle sweep:** SessionStart's idle report also withdraws held asks.
+- **Reverse:** drop `behind_start` in `daemon/humatad/src/start_ready.rs` and the gate in `terminal.rs` `type_in`; drop `raise_notice` and its callers in `session_service/hooks.rs`.

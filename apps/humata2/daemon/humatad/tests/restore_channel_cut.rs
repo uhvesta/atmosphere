@@ -27,6 +27,9 @@ case "$mode" in
   --session-id) mkdir -p "$CONV_DIR/$key"; printf '{"cwd":"%s"}\n' "$place" > "$f" ;;
   --resume) [ -f "$f" ] || { echo "no conversation at $f"; exit 3; } ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do printf '%s\n' "$line" >> "$f"; done
 "#;
@@ -120,6 +123,7 @@ async fn cut_a_restore_at(dir: tempfile::TempDir, stop_at: &str) -> Cut {
             plan: plan.token.clone(),
             presence: None,
             delete_unpushed_work: true,
+            end_live: Some(true),
         })
         .await
         .unwrap()

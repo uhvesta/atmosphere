@@ -23,34 +23,58 @@ struct Row<'a> {
     depth: usize,
     branch: String,
     base: String,
+    /// The rebuilt topic's head commit; None when the topic has no tip.
+    head: Option<String>,
+    /// The commit the rebuilt head sits on; None when the topic has no tip.
+    base_commit: Option<String>,
     pr: Option<&'a Pr>,
     needs_upload: bool,
 }
+
+/// The prefix `--offline` uses when stack.toml sets none: it only names the
+/// branches shown in the output, since no pull request is looked up.
+const OFFLINE_PREFIX: &str = "local";
 
 pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
     let config = Config::load()?;
     let git = Git::new(dir);
     let in_progress = restack::in_progress(&git)?;
-    let gh = Gh::new(dir);
-    let repo = gh.repo()?;
-    let login = gh.login()?;
-    let prefix = config.prefix(&git, None, &login)?;
-    let trunk = config.trunk(&args.target, repo.default_branch);
     let remote = config.remote(&args.target);
     let remote = remote.as_str();
-    git.fetch(remote, &[format!("+refs/heads/{trunk}:refs/remotes/{remote}/{trunk}")])?;
+    // Offline, nothing calls GitHub: no gh, no fetch, no ls-remote.
+    let gh = (!args.offline).then(|| Gh::new(dir));
+    let (trunk, prefix) = match &gh {
+        Some(gh) => {
+            let repo = gh.repo()?;
+            let login = gh.login()?;
+            let prefix = config.prefix(&git, None, &login)?;
+            (config.trunk(&args.target, repo.default_branch), prefix)
+        }
+        None => {
+            let trunk = config.local_trunk(&args.target, &git, remote);
+            (trunk, config.prefix(&git, None, OFFLINE_PREFIX)?)
+        }
+    };
+    if gh.is_some() {
+        git.fetch(remote, &[format!("+refs/heads/{trunk}:refs/remotes/{remote}/{trunk}")])?;
+    }
     let (merge_base, plan) = local::read(&git, remote, &trunk)?;
 
-    let mine = gh.my_open_prs()?;
+    let mine = match &gh {
+        Some(gh) => gh.my_open_prs()?,
+        None => Vec::new(),
+    };
     let branches = Branches::new(prefix, mine.clone());
     let mut prs: BTreeMap<&str, Pr> = BTreeMap::new();
-    for topic in &plan.topics {
-        let found = match branches.open_pr(&topic.name) {
-            Some(pr) => Some(pr.clone()),
-            None => gh.pr_for_head(&branches.branch(&topic.name))?,
-        };
-        if let Some(pr) = found {
-            prs.insert(topic.name.as_str(), pr);
+    if let Some(gh) = &gh {
+        for topic in &plan.topics {
+            let found = match branches.open_pr(&topic.name) {
+                Some(pr) => Some(pr.clone()),
+                None => gh.pr_for_head(&branches.branch(&topic.name))?,
+            };
+            if let Some(pr) = found {
+                prs.insert(topic.name.as_str(), pr);
+            }
         }
     }
     let merged: BTreeSet<String> = prs
@@ -59,7 +83,12 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
         .map(|(name, _)| name.to_string())
         .collect();
     let tips = local::rebuild(&git, &plan, &merge_base, &merged)?;
-    let heads = local::remote_heads(&git, remote, &branches.prefixes())?;
+    // Offline, what is on the remote is unknown, so every topic with a tip
+    // reports `needs upload`.
+    let heads = match &gh {
+        Some(_) => Some(local::remote_heads(&git, remote, &branches.prefixes())?),
+        None => None,
+    };
 
     let mut depths: BTreeMap<&str, usize> = BTreeMap::new();
     let rows: Vec<Row<'_>> = plan
@@ -75,10 +104,11 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                 Some(relative) => branches.branch(relative),
                 None => trunk.clone(),
             };
+            let tip = tips.get(name);
             let needs_upload = !merged.contains(name)
-                && match tips.get(name) {
-                    Some(tip) => heads.get(&branch) != Some(&tip.head),
-                    None => true,
+                && match (tip, &heads) {
+                    (Some(tip), Some(heads)) => heads.get(&branch) != Some(&tip.head),
+                    _ => true,
                 };
             Row {
                 topic: name,
@@ -86,6 +116,8 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                 depth,
                 branch,
                 base,
+                head: tip.map(|tip| tip.head.clone()),
+                base_commit: tip.map(|tip| tip.base.clone()),
                 pr: prs.get(name),
                 needs_upload,
             }
@@ -108,6 +140,8 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                     "depth": row.depth,
                     "branch": row.branch,
                     "base": row.base,
+                    "head": row.head.as_deref(),
+                    "base_commit": row.base_commit.as_deref(),
                     "number": row.pr.map(|pr| pr.number),
                     "url": row.pr.map(|pr| pr.url.as_str()),
                     "state": row.pr.map(|pr| state_name(pr.state)),

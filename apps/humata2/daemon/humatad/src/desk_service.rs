@@ -234,7 +234,7 @@ impl pb::desk_service_server::DeskService for DeskSvc {
         request: Request<pb::CloseDeskSessionRequest>,
     ) -> Result<Response<pb::DeskSession>, Status> {
         let caller = identity::caller(&request)?;
-        user_only(&caller)?;
+        self.user_or_destroy_switch(&caller)?;
         let request = request.into_inner();
         if let Some(closed) = self.close_channel_desk(&caller, &request).await? {
             return Ok(Response::new(closed));
@@ -436,6 +436,12 @@ impl pb::desk_service_server::DeskService for DeskSvc {
 }
 
 impl DeskSvc {
+    /// D801 H: tells the clients a session changed (a delete filed it on
+    /// the Desk).
+    pub(crate) async fn tell_session_updated(&self, id: &str) {
+        self.tell.session(id, pb::Change::Updated, None).await;
+    }
+
     /// Every Desk session on this machine, open and closed, deleted ones
     /// left out (DK-5). Runs no git.
     async fn list(&self) -> Result<Vec<pb::DeskSession>, Status> {
@@ -563,6 +569,27 @@ pub(crate) fn user_only(caller: &Caller) -> Result<(), Status> {
         Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
         Caller::Agent(_) | Caller::Script(_) => {
             Err(status::refused(&Refusal::UserOnly { capability: None }))
+        }
+    }
+}
+
+impl DeskSvc {
+    /// The user closes a Desk session, which ends its terminals; an agent
+    /// may only with the destroy switch on (D801 G, PER-32), which is off
+    /// by default. A peer or a script is refused.
+    fn user_or_destroy_switch(&self, caller: &Caller) -> Result<(), Status> {
+        match caller {
+            Caller::Agent(_) => self.guard.require(
+                caller,
+                &humata2_access::Call::Use {
+                    capability: humata2_access::Capability::MachineDestroy,
+                    target: humata2_access::Target::Machine(humata2_access::MachineAction {
+                        machine: humata2_access::MachineId::new(self.machine.as_str()),
+                        action: humata2_access::MachineActionKind::Delete,
+                    }),
+                },
+            ),
+            _ => user_only(caller),
         }
     }
 }

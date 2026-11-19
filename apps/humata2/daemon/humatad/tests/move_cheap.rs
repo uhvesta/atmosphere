@@ -380,7 +380,7 @@ async fn claude_boxes(rig: &mut Rig, boxes: &[&'static str]) {
             &script,
             "mode=$1; id=$2; dir=$3\nmkdir -p \"$dir\"\nf=\"$dir/$id.jsonl\"\n\
              case \"$mode\" in --session-id) : > \"$f\" ;; esac\n\
-             echo \"agent up $mode\"\nwhile IFS= read -r line; do echo \"got: $line\"; done\n",
+             stty -icanon 2>/dev/null\necho \"agent up $mode\"\nwhile IFS= read -r line; do echo \"got: $line\"; done\n",
         )
         .unwrap();
         let project = "{home}/.claude/projects/{folder_dashed}";

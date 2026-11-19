@@ -42,6 +42,9 @@ case "$mode" in
   --session-id) mkdir -p "$CONV_DIR/$key"; printf '{"cwd":"%s"}\n' "$place" > "$f" ;;
   --resume) [ -f "$f" ] || { echo "no conversation at $f"; exit 3; } ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#;
@@ -309,6 +312,7 @@ impl Fixture {
                 plan: plan.token.clone(),
                 presence: None,
                 delete_unpushed_work: true,
+                end_live: Some(true),
             })
             .await
             .unwrap()
@@ -405,6 +409,21 @@ impl Fixture {
             assert!(Instant::now() < deadline, "the conversation stayed at its old key: {}", before.display());
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Stops session `id`'s agent and resumes it, as its menu does: a
+    /// channel renamed under a running agent leaves its conversation to be
+    /// carried to the new folder's key by this resume (D801 D).
+    async fn stop_and_resume(&self, id: &pb::SessionId) {
+        let mut sessions = self.daemon.session_service().await;
+        sessions
+            .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
+            .await
+            .expect("the agent stops");
+        sessions
+            .resume_session(pb::ResumeSessionRequest { id: Some(id.clone()), ..Default::default() })
+            .await
+            .expect("the agent resumes");
     }
 
     /// Waits until `conversation`'s agent has started `times` times.
@@ -527,10 +546,11 @@ fn now_ns() -> i64 {
         .as_nanos() as i64
 }
 
-/// D314: renaming Payments to Billing moves `<root>/payments/` to
+/// D314, D801 D: renaming Payments to Billing moves `<root>/payments/` to
 /// `<root>/billing/` once. The channel session and the channel Desk session
-/// each resume in their new folder with their conversation, and nothing
-/// names `<root>/payments/` any more.
+/// keep running, with `<root>/payments` a link to the new folder; stopped
+/// and resumed, each takes up its conversation in its new folder, and then
+/// nothing names `<root>/payments/` any more.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rename_moves_the_channel_folder_and_every_session_resumes_there() {
     let fixture = Fixture::new().await;
@@ -546,7 +566,10 @@ async fn a_rename_moves_the_channel_folder_and_every_session_resumes_there() {
     assert_eq!(renamed.folder, "billing", "the folder follows the name");
     let new = fixture.world.channels.join("billing");
     assert!(new.join("main/api").is_dir(), "the channel's main clone moved with it");
-    assert!(!old.exists(), "nothing is left at the old folder");
+    assert!(
+        std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink(),
+        "the old name is a link to the new folder while the agents run"
+    );
     let session_folder = under(&session.folder, &old, &new);
     let desk_folder = under(&desk.folder, &old, &new);
     assert_eq!(fixture.folder_of(&session.id), session_folder);
@@ -555,7 +578,11 @@ async fn a_rename_moves_the_channel_folder_and_every_session_resumes_there() {
     assert_eq!(fixture.desk_folder_listed(&desk.id).await.as_deref(), Some(desk_folder.as_path()));
     let repo = &get_session(&fixture.daemon, &session.id).await.repos[0];
     assert!(Path::new(&repo.path).starts_with(&session_folder), "{repo:?}");
+    assert_eq!(fixture.starts(&session.conversation).len(), 1, "the session's agent was not started again");
+    assert_eq!(fixture.starts(&desk.conversation).len(), 1, "the Desk session's agent was not started again");
 
+    fixture.stop_and_resume(&session.id).await;
+    fixture.stop_and_resume(&desk.id).await;
     fixture.resumed_in(&session, &session_folder, 2, "ledger-line").await;
     fixture.resumed_in(&desk, &desk_folder, 2, "desk-line").await;
     let launch = fixture.launch_of(&session.id);
@@ -564,40 +591,23 @@ async fn a_rename_moves_the_channel_folder_and_every_session_resumes_there() {
     fixture.nothing_names(&old, &new);
 }
 
-/// D314: while a session of the channel is in a turn, a rename asks first:
-/// without `confirm_running` it is refused, naming the busy session, and
-/// nothing changes; confirmed, it goes through.
+/// D801 D: a session in a turn needs no confirming: the rename goes through
+/// without `confirm_running`, and the agent is not stopped.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rename_that_would_cut_off_a_running_turn_asks_first() {
+async fn a_rename_with_an_agent_in_a_turn_needs_no_confirming_and_does_not_stop_it() {
     let fixture = Fixture::with_turn_end(Some("hooks")).await;
     let old = fixture.old();
     let session = fixture.session("Ledger fix").await;
     assert!(is_running(&get_session(&fixture.daemon, &session.id).await));
 
-    let asked = fixture.rename("Billing", false).await.unwrap_err();
-
-    assert_eq!(asked.code(), Code::FailedPrecondition, "{asked:?}");
-    let busy = match error_of(&asked).kind {
-        Some(pb::error::Kind::SessionBusy(busy)) => busy.session,
-        other => panic!("not a busy session: {other:?}"),
-    };
-    assert_eq!(busy.as_ref(), Some(&session.id), "it names the session in a turn");
-    let now = fixture.channel_now().await;
-    assert_eq!((now.name.as_str(), now.folder.as_str()), ("Payments", fixture.channel.folder.as_str()));
-    assert!(old.join("main/api").is_dir());
-    assert!(!fixture.world.channels.join("billing").exists());
-    assert_eq!(fixture.folder_of(&session.id), session.folder);
-    assert_eq!(fixture.starts(&session.conversation).len(), 1, "the agent was not stopped");
-    assert!(is_running(&get_session(&fixture.daemon, &session.id).await));
-
-    let renamed = fixture.rename("Billing", true).await.expect("confirmed, it goes through");
+    let renamed = fixture.rename("Billing", false).await.expect("nothing is cut off, so nothing is asked");
 
     assert_eq!(renamed.folder, "billing");
     let new = fixture.world.channels.join("billing");
     let session_folder = under(&session.folder, &old, &new);
     assert_eq!(fixture.folder_of(&session.id), session_folder);
-    fixture.wait_starts(&session.conversation, 2).await;
-    assert_eq!(fixture.starts(&session.conversation).pop().unwrap().place, session_folder);
+    assert_eq!(fixture.starts(&session.conversation).len(), 1, "the agent was not stopped");
+    assert!(is_running(&get_session(&fixture.daemon, &session.id).await));
 }
 
 /// D314: with every session of the channel between turns, a rename needs
@@ -621,8 +631,8 @@ async fn a_rename_with_every_session_between_turns_needs_no_confirming() {
     let renamed = fixture.rename("Billing", false).await.expect("nothing is cut off, so nothing is asked");
 
     assert_eq!(renamed.folder, "billing");
-    assert!(!old.exists());
     let new = fixture.world.channels.join("billing");
+    assert!(new.join("main/api").is_dir());
     assert_eq!(fixture.folder_of(&session.id), under(&session.folder, &old, &new));
 }
 

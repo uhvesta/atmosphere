@@ -22,6 +22,10 @@ pub struct ContinueDraft {
     pub picking_turn: bool,
     /// The request is on its way to the daemon.
     pub sending: bool,
+    /// The running step of the operation while `sending`.
+    pub progress: Option<humata2_clients::progress::OpProgress>,
+    /// The operation id `progress` follows; latched by the first update.
+    pub op: Option<String>,
 }
 
 /// Whether `channel` can take the open session's conversation: one of the
@@ -101,6 +105,8 @@ impl Sessions {
                     return Effect::none();
                 }
                 draft.sending = true;
+                draft.progress = None;
+                draft.op = None;
                 draft.picking_turn = false;
                 let before_turn = draft.before_turn;
                 state.error = None;
@@ -118,6 +124,10 @@ impl Sessions {
             }
             SessionAction::Continued(result) => match result {
                 Ok(id) => {
+                    if let Some(draft) = &mut state.continuing {
+                        draft.progress = None;
+                        draft.op = None;
+                    }
                     state.continuing = None;
                     return Effect::send(SessionAction::Delegate(Delegate::OpenSession(id)));
                 }
@@ -125,6 +135,8 @@ impl Sessions {
                     // Shown in the dialog, which stays for another try.
                     if let Some(draft) = &mut state.continuing {
                         draft.sending = false;
+                        draft.progress = None;
+                        draft.op = None;
                     }
                     state.error = Some(error.to_string());
                 }

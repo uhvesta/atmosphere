@@ -17,7 +17,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{GitError, NameError, NewChannel, SetupError, Starter, clone_mains, create_channel};
+use humata2_sessions::{GitError, NameError, NewChannel, SetupError, Starter, clone_mains_with, create_channel};
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, Store, StoreError};
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -46,7 +46,7 @@ mod follow_rename;
 // CH-9 (D764): the Repos and machines grid.
 mod grid;
 mod rename_ask;
-mod rename_folder;
+pub(crate) mod rename_folder;
 
 /// Every channel `caller` may read.
 async fn readable_channels(
@@ -947,12 +947,19 @@ fn clone_in_background(
             progress.set_step(&format!("clone_main:{next}"), pb::StepState::Running, None);
         }
     };
-    let done = clone_mains(
+    let units = progress.with_progress(|p| p.units());
+    let on_units = |shown: &str, done: u64, total: u64| {
+        if let Some(units) = &units {
+            units.set(&format!("clone_main:{shown}"), done, total);
+        }
+    };
+    let done = clone_mains_with(
         &starter.store,
         &starter.layout,
         &starter.remote_template,
         &channel.id,
         &mut on_step,
+        on_units,
     );
     match done {
         Err(error) => Err(error_of(

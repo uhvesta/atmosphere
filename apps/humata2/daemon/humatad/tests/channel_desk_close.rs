@@ -169,6 +169,7 @@ impl Fixture {
                 id: Some(id.clone()),
                 choice: choice as i32,
                 plan: plan.token,
+                end: Some(true),
             })
             .await
             .unwrap()
@@ -202,6 +203,7 @@ impl Fixture {
                 plan: plan.token.clone(),
                 presence: None,
                 delete_unpushed_work: true,
+                end_live: Some(true),
             })
             .await
             .unwrap()

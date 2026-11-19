@@ -211,6 +211,7 @@ impl Operation {
                         id: Some(base.b.clone()),
                         choice: pb::ArchiveChoice::Archive as i32,
                         plan: plan.token,
+                        end: Some(true),
                     })
                     .await;
             }
@@ -671,6 +672,7 @@ async fn prepare_restore(rig: &Rig, channel: &pb::Channel, id: &pb::SessionId) {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .expect("the archive starts")

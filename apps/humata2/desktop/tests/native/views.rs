@@ -129,6 +129,8 @@ fn a_review_plans_groups_are_drawn_in_the_diff_panel_until_revert() {
         "The migration first, then the client",
         "Claude Code",
         ViewContent::ReviewPlan(PlanView {
+            importance: Vec::new(),
+            stack: None,
             targets: Vec::new(),
             order: vec![
                 entry("acme/ledger", "migrations/0042_accounts.sql"),
@@ -190,6 +192,8 @@ fn a_review_plans_outdated_line_note_is_tagged_in_the_diff_panel() {
         "The client",
         "Claude Code",
         ViewContent::ReviewPlan(PlanView {
+            importance: Vec::new(),
+            stack: None,
             targets: Vec::new(),
             order: vec![("acme/api".to_owned(), "src/client.rs".to_owned())],
             groups: Vec::new(),

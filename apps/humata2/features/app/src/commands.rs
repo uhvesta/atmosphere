@@ -2,7 +2,7 @@ use humata2_clients::model::{MachineId, Scope, SessionId};
 use humata2_find::PinnedAction;
 use humata2_palette::Command;
 use humata2_settings::SettingsAction;
-use humata2_session::SessionAction;
+use humata2_session::{Panel, SessionAction};
 use humata2_sidebar::SidebarAction;
 use tca::{Effect, Reducer};
 
@@ -10,6 +10,19 @@ use crate::layout::{FullScreen, PaneId};
 use crate::{App, AppAction, AppState, ReportAction, ReportRequest, Route};
 
 impl App {
+    /// Sends a review step when the open session's panel shows the Diff.
+    fn step_review(
+        &self,
+        state: &mut AppState,
+        step: humata2_review::ReviewAction,
+    ) -> Effect<AppAction> {
+        if matches!(state.panel(), Some(Panel::Changes)) {
+            self.child(state, AppAction::Review(step))
+        } else {
+            Effect::none()
+        }
+    }
+
     pub(super) fn run(&self, state: &mut AppState, command: Command) -> Effect<AppAction> {
         match command {
             Command::Home => self.navigate(state, Route::Home),
@@ -77,6 +90,19 @@ impl App {
             Command::TerminalFullScreen => {
                 self.reduce(state, AppAction::ToggleFullScreen(FullScreen::Terminal))
             }
+            Command::PanelFullScreen => {
+                // A session with no panel open gets the Diff first.
+                let open = if matches!(state.route, Route::Session(_)) && state.panel().is_none() {
+                    self.reduce(
+                        state,
+                        AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+                    )
+                } else {
+                    Effect::none()
+                };
+                let widen = self.reduce(state, AppAction::Session(SessionAction::ToggleWiden));
+                Effect::merge([open, widen])
+            }
             Command::File {
                 session,
                 repo,
@@ -92,6 +118,26 @@ impl App {
             }
             Command::JoinTabGroups => {
                 self.child(state, AppAction::Session(SessionAction::CloseGroup(1)))
+            }
+            Command::NextLayer => {
+                self.child(state, AppAction::Review(humata2_review::ReviewAction::NextLayer))
+            }
+            Command::PrevLayer => {
+                self.child(state, AppAction::Review(humata2_review::ReviewAction::PrevLayer))
+            }
+            Command::WholeStack => self.child(
+                state,
+                AppAction::Review(humata2_review::ReviewAction::PickLayer(None)),
+            ),
+            // The Diff panel's own steps; with another panel showing, a key
+            // or a palette pick leaves the review where it is.
+            Command::NextFile => self.step_review(state, humata2_review::ReviewAction::NextFile),
+            Command::PrevFile => self.step_review(state, humata2_review::ReviewAction::PrevFile),
+            Command::NextChange => {
+                self.step_review(state, humata2_review::ReviewAction::NextChange)
+            }
+            Command::PrevChange => {
+                self.step_review(state, humata2_review::ReviewAction::PrevChange)
             }
             Command::Back => self.go_back(state),
             Command::ShowShortcuts => self.show_shortcuts(state),

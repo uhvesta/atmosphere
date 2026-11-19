@@ -90,43 +90,81 @@ fn hunk(look: Look, threads: Threads) -> Div {
         .children(l44)
 }
 
-fn file_row(look: Look, name: &'static str, add: &'static str, del: &'static str, on: bool, comments: Option<&'static str>) -> Div {
+/// One changed file as the Diff panel lists it: a 14 px status column (empty
+/// for a modified file), the name, then its directory dimmed, the comment
+/// count, and +a −r. `path` is the directory, then the name.
+fn file_row(
+    look: Look,
+    path: (&'static str, &'static str),
+    mark: Option<&'static str>,
+    add: &'static str,
+    del: &'static str,
+    on: bool,
+    comments: Option<&'static str>,
+) -> Div {
+    let (dir, name) = path;
+    let letter = mark.map(|mark| (mark, if mark == "A" { GREEN } else if mark == "D" { RED } else { look.secondary }));
     div()
         .flex()
         .items_center()
         .gap(px(6.))
-        .h(px(24.))
-        .px(px(8.))
+        .h(px(25.))
+        .pl(px(22.))
+        .pr(px(8.))
         .rounded(px(5.))
         .when(on, |row| row.bg(c(look.fill)))
-        .child(small_icon(IconName::FileCode, look.secondary))
-        .child(div().flex_1().whitespace_nowrap().child(name))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .children(letter.map(|(letter, hex)| div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(hex)).child(letter))),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .gap(px(6.))
+                .child(div().flex_shrink_0().max_w_full().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(c(look.tertiary)).child(dir)),
+        )
         .children(comments.map(|count| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(2.))
+                .flex_shrink_0()
+                .gap(px(3.))
                 .text_size(px(11.))
-                .text_color(c(look.accent))
-                .child(small_icon(IconName::MessageSquare, look.accent))
+                .text_color(c(look.secondary))
+                .child(small_icon(IconName::MessageSquare, look.secondary))
                 .child(count)
         }))
-        .child(div().text_size(px(11.)).text_color(c(GREEN)).child(add))
-        .child(div().text_size(px(11.)).text_color(c(RED)).child(del))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-fn repo_row(look: Look, name: &'static str) -> Div {
+/// A repo's one row: the fold chevron, its name, the quiet base chip (its
+/// chevron only: every repo shares the header's base and the session's
+/// branch), a spacer and the repo's totals.
+fn repo_row(look: Look, name: &'static str, add: &'static str, del: &'static str) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(6.))
         .h(px(26.))
         .px(px(4.))
-        .child(small_icon(IconName::ChevronDown, look.tertiary))
-        .child(small_icon(IconName::FolderGit2, look.secondary))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+        .pr(px(8.))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronDown, look.tertiary)))
+        .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+        .child(div().w(px(24.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
         .child(div().flex_1())
-        .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child("ledger-schema"))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
 /// The Diff panel full screen: files left, the hunk with its threads right.
@@ -143,23 +181,11 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
         .border_r_1()
         .border_color(c(look.line))
         .text_size(px(12.5))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(4.))
-                .pb(px(6.))
-                .child(secondary(look, "3 files · 2 repos"))
-                .child(div().flex_1())
-                .child(div().text_size(px(11.)).text_color(c(GREEN)).child("+184"))
-                .child(div().text_size(px(11.)).text_color(c(RED)).child("−24")),
-        )
-        .child(repo_row(look, "ledger"))
-        .child(file_row(look, "migrations/0042_accounts.sql", "+41", "−0", false, None))
-        .child(repo_row(look, "api"))
-        .child(file_row(look, "src/client.rs", "+62", "−21", true, Some(count)))
-        .child(file_row(look, "src/entry.rs", "+81", "−3", false, None));
+        .child(repo_row(look, "ledger", "+41", "−0"))
+        .child(file_row(look, ("migrations/", "0042_accounts.sql"), Some("A"), "+41", "−0", false, None))
+        .child(repo_row(look, "api", "+143", "−24"))
+        .child(file_row(look, ("src/", "client.rs"), None, "+62", "−21", true, Some(count)))
+        .child(file_row(look, ("src/", "entry.rs"), None, "+81", "−3", false, None));
     let view = div()
         .flex_1()
         .min_w_0()
@@ -177,10 +203,20 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
                 .border_color(c(look.line))
                 .text_size(px(12.))
                 .child(small_icon(IconName::FileCode, look.secondary))
-                .child(div().font_weight(FontWeight::MEDIUM).child("api/src/client.rs"))
-                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap(px(4.))
+                        .child(secondary(look, "api ·").flex_shrink_0())
+                        .child(secondary(look, "src/").min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
+                        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
+                )
                 .children(file_extra)
-                .child(secondary(look, "Open in editor")),
+                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
         )
         .children(above)
         .child(div().flex_1().min_h_0().overflow_hidden().child(hunk(look, threads)));
@@ -189,12 +225,7 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
         .min_h_0()
         .flex()
         .flex_col()
-        .child(session::panel_header(
-            look,
-            "Diff",
-            true,
-            Some(div().flex().items_center().gap(px(6.)).child(secondary(look, "against")).child(popup(look, "main"))),
-        ))
+        // One title bar (the shell's) carries "Diff" and the base chip.
         .child(div().flex_1().min_h_0().flex().child(list).child(view))
         .child(
             div()
@@ -204,6 +235,8 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
                 .p(px(10.))
                 .border_t_1()
                 .border_color(c(look.line))
+                .child(session::quiet(look, "Push & PR…"))
+                .child(session::quiet(look, "Add repo…"))
                 .child(secondary(look, footer.drafts))
                 .child(div().flex_1())
                 .child(button(look, Kind::Primary, footer.send).when(!footer.live, |send| send.opacity(0.4))),
@@ -213,7 +246,7 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
 fn full_diff(look: Look, body: Div) -> Div {
     let mut screen = Screen::new(Some(Panel::Diff), Term::Working);
     screen.fill = Fill::PanelFull;
-    session::session_with(look, screen, Panel::Diff, "Diff", body)
+    session::session_with_extra(look, screen, Panel::Diff, "Diff", Some(session::base_chip(look)), body)
 }
 
 /// A card under a hunk line, with room beside the line numbers.

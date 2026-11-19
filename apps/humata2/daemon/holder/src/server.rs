@@ -1,7 +1,7 @@
 //! The holder process: one program on one pseudo-terminal, its output
 //! kept with offsets, served to any number of clients on a Unix socket.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
 use std::future::Future;
@@ -31,13 +31,14 @@ use crate::HolderError;
 use crate::protocol::{
     CHUNK, ClientFrame, MAX_KEYED, ServerFrame, VERSION, Welcome, output_frame, read_frame,
 };
+use crate::process::{Snapshot, own_group, send_group};
 use crate::saved::{SYNC_EVERY, SaveLog};
 use crate::scrollback::Scrollback;
 
 #[path = "take_over.rs"]
 mod take_over;
 
-pub use take_over::{check_take_over, handoff_versions, take_over};
+pub use take_over::{check_take_over, handoff_path, handoff_versions, take_over};
 
 /// Live output a slow client can fall this many chunks behind before it
 /// is caught up from the scrollback instead.
@@ -140,6 +141,11 @@ struct Shared {
     reaped: Mutex<Option<i32>>,
     /// A move is under way.
     moving: AtomicBool,
+    /// The process groups stopped by a `Freeze`, while the program is
+    /// frozen for a cross-machine move (D801 J). Typing is refused while
+    /// it is set. Kept in memory: a move onto a new build is refused
+    /// while it is set, so nothing hands it over.
+    frozen: Mutex<Option<BTreeSet<u32>>>,
 }
 
 impl Shared {
@@ -228,7 +234,90 @@ impl Shared {
         Ok(())
     }
 
+    fn is_frozen(&self) -> bool {
+        self.frozen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    /// Stops the program: SIGSTOP to the process groups `end_by_pid`
+    /// targets, those under this holder. The holder goes on serving the
+    /// screen as it is. Freezing a frozen program, or one that has ended,
+    /// does nothing.
+    async fn freeze(&self) -> Result<(), HolderError> {
+        if self.exit.borrow().is_some() || self.is_frozen() {
+            return Ok(());
+        }
+        let own = own_group();
+        let pid = std::process::id();
+        let listing = |source| HolderError::Freeze {
+            socket: self.socket.clone(),
+            source,
+        };
+        let mut groups = Snapshot::take()
+            .await
+            .map_err(listing)?
+            .groups_under(pid, own);
+        if let Some(group) = self.group.and_then(|group| u32::try_from(group.as_raw_pid()).ok()) {
+            groups.insert(group);
+        }
+        // Set before the signals, so nothing is typed into a program that
+        // is about to stop.
+        {
+            let mut frozen = self
+                .frozen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if frozen.is_some() {
+                return Ok(());
+            }
+            *frozen = Some(groups.clone());
+        }
+        for group in &groups {
+            send_group(*group, Signal::STOP);
+        }
+        // What started in the meantime is stopped too.
+        if let Ok(snapshot) = Snapshot::take().await {
+            let late: Vec<u32> = snapshot
+                .groups_under(pid, own)
+                .into_iter()
+                .filter(|group| !groups.contains(group))
+                .collect();
+            for group in &late {
+                send_group(*group, Signal::STOP);
+            }
+            if let Some(frozen) = self
+                .frozen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+            {
+                frozen.extend(late);
+            }
+        }
+        Ok(())
+    }
+
+    /// Lets a frozen program run again: SIGCONT to the groups stopped.
+    /// Thawing one that isn't frozen does nothing.
+    fn thaw(&self) {
+        let groups = self
+            .frozen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        for group in groups.into_iter().flatten() {
+            send_group(group, Signal::CONT);
+        }
+    }
+
     fn write(&self, data: &[u8]) -> Result<(), HolderError> {
+        if self.is_frozen() {
+            return Err(HolderError::Frozen {
+                socket: self.socket.clone(),
+            });
+        }
         self.writer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -298,6 +387,8 @@ impl Shared {
         let mut exit = self.exit.subscribe();
         if exit.borrow().is_none() {
             let _ = rustix::process::kill_process_group(group, Signal::HUP);
+            // A stopped program takes the hangup only once it runs again.
+            self.thaw();
             let _ = tokio::time::timeout(HANG_UP_GRACE, exit.wait_for(Option::is_some)).await;
         }
         // Whatever it started in the background goes too. Gone already is
@@ -674,6 +765,7 @@ fn start(
         gate: Mutex::new(()),
         reaped: Mutex::new(None),
         moving: AtomicBool::new(false),
+        frozen: Mutex::new(None),
     });
 
     let (exit_read, exit_write) = std::io::pipe().map_err(started)?;
@@ -998,6 +1090,19 @@ async fn commands(
                     }),
                 })
             }
+            Ok(ClientFrame::Freeze) => Some(match shared.freeze().await {
+                Ok(()) => ServerFrame::Frozen {
+                    frozen: shared.is_frozen(),
+                },
+                Err(error) => refused(&error),
+            }),
+            Ok(ClientFrame::Thaw) => {
+                shared.thaw();
+                Some(ServerFrame::Frozen { frozen: false })
+            }
+            Ok(ClientFrame::FrozenQuery) => Some(ServerFrame::Frozen {
+                frozen: shared.is_frozen(),
+            }),
             Ok(ClientFrame::Resize { cols, rows }) => {
                 shared.resize(cols, rows).err().map(|error| refused(&error))
             }

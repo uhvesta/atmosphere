@@ -40,6 +40,9 @@ pub trait StartSignal: Send + Sync {
     /// the agent was heard, or the person chose to send it now. There is no
     /// deadline.
     fn released(&self, session: &str, text: &str) -> Boxed<()>;
+    /// `session`'s held first message was typed, or its try is over, so
+    /// sends that waited behind it may go.
+    fn delivered(&self, _session: &str) {}
 }
 
 /// Tries a first message that wasn't sent again, as a new start would.
@@ -117,6 +120,7 @@ impl FirstMessage {
                 tokio::spawn(async move {
                     signal.released(&session, &message).await;
                     first.deliver_once_heard(&session, &socket, &message).await;
+                    signal.delivered(&session);
                 });
                 return Ok(());
             }

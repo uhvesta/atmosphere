@@ -62,7 +62,9 @@ fn read_handoff(path: &Path) -> Result<Handoff, HolderError> {
     })
 }
 
-fn handoff_path(socket: &Path) -> PathBuf {
+/// Where the holder at `socket` writes its handoff while it moves onto a
+/// new build; the new build removes it once it serves (D801 A).
+pub fn handoff_path(socket: &Path) -> PathBuf {
     let mut name = socket.as_os_str().to_owned();
     name.push(".handoff");
     PathBuf::from(name)
@@ -158,6 +160,9 @@ pub(super) fn try_move(
     told: &StdUnixStream,
     runtime: &tokio::runtime::Handle,
 ) -> String {
+    if shared.is_frozen() {
+        return "the program is paused for a move to another machine, and a pause isn't carried onto a new holder build; finish or cancel that move, then try again".to_owned();
+    }
     if shared.moving.swap(true, Ordering::SeqCst) {
         return "a move of this holder is already under way; wait for it to finish".to_owned();
     }
@@ -399,6 +404,7 @@ pub async fn take_over(socket: PathBuf, handoff: &Path) -> Result<(), HolderErro
         gate: Mutex::new(()),
         reaped: Mutex::new(state.reaped),
         moving: std::sync::atomic::AtomicBool::new(false),
+        frozen: Mutex::new(None),
     });
     let (exit_read, exit_write) = std::io::pipe().map_err(adopt("its terminal"))?;
     start_threads(&shared, reader, exit_read, exit_write, group, known);

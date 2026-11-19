@@ -8,6 +8,17 @@
 //! folder the user picked is copied like a scratch folder and the original
 //! stays where it was; `move_picked_folder` is ignored (D461).
 //!
+//! D801 E: a scratch folder that is on the same filesystem as the landing is
+//! not copied but renamed, and nothing running stops. The agent and the
+//! shells keep their holders and programs; the old folder stays as a link to
+//! the new one while a holder that started under it runs (the alias of
+//! `channel_service::rename_alias`); each agent gets a note beside its
+//! holder's socket, which its next resume follows to carry its conversation
+//! to the new folder's key. The rename is journaled first (`Renaming`); a
+//! power cut before the switch renames the folder back, and one after it
+//! only finishes. Across filesystems, and for a picked folder, the move is
+//! the copy below, which stops the agent and the shells and resumes them.
+//!
 //! The move runs on the machine that has the session. The host relays a
 //! move of a session on another machine there, follows its operation, and
 //! files the session in the channel in its own view once the machine has.
@@ -24,14 +35,17 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use humata2_access::{Call, Capability, ChannelId, Decision, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{DESK_CHANNEL, DeskMoveRepo as FoundRepo, Landing, TurnEnd, desk_move_repos, repoint_clone};
+use humata2_revive::{RekeyError, RekeyNote, Started as AgentStart, remove_note, write_note};
 use humata2_store::{
-    AgentState, ChannelRecord, DeskFolderKind, SessionDetail, SessionRecord, SessionRepo, StartStep, StoreError,
+    AgentState, ChannelRecord, DeskFolderKind, SessionDetail, SessionRecord, SessionRepo, StartStep, Store, StoreError,
+    TabKind,
 };
 use humata2_transfers::NewItem;
 use serde::{Deserialize, Serialize};
@@ -42,6 +56,7 @@ use tonic::{Code, Request, Response, Status};
 
 use super::{DeskSvc, failed_precondition, now_ms, session_id};
 use crate::carry_service::failed as carry_failed;
+use crate::channel_service::rename_folder::rename_alias as alias;
 use crate::channel_service::{Gated, answer_gated, blocking, failed, gate};
 use crate::host_relay::assigned;
 use crate::identity::{self, Caller, UserVia};
@@ -86,6 +101,9 @@ struct Planned {
     /// The repos the channel lacks, as `(owner, name)`.
     adds: Vec<(String, String)>,
     token: String,
+    /// D801 E: the folder is renamed into place and what runs in it keeps
+    /// running; otherwise it is copied and the agent and shells restart.
+    renames: bool,
 }
 
 impl Planned {
@@ -123,6 +141,12 @@ impl Planned {
         for (owner, name) in &self.adds {
             changes.push(format!("the channel gets {owner}/{name}"));
         }
+        if !self.renames {
+            changes.push(
+                "the folder is copied, not renamed, so the agent and the shells stop and start again in the new folder"
+                    .to_owned(),
+            );
+        }
         changes
     }
 }
@@ -133,6 +157,9 @@ impl Planned {
 enum Phase {
     /// The session is being staged and copied; nothing of it changed yet.
     Packing,
+    /// A rename move: its notes are written and the folder is renamed, or
+    /// about to be. The records still say it is a Desk session.
+    Renaming,
     /// The copy is whole at the landing; the session works where it was.
     Copied,
     /// The agent and its shells are stopping, and the landing is synced
@@ -175,6 +202,10 @@ struct Journal {
     folder: PathBuf,
     /// The Desk folder.
     old_folder: PathBuf,
+    /// D801 E: the folder was renamed into place (see the module doc), so a
+    /// power cut renames it back or finishes, and nothing is resumed.
+    #[serde(default)]
+    rename: bool,
     /// The Desk folder is one the user picked, so the move copies it and
     /// leaves it where it was (D461). A journal from before doesn't say
     /// (`None`), and then only a folder Humata made may go to the Bin.
@@ -578,7 +609,14 @@ impl DeskSvc {
             feed(repo.head_branch.as_deref().unwrap_or(""));
         }
         let token = hex(&digest.finalize());
-        Ok(Planned { channel: channel_record, branch: branch.name, folder, rel, repos, adds, token })
+        let (store, id, old, landing, machine) =
+            (self.starter.store.clone(), record.id.clone(), record.folder.clone(), folder.clone(), self.machine.clone());
+        let renames = off(move || {
+            let row = store.desk(&id).map_err(|error| status::store(error, &machine, "look up the Desk session"))?;
+            Ok(row.is_some_and(|row| row.kind != DeskFolderKind::Picked) && same_device(&old, &landing))
+        })
+        .await?;
+        Ok(Planned { channel: channel_record, branch: branch.name, folder, rel, repos, adds, token, renames })
     }
 
     /// The body of a move; `approved` once the user said yes to an agent's
@@ -631,7 +669,8 @@ impl DeskSvc {
             }
             // An agent's own call is made in its turn: the move is its pick.
             Some(AgentState::Running { holder_pid })
-                if !request.confirm_running
+                if !planned.renames
+                    && !request.confirm_running
                     && !approved
                     && !matches!(caller, Caller::Agent(_))
                     && running_turn(&id, *holder_pid) != pb::SessionStatus::Idle =>
@@ -665,6 +704,7 @@ impl DeskSvc {
             branch: planned.branch.clone(),
             folder: planned.folder.clone(),
             old_folder: record.folder.clone(),
+            rename: planned.renames,
             keep_old_folder: Some(row.kind == DeskFolderKind::Picked),
             machine: record.machine.clone(),
             operation: operation.id.as_ref().map(|id| id.value.clone()).unwrap_or_default(),
@@ -676,7 +716,14 @@ impl DeskSvc {
                 .collect(),
         };
         let (svc, who) = (self.clone(), caller.clone());
-        tokio::spawn(async move { svc.run_move(who, held, Job { planned, journal }, progress).await });
+        tokio::spawn(async move {
+            let job = Job { planned, journal };
+            if job.planned.renames {
+                svc.run_rename(who, held, job, progress).await;
+            } else {
+                svc.run_move(who, held, job, progress).await;
+            }
+        });
         Ok(Gated::Done(operation))
     }
 
@@ -1080,6 +1127,9 @@ impl DeskSvc {
             remove_journal(&self.state, &id);
             return Ok(Settled::Undone("the session was deleted".to_owned()));
         };
+        if journal.rename {
+            return self.recover_rename(&journal, &record).await;
+        }
         if record.channel == DESK_CHANNEL {
             // Cut before the switch: it is a Desk session still.
             let stopped = self.desk_open(&id).await?;
@@ -1370,6 +1420,298 @@ pub(super) fn recover_after(svc: DeskSvc, started: Arc<crate::restart::Started>)
             operations.record(&id, "desk_move", "recovered", state);
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// D801 E: the rename.
+
+/// Whether `folder` is a folder on the filesystem the landing is made on
+/// (the nearest folder that exists above it), so `rename(2)` works under
+/// what runs in it. Any doubt answers no: the copy is always safe.
+fn same_device(folder: &Path, landing: &Path) -> bool {
+    let Some(parent) = landing
+        .parent()
+        .and_then(|parent| parent.ancestors().find(|above| fs::metadata(above).is_ok_and(|meta| meta.is_dir())))
+    else {
+        return false;
+    };
+    match (fs::symlink_metadata(folder), fs::metadata(parent)) {
+        (Ok(folder), Ok(parent)) => folder.is_dir() && folder.dev() == parent.dev(),
+        _ => false,
+    }
+}
+
+/// The name the old folder's link is recorded under.
+fn alias_key(session: &str) -> String {
+    format!("desk-{session}")
+}
+
+/// Why a rename move couldn't be prepared, done or undone.
+#[derive(Debug, thiserror::Error)]
+enum RenameError {
+    #[error(
+        "couldn't make {} to move Desk session {session} into: {source}; check that the channel's folder can be written to and has room, then move the session again",
+        path.display()
+    )]
+    Landing {
+        session: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "couldn't read Desk session {session}'s agent and shells to move it: {source}; check Humata's state folder, then move the session again"
+    )]
+    Records {
+        session: String,
+        #[source]
+        source: StoreError,
+    },
+    #[error(
+        "couldn't keep the note that carries Desk session {session}'s conversation to its new folder: {source}; free the disk space or fix the permissions of Humata's holders folder, then move the session again"
+    )]
+    Rekey {
+        session: String,
+        #[source]
+        source: RekeyError,
+    },
+    #[error("couldn't keep the old folder's name as a link to the new one: {source}")]
+    Alias {
+        #[source]
+        source: alias::AliasError,
+    },
+    #[error(
+        "couldn't rename {} to {}: {source}; check that both folders can be written to, then move the session again. Nothing running was stopped",
+        from.display(),
+        to.display()
+    )]
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+fn rename_status(error: &RenameError) -> Status {
+    failed(Code::Internal, error, "fix what the message names, then move the session again", None)
+}
+
+/// Writes the note each of the session's agents follows at its next resume,
+/// and answers the holders that started under the old folder and still run.
+fn prepare_rename(starter: &humata2_sessions::Starter, journal: &Journal) -> Result<Vec<alias::Holder>, RenameError> {
+    let store = starter.store.as_ref();
+    let records = |source| RenameError::Records { session: journal.session.clone(), source };
+    let mut holders = Vec::new();
+    if let Some(agent) = store.agent(&journal.session).map_err(records)? {
+        let launch = &agent.launch;
+        let note = RekeyNote {
+            path: journal.old_folder.clone(),
+            target: journal.folder.clone(),
+            started: AgentStart {
+                folder: launch.folder.clone(),
+                argv: launch.argv.clone(),
+                resume_argv: launch.resume_argv.clone(),
+                conversation_file: launch.conversation_file.clone(),
+            },
+            known: journal.repos.iter().map(|repo| journal.old_folder.join(&repo.dir)).collect(),
+            // Codex's and Copilot's conversations name their folder inside them.
+            follows: crate::channel_service::rename_folder::session_follows(
+                store,
+                &starter.agents,
+                &starter.home,
+                &starter.layout.root(),
+                &journal.session,
+                &journal.old_folder,
+                &journal.folder,
+            )
+            .map_err(records)?,
+        };
+        write_note(&launch.holder_socket, &note)
+            .map_err(|source| RenameError::Rekey { session: journal.session.clone(), source })?;
+        if let AgentState::Running { holder_pid } = agent.state {
+            holders.push(alias::Holder { socket: launch.holder_socket.clone(), pid: holder_pid });
+        }
+    }
+    for tab in store.tabs().map_err(records)? {
+        if tab.kind == TabKind::Shell && tab.holder_pid != 0 && tab.session.as_deref() == Some(journal.session.as_str()) {
+            holders.push(alias::Holder { socket: tab.holder_socket, pid: tab.holder_pid });
+        }
+    }
+    holders.retain(alias::alive);
+    holders.dedup();
+    Ok(holders)
+}
+
+/// Renames the Desk folder to the landing, leaving a link at the old name
+/// while `holders` run.
+fn rename_in_place(root: &Path, journal: &Journal, holders: &[alias::Holder]) -> Result<(), RenameError> {
+    let (old, new) = (&journal.old_folder, &journal.folder);
+    if let Some(parent) = new.parent() {
+        humata2_durable::create_dir_all(parent, 0o700).map_err(|source| RenameError::Landing {
+            session: journal.session.clone(),
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let key = alias_key(&journal.session);
+    let before = alias::begin(root, &key, old, new, holders).map_err(|source| RenameError::Alias { source })?;
+    let moved = alias::rename_folder(old, new, !holders.is_empty())
+        .and_then(|()| {
+            for folder in [old.parent(), new.parent()].into_iter().flatten() {
+                humata2_durable::sync_dir(folder)?;
+            }
+            Ok(())
+        })
+        .map_err(|source| RenameError::Move { from: old.clone(), to: new.clone(), source });
+    if moved.is_err() {
+        alias::undo(root, &key, &before);
+    }
+    moved
+}
+
+/// Puts the folder back where the Desk had it and drops the notes: what a
+/// failed or cut rename move that never switched leaves. Safe to repeat.
+fn undo_rename(store: &Store, root: &Path, journal: &Journal) -> Result<(), RenameError> {
+    let (old, new) = (&journal.old_folder, &journal.folder);
+    let key = alias_key(&journal.session);
+    // The link goes first, so the old name is free for the folder.
+    alias::release(root, &key, old).map_err(|source| RenameError::Alias { source })?;
+    let gone = fs::symlink_metadata(old).is_err();
+    if gone && fs::symlink_metadata(new).is_ok_and(|meta| meta.is_dir()) {
+        alias::rename_folder(new, old, false).map_err(|source| RenameError::Move {
+            from: new.clone(),
+            to: old.clone(),
+            source,
+        })?;
+    }
+    if let Some(agent) = store
+        .agent(&journal.session)
+        .map_err(|source| RenameError::Records { session: journal.session.clone(), source })?
+    {
+        remove_note(&agent.launch.holder_socket);
+    }
+    Ok(())
+}
+
+impl DeskSvc {
+    /// Runs an accepted rename move, holding the session's lock and showing
+    /// it as Moving until it ends. Nothing it does stops a terminal.
+    async fn run_rename(&self, caller: Caller, _held: OwnedMutexGuard<()>, mut job: Job, progress: Progress) {
+        let _moving = Moving::begin(&job.journal.session, &self.machine, &job.journal.operation);
+        if let Err(failure) = self.add_repos(&caller, &job, &progress).await {
+            end_failed(progress, failure.step, &failure.status);
+            return;
+        }
+        for key in ["copy", "stop", "release", "launch", "verify"] {
+            progress.set_step(key, pb::StepState::Skipped, None);
+        }
+        // The notes come first, so a restart that finds the folder moved
+        // finds them too; then the journal says the rename is next.
+        progress.set_step("pack", pb::StepState::Running, None);
+        let (starter, at_journal) = (self.starter.clone(), job.journal.clone());
+        let prepared = off(move || prepare_rename(&starter, &at_journal).map_err(|error| rename_status(&error))).await;
+        let holders = match prepared {
+            Ok(holders) => holders,
+            Err(error) => {
+                self.undo_and_fail(&caller, &job.journal, progress, "pack", &error).await;
+                return;
+            }
+        };
+        job.journal.phase = Phase::Renaming;
+        if let Err(error) = self.save_journal(&job.journal).await {
+            self.undo_and_fail(&caller, &job.journal, progress, "pack", &error).await;
+            return;
+        }
+        progress.set_step("pack", pb::StepState::Done, None);
+
+        progress.set_step("unpack", pb::StepState::Running, None);
+        let (root, at_journal) = (self.starter.layout.root(), job.journal.clone());
+        let renamed =
+            off(move || rename_in_place(&root, &at_journal, &holders).map_err(|error| rename_status(&error))).await;
+        if let Err(error) = renamed {
+            self.undo_and_fail(&caller, &job.journal, progress, "unpack", &error).await;
+            return;
+        }
+        // A kill here leaves the folder moved and the records not: the
+        // restart renames it back.
+        crate::fault::point("move-renamed");
+        progress.set_step("unpack", pb::StepState::Done, None);
+
+        progress.set_step("branch", pb::StepState::Running, None);
+        if let Err(error) = self.repoint(&job.journal, &job.planned.channel.folder).await {
+            self.undo_and_fail(&caller, &job.journal, progress, "branch", &error).await;
+            return;
+        }
+        progress.set_step("branch", pb::StepState::Done, None);
+
+        progress.set_step("switch", pb::StepState::Running, None);
+        if let Err(error) = self.switch(&job.journal).await {
+            self.undo_and_fail(&caller, &job.journal, progress, "switch", &error).await;
+            return;
+        }
+        job.journal.phase = Phase::Switched;
+        if let Err(error) = self.save_journal(&job.journal).await {
+            crate::log::say!("humatad2: {}", error.message());
+        }
+        progress.set_step("switch", pb::StepState::Done, None);
+        crate::fault::point("move-switched");
+        if let Err(error) = self.finish_switch(&job.journal, Some(&caller)).await {
+            end_failed(progress, "switch", &error);
+            return;
+        }
+        let id = job.journal.session.clone();
+        remove_journal(&self.state, &id);
+        self.channels.watch_aliases();
+        self.tell.session(&id, pb::Change::Updated, Some(identity::actor(&caller))).await;
+        progress.succeed(Some(pb::operation::Result::Session(pb::SessionId { value: id })));
+    }
+
+    /// Ends a rename move that failed before the switch: the folder goes
+    /// back, the notes are dropped, and the session is a Desk session as it
+    /// was, still running.
+    async fn undo_and_fail(&self, caller: &Caller, journal: &Journal, progress: Progress, step: &'static str, status: &Status) {
+        if let Err(error) = self.undo_rename(journal).await {
+            crate::log::say!(
+                "humatad2: couldn't take back the move of Desk session {}: {}; restart humatad2 to try again",
+                journal.session,
+                error.message()
+            );
+        } else {
+            remove_journal(&self.state, &journal.session);
+        }
+        self.tell.session(&journal.session, pb::Change::Updated, Some(identity::actor(caller))).await;
+        end_failed(progress, step, status);
+    }
+
+    async fn undo_rename(&self, journal: &Journal) -> Result<(), Status> {
+        let (store, root, journal) = (self.starter.store.clone(), self.starter.layout.root(), journal.clone());
+        off(move || undo_rename(&store, &root, &journal).map_err(|error| rename_status(&error))).await
+    }
+
+    /// Finishes or undoes a rename move a restart cut short. Before the
+    /// switch the folder is renamed back; after it, only what the switch
+    /// leaves to do is done. A holder that died meanwhile is resumed by the
+    /// revive, whose note carries its conversation.
+    async fn recover_rename(&self, journal: &Journal, record: &SessionRecord) -> Result<Settled, Status> {
+        let id = journal.session.as_str();
+        if record.channel == DESK_CHANNEL {
+            self.undo_rename(journal).await?;
+            remove_journal(&self.state, id);
+            return Ok(Settled::Undone(format!(
+                "it was cut short before the switch, so the folder is back in {} and it is a Desk session still",
+                journal.old_folder.display()
+            )));
+        }
+        if record.channel != journal.channel {
+            remove_journal(&self.state, id);
+            return Ok(Settled::Undone("the session is in another channel now".to_owned()));
+        }
+        self.finish_switch(journal, None).await?;
+        remove_journal(&self.state, id);
+        self.channels.watch_aliases();
+        Ok(Settled::Finished)
+    }
 }
 
 #[cfg(test)]

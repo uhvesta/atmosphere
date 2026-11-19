@@ -30,6 +30,9 @@ use crate::status;
 
 pub(crate) mod codex_trust;
 
+/// The ask key of a session's "waiting in its terminal" notice (D798).
+const NOTICE_KEY: &str = "notice-in-terminal";
+
 /// The store key D199's single switch was kept under: "true" when every
 /// agent asked in its own prompt. D782 moved it to each kind's
 /// `asks_in_inbox` in agents.toml; [`move_global_switch`] carries an old
@@ -306,6 +309,64 @@ impl Inbox {
             card
         })
         .await
+    }
+
+    /// D798: raises the card that says `agent_name` waits on a prompt in its
+    /// terminal, with what the agent shows, `message`, under it. It has no
+    /// action that types anything; Dismiss only closes it. Held as a
+    /// permission card is: dropping the wait withdraws it.
+    pub(crate) async fn raise_notice(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        agent_name: &str,
+        message: String,
+    ) -> Result<PermissionWait, Status> {
+        self.raise_held(caller, agent, NOTICE_KEY, false, |id| {
+            let mut card = card(
+                id,
+                agent,
+                agent_name,
+                &self.machine,
+                Ask {
+                    tool: String::new(),
+                    command: message,
+                    description: Some("Answer it in the session's terminal. Dismiss only closes this card; nothing is typed.".to_owned()),
+                    edits_files: false,
+                    key: String::new(),
+                },
+            );
+            card.action_title = format!("{agent_name} is waiting in its terminal");
+            card
+        })
+        .await
+    }
+
+    /// Withdraws the "waiting in its terminal" card of `session`, if it has
+    /// one: the agent went on, or asks another way.
+    pub(crate) async fn withdraw_notice(&self, session: &str) {
+        let key = format!("{session}/{NOTICE_KEY}");
+        self.withdraw_held_where(session, |entry| entry.keys.contains(&key)).await;
+    }
+
+    /// Withdraws every ask a hook holds for `session` as resolved (D798):
+    /// its turn ended, so each was answered in its terminal or is moot.
+    /// Their hooks get no decision, and a later answer is refused.
+    pub(crate) async fn withdraw_held(&self, session: &str) {
+        self.withdraw_held_where(session, |_| true).await;
+    }
+
+    async fn withdraw_held_where(&self, session: &str, wanted: impl Fn(&Entry) -> bool) {
+        let state = self.state.lock().await;
+        for entry in &state.requests {
+            if entry.permission
+                && entry.session == session
+                && entry.request.borrow().request.state == pb::RequestState::Pending as i32
+                && wanted(entry)
+            {
+                self.withdraw_resolved(entry).await;
+            }
+        }
     }
 
     /// Raises a question card for the agent's own ask-user form (D761),

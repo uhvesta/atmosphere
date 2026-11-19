@@ -80,6 +80,8 @@ const LISTED_METHODS: [(&str, &[&str]); 8] = [
         &[
             "StartSession",
             "StopSession",
+            // D801 J: a move pauses the agent it is taking away.
+            "FreezeSession",
             "ResumeSession",
             "GetSession",
             "ListSessions",
@@ -389,7 +391,7 @@ fn off_list(path: &str) -> Status {
         Code::PermissionDenied,
         pb::Error {
             message: format!(
-                "humatad2 refused {method} on the peer link: the host may relay only terminal, file, trash and diff calls, session start/stop/resume/get/list, channel create/get, operation get/watch/cancel, the event feed and a conversation read for the host's mirror (HistoryService/ReadMirror)"
+                "humatad2 refused {method} on the peer link: the host may relay only terminal, file, trash and diff calls, session start/stop/freeze/resume/get/list, channel create/get, operation get/watch/cancel, the event feed and a conversation read for the host's mirror (HistoryService/ReadMirror)"
             ),
             fix: "do this on the Mac's own daemon, or on the machine itself with `humata`".to_owned(),
             retry: None,
@@ -789,6 +791,7 @@ mod tests {
             "/humata.v1.TransferEndService/WriteAt",
             "/humata.v1.SessionService/StartSession",
             "/humata.v1.SessionService/StopSession",
+            "/humata.v1.SessionService/FreezeSession",
             "/humata.v1.SessionService/ResumeSession",
             "/humata.v1.SessionService/GetSession",
             "/humata.v1.SessionService/ListSessions",

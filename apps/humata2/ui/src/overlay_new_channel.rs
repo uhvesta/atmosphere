@@ -288,15 +288,21 @@ fn made_row(look: Look) -> Div {
         .child(widgets::dim_in(look, "Folders made").text_color(rgb(look.secondary)))
 }
 
-fn bar(look: Look, percent: u8, color: u32) -> Div {
-    let width = 160. * f32::from(percent.min(100)) / 100.;
-    div()
-        .w(px(160.))
-        .h(px(4.))
-        .rounded_full()
-        .bg(rgb(look.fill))
-        .flex_shrink_0()
-        .child(div().h_full().w(px(width)).rounded_full().bg(rgb(color)))
+/// The clone bar of `repo`'s setup row: 160 px, 4 px high, `percent` filled in
+/// `color`.
+fn bar(look: Look, repo: &str, percent: u8, color: u32) -> AnyElement {
+    widgets::progress_bar(
+        look,
+        Some(f32::from(percent.min(100)) / 100.),
+        widgets::BarMetrics {
+            width: Some(px(160.)),
+            height: px(4.),
+            radius: px(2.),
+            track: look.fill,
+            fill: color,
+        },
+        SharedString::from(format!("setup-bar-{repo}")),
+    )
 }
 
 fn clone_row(repo: &str, state: &SetupState, look: Look, ui: &Rc<Ui>) -> AnyElement {
@@ -306,7 +312,7 @@ fn clone_row(repo: &str, state: &SetupState, look: Look, ui: &Rc<Ui>) -> AnyElem
             .pl(px(8.))
             .child(chrome::icon(IconName::FolderGit2, look.secondary, 13.))
             .child(div().w(px(110.)).child(repo.to_owned()))
-            .child(bar(look, percent, color))
+            .child(bar(look, repo, percent, color))
             .child(chrome::icon(mark, mark_color, 12.))
             .child(div().text_color(rgb(look.secondary)).child(text))
             .into_any_element()
@@ -338,7 +344,7 @@ fn clone_row(repo: &str, state: &SetupState, look: Look, ui: &Rc<Ui>) -> AnyElem
                     .pl(px(8.))
                     .child(chrome::icon(IconName::FolderGit2, look.secondary, 13.))
                     .child(div().w(px(110.)).child(repo.to_owned()))
-                    .child(bar(look, 12, theme::RED))
+                    .child(bar(look, repo, 12, theme::RED))
                     .child(chrome::icon(IconName::CircleX, theme::RED, 12.))
                     .child(div().text_color(rgb(theme::RED)).child("Clone failed"))
                     .child(div().flex_1())

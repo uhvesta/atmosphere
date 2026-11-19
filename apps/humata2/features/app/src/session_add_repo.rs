@@ -8,6 +8,7 @@
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::SessionId;
+use humata2_clients::progress::{OpKind, OpProgress, OpUpdate};
 use tca::Effect;
 
 use crate::repo_search::{self, RepoPicker, RepoSearchAction, RepoSearchState};
@@ -25,6 +26,10 @@ pub struct SessionAddRepo {
     pub search: RepoSearchState,
     /// The repo the daemon is adding; the sheet waits.
     pub adding: Option<String>,
+    /// The running step of the operation while `adding`.
+    pub progress: Option<OpProgress>,
+    /// The operation id `progress` follows; latched by the first update.
+    pub op: Option<String>,
     /// Why the last add failed, and what to do.
     pub error: Option<String>,
 }
@@ -83,6 +88,8 @@ impl App {
             session,
             search: RepoSearchState::default(),
             adding: None,
+            progress: None,
+            op: None,
             error: None,
         }));
         self.session_repo_search(state, RepoSearchAction::Open)
@@ -102,6 +109,8 @@ impl App {
         }
         sheet.error = None;
         sheet.adding = Some(repo.clone());
+        sheet.progress = None;
+        sheet.op = None;
         let (daemon, session) = (self.clients.daemon.clone(), sheet.session.clone());
         Effect::future(async move {
             let result = daemon.add_repo_to_session(&session, &repo).await;
@@ -126,10 +135,24 @@ impl App {
             Err(error) => {
                 if let Some(sheet) = sheet_of(state) {
                     sheet.adding = None;
+                    sheet.progress = None;
+                    sheet.op = None;
                     sheet.error = Some(error.to_string());
                 }
                 Effect::none()
             }
+        }
+    }
+}
+
+impl App {
+    /// A watched operation moved on: the waiting sheet keeps its progress.
+    pub(super) fn add_repo_operation(&self, state: &mut AppState, update: OpUpdate) {
+        if update.kind != OpKind::AddRepo {
+            return;
+        }
+        if let Some(sheet) = sheet_of(state).filter(|sheet| sheet.adding.is_some()) {
+            humata2_session::follow_operation(&mut sheet.op, &mut sheet.progress, update);
         }
     }
 }

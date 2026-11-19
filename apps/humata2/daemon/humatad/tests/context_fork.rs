@@ -70,6 +70,9 @@ f="$CONV_DIR/$key/$id.jsonl"
 case "$mode" in
   --session-id) : > "$f" ;;
 esac
+# Reads keys itself, as agent CLIs do, so typing never waits out the
+# holder's keys limit (see common/mod.rs).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,

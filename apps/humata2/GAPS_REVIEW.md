@@ -1329,6 +1329,14 @@ Owner's ask. Skills and docs only, no code. `render-humata-review` now prepares 
 - Verified: not yet run (this agent may not run bazel; commands handed to main).
 - Open: the setting lives in app Preferences until the app reads daemon settings at launch (D793's reverse moves it to `settings.toml`). No design golden for the folded Desk or the "K more" row.
 
+### (uncommitted): long operations show how far they are; a working session shows how long (D807, milestone PROGRESS)
+- Asked: the owner asked for progress indicators on work that looks frozen.
+- Changed: one shared progress line (`ui/src/widgets.rs`) in three forms (measured, sweep, run time after 10 s; nothing for 300 ms). Clones report units 0–1000 from git's stderr (`daemon/sessions/src/git.rs`), wired through start, continue, add repo and new-channel clones. `daemon/humatad/src/operations.rs` publishes a step's units at most every 250 ms, with one trailing flush. The live client maps operations to `Event::Operation(OpUpdate)` and publishes only changes, then a final clear. The New session, Fork, Continue and Add repo dialogs latch onto their own operation. Move steps draw measured or sweep (`session_tabs.rs`, `overlay_add_machine.rs`, `overlay_new_channel.rs`). Files, Conversation, machine-page and file loads draw the sweep. `Session.status_since` (proto 35) comes from a daemon book saved under its lock to `<state>/status-since.json`. The tab header shows "Working for …" with a 1 fps tick; the empty note sits out of the row's flow, so the header keeps its spacing.
+- Performance: the bar's sweep is one animated child (30 fps, 1.6 s period) with no per-frame allocation; the 300 ms wait self-wakes at 10 fps; the elapsed note at 1 fps. The sidebar does not tick (P8).
+- Tests: `features/app:op_progress_test` (new), `clients/live:live_unit_test` (map cases), `daemon/sessions:sessions_unit_test` (git progress parsing), `daemon/humatad:humatad2_unit_test` (gate, status_since), `ui:ui_unit_test` (widget forms, add-machine sweeps, header note). Frames 122–124 are new in `desktop:design_test`.
+- Verified: presubmit 100/101 pass. `ui:ui_unit_test` doesn't build because of DIFFVIEW's `ui/src/panel_changes.rs:3421` (recursion limit expanding `#[test]`); `bazel build //apps/humata2/ui:ui` is clean. Scoped slow: humatad `sessions_test`, `session_add_repo_test` pass. `desktop:native_test` 254/55: the failures are other lanes' panel-header, diff and review snapshot or focus changes, none in progress output. `desktop:design_test` builds; 122–124 are not recorded yet.
+- Open: T6 holder count (LIVEHOLDER) and T7 diff load (DIFFVIEW) carry over (P10). Archive push, restore download and trash stay unmeasured (P7). Frames 122–124 need recording and Fable's approval.
+
 ## D792: an agent's provider import goes to the Inbox (2026-11-18)
 
 - Was: MCP `provider_import` was user-only, so an agent got `user_only` and nothing reached the Inbox; `inbox_ask` imports nothing.

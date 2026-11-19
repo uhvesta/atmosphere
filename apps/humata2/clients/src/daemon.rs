@@ -154,6 +154,9 @@ pub enum Event {
     /// SEAM (MACHINESCRIPTS, D686): a script run on this machine started, moved or ended;
     /// read its runs again.
     MachineScriptRun(MachineId),
+    /// PROGRESS: an operation the app is waiting on moved on (its running
+    /// step and how far it is). Sent only when what it shows changed.
+    Operation(crate::progress::OpUpdate),
     /// Events were dropped because the subscriber fell behind: reload.
     Resync,
 }
@@ -389,6 +392,13 @@ pub trait Daemon: Send + Sync + 'static {
     /// (RV-1), read from its clones now.
     fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
         let what = format!("The changes of {session} against {base:?}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// One repository's changes in the session against `base` (DS-35), read on
+    /// its own so a repository that fails doesn't hide the others. `repo` is as
+    /// `RepoDiff::repo` names it. Empty when the repository has no changes.
+    fn repo_diff(&self, session: &SessionId, base: &DiffBase, repo: &str) -> Reply<Vec<RepoDiff>> {
+        let what = format!("The changes of {repo} in {session} against {base:?}");
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
     /// The branches one repository of the session can be compared with, the

@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use crate::model::Side;
-use crate::plan::{FileRef, Group, Note, NoteState, NoteTarget, ReviewPlan};
+use crate::plan::{FileRef, Group, Importance, Note, NoteState, NoteTarget, ReviewPlan};
 use crate::spec::DiffSpec;
 use crate::stack::Stack;
 
@@ -161,6 +161,25 @@ pub struct ViewState {
     pub stack: Option<Stack>,
     /// The title of the layer showing; `None` is the whole stack.
     pub layer: Option<String>,
+    /// The files the plan marked key or skim (D802), as the agent sent
+    /// them. The app never reports these; they come only from a plan.
+    pub importance: Vec<Importance>,
+}
+
+impl ViewState {
+    /// The agent's tiers for what shows (D802): a picked layer's own, else
+    /// the plan's, else for a stack the layers' joined.
+    #[must_use]
+    pub fn agent_importance(&self) -> Vec<Importance> {
+        match (&self.stack, &self.layer) {
+            (Some(stack), Some(layer)) => stack
+                .layer_plan(layer)
+                .map(|plan| plan.importance)
+                .unwrap_or_default(),
+            (Some(stack), None) if self.importance.is_empty() => stack.whole_plan().importance,
+            _ => self.importance.clone(),
+        }
+    }
 }
 
 /// A note for the user (PR-23): anchored like a plan's notes, so it is
@@ -216,6 +235,7 @@ pub enum ChangeKind {
         groups: Vec<Group>,
         stack: Option<Stack>,
         layer: Option<String>,
+        importance: Vec<Importance>,
     },
     /// Show this layer (`None` is the whole stack).
     Layer(Option<String>),
@@ -308,6 +328,7 @@ pub enum Replaced {
         added: Vec<String>,
         stack: Option<Stack>,
         layer: Option<String>,
+        importance: Vec<Importance>,
     },
     /// The layer showing before the agent moved it.
     Layer { layer: Option<String> },
@@ -429,7 +450,9 @@ impl ReviewChat {
         if view.open != self.view.open {
             self.back = None;
         }
-        self.view = view;
+        // The app doesn't know the plan's importance; it stays the plan's.
+        let importance = std::mem::take(&mut self.view.importance);
+        self.view = ViewState { importance, ..view };
     }
 
     pub fn set_switches(&mut self, switches: AgentSwitches) {
@@ -660,6 +683,7 @@ impl ReviewChat {
             added,
             stack: std::mem::replace(&mut self.view.stack, plan.stack.clone()),
             layer: std::mem::replace(&mut self.view.layer, layer.clone()),
+            importance: std::mem::replace(&mut self.view.importance, plan.importance.clone()),
         };
         let summary = format!("{} files, {} groups", plan.order.len(), plan.groups.len());
         Ok(self.record(
@@ -670,6 +694,7 @@ impl ReviewChat {
                 groups: plan.groups,
                 stack: plan.stack,
                 layer,
+                importance: plan.importance,
             },
             before,
         ))
@@ -713,6 +738,7 @@ impl ReviewChat {
                 added,
                 stack,
                 layer,
+                importance,
             } => {
                 for id in added {
                     self.notes.remove(&id);
@@ -721,12 +747,14 @@ impl ReviewChat {
                 self.view.groups.clone_from(&groups);
                 self.view.stack.clone_from(&stack);
                 self.view.layer.clone_from(&layer);
+                self.view.importance.clone_from(&importance);
                 (
                     ChangeKind::Order {
                         order,
                         groups,
                         stack,
                         layer,
+                        importance,
                     },
                     String::new(),
                 )

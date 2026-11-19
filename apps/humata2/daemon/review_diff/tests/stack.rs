@@ -79,6 +79,7 @@ fn layer(title: &str, repos: Vec<LayerRepo>) -> Layer {
         title: title.to_owned(),
         purpose: None,
         repos,
+        ..Layer::default()
     }
 }
 

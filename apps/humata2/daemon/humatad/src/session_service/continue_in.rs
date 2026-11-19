@@ -293,7 +293,9 @@ async fn run_continue(
             }
             crate::fault::point(&format!("continue.{event}"));
         };
-        starter.continue_in(request, &env, &mut note).await
+        let units = progress.units();
+        let sink: humata2_sessions::CloneUnits = std::sync::Arc::new(move |key: &str, done, total| units.set(key, done, total));
+        humata2_sessions::with_clone_units(sink, starter.continue_in(request, &env, &mut note)).await
     };
     match continued {
         Ok(started) => {

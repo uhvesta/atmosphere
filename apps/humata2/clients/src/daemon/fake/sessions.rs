@@ -813,6 +813,7 @@ pub(super) fn create_session(
                 push_allowed: false,
                 moving: None,
                 folder: format!("/Users/me/Humata/{channel}/sessions/{id}"),
+                status_since_ms: None,
                 clones: options
                     .repos
                     .iter()

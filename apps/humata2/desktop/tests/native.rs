@@ -252,3 +252,11 @@ mod desk_target;
 mod diff_view;
 #[path = "native/diff_big.rs"]
 mod diff_big;
+#[path = "native/diff_full_screen.rs"]
+mod diff_full_screen;
+#[path = "native/diff_stress.rs"]
+mod diff_stress;
+#[path = "native/stack.rs"]
+mod stack;
+#[path = "native/review_ui.rs"]
+mod review_ui;

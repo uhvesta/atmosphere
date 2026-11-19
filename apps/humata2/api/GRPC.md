@@ -418,6 +418,20 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
   already held or fetched from a repo's remote (decimal). A clone whose
   remote has its history is fetched on the target, so `sent_bytes` is
   the work the remote lacks, not the clone's `.git`.
+- A clone reports how far it is on its own step (D807): `clone:<repo>`
+  (START_SESSION, CONTINUE_IN_CHANNEL, RESTORE_SESSION, REBUILD_SESSION,
+  START_PR_REVIEW and a session's ADD_REPO) and `clone_main:<repo>` (a new
+  channel's main clones) run `done_units` of `total_units` = 1000, read from
+  git's progress: receiving objects fills 0–900, resolving deltas 900–1000,
+  and a local clone's checkout (Updating files) 0–1000. A clone that worked
+  ends at 1000. When git's output can't be read, the step stays unmeasured
+  (`total_units` 0): never an error. Any other step that reports units says
+  so above (MOVE_SESSION's `copy`); every other step is unmeasured, and the
+  app draws a sweep for it.
+- A step's units reach watchers at most 4 times a second (every 250 ms);
+  the latest value inside a window goes out when it ends, and a state change
+  always carries the units with it. A client only acts on an update whose
+  title, fraction or label changed.
 
 | Kind | Step keys | Point of no return | Cancel undoes |
 | --- | --- | --- | --- |

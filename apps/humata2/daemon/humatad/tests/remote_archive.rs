@@ -63,6 +63,7 @@ async fn start_archive(rig: &Rig, id: &pb::SessionId, choice: pb::ArchiveChoice)
             id: Some(id.clone()),
             choice: choice as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await
         .expect("the archive starts")
@@ -564,6 +565,7 @@ async fn archive_until_cut(rig: &Rig, id: &pb::SessionId) {
             id: Some(id.clone()),
             choice: pb::ArchiveChoice::Archive as i32,
             plan: plan.token,
+            end: Some(true),
         })
         .await;
 }

@@ -44,6 +44,10 @@ impl App {
                     path: place.path.clone(),
                 }),
             ),
+            // The agent moved the stack to a layer (or Whole stack).
+            AppAction::PrFollower(FollowerAction::Delegate(FollowerDelegate::ShowLayer(layer))) => {
+                self.child(state, AppAction::Review(ReviewAction::PickLayer(layer.clone())))
+            }
             // Every review posted: Submit review is done.
             AppAction::PrSubmit(SubmitAction::Delegate(SubmitDelegate::Posted(_))) => {
                 self.child(state, AppAction::PrSubmit(SubmitAction::Close))

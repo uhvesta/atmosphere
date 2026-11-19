@@ -1618,6 +1618,21 @@ impl Core {
         // D671 (Provisional): a trailing newline is the submit, sent as its
         // own write after the text has settled in the agent's prompt.
         let (text, submit) = split_submit(request.text.as_bytes());
+        // D797: Humata's own sends (the composer, the Inbox, MCP) wait
+        // behind a start message still held for the agent's ready signal,
+        // so they never go in ahead of it or into a screen it shows first.
+        let still = match &tab {
+            Ok(tab) if !text.is_empty() && tab.kind == TabKind::Agent => {
+                crate::start_ready::behind_start(&session.id).await.err()
+            }
+            _ => None,
+        };
+        if let Some(still) = still {
+            if let (Some(key), None) = (key.clone(), retry_of) {
+                self.release_typed_key(key).await;
+            }
+            return Err(crate::start_ready::refusal(&still));
+        }
         // BUG-T1: a return pressed before the program has taken the text
         // reaches it with the text, as part of a paste. A retry's text may
         // be there already, shown before this could watch for it.

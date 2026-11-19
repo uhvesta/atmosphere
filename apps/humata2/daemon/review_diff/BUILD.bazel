@@ -13,6 +13,7 @@ rust_library(
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
         "//apps/humata2/daemon/git_head",
+        "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:thiserror",
         "@crates//:tokio",
