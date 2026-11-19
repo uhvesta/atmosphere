@@ -4953,3 +4953,39 @@ An agent's GitHub draft is the one agent card (DIFFUI3 manager, 2026-11-19; sett
 - **Goldens:** native shortcuts-sheet-dark and shortcuts-sheet-light re-recorded.
 - **Tests:** `features/session:tabs_test` (a new Terminal tab, and nothing without a session), `features/app:every_action_test` (⌘T is in the palette with its shortcut), `desktop:native_test` `diff_full_screen::cmd_t_opens_a_terminal_tab_and_leaves_full_screen`.
 - **Reverse:** drop `SessionAction::NewTerminalTab` with its app arm, `Command::NewTerminalTab`, `keys::NewTerminalTab` with its binding, SHORTCUTS row and shell handler, and the Terminal row's hint, then re-record the shortcuts sheets.
+
+## D858
+New agent tab opens a fresh agent, done comments fold only on a ticked file, and the REVIEWER exit flow (DIFFUI4 manager, 2026-11-19; UXSIMPLE 3-3, 3-4, 4-2, 4-3; Fable 5.2, under its design authority). Provisional
+- **Fold keyed on the tick (4-2/4-3):** a file's done comment cards fold into one line only once the person ticked the file Looks good. An unticked file keeps its done cards open with Reopen, as 4-2 draws. Native frames re-recorded: review-done-by-agent, review-done-by-agent-dark, review-done-by-agent-full, review-done-folded. Fable approved all four.
+- **Always a fresh tab:** an agent picked from New agent tab never attaches tab 0 (the agent that wrote the change) or an earlier tab. Picking the same agent twice gives two tabs. `OpenTerminal`'s attach stays for its other callers.
+- **How it starts:** today's daemon refuses a second agent and can only open shell tabs. So `SessionAction::OpenAgentTab` opens a shell tab in the session folder and runs these steps:
+  - waits for its first paint and quiet;
+  - types the agent's command and Enter;
+  - waits for the agent's own paint and quiet;
+  - types the D857 prompt.
+
+  Details:
+  - The shell's echo of the command does not count as the agent's paint. Only output after the echo's line end does, or a switch to the alternate screen.
+  - One 15 s deadline covers the whole sequence, measured on the clients' clock against terminal link frames.
+  - The person typing in that tab cancels the rest.
+  - Typing uses TerminalService.Type through `Daemon::send_to_tab`.
+  - The prompt belongs to its own open (`AgentTabOpened`), so another tab opening meanwhile never takes it.
+- **Label:** the tab shows the bare agent command with the agent dot (3-4: `copilot ×`). For now the app keeps it (`SessionState::agent_tabs`, keyed by session and tab index; the daemon never reuses an index). It is re-applied when the daemon sends the session again. It does not survive an app restart. Follow-up for main: the daemon records a shell tab's label and agent kind.
+- **REVIEWER exit mapped onto D849:**
+  - open: a pick leaves full screen and selects the new tab;
+  - hide: select another tab or go back to the full-screen Diff, and it keeps running;
+  - show: click its tab;
+  - end: its ×, then End for good;
+  - restart: after a daemon reboot the tab is listed again.
+
+  The dock, the Show/Hide review terminals button and a reviewer session kind no longer apply.
+- **Tests:**
+  - `features/session:opening_prompt_test`: command then prompt; the echo isn't paint; the person typing first, or after the command; the deadline; a tab opening meanwhile; the label; Terminal and ⌘T never type.
+  - `features/review:opening_prompt_test`: the four wordings.
+  - `features/app:agent_tab_label_test`.
+  - `desktop:native_test` `diff_full_screen::an_agent_pick_waits_with_its_prompt_and_terminal_has_none`.
+  - `desktop:live_flows_test` `reviewer::a_reviewer_tab_opens_hides_shows_comes_back_after_a_reboot_and_ends_on_its_cross`, against a real humatad2.
+- **Reverse:**
+  - Send `OpenTerminal{agent}` from agent_tab.rs again.
+  - Drop `OpenAgentTab`, `AgentTabOpened`, `PersonTyped`, `OpeningPromptDone`, `opening_prompt.rs` in features/session and features/review, `agent_tabs` with its events.rs line, and `Daemon::send_to_tab`.
+  - Drop the `.filter(|_| ticked)` in diff_body.rs and re-record the four frames.

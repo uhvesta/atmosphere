@@ -59,11 +59,35 @@ enum Step {
     Deadline,
 }
 
-/// Whether `frame` shows the tab has drawn something.
-fn paints(frame: &ServerFrame) -> bool {
+/// What the shell's echo of a typed command looks like to the waiter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Echo {
+    /// Nothing typed that the shell would echo: any output is paint.
+    None,
+    /// The command was typed: output up to the first line end is the echo.
+    Pending,
+}
+
+/// The switch to the alternate screen, which a full-screen agent starts with.
+const ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
+
+/// Whether `frame` shows the tab has drawn something. While `echo` is
+/// pending, only what follows the echo's line end, or a switch to the
+/// alternate screen, counts, and the echo is then over.
+fn paints(frame: &ServerFrame, echo: &mut Echo) -> bool {
     match frame {
-        ServerFrame::Snapshot { offset, .. } => *offset > 0,
-        ServerFrame::Output { .. } => true,
+        ServerFrame::Snapshot { offset, .. } => *echo == Echo::None && *offset > 0,
+        ServerFrame::Output { bytes, .. } if *echo == Echo::None => !bytes.is_empty(),
+        ServerFrame::Output { bytes, .. } => {
+            let switched = bytes
+                .windows(ALTERNATE_SCREEN.len())
+                .any(|window| window == ALTERNATE_SCREEN);
+            let line_end = bytes.iter().position(|byte| *byte == b'\n');
+            if switched || line_end.is_some() {
+                *echo = Echo::None;
+            }
+            switched || line_end.is_some_and(|at| at + 1 < bytes.len())
+        }
         _ => false,
     }
 }
@@ -75,6 +99,7 @@ struct Waiter {
     link: TerminalLink,
     deadline: Sleep,
     quiet: Option<Sleep>,
+    echo: Echo,
 }
 
 impl Waiter {
@@ -103,7 +128,7 @@ impl Waiter {
                 Step::Deadline | Step::Frame(None) => return false,
                 Step::Frame(Some(frame)) => match frame {
                     ServerFrame::Exited { .. } | ServerFrame::Error { .. } => return false,
-                    _ if paints(&frame) || self.quiet.is_some() => {
+                    _ if paints(&frame, &mut self.echo) || self.quiet.is_some() => {
                         self.quiet = Some(self.clients.clock.sleep(QUIET));
                     }
                     _ => {}
@@ -112,9 +137,11 @@ impl Waiter {
         }
     }
 
-    /// Forgets the screen so far: what follows must paint afresh.
+    /// Forgets the screen so far: what follows the shell's echo of the
+    /// command just typed must paint afresh.
     fn start_over(&mut self) {
         self.quiet = None;
+        self.echo = Echo::Pending;
     }
 }
 
@@ -137,6 +164,7 @@ pub(crate) async fn run(
         link,
         deadline,
         quiet: None,
+        echo: Echo::None,
     };
     let [command_key, prompt_key] = keys;
     if !waiter.quiet().await {

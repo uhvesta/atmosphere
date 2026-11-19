@@ -1043,6 +1043,7 @@ impl App {
                 }
                 let before = state.workspace.restarts.clone();
                 state.workspace = Arc::new(workspace);
+                state.session.keep_agent_tabs(Arc::make_mut(&mut state.workspace));
                 let mut effects = vec![self.show(state), self.loaded_restarts(state, &before)];
                 // Comments older builds saved go to the daemon once the
                 // diffs are known, which tell which repository each is in.
@@ -1221,6 +1222,11 @@ impl App {
                     state.full_screens.remove(id);
                 }
                 self.child(state, AppAction::Session(SessionAction::NewTerminalTab))
+            }
+            AppAction::Session(action @ SessionAction::AgentTabOpened { .. }) => {
+                let effect = self.child(state, AppAction::Session(action));
+                state.session.keep_agent_tabs(Arc::make_mut(&mut state.workspace));
+                effect
             }
             AppAction::Pane(change) => {
                 if change == PaneAction::Toggle(PaneId::Panel)

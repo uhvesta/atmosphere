@@ -81,6 +81,8 @@ fn tab_row(
                 Tab::Terminal(tab) => (
                     if *tab == 0 {
                         session.agent.command().to_owned()
+                    } else if let Some(agent) = session.terminal_agents.get(tab) {
+                        agent.command().to_owned()
                     } else {
                         session
                             .shells

@@ -67,6 +67,9 @@ mod restart;
 mod pr_review;
 #[path = "live_flows/review.rs"]
 mod review;
+/// REVIEWER exit: a reviewer is a tab in the session's own strip (D849).
+#[path = "live_flows/reviewer.rs"]
+mod reviewer;
 #[path = "live_flows/stop_and_start.rs"]
 mod stop_and_start;
 #[path = "live_flows/tabs_and_palette.rs"]

@@ -25,6 +25,8 @@ impl App {
                     && state.route == crate::Route::Session(session.id.clone());
                 snapshot = Some(session.id.clone());
                 upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
+                // A tab opened from New agent tab keeps its agent (D858).
+                state.session.keep_agent_tabs(workspace);
             }
             Event::Request(request) => {
                 if state.settings.preferences.permission_request_alerts

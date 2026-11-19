@@ -320,9 +320,20 @@ pub struct SessionState {
     pub ending_for_good: Option<SessionId>,
     /// The prompt a new agent tab gets once its agent is ready (D857).
     pub opening_prompt: Option<OpeningPrompt>,
+    /// The agents running in tabs opened from New agent tab: the daemon
+    /// knows those tabs as shells, so the app keeps what they run. Lost
+    /// when the app restarts.
+    pub agent_tabs: BTreeMap<(SessionId, usize), Agent>,
 }
 
 impl SessionState {
+    /// Marks the tabs opened as agents in `workspace`'s sessions, which the
+    /// daemon's own copy of a session lacks. Call after a session from the
+    /// daemon replaces the one held.
+    pub fn keep_agent_tabs(&self, workspace: &mut Workspace) {
+        keep_agent_tabs(&self.agent_tabs, workspace);
+    }
+
     /// Whether a prompt still waits to be typed into tab `tab` of
     /// `session`: the tab's view uses it to notice the person typing first.
     #[must_use]
@@ -449,6 +460,12 @@ pub enum SessionAction {
     /// strip's `+` with Terminal. The app leaves a full-screen panel first
     /// (UXSIMPLE 3-3).
     NewTerminalTab,
+    /// The tab of an OpenAgentTab is ready; it alone gets the opening prompt.
+    AgentTabOpened {
+        session: SessionId,
+        group: usize,
+        result: Result<(usize, Session), DaemonError>,
+    },
     /// The new terminal is ready, even if the person changed sessions meanwhile.
     TerminalOpened {
         session: SessionId,
@@ -732,6 +749,14 @@ pub enum SessionAction {
     Delegate(Delegate),
 }
 
+fn keep_agent_tabs(tabs: &BTreeMap<(SessionId, usize), Agent>, workspace: &mut Workspace) {
+    for ((session, tab), agent) in tabs {
+        if let Some(found) = workspace.sessions.iter_mut().find(|s| s.id == *session) {
+            found.terminal_agents.entry(*tab).or_insert(*agent);
+        }
+    }
+}
+
 /// The name that cancels the opening prompt of one tab.
 fn opening_prompt_id(session: &SessionId, tab: usize) -> String {
     format!("opening-prompt-{session}-{tab}")
@@ -796,6 +821,33 @@ impl Sessions {
             }
         })
         .cancellable(id, true)
+    }
+
+    /// A new tab is ready: show it and take the session as the daemon now has it.
+    fn terminal_opened(
+        &self,
+        state: &mut SessionState,
+        session: SessionId,
+        group: usize,
+        split: bool,
+        result: Result<(usize, Session), DaemonError>,
+    ) {
+        state.opening_terminal = false;
+        match result {
+            Ok((tab, snapshot)) => {
+                let shells = snapshot.shells.len();
+                let workspace = Arc::make_mut(&mut state.workspace);
+                if let Some(existing) = workspace.sessions.iter_mut().find(|s| s.id == session) {
+                    *existing = snapshot;
+                }
+                keep_agent_tabs(&state.agent_tabs, workspace);
+                let view = state.views.entry(session).or_default();
+                view.ensure_groups(shells);
+                view.show_tab(Tab::Terminal(tab), group, split);
+                state.refused = None;
+            }
+            Err(error) => state.fail(&error),
+        }
     }
 
     fn read_file(&self, session: SessionId, repo: String, path: String) -> Effect<SessionAction> {
@@ -998,6 +1050,10 @@ impl Reducer for Sessions {
             SessionAction::Close(action) => return self.close(state, action),
             SessionAction::Show(workspace) => {
                 state.workspace = workspace;
+                // The app's workspace knows New agent tab's tabs only as shells.
+                if !state.agent_tabs.is_empty() {
+                    keep_agent_tabs(&state.agent_tabs, Arc::make_mut(&mut state.workspace));
+                }
                 let waiting: Vec<_> = state
                     .views
                     .iter()
@@ -1133,14 +1189,41 @@ impl Reducer for Sessions {
                 let Some(session) = state.open.clone() else {
                     return Effect::none();
                 };
-                state.opening_prompt = Some(OpeningPrompt::new(session, agent, prompt));
-                return self.reduce(
-                    state,
-                    SessionAction::OpenTerminal {
-                        agent: Agent::Shell,
-                        split: false,
-                    },
-                );
+                let group = state
+                    .terminal_menu
+                    .or_else(|| state.view().map(|v| v.focused_group))
+                    .unwrap_or(0);
+                state.terminal_menu = None;
+                state.opening_terminal = true;
+                state.opening_prompt = Some(OpeningPrompt::new(session.clone(), agent, prompt));
+                let terminals = self.clients.terminals.clone();
+                return Effect::future(async move {
+                    let result = terminals.open(&session, Agent::Shell).await;
+                    SessionAction::AgentTabOpened {
+                        session,
+                        group,
+                        result,
+                    }
+                });
+            }
+            SessionAction::AgentTabOpened {
+                session,
+                group,
+                result,
+            } => {
+                let mut start = Effect::none();
+                let prompt = state
+                    .opening_prompt
+                    .take()
+                    .filter(|prompt| prompt.session == session && prompt.tab.is_none());
+                if let (Ok((tab, _)), Some(mut prompt)) = (&result, prompt) {
+                    prompt.tab = Some(*tab);
+                    start = self.start_opening_prompt(&prompt, *tab);
+                    state.agent_tabs.insert((session.clone(), *tab), prompt.agent);
+                    state.opening_prompt = Some(prompt);
+                }
+                self.terminal_opened(state, session, group, false, result);
+                return start;
             }
             SessionAction::PersonTyped { session, tab } => {
                 if state.awaits_opening_prompt(&session, tab) {
@@ -1189,42 +1272,7 @@ impl Reducer for Sessions {
                 group,
                 split,
                 result,
-            } => {
-                state.opening_terminal = false;
-                let mut start = Effect::none();
-                if state
-                    .opening_prompt
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.session == session && prompt.tab.is_none())
-                {
-                    match (&result, state.opening_prompt.take()) {
-                        (Ok((tab, _)), Some(mut prompt)) => {
-                            prompt.tab = Some(*tab);
-                            start = self.start_opening_prompt(&prompt, *tab);
-                            state.opening_prompt = Some(prompt);
-                        }
-                        _ => {}
-                    }
-                }
-                match result {
-                    Ok((tab, snapshot)) => {
-                        let shells = snapshot.shells.len();
-                        if let Some(existing) = Arc::make_mut(&mut state.workspace)
-                            .sessions
-                            .iter_mut()
-                            .find(|s| s.id == session)
-                        {
-                            *existing = snapshot;
-                        }
-                        let view = state.views.entry(session).or_default();
-                        view.ensure_groups(shells);
-                        view.show_tab(Tab::Terminal(tab), group, split);
-                        state.refused = None;
-                    }
-                    Err(error) => state.fail(&error),
-                }
-                return start;
-            }
+            } => self.terminal_opened(state, session, group, split, result),
             SessionAction::CloneMenu(path) => state.clone_menu = path,
             SessionAction::CopyClonePath(path) => {
                 state.clone_menu = None;

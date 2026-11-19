@@ -358,6 +358,12 @@ impl FakeDaemon {
         terminal_link::notice(&self.inner().links, session, tab, notice);
     }
 
+    /// Prints `bytes` in a tab as its program would, to its saved screen and to
+    /// the views following it.
+    pub fn terminal_print(&self, session: &SessionId, tab: usize, bytes: &[u8]) {
+        self.inner().terminal_data(session, tab, bytes.to_vec());
+    }
+
     /// Ends the links of the views following a tab, as the daemon's end
     /// when the tab's program is stopped; a view opens a new one.
     pub fn end_terminal_links(&self, session: &SessionId, tab: usize) {

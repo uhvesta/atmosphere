@@ -50,9 +50,15 @@ impl Rig {
             |_| {},
         );
         self.store
-            .receive_matching("the tab opening", |a| matches!(a, A::TerminalOpened { .. }), |_| {});
+            .receive_matching("the tab opening", |a| matches!(a, A::AgentTabOpened { .. }), |_| {});
         self.store.settle();
         self.store.state().view().map_or(0, |v| v.tab)
+    }
+
+    /// The agent paints its screen in `tab`.
+    fn paint(&mut self, tab: usize, bytes: &[u8]) {
+        self.fakes.daemon.terminal_print(&ledger(), tab, bytes);
+        self.store.settle();
     }
 
     fn later(&mut self, by: Duration) {
@@ -85,6 +91,7 @@ fn a_picked_agent_is_started_and_then_given_the_prompt_once_each_is_quiet() {
     assert_eq!(typed.len(), 1, "{typed:?}");
     assert!(typed[0].contains(&format!(" {tab} ")) && typed[0].contains("codex"), "{typed:?}");
 
+    rig.paint(tab, b"codex is ready\r\n> ");
     rig.later(QUIET);
     let typed = rig.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
@@ -105,6 +112,7 @@ fn the_sessions_own_agent_still_opens_a_new_tab_with_the_command_then_the_prompt
     let tab = rig.pick(own.0);
     assert_eq!(tab, own.1 + 1, "a new tab, not an attach to the agent's");
     rig.later(QUIET);
+    rig.paint(tab, b"ready\r\n> ");
     rig.later(QUIET);
     let typed = rig.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
@@ -132,6 +140,7 @@ fn the_person_typing_after_the_command_stops_the_prompt() {
     assert_eq!(rig.typed().len(), 1);
     rig.store
         .send(A::PersonTyped { session: ledger(), tab }, |_| {});
+    rig.paint(tab, b"ready\r\n> ");
     rig.later(QUIET);
     rig.later(QUIET);
     assert_eq!(rig.typed().len(), 1, "{:?}", rig.typed());
@@ -163,4 +172,74 @@ fn a_plain_terminal_never_gets_a_prompt() {
     rig.later(QUIET);
     rig.later(QUIET);
     assert!(rig.typed().is_empty(), "{:?}", rig.typed());
+}
+
+#[test]
+fn the_shells_echo_of_the_command_is_not_the_agents_paint() {
+    let mut rig = rig();
+    let tab = rig.pick(Agent::Codex);
+    rig.later(QUIET);
+    assert_eq!(rig.typed().len(), 1, "{:?}", rig.typed());
+
+    // The echo has been printed; the agent is slow to draw.
+    rig.later(QUIET * 3);
+    assert_eq!(rig.typed().len(), 1, "the prompt waited for the agent's screen: {:?}", rig.typed());
+
+    rig.paint(tab, b"\x1b[?1049hcodex is ready");
+    rig.later(QUIET - Duration::from_millis(1));
+    assert_eq!(rig.typed().len(), 1, "quiet is measured from the screen: {:?}", rig.typed());
+    rig.later(Duration::from_millis(1));
+    let typed = rig.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(typed[1].contains(PROMPT), "{typed:?}");
+}
+
+#[test]
+fn another_tab_opening_meanwhile_does_not_take_the_prompt() {
+    let mut rig = rig();
+    rig.store.send(
+        A::OpenTerminalIn {
+            session: ledger(),
+            folder: "/tmp".to_owned(),
+        },
+        |_| {},
+    );
+    rig.store.send(
+        A::OpenAgentTab {
+            agent: Agent::Codex,
+            prompt: PROMPT.to_owned(),
+        },
+        |_| {},
+    );
+    rig.store
+        .receive_matching("the other tab opening", |a| matches!(a, A::TerminalOpened { .. }), |_| {});
+    rig.store
+        .receive_matching("the agent tab opening", |a| matches!(a, A::AgentTabOpened { .. }), |_| {});
+    rig.store.settle();
+    // The other tab opened first, so the agent's is the last.
+    let agent_tab = rig
+        .fakes
+        .daemon
+        .workspace()
+        .session(&ledger())
+        .map_or(0, |s| s.shells.len());
+    assert!(agent_tab >= 2, "both tabs opened");
+    rig.later(QUIET);
+    rig.paint(agent_tab, b"ready\r\n> ");
+    rig.later(QUIET);
+    let typed = rig.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(
+        typed.iter().all(|call| call.contains(&format!(" {agent_tab} "))),
+        "only the agent's own tab is typed into: {typed:?}"
+    );
+}
+
+#[test]
+fn the_agents_tab_is_listed_as_running_the_agent() {
+    let mut rig = rig();
+    let tab = rig.pick(Agent::Codex);
+    let state = rig.store.state();
+    let listed = state.workspace.session(&ledger()).and_then(|s| s.terminal_agents.get(&tab).copied());
+    assert_eq!(listed, Some(Agent::Codex));
 }
