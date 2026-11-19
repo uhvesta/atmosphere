@@ -372,12 +372,16 @@ rust_binary(
     ),
     crate_features = [
         "admin",
+        "svc_board",
         "svc_files",
         "svc_review",
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS + ["//apps/humata2/daemon/svc_review"],
+    deps = DAEMON_DEPS + [
+        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_review",
+    ],
 )
 
 rust_binary(
@@ -390,12 +394,16 @@ rust_binary(
     crate_features = [
         "admin",
         "faults",
+        "svc_board",
         "svc_files",
         "svc_review",
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FAULTS_DEPS + ["//apps/humata2/daemon/svc_review:svc_review_faults"],
+    deps = FAULTS_DEPS + [
+        "//apps/humata2/daemon/svc_board:svc_board_faults",
+        "//apps/humata2/daemon/svc_review:svc_review_faults",
+    ],
 )
 
 rust_binary(
@@ -1365,13 +1373,13 @@ POWER_CUT_SCOPED_TESTS = [
     "faults",
     "fork",
     "fork_channel",
-    "fork_remote",
     "gh_repos",
     "holder_gone",
     "holder_swap_identity",
     "hooks_remote",
     "host_variables_move",
     "inbox",
+    "inbox_copy",
     "lagged_attach",
     "matrix",
     "move_cheap",
@@ -1527,7 +1535,6 @@ TRANSFERS_SCOPED_TESTS = [
     "file_ops",
     "files",
     "find_files",
-    "inbox_copy",
     "received_root",
     "remote_files",
     "remote_transfers",

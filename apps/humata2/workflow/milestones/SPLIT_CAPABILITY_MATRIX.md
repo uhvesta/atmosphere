@@ -12,7 +12,7 @@
 |---|---|---|---|---:|---:|
 | **`humatad2_test_power_cut`** | `_faults`, `_release` | `svc_sessions_{common,local,transfer,archive}`, `svc_channels`, `svc_desk`, `svc_terminal`, `svc_inbox`, `svc_machines`, `svc_upgrade`, `svc_stop_restart`, `svc_peer`, `svc_transfers` | **`svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_away`** | **106** | **3** (`live_daemon/inbox`, `live_daemon/term_restart`, `live_desk/desk`) |
 | **`humatad2_test_machines`** | `_release`, `_full` (+ `sessions`/`channels`/`faults`) | `svc_machines`, `svc_peer`, `svc_upgrade`, `svc_stop_restart` (+ `svc_sessions_local`, `svc_channels`, `svc_terminal` in `_full`) | `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_away` | **10** | **1** (`live_machines/machines`) |
-| **`humatad2_test_review_remote`** | `_faults` | `svc_review`, `svc_sessions_{common,local,transfer}`, `svc_channels`, `svc_transfers`, `svc_peer` | `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_away`, `svc_upgrade` | **21** | **4** (`live_diff/diffs`, `live_review/{parity_comments,pull_requests,review_chat}`) |
+| **`humatad2_test_review_remote`** | `_faults` | `svc_review`, `svc_board`, `svc_files`, `svc_sessions_{common,local,transfer}`, `svc_channels`, `svc_transfers`, `svc_peer` | `svc_mcp`, `svc_catalog`, `svc_away`, `svc_upgrade` | **21** | **4** (`live_diff/diffs`, `live_review/{parity_comments,pull_requests,review_chat}`) |
 | **`humatad2_test_catalog_remote`** | `_faults` | `svc_catalog`, `svc_machines`, `svc_peer`, `svc_sessions_local`, `svc_channels` | `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_away`, `svc_transfers`, `svc_upgrade` | **37** | **3** (`live_daemon/{github_repos,history,marks}`) |
 | **`humatad2_test_away_board`** | `_release` | `svc_away`, `svc_board`, `svc_inbox`, `svc_catalog` (`access`), `svc_peer`, `svc_stop_restart` | `svc_review`, `svc_files`, `svc_mcp`, `svc_transfers`, `svc_upgrade`, `svc_desk` | **22** | **1** (`live_daemon/boards`) |
 | **`humatad2_test_transfers`** | `_faults` | `svc_transfers`, `svc_files`, `svc_machines`, `svc_catalog` (`trash`), `svc_peer` | `svc_review`, `svc_board`, `svc_mcp`, `svc_away`, `svc_upgrade`, `svc_desk` | **6** | **1** (`live_files/file_manager`) |
@@ -39,7 +39,7 @@
 | `clients/live_diff/tests/diffs.rs` | `review`, `sessions`, `channels` | `admin` | — | **`humatad2_test_review_remote`** |
 | `clients/live_files/tests/file_manager.rs` | `files`, `transfers`, `desk`, `channels` | `admin` | — | **`humatad2_test_transfers`** |
 | `clients/live_machines/tests/machines.rs` | `machines`, `peer`, `lifecycle` | `admin` | — | **`humatad2_test_machines`** |
-| `clients/live_review/tests/parity_comments.rs` | `review`, `sessions`, `channels` | `admin` | — | **`humatad2_test_review_remote`** |
+| `clients/live_review/tests/parity_comments.rs` | `review`, `sessions`, `channels`, `boards` | `admin` | — | **`humatad2_test_review_remote`** |
 | `clients/live_review/tests/pull_requests.rs` | `review`, `sessions`, `channels` | `admin` | — | **`humatad2_test_review_remote`** |
 | `clients/live_review/tests/review_chat.rs` | `review`, `sessions`, `channels` | `admin` | — | **`humatad2_test_review_remote`** |
 
@@ -53,6 +53,7 @@ Excludes `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_
 - **Power-cut, move, rebuild, fork, archive, stop & upgrade fault/rig tests (55 tests — `needs_faults`, `needs_release`, `needs_holder`, `needs_stack` where noted):**
   - `power_cut_both`, `power_cut_focus`, `power_cut_host`, `power_cut_machine`, `power_cut_start_box` (`sessions`, `channels`, `peer`, `lifecycle`, `faults`, `release`, `holder`)
   - `move_session`, `move_session_freeze`, `move_cheap`, `move_typing`, `rebuild_session`, `fork_remote`, `own_copy_remote` (+ `stack`), `remote_archive`, `archive`, `archive_live`, `continue_in`, `continue_in_journal` (+ `stack`), `continue_in_remote` (+ `stack`), `start_fresh`, `context_fork`, `fork` (`sessions`, `channels`, `transfers`, `peer`, `faults`, `release`, `holder`)
+  - `inbox_copy` (`inbox`, `transfers`, `channels`, `peer`, `release`): moved from transfers 2026-11-19, which lacks inbox and channel relay
   - `stop_box`, `stop_sessions`, `upgrade_box` (+ `stack`), `upgrade_cut` (+ `stack`), `upgrade_holders` (+ `stack`), `upgrade_inbox` (+ `stack`), `upgrade_kinds` (+ `stack`), `upgrade_refusals` (+ `stack`), `upgrade_remote_holders` (+ `stack`) (`lifecycle`, `sessions`, `inbox`, `peer`, `faults`, `release`, `holder`, `stack`)
   - `change_root`, `channel_delete_remote`, `channel_rename_roam`, `desk_close_remote`, `desk_events_remote`, `desk_into_channel_roam`, `desk_migrate_remote`, `desk_picked_remote`, `desk_roam`, `desk_roam_upgrade` (+ `stack`), `desk_start_host_cut`, `desk_stuck_remote`, `desk_versions_remote`, `remove_machine_cut`, `remove_machine_live`, `restart_operations`, `restore_channel_cut`, `channel_desk`, `channel_rename_live`, `delete_channel`, `desk`, `desk_into_channel`, `desk_move_live`, `detach_live`, `hooks_remote`, `host_variables_move`, `pointers`, `push_remote`, `push_remote_restart`, `remote_rename`, `start_resume_failed_remote`, `start_stuck_remote`, `stop_launching`, `agent_send_machine` (`channels`, `desk`, `sessions`, `peer`, `lifecycle`, `faults`, `release`)
 - **Lifecycle, terminal, inbox & local session/channel tests (51 tests — `sessions`/`channels`/`desk`/`terminal`/`inbox`/`lifecycle`):**
@@ -68,6 +69,7 @@ Excludes `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_
 
 ### 3.3 `humatad2_test_review_remote` (+ `_faults`) — 21 tests
 `review` + `sessions` + `channels` + `transfers` + `peer`.
+- `svc_board` and `svc_files` are linked (2026-11-19): `LiveDaemon::load` lists board items, so the `live_*` parity tests need BoardService; an unserved BoardService answers Unimplemented and the load is refused.
 - Local review/PR/views: `pr_base`, `pr_commits`, `pr_diff_stress`, `pr_refresh`, `review`, `review_bases`, `review_file_trees`, `review_per_repo`, `review_snapshots`, `review_stack`, `views_forks`, `views_plan_notes`
 - Faults/MCP/remote review: `comment_tools` (`cli`), `comments` (`faults`), `pr_review` (`faults`), `pr_stopped` (`faults`), `pr_review_move` (`faults`, `release`), `pr_review_remote` (`faults`, `release`), `views_remote` (`faults`, `release`)
 
@@ -84,7 +86,7 @@ Excludes `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_
 
 ### 3.6 `humatad2_test_transfers` (+ `_faults`) — 6 tests
 `transfers` + `files` + `machines` + `catalog/trash` + `peer`.
-- Files & transfers: `file_changes`, `file_ops`, `files`, `find_files`, `received_root`, `transfer_end`, `transfers` (`faults`), `inbox_copy`, `remote_files` (`release`), `remote_transfers` (`release`)
+- Files & transfers: `file_changes`, `file_ops`, `files`, `find_files`, `received_root`, `transfer_end`, `transfers` (`faults`), `remote_files` (`release`), `remote_transfers` (`release`)
 
 ### 3.7 Tier C — Explicit Full-Daemon E2E (`:humatad2` / `:humatad2_admin`) — 14 tests
 Require full daemon wiring, CLI auth/login, MCP stdio across all services, or full-stack release upgrades:
