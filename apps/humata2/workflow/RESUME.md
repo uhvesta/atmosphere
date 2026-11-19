@@ -36,7 +36,7 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 
 ## Release plan (owner, 2026-11-19): walk this in order
 
-- **Patch:** release build only, no tests (`tools/release/release.sh <ver>` then `install.sh`).
+- **Patch:** release build plus the cheap tests: `apps/humata2/tools/tests/presubmit.sh` (tests affected by the change, slow.txt excluded). A red cheap test in the step's own area blocks the patch; an unrelated red one ships and is fixed in the next patch. Then `tools/release/release.sh <ver>` and `install.sh`.
 - **Launch check:** `apps/humata2/tools/release/check.sh humata2-v<ver>` (signature, notarization, the app starts and reports its version; opens no windows).
 - **Full suite:** `presubmit.sh --full` (slow tier included), every failure fixed, plus the launch check.
 - Each step: finish it, commit, push, release, install. Start after the CI speed-up (TESTSPEED). Steps may run in parallel lanes, but releases go out in this order. If two steps land together, ship one patch for both. Keep launch checks on every 3rd patch and every minor version.

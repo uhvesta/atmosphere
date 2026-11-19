@@ -6,7 +6,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **Start with `RESUME.md` › Release plan (owner, 2026-11-19).** It is the order of work and releases: patches are a release build only, a launch check every 3rd patch, and the full suite for each minor (0.4.0, 0.5.0, 0.6.0). It replaces the release policy below.
+- **Start with `RESUME.md` › Release plan (owner, 2026-11-19).** It is the order of work and releases: patches are a release build plus the cheap tests (`presubmit.sh`), a launch check every 3rd patch, and the full suite for each minor (0.4.0, 0.5.0, 0.6.0). It replaces the release policy below.
 - **Release policy (owner, 2026-11-18 ~20:00):** a green `bazel build //apps/humata2/...` plus the daemon unit tests is enough for a patch release. Red tests and pending goldens go into the next patch. A minor version waits until the lanes are done.
 - **SPLIT (owner, after the whole backlog):** split the big crates so Bazel caches more tests. Sizes: daemon/humatad ~148k lines, ui ~44k, clients ~21k, clients/live ~17k, daemon/sessions ~16k. panel_changes.rs ~3.8k lines is shared by three lanes. Goal: a change rebuilds and retests only what depends on it.
 - **Final releases (owner, 2026-11-18 evening):** "I want a normal release when normal works and then a fast mode one." After the current milestones (0.3.4, then 0.3.5 with DIFFVIEW):
