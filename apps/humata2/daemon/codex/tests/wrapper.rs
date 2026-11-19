@@ -79,7 +79,9 @@ fn wrapper(program: PathBuf, dir: &Path, socket_root: &Path) -> Wrapper {
         folder: dir.to_path_buf(),
         socket_root: socket_root.to_path_buf(),
         retry: Duration::from_millis(100),
-        wait_for_socket: Duration::from_secs(5),
+        // As long as the test waits: under a loaded machine the test binds
+        // the socket late, and the wrapper must not fall back before it.
+        wait_for_socket: WAIT,
     }
 }
 
