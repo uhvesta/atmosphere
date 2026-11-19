@@ -51,7 +51,23 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 - [ ] **Live terminals survive moves, renames and upgrades (LIVEHOLDER):** `move_session_freeze_test` rig + full `delete_channel_test` in slow tier.
 - [ ] **Agents' questions and waits show up in the Inbox and go away when answered (AGENTS2):** queue O1–O4 live checks for owner.
 - [ ] **Progress and stack views match their design frames (PROGRESS, STACKVIEW):** frames 122–124 and 119–121 judged.
-- [ ] **I open a fresh agent beside any diff for a second pair of eyes (REVIEWER).** An "Open review session" button in the Diff panel picks a model and opens a separate agent terminal that I can hide and show. It is a new agent, not the session's author. See `milestones/REVIEWER.md` (owner, 2026-11-19).
+- [ ] **I open fresh review terminals beside any diff for a second pair of eyes (REVIEWER).** "Open review terminal ⌄" in the Diff panel opens a new terminal, or an agent TUI I choose (claude, copilot, codex), in a read-only copy of the diff. There is no model picker: I pick the model inside the TUI. I can open several and hide them without ending them. **Render first:** mockups are in `milestones/mockups/reviewer/`, and nothing is built until the owner approves them and the UX review below has ruled. See `milestones/REVIEWER.md` (owner, 2026-11-19).
+- [ ] **Iterating on work stays simple, not niche (UXSIMPLE, owner 2026-11-19).** Fable 5.2 reviews the whole loop: agent works → diff → comments → agent revises → stack across repos → push/PR → PR review → review terminals. It counts the concepts a user must learn, ranks overlaps (several "review" meanings, several base pickers, several ways to get a second opinion), gives a verdict on REVIEWER, and proposes a loop of at most ~7 concepts. See `milestones/UXSIMPLE.md`.
+  - Fable renders these flows in the proposed loop (8–14 frames, `scratchpad/ux-review/frames/` + `FRAMES.md`):
+    1. I open a terminal and just start working, then decide to make a stack of PRs across many repos.
+    2. I made them in one agent session and don't know where the code is, so I ask the agent to prepare a review view of the stack.
+    3. I review it: comment, sign off on some layers or files, mark some as good.
+    4. The agent applies my feedback; I review it by hand in the plain diff view (no prepared ordering), seeing what changed since I last looked and which comments were addressed.
+  - The owner picks which changes go on the roadmap. Nothing is built from the review without that.
+- [ ] **Planning work on boards is simpler (BOARDSIMPLE, owner 2026-11-19).** The owner suspects the board (BD-1–BD-16, frames 21–24, D106/D155/D216) is too complicated. Compare it with a lightweight global to-do model:
+  - one global list, where channels and sessions are filters rather than separate boards;
+  - optional metadata on items (labels/key–values) and a nicer item view;
+  - **due dates**, which we don't have today (`BoardItem` has no due field).
+  - Today's model to weigh against it: three board kinds (Global, channel, session) with a Scope picker; five fixed columns (Backlog, To do, In progress, In review, Done); board, table and dashboard views; pinned and VIP marks; several sessions per item; Depends on; agent asks answered on the item; revisions and history.
+  - Output: a compare-and-contrast and a proposed simpler model (what to merge, cut, add), with frames. The owner approves before any change. See `milestones/BOARDSIMPLE.md`.
+  - Do not name or link any outside project in code or docs.
+- [ ] **Two simple inboxes interrupt me as little as possible (INBOXHOOKS, owner 2026-11-19).** The agent inbox holds asks that need me now (risky permission approvals and questions, raised by hooks). The to-do inbox is the higher level: the ranked list and agents' proposals about it, and it never interrupts. Scopes become filters. Asks through Humata's own MCP (moving files or sessions, changing to-do statuses) require a reason and evidence, show names rather than IDs, before → after, and what else they affect, with an Ask why button. Status changes become Agent suggestions that never block. Agents' own permission prompts stay as they are. Hooks are the path we invest in. If a hook is missing or fails, that's fine. Screen reading is best effort only: what exists stays while it works for free, it gets no new work, and anything costly (D785/D786 first) is cut. See `milestones/INBOXHOOKS.md`.
+- [ ] **Antigravity (`agy`) is a supported agent (AGY, owner 2026-11-19).** See `milestones/AGY.md`.
 - [ ] **Owner's UI marks (2026-11-19):**
   - The per-repo base chevron (⌃⌄ beside each repo) says what it does, or stays hidden until the bases differ (revisits D739).
   - The full-screen Diff header says "Exit full screen" instead of "Show the terminal" and offers Close.
