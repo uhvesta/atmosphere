@@ -611,10 +611,11 @@ fn the_capability_list_matches_the_trace_matrix() {
     );
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
-    assert_eq!(count(Tier::DefaultAllow), 15);
+    // TODO_SUGGEST joined Default Allow, TODO_CLOSE Ask me.
+    assert_eq!(count(Tier::DefaultAllow), 16);
     // GLOBAL_BOARD_WRITE joined Ask me with D155, CHANNEL_REPO_ADD with D304,
     // SESSION_STOP_OTHER with D306 (SESSION_DELETE_OTHER took its Never place).
-    assert_eq!(count(Tier::AskMe), 19);
+    assert_eq!(count(Tier::AskMe), 20);
     // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305, PROVIDER_IMPORT
     // with D792.
     assert_eq!(count(Tier::AskNoAllow), 3);

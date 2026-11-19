@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use humata2_access::BoardAct;
+use humata2_access::{BoardAct, Call, Capability, Target};
 use humata2_daemon_ports::{BoardAsk, Caller, Deferred, Run};
 use humata2_rpc_kit::{
     blocking, internal, invalid_field, lock, missing, not_built_status, now_ms, timestamp_ms,
@@ -659,6 +659,28 @@ impl BoardSvc {
 
     // ------------------------------------------------------------- writes
 
+    /// The to-do rule for an agent's call: its own session's switch. The
+    /// user and scripts have none.
+    fn gate_todo(
+        &self,
+        caller: &Caller,
+        capability: Capability,
+        approved: bool,
+    ) -> Result<Option<Box<humata2_access::AccessRequest>>, Status> {
+        let Caller::Agent(agent) = caller else {
+            return Ok(None);
+        };
+        super::gate(
+            self.guard.as_ref(),
+            caller,
+            &Call::Use {
+                capability,
+                target: Target::Session(agent.session.clone()),
+            },
+            approved,
+        )
+    }
+
     fn create_todo_in(
         &self,
         caller: &Caller,
@@ -686,7 +708,13 @@ impl BoardSvc {
         let sessions = self.known_sessions(&request.sessions, "sessions")?;
         let depends_on = self.readable_targets(caller, &request.depends_on)?;
         let policy = board_for_policy(&key, &channel, &self.machine);
-        if let Some(asked) = self.gate(caller, policy, BoardAct::Add, approved)? {
+        // An agent's suggestion has its own rule on top of the board's.
+        let suggest = self.gate_todo(caller, Capability::TodoSuggest, approved)?;
+        let asked = match suggest {
+            Some(asked) => Some(asked),
+            None => self.gate(caller, policy, BoardAct::Add, approved)?,
+        };
+        if let Some(asked) = asked {
             let ask = new_item_ask(
                 pb::NewBoardItemPreview {
                     board: Some(board_pb(&key)),
@@ -799,7 +827,17 @@ impl BoardSvc {
         let act = BoardAct::Edit {
             created_by: made_by_session(&record.created_by),
         };
-        if let Some(asked) = self.gate(caller, self.policy_of(&record), act, approved)? {
+        let closes = matches!(parsed.state, Some(State::Closed));
+        let close = if closes {
+            self.gate_todo(caller, Capability::TodoClose, approved)?
+        } else {
+            None
+        };
+        let asked = match close {
+            Some(asked) => Some(asked),
+            None => self.gate(caller, self.policy_of(&record), act, approved)?,
+        };
+        if let Some(asked) = asked {
             let planned = apply_patch(&current, &patch, &parsed, channel.clone(), &add, &remove, &deps_add, &deps_remove, now);
             return Ok(TodoApplied::Ask(
                 asked,
@@ -2191,5 +2229,167 @@ mod tests {
             pb::BoardColumn::InProgress as i32
         );
         assert_eq!(fields_of(&moved).state, pb::TodoState::InProgress as i32);
+    }
+
+    /// A guard that judges the to-do capabilities by their defaults plus
+    /// whatever a test overrides, and lets every board call through.
+    struct RuleGuard {
+        set: std::sync::Mutex<BTreeMap<humata2_access::Capability, humata2_access::Decision>>,
+    }
+
+    impl RuleGuard {
+        fn set(&self, capability: humata2_access::Capability, decision: humata2_access::Decision) {
+            self.set.lock().unwrap().insert(capability, decision);
+        }
+    }
+
+    impl crate::ports::BoardGuard for RuleGuard {
+        fn check(
+            &self,
+            caller: &Caller,
+            call: &humata2_access::Call,
+        ) -> Result<crate::ports::Checked, Status> {
+            use humata2_access::Decision;
+            let humata2_access::Call::Use { capability, .. } = call else {
+                return Ok(crate::ports::Checked::Allowed);
+            };
+            let Caller::Agent(agent) = caller else {
+                return Ok(crate::ports::Checked::Allowed);
+            };
+            let decision = self
+                .set
+                .lock()
+                .unwrap()
+                .get(capability)
+                .copied()
+                .or_else(|| capability.default_decision());
+            match decision {
+                Some(Decision::Never) => Err(crate::ports::refused(
+                    &humata2_access::Refusal::NeverRule {
+                        channel: agent.session.channel.clone(),
+                        capability: *capability,
+                    },
+                )),
+                Some(Decision::Ask) => Ok(crate::ports::Checked::Ask(Box::new(
+                    humata2_access::AccessRequest {
+                        capability: *capability,
+                        channel: agent.session.channel.clone(),
+                        requester: agent.session.id.clone(),
+                        call: call.clone(),
+                        always_let: None,
+                        ahead: false,
+                        answer_at: humata2_access::AnswerAt::Host,
+                    },
+                ))),
+                Some(Decision::Allow) | None => Ok(crate::ports::Checked::Allowed),
+            }
+        }
+        fn check_away(
+            &self,
+            _caller: &Caller,
+            _call: &humata2_access::Call,
+        ) -> Result<crate::ports::AwayCall, Status> {
+            Ok(crate::ports::AwayCall::Reachable)
+        }
+        fn lists_low_risk(&self, _asked: &humata2_access::AccessRequest) -> bool {
+            false
+        }
+        fn policy_changed(&self) {}
+        fn host_link(&self) -> String {
+            String::new()
+        }
+    }
+
+    fn ruled_svc(dir: &tempfile::TempDir) -> (BoardSvc, std::sync::Arc<RuleGuard>, Caller) {
+        let guard = std::sync::Arc::new(RuleGuard {
+            set: std::sync::Mutex::new(BTreeMap::new()),
+        });
+        let store = std::sync::Arc::new(humata2_store::Store::open(dir.path().join("state")).unwrap());
+        let svc = BoardSvc::new(
+            guard.clone(),
+            store,
+            std::sync::Arc::new(super::super::test_support::NoopFeed),
+            std::sync::Arc::new(super::super::test_support::NoopInbox),
+            "local".to_owned(),
+        );
+        put_channel(&svc, "c1", "Payments");
+        put_session(&svc, "s1", "c1");
+        let record = svc.store.session("s1").unwrap().unwrap();
+        let agent = Caller::Agent(super::super::ports::agent_caller_of(&record, "local"));
+        (svc, guard, agent)
+    }
+
+    fn agent_create(svc: &BoardSvc, agent: &Caller) -> Result<TodoApplied, Status> {
+        let request = pb::CreateTodoRequest {
+            title: "look at the retry bug".to_owned(),
+            ..Default::default()
+        };
+        svc.create_todo_in(agent, &request, false, now())
+    }
+
+    fn close_request(key: &str) -> pb::UpdateTodoRequest {
+        pb::UpdateTodoRequest {
+            id: Some(pb::BoardItemId {
+                value: key.to_owned(),
+            }),
+            patch: Some(pb::TodoPatch {
+                state: Some(pb::TodoState::Closed as i32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_agent_suggests_by_default_but_its_close_waits_for_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, _guard, agent) = ruled_svc(&dir);
+        let key = key_of(&done(agent_create(&svc, &agent).unwrap()));
+        let asked = svc
+            .update_todo_in(&agent, &close_request(&key), false, now())
+            .unwrap();
+        assert!(matches!(asked, TodoApplied::Ask(..)));
+        let shown = list(&svc, pb::TodoFilter::default(), now());
+        let found = shown.iter().find(|shown| key_of(shown) == key).unwrap();
+        assert_ne!(fields_of(found).state, pb::TodoState::Closed as i32);
+    }
+
+    #[test]
+    fn an_agent_closes_when_closing_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, guard, agent) = ruled_svc(&dir);
+        let key = key_of(&done(agent_create(&svc, &agent).unwrap()));
+        guard.set(
+            humata2_access::Capability::TodoClose,
+            humata2_access::Decision::Allow,
+        );
+        let closed = done(
+            svc.update_todo_in(&agent, &close_request(&key), false, now())
+                .unwrap(),
+        );
+        assert_eq!(fields_of(&closed).state, pb::TodoState::Closed as i32);
+    }
+
+    #[test]
+    fn an_agent_cannot_suggest_when_suggesting_is_never() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, guard, agent) = ruled_svc(&dir);
+        guard.set(
+            humata2_access::Capability::TodoSuggest,
+            humata2_access::Decision::Never,
+        );
+        assert!(agent_create(&svc, &agent).is_err());
+    }
+
+    #[test]
+    fn the_user_closes_without_any_to_do_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, _guard, agent) = ruled_svc(&dir);
+        let key = key_of(&done(agent_create(&svc, &agent).unwrap()));
+        let closed = done(
+            svc.update_todo_in(&user(), &close_request(&key), false, now())
+                .unwrap(),
+        );
+        assert_eq!(fields_of(&closed).state, pb::TodoState::Closed as i32);
     }
 }

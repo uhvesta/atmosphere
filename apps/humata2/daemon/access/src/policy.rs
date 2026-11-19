@@ -882,6 +882,10 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         {
             need(capability)
         }
+        // A to-do suggest or close by an agent: its own session's rule.
+        (C::TodoSuggest | C::TodoClose, Target::Session(session)) if session.id == me.id => {
+            need(capability)
+        }
         (C::SessionMove, Target::Session(session)) => {
             in_channel(agent, &session.channel, need(C::SessionMove))
         }

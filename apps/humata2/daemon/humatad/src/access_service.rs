@@ -784,6 +784,8 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::PeerReport
         | C::HostControl => S::Machine,
         C::OwnBoardWrite
+        | C::TodoSuggest
+        | C::TodoClose
         | C::ViewsPrepare
         | C::ReviewDraft
         | C::InboxAsk

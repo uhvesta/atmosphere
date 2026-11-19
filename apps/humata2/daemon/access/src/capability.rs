@@ -15,6 +15,7 @@ use std::fmt;
 pub enum Capability {
     // Default Allow.
     OwnBoardWrite,
+    TodoSuggest,
     ChannelRead,
     ChannelBoardAdd,
     ChannelBoardEditOwn,
@@ -35,6 +36,8 @@ pub enum Capability {
     // Reads of other channels and the global board (D127.4).
     GlobalRead,
     // Ask me.
+    // An agent closing a to-do item.
+    TodoClose,
     ChannelBoardEditOthers,
     // Add, edit, move or delete on the Global board or another channel's
     // boards, whoever made the item (BD-9, D155).
@@ -141,8 +144,10 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 55] = [
+    pub const ALL: [Capability; 57] = [
         Self::OwnBoardWrite,
+        Self::TodoSuggest,
+        Self::TodoClose,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
         Self::ChannelBoardEditOwn,
@@ -202,6 +207,7 @@ impl Capability {
     pub fn tier(self) -> Tier {
         match self {
             Self::OwnBoardWrite
+            | Self::TodoSuggest
             | Self::ChannelRead
             | Self::ChannelBoardAdd
             | Self::ChannelBoardEditOwn
@@ -216,7 +222,8 @@ impl Capability {
             | Self::CommentReply
             | Self::CommentResolve
             | Self::GlobalRead => Tier::DefaultAllow,
-            Self::ChannelBoardEditOthers
+            Self::TodoClose
+            | Self::ChannelBoardEditOthers
             | Self::GlobalBoardWrite
             | Self::FilesReadOtherSession
             | Self::FilesReadOtherMachine
@@ -314,6 +321,8 @@ impl Capability {
             | Self::ChannelDelete
             | Self::MachineSettings => true,
             Self::OwnBoardWrite
+            | Self::TodoSuggest
+            | Self::TodoClose
             | Self::ChannelRead
             | Self::ChannelBoardAdd
             | Self::ChannelBoardEditOwn
@@ -383,6 +392,8 @@ impl Capability {
     pub fn label(self) -> &'static str {
         match self {
             Self::OwnBoardWrite => "change its own session board",
+            Self::TodoSuggest => "suggest to-do items",
+            Self::TodoClose => "close to-do items",
             Self::ChannelRead => "see its channel",
             Self::ChannelBoardAdd => "add items to the channel board",
             Self::ChannelBoardEditOwn => "edit channel board items it created",
@@ -504,5 +515,18 @@ impl ChannelRules {
 impl Default for ChannelRules {
     fn default() -> Self {
         Self::defaults()
+    }
+}
+
+#[cfg(test)]
+mod todo_rules_tests {
+    use super::*;
+
+    #[test]
+    fn suggesting_starts_allowed_and_closing_starts_at_ask_me() {
+        assert_eq!(Capability::TodoSuggest.default_decision(), Some(Decision::Allow));
+        assert_eq!(Capability::TodoClose.default_decision(), Some(Decision::Ask));
+        assert!(Capability::ALL.contains(&Capability::TodoSuggest));
+        assert!(Capability::ALL.contains(&Capability::TodoClose));
     }
 }

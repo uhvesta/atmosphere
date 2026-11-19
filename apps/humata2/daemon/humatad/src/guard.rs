@@ -397,6 +397,8 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
     use pb::Capability as P;
     match capability {
         C::OwnBoardWrite => P::OwnBoardWrite,
+        C::TodoSuggest => P::TodoSuggest,
+        C::TodoClose => P::TodoClose,
         C::ChannelRead => P::ChannelRead,
         C::ChannelBoardAdd => P::ChannelBoardAdd,
         C::ChannelBoardEditOwn => P::ChannelBoardEditOwn,

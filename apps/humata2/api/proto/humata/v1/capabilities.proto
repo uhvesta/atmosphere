@@ -187,6 +187,13 @@ enum Capability {
   CAPABILITY_PEER_REPORT = 70;
   // The host controlling a machine it enrolled.
   CAPABILITY_HOST_CONTROL = 71;
+
+  // ----- To-do. -----
+
+  // An agent suggesting a to-do item for the user's yes. Default Allow.
+  CAPABILITY_TODO_SUGGEST = 72;
+  // An agent closing a to-do item. Ask me by default.
+  CAPABILITY_TODO_CLOSE = 73;
 }
 
 // A rule's setting for one capability in one channel.

@@ -324,6 +324,8 @@ pub(crate) fn list(serves: impl Fn(Operation) -> bool) -> Value {
 pub(crate) fn capability_name(capability: Capability) -> &'static str {
     match capability {
         Capability::OwnBoardWrite => "own_board_write",
+        Capability::TodoSuggest => "todo_suggest",
+        Capability::TodoClose => "todo_close",
         Capability::ChannelRead => "channel_read",
         Capability::ChannelBoardAdd => "channel_board_add",
         Capability::ChannelBoardEditOwn => "channel_board_edit_own",

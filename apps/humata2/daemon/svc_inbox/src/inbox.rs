@@ -1574,7 +1574,9 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
         | C::ChannelBoardEditOthers
         | C::GlobalBoardWrite
         | C::ChannelBoardEditOwn
-        | C::OwnBoardWrite => pb::RequestKind::Board,
+        | C::OwnBoardWrite
+        | C::TodoSuggest
+        | C::TodoClose => pb::RequestKind::Board,
         C::SessionNote
         | C::SessionType
         | C::SessionStartSameMachine
