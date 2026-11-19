@@ -64,7 +64,7 @@ fn tags_or_and_search_and_no_channel() {
 fn session_filter_and_channel_counts() {
     let mut l = list();
     l[1].sessions.push("s1".to_owned());
-    let f = Filter { session: Some("s1".to_owned()), ..Filter::default() };
+    let f = Filter { session: Some(SessionFilter::Session("s1".to_owned())), ..Filter::default() };
     assert_eq!(keys(&apply(&l, &f, today())), vec!["PAY-2"]);
     l[3].state = State::Closed;
     let counts = channel_counts(&l, today());
@@ -102,4 +102,15 @@ fn effort_impact_and_only_narrow_the_list() {
     assert_eq!(keys(&apply(&items, &f, today())), vec!["INF-1"]);
     let f = Filter { only: vec![Only::PullRequests], ..Filter::default() };
     assert_eq!(keys(&apply(&items, &f, today())), vec!["X-1"]);
+}
+
+#[test]
+fn session_filter_none_yet_keeps_only_items_with_no_session() {
+    let mut l = list();
+    l[0].sessions.push("s1".to_owned());
+    l[2].sessions.push("s2".to_owned());
+    let f = Filter { session: Some(SessionFilter::NoneYet), ..Filter::default() };
+    assert_eq!(keys(&apply(&l, &f, today())), vec!["PAY-2", "PAY-4", "INF-1", "X-1"]);
+    let f = Filter { session: Some(SessionFilter::Session("s1".to_owned())), ..Filter::default() };
+    assert_eq!(keys(&apply(&l, &f, today())), vec!["PAY-1"]);
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Weekday {
@@ -129,6 +130,189 @@ impl Day {
         let month = MONTHS.get((m as usize).saturating_sub(1)).copied().unwrap_or("");
         format!("{} {} {}", self.weekday().name(), d, month)
     }
+}
+
+/// Why a typed due date couldn't be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParseDayError {
+    /// Nothing was typed.
+    Empty,
+    /// The date doesn't exist in the calendar (e.g. "2026-02-30").
+    InvalidDate {
+        /// What the person typed.
+        input: String,
+    },
+    /// The text didn't match a date format we understand.
+    Unrecognized {
+        /// What the person typed.
+        input: String,
+    },
+}
+
+impl fmt::Display for ParseDayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(
+                f,
+                "Type a date such as \"fri\", \"nov 28\", \"next week\", or \"2026-12-01\"."
+            ),
+            Self::InvalidDate { input } => write!(
+                f,
+                "\"{input}\" isn't a real calendar date; check the month and day."
+            ),
+            Self::Unrecognized { input } => write!(
+                f,
+                "Couldn't read \"{input}\" as a date; try \"fri\", \"nov 28\", \"next week\", or \"2026-12-01\"."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParseDayError {}
+
+fn parse_weekday(word: &str) -> Option<Weekday> {
+    Some(match word {
+        "mon" | "monday" => Weekday::Mon,
+        "tue" | "tuesday" => Weekday::Tue,
+        "wed" | "wednesday" => Weekday::Wed,
+        "thu" | "thursday" => Weekday::Thu,
+        "fri" | "friday" => Weekday::Fri,
+        "sat" | "saturday" => Weekday::Sat,
+        "sun" | "sunday" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
+fn parse_month(word: &str) -> Option<u32> {
+    Some(match word {
+        "jan" | "january" => 1,
+        "feb" | "february" => 2,
+        "mar" | "march" => 3,
+        "apr" | "april" => 4,
+        "may" => 5,
+        "jun" | "june" => 6,
+        "jul" | "july" => 7,
+        "aug" | "august" => 8,
+        "sep" | "sept" | "september" => 9,
+        "oct" | "october" => 10,
+        "nov" | "november" => 11,
+        "dec" | "december" => 12,
+        _ => return None,
+    })
+}
+
+fn all_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn parse_iso(text: &str, raw: &str) -> Option<Result<Day, ParseDayError>> {
+    let mut parts = text.split('-');
+    let (Some(y), Some(m), Some(d), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    if y.len() != 4
+        || !(1..=2).contains(&m.len())
+        || !(1..=2).contains(&d.len())
+        || !all_digits(y)
+        || !all_digits(m)
+        || !all_digits(d)
+    {
+        return None;
+    }
+    let (Ok(y), Ok(m), Ok(d)) = (y.parse::<i32>(), m.parse::<u32>(), d.parse::<u32>()) else {
+        return None;
+    };
+    Some(Day::from_ymd(y, m, d).ok_or_else(|| ParseDayError::InvalidDate {
+        input: raw.to_owned(),
+    }))
+}
+
+fn parse_day_num(w: &str) -> Option<u32> {
+    (all_digits(w) && (1..=2).contains(&w.len())).then(|| w.parse::<u32>().ok()).flatten()
+}
+
+fn parse_year_num(w: &str) -> Option<i32> {
+    (all_digits(w) && w.len() == 4).then(|| w.parse::<i32>().ok()).flatten()
+}
+
+/// Parses a due date typed by hand relative to `today`:
+/// `"today"`, `"tomorrow"`, `"next week"`, weekday names (`"fri"`),
+/// month + day (`"nov 28"`, `"28 nov"`, optional 4-digit year), or ISO (`"2026-12-01"`).
+///
+/// # Errors
+/// Returns [`ParseDayError::Empty`] for blank input,
+/// [`ParseDayError::InvalidDate`] for an impossible calendar date, or
+/// [`ParseDayError::Unrecognized`] when the text doesn't match any supported format.
+pub fn parse_day(input: &str, today: Day) -> Result<Day, ParseDayError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ParseDayError::Empty);
+    }
+    let lower = trimmed.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.len() == 1 {
+        let word = words[0];
+        if word == "today" {
+            return Ok(today);
+        }
+        if word == "tomorrow" {
+            return Ok(today.add_days(1));
+        }
+        if let Some(wd) = parse_weekday(word) {
+            return Ok(today.next_weekday(wd));
+        }
+        if let Some(iso) = parse_iso(word, trimmed) {
+            return iso;
+        }
+    }
+    if words.as_slice() == ["next", "week"] {
+        return Ok(today.next_weekday(Weekday::Mon));
+    }
+    if words.len() == 2 || words.len() == 3 {
+        let (month, day, explicit_year) = if let Some(m) = parse_month(words[0]) {
+            let d = parse_day_num(words[1]);
+            let y = words.get(2).and_then(|w| parse_year_num(w));
+            if words.len() == 3 && y.is_none() {
+                (None, None, None)
+            } else {
+                (Some(m), d, y)
+            }
+        } else if let Some(m) = parse_month(words[1]) {
+            let d = parse_day_num(words[0]);
+            let y = words.get(2).and_then(|w| parse_year_num(w));
+            if words.len() == 3 && y.is_none() {
+                (None, None, None)
+            } else {
+                (Some(m), d, y)
+            }
+        } else {
+            (None, None, None)
+        };
+        if let (Some(m), Some(d)) = (month, day) {
+            if let Some(y) = explicit_year {
+                return Day::from_ymd(y, m, d).ok_or_else(|| ParseDayError::InvalidDate {
+                    input: trimmed.to_owned(),
+                });
+            }
+            let (ty, _, _) = today.ymd();
+            let this_year = Day::from_ymd(ty, m, d);
+            if let Some(candidate) = this_year {
+                if candidate >= today {
+                    return Ok(candidate);
+                }
+                return Day::from_ymd(ty + 1, m, d).ok_or_else(|| ParseDayError::InvalidDate {
+                    input: trimmed.to_owned(),
+                });
+            }
+            return Err(ParseDayError::InvalidDate {
+                input: trimmed.to_owned(),
+            });
+        }
+    }
+    Err(ParseDayError::Unrecognized {
+        input: trimmed.to_owned(),
+    })
 }
 
 #[cfg(test)]

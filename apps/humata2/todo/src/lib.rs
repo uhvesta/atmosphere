@@ -8,9 +8,11 @@ mod model;
 mod quick_add;
 mod rank;
 
-pub use day::{Day, Weekday};
+pub use day::{Day, ParseDayError, Weekday, parse_day};
 pub use due::{DueChip, Tone, chip};
-pub use filter::{ChannelFilter, DueFilter, Filter, Only, apply, channel_counts, left_out};
+pub use filter::{
+    ChannelFilter, DueFilter, Filter, Only, SessionFilter, apply, channel_counts, left_out,
+};
 pub use migrate::{OldItem, Summary, migrate, migrate_with_summary};
 pub use model::{
     Ask, AskDetail, AskKind, Effort, Evidence, Impact, OldColumn, Review, Start, State, Step, Todo,

@@ -305,6 +305,175 @@ impl Wanted {
     }
 }
 
+/// One line of a card fact or effect: its bold lead and the rest, with a space
+/// between them when neither side supplies whitespace or attaching punctuation.
+fn card_text(lead: &str, rest: &str) -> String {
+    let lead = lead.trim_start();
+    let rest = rest.trim_end();
+    if lead.is_empty() {
+        return rest.trim().to_owned();
+    }
+    if rest.is_empty() {
+        return lead.trim().to_owned();
+    }
+    let needs_space = !lead.ends_with(char::is_whitespace)
+        && !rest.starts_with(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | ')')
+        });
+    if needs_space {
+        format!("{lead} {rest}")
+    } else {
+        format!("{lead}{rest}")
+    }
+}
+
+fn ask_kind_of(change: Option<&pb::BoardChangePreview>) -> domain::AskKind {
+    let Some(change) = change else {
+        return domain::AskKind::Close;
+    };
+    if change.deletes_item {
+        return domain::AskKind::Close;
+    }
+    let Some(first) = change.changes.first() else {
+        return domain::AskKind::Close;
+    };
+    let field = first.field.to_lowercase();
+    let closes = matches!(field.as_str(), "column" | "status" | "state")
+        && matches!(first.after.to_lowercase().as_str(), "done" | "closed");
+    if closes {
+        domain::AskKind::Close
+    } else {
+        domain::AskKind::Edit {
+            field: first.field.clone(),
+            before: first.before.clone(),
+            after: first.after.clone(),
+        }
+    }
+}
+
+fn ask_by_of(requester: Option<&pb::AgentActor>) -> String {
+    let Some(requester) = requester else {
+        return String::new();
+    };
+    let agent = requester
+        .agent
+        .as_ref()
+        .map_or("", |id| id.value.as_str());
+    let session = requester.session_title.as_str();
+    match (agent.is_empty(), session.is_empty()) {
+        (false, false) => format!("{agent} in {session}"),
+        (false, true) => agent.to_owned(),
+        (true, false) => session.to_owned(),
+        (true, true) => String::new(),
+    }
+}
+
+fn ask_requester<'a>(
+    ask: &'a pb::PendingAsk,
+    request: Option<&'a pb::InboxRequest>,
+) -> Option<&'a pb::AgentActor> {
+    request
+        .and_then(|req| req.requester.as_ref())
+        .or_else(|| match ask.asked_by.as_ref().and_then(|a| a.actor.as_ref()) {
+            Some(pb::actor::Actor::Agent(agent)) => Some(agent),
+            _ => None,
+        })
+}
+
+fn ask_detail_of(
+    ask: &pb::PendingAsk,
+    request: Option<&pb::InboxRequest>,
+    archived: &HashSet<String>,
+    now_ms: i64,
+) -> domain::AskDetail {
+    let change = ask
+        .change
+        .as_ref()
+        .and_then(|c| c.changes.first())
+        .map(|fc| {
+            let left = if fc.before.is_empty() {
+                format!("{}: none", fc.field)
+            } else {
+                format!("{}: {}", fc.field, fc.before)
+            };
+            (left, fc.after.clone())
+        });
+    let Some(request) = request else {
+        let session_ended = ask
+            .session
+            .as_ref()
+            .is_some_and(|id| archived.contains(&id.value));
+        return domain::AskDetail {
+            change,
+            session_ended,
+            ..domain::AskDetail::default()
+        };
+    };
+    let evidence = request
+        .facts
+        .iter()
+        .map(|fact| (fact, card_text(&fact.lead, &fact.rest)))
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(fact, text)| domain::Evidence {
+            text: if fact.label.is_empty() {
+                text
+            } else {
+                format!("{}: {text}", fact.label)
+            },
+            link: None,
+        })
+        .collect();
+    let affects = request
+        .affects
+        .iter()
+        .map(|effect| card_text(&effect.lead, &effect.rest))
+        .filter(|text| !text.is_empty())
+        .collect();
+    let asked_minutes_ago = request.created_at.as_ref().map_or(0, |at| {
+        let created_ms = at
+            .seconds
+            .saturating_mul(1000)
+            .saturating_add(i64::from(at.nanos / 1_000_000));
+        u32::try_from(now_ms.saturating_sub(created_ms).max(0) / 60_000).unwrap_or(u32::MAX)
+    });
+    let session_id = request
+        .requester
+        .as_ref()
+        .and_then(|r| r.session.as_ref())
+        .or(ask.session.as_ref())
+        .map(|id| id.value.as_str());
+    let withdrawn_session_ended = matches!(
+        pb::WithdrawReason::try_from(request.withdraw_reason),
+        Ok(
+            pb::WithdrawReason::SessionStopped
+                | pb::WithdrawReason::SessionArchived
+                | pb::WithdrawReason::SessionDeleted
+        )
+    );
+    let session_ended = withdrawn_session_ended
+        || session_id.is_some_and(|id| archived.contains(id));
+    domain::AskDetail {
+        evidence,
+        affects,
+        change,
+        asked_minutes_ago,
+        session_ended,
+    }
+}
+
+fn first_request_for<'a>(
+    item: &BoardItemRecord,
+    asks: &'a [pb::InboxRequest],
+) -> Option<&'a pb::InboxRequest> {
+    asks.iter().find(|ask| {
+        matches!(
+            ask.preview.as_ref().and_then(|p| p.preview.as_ref()),
+            Some(pb::request_preview::Preview::BoardChange(change))
+                if change.item.as_ref().map(|id| id.value.as_str()) == Some(item.key.as_str())
+        )
+    })
+}
+
 /// What a write came to: done, or stopped at a rule that asks.
 pub(super) enum TodoApplied {
     Done(Box<pb::WriteTodoResponse>),
@@ -381,10 +550,15 @@ impl BoardSvc {
         Ok(out)
     }
 
-    /// The domain's item for `entry`; `ask` is an agent's request waiting on it.
+    /// The domain's item for `entry`; `ask` is an agent's pending request
+    /// waiting on it, with `request` the Inbox request it came from so
+    /// evidence, affects, change, `asked_minutes_ago` and `session_ended` are
+    /// filled in.
     fn domain_item(
         entry: &Entry,
         ask: Option<&pb::PendingAsk>,
+        request: Option<&pb::InboxRequest>,
+        archived: &HashSet<String>,
         today: Day,
         now: i64,
     ) -> domain::Todo {
@@ -414,10 +588,13 @@ impl BoardSvc {
         todo.depends_on = record.depends_on.clone();
         todo.suggested = fields.suggested;
         todo.ask = ask.map(|ask| domain::Ask {
-            kind: domain::AskKind::Close,
-            by: String::new(),
+            kind: ask_kind_of(ask.change.as_ref()),
+            by: ask_by_of(ask_requester(ask, request)),
             reason: ask.reason.clone(),
         });
+        if let Some(ask) = ask {
+            todo.ask_detail = ask_detail_of(ask, request, archived, now);
+        }
         todo.review = fields.review.as_ref().map(|review| domain::Review {
             repo_prs: review
                 .pull_requests
@@ -446,12 +623,18 @@ impl BoardSvc {
         now: i64,
     ) -> Result<(Vec<Entry>, domain::Ranked), Status> {
         let entries = self.entries(caller)?;
+        let archived = self.archived()?;
         let today = day_of(now).ok_or_else(|| internal("the clock is outside the calendar", ""))?;
         let items: Vec<domain::Todo> = entries
             .iter()
             .map(|entry| {
                 let pending = pending_for(&entry.record, asks);
-                Self::domain_item(entry, pending.first(), today, now)
+                let first = pending.first();
+                let request = first
+                    .and_then(|ask| ask.request.as_ref())
+                    .and_then(|id| asks.iter().find(|req| req.id.as_ref() == Some(id)))
+                    .or_else(|| first_request_for(&entry.record, asks));
+                Self::domain_item(entry, first, request, &archived, today, now)
             })
             .collect();
         let ranked = domain::rank(&items, today);
@@ -2391,5 +2574,72 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(fields_of(&closed).state, pb::TodoState::Closed as i32);
+    }
+
+    #[test]
+    fn domain_item_fills_ask_detail_from_the_inbox_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        let created = add(&svc, "Ledger schema v2", None, |_| {});
+        let key = key_of(&created);
+        let entries = svc.entries(&user()).unwrap();
+        let entry = entries.iter().find(|e| e.record.key == key).unwrap();
+        let at = now();
+        let ask = pb::InboxRequest {
+            id: Some(pb::RequestId { value: "rq_1".to_owned() }),
+            requester: Some(pb::AgentActor {
+                session: Some(pb::SessionId { value: "se_ended".to_owned() }),
+                ..Default::default()
+            }),
+            reason: "Staging backfill passed.".to_owned(),
+            preview: Some(pb::RequestPreview {
+                preview: Some(pb::request_preview::Preview::BoardChange(
+                    pb::BoardChangePreview {
+                        item: Some(pb::BoardItemId { value: key.clone() }),
+                        item_title: entry.record.title.clone(),
+                        changes: vec![field_change("status", "In progress", "Closed")],
+                        deletes_item: false,
+                    },
+                )),
+            }),
+            created_at: Some(timestamp_ms(at - 20 * 60_000)),
+            facts: vec![
+                pb::CardFact {
+                    label: "Commits".to_owned(),
+                    lead: "3 commits".to_owned(),
+                    rest: " on main".to_owned(),
+                },
+                pb::CardFact {
+                    label: String::new(),
+                    lead: "212 tests passed".to_owned(),
+                    rest: String::new(),
+                },
+            ],
+            affects: vec![pb::CardEffect {
+                warn: false,
+                lead: "WEB-13".to_owned(),
+                rest: " stops waiting".to_owned(),
+            }],
+            ..Default::default()
+        };
+        let pending = pending_for(&entry.record, std::slice::from_ref(&ask));
+        let today = day_of(at).unwrap();
+        let archived = HashSet::from(["se_ended".to_owned()]);
+        let todo = BoardSvc::domain_item(entry, pending.first(), Some(&ask), &archived, today, at);
+        assert_eq!(todo.ask_detail.evidence.len(), 2);
+        assert_eq!(todo.ask_detail.affects.len(), 1);
+        assert!(todo.ask_detail.change.is_some());
+        assert_eq!(todo.ask_detail.asked_minutes_ago, 20);
+        assert!(todo.ask_detail.session_ended);
+
+        let live = BoardSvc::domain_item(
+            entry,
+            pending.first(),
+            Some(&ask),
+            &HashSet::new(),
+            today,
+            at,
+        );
+        assert!(!live.ask_detail.session_ended);
     }
 }

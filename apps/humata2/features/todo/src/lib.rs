@@ -13,8 +13,8 @@ use std::sync::Arc;
 use humata2_clients::DaemonError;
 use humata2_clients::todo::{Entry, MigrationNotice, NewTodo, TodoClient, TodoFilter, TodoPatch};
 use humata2_todo::{
-    ChannelFilter, Day, Draft, DueFilter, Effort, Filter, Impact, Only, Ranked, State, Step,
-    Todo as Item, apply, rank,
+    ChannelFilter, Day, Draft, DueFilter, Effort, Filter, Impact, Only, ParseDayError, Ranked,
+    SessionFilter, State, Step, Todo as Item, apply, parse_day, rank,
 };
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
@@ -28,6 +28,15 @@ pub enum ChannelPick {
     Channel(String),
     /// Items with no channel.
     NoChannel,
+}
+
+/// Which session the list is narrowed to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionPick {
+    /// One session.
+    Session(String),
+    /// Items not in any session yet.
+    NoneYet,
 }
 
 /// A due filter chip.
@@ -58,8 +67,8 @@ pub enum OnlyPick {
 pub struct ViewFilter {
     /// A channel, or the items with none; unset is every channel.
     pub channel: Option<ChannelPick>,
-    /// One session's items.
-    pub session: Option<String>,
+    /// One session's items, or items not in any session yet.
+    pub session: Option<SessionPick>,
     /// Due chips; an item matches any of them.
     pub due: Vec<DuePick>,
     /// Tags; an item matches any of them.
@@ -83,7 +92,10 @@ impl ViewFilter {
                 ChannelPick::Channel(name) => ChannelFilter::Channel(name.clone()),
                 ChannelPick::NoChannel => ChannelFilter::NoChannel,
             }),
-            session: self.session.clone(),
+            session: self.session.as_ref().map(|s| match s {
+                SessionPick::Session(id) => SessionFilter::Session(id.clone()),
+                SessionPick::NoneYet => SessionFilter::NoneYet,
+            }),
             due: self
                 .due
                 .iter()
@@ -171,6 +183,8 @@ pub enum EditField {
     Step,
     /// The description.
     Description,
+    /// A typed due date ("fri", "nov 28", "2026-12-01").
+    Due,
 }
 
 /// The field being typed into.
@@ -209,6 +223,8 @@ pub struct TodoState {
     pub loaded: bool,
     /// Why the last call failed, for the person to fix.
     pub error: Option<DaemonError>,
+    /// Why a typed due date couldn't be read, cleared on the next valid date or edit.
+    pub due_error: Option<ParseDayError>,
 }
 
 impl TodoState {
@@ -227,6 +243,7 @@ impl TodoState {
             what_changed: false,
             loaded: false,
             error: None,
+            due_error: None,
         }
     }
 
@@ -365,6 +382,9 @@ pub enum TodoAction {
     MovePin(String, usize),
     /// Sets the due date.
     SetDue(String, Day),
+    /// Parses a typed due date ("fri", "nov 28", "2026-12-01") and sets it, or
+    /// records why it couldn't be read in [`TodoState::due_error`].
+    SetDueText(String, String),
     /// Takes the due date off.
     ClearDue(String),
     /// Sets or clears the effort.
@@ -415,6 +435,8 @@ pub enum TodoAction {
     OpenSession(String),
     /// Opens an item's history. The app routes it.
     ShowHistory(String),
+    /// Opens a link on an ask card's evidence row. The app routes it.
+    OpenEvidence(String),
     /// Shows or hides the full account of what the migration changed.
     ShowWhatChanged,
     /// Dismisses the migration banner.
@@ -506,6 +528,8 @@ impl Reducer for Todo {
                 state.error = None;
                 if state.open.as_deref().is_some_and(|k| state.position(k).is_none()) {
                     state.open = None;
+                    state.editing = None;
+                    state.due_error = None;
                 }
                 Effect::none()
             }
@@ -537,6 +561,8 @@ impl Reducer for Todo {
                 state.items = items;
                 if state.open.as_deref().is_some_and(|k| state.position(k).is_none()) {
                     state.open = None;
+                    state.editing = None;
+                    state.due_error = None;
                 }
                 Effect::none()
             }
@@ -551,9 +577,10 @@ impl Reducer for Todo {
                 state.do_next = None;
                 Effect::none()
             }
-            TodoAction::AskWhy(_) | TodoAction::OpenSession(_) | TodoAction::ShowHistory(_) => {
-                Effect::none()
-            }
+            TodoAction::AskWhy(_)
+            | TodoAction::OpenSession(_)
+            | TodoAction::ShowHistory(_)
+            | TodoAction::OpenEvidence(_) => Effect::none(),
             TodoAction::ShowWhatChanged => {
                 state.what_changed = !state.what_changed;
                 Effect::none()
@@ -596,26 +623,37 @@ impl Reducer for Todo {
                     state.open = Some(key);
                 }
                 state.editing = None;
+                state.due_error = None;
                 Effect::none()
             }
             TodoAction::Close => {
                 state.open = None;
                 state.editing = None;
+                state.due_error = None;
                 Effect::none()
             }
             TodoAction::StartEdit(key, field) => {
                 let text = match (field, state.position(&key)) {
                     (EditField::Title, Some(at)) => state.items[at].todo.title.clone(),
                     (EditField::Description, Some(at)) => state.items[at].todo.description.clone(),
+                    (EditField::Due, Some(at)) => state.items[at]
+                        .todo
+                        .due
+                        .map_or_else(String::new, |d| {
+                            let (y, m, day) = d.ymd();
+                            format!("{y:04}-{m:02}-{day:02}")
+                        }),
                     _ => String::new(),
                 };
                 state.editing = Some(Editing { key, field, text });
+                state.due_error = None;
                 Effect::none()
             }
             TodoAction::EditChanged(text) => {
                 if let Some(editing) = &mut state.editing {
                     editing.text = text;
                 }
+                state.due_error = None;
                 Effect::none()
             }
             TodoAction::CommitEdit => {
@@ -623,6 +661,31 @@ impl Reducer for Todo {
                     return Effect::none();
                 };
                 let text = editing.text.trim().to_owned();
+                if editing.field == EditField::Due {
+                    if text.is_empty() {
+                        state.due_error = None;
+                        return self.patch(
+                            state,
+                            &editing.key,
+                            TodoPatch { due: Some(None), ..TodoPatch::default() },
+                        );
+                    }
+                    return match parse_day(&text, state.today) {
+                        Ok(day) => {
+                            state.due_error = None;
+                            self.patch(
+                                state,
+                                &editing.key,
+                                TodoPatch { due: Some(Some(day)), ..TodoPatch::default() },
+                            )
+                        }
+                        Err(err) => {
+                            state.editing = Some(editing);
+                            state.due_error = Some(err);
+                            Effect::none()
+                        }
+                    };
+                }
                 // A description may be cleared; the other fields need text.
                 if text.is_empty() && editing.field != EditField::Description {
                     return Effect::none();
@@ -656,10 +719,12 @@ impl Reducer for Todo {
                             TodoPatch { steps: Some(steps), ..TodoPatch::default() },
                         )
                     }
+                    EditField::Due => unreachable!("handled above"),
                 }
             }
             TodoAction::CancelEdit => {
                 state.editing = None;
+                state.due_error = None;
                 Effect::none()
             }
 
@@ -695,9 +760,25 @@ impl Reducer for Todo {
                 Effect::merge(writes)
             }
             TodoAction::SetDue(key, day) => {
+                state.due_error = None;
                 self.patch(state, &key, TodoPatch { due: Some(Some(day)), ..TodoPatch::default() })
             }
+            TodoAction::SetDueText(key, text) => match parse_day(&text, state.today) {
+                Ok(day) => {
+                    state.due_error = None;
+                    self.patch(
+                        state,
+                        &key,
+                        TodoPatch { due: Some(Some(day)), ..TodoPatch::default() },
+                    )
+                }
+                Err(err) => {
+                    state.due_error = Some(err);
+                    Effect::none()
+                }
+            },
             TodoAction::ClearDue(key) => {
+                state.due_error = None;
                 self.patch(state, &key, TodoPatch { due: Some(None), ..TodoPatch::default() })
             }
             TodoAction::SetEffort(key, effort) => {

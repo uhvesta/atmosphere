@@ -20,7 +20,7 @@ use gpui_kit::{prelude::*, *};
 use humata2_clients::todo::Entry;
 use humata2_todo::{Ask, AskKind, Day, DueChip, Effort, Impact, Row, State, Todo, Tone, Weekday};
 use humata2_todo_feature::{
-    ChannelPick, DuePick, EditField, OnlyPick, TodoAction as A, TodoState, ViewFilter,
+    ChannelPick, DuePick, EditField, OnlyPick, SessionPick, TodoAction as A, TodoState, ViewFilter,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -269,6 +269,20 @@ pub(crate) struct AskRow {
     pub(crate) label: &'static str,
     pub(crate) text: String,
     pub(crate) link: bool,
+}
+
+/// What each evidence item on an ask card shows and opens when clicked.
+pub(crate) fn evidence_links(todo: &Todo) -> Vec<(&str, Option<A>)> {
+    todo.ask_detail
+        .evidence
+        .iter()
+        .map(|ev| {
+            (
+                ev.text.as_str(),
+                ev.link.as_ref().map(|target| A::OpenEvidence(target.clone())),
+            )
+        })
+        .collect()
 }
 
 /// The ask card's rows in the frames' order: Evidence, Change, Also, Asked by.
@@ -631,7 +645,12 @@ pub fn page(
 fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
     let (label, key) = do_next(state);
     let toggle = inputs.filters_open.clone();
-    let filters_on = state.view.filter.due.len() + state.view.filter.tags.len();
+    let filters_on = state.view.filter.due.len()
+        + state.view.filter.tags.len()
+        + usize::from(state.view.filter.session.is_some())
+        + state.view.filter.effort.len()
+        + state.view.filter.impact.len()
+        + state.view.filter.only.len();
     row()
         .h(px(52.))
         .flex_shrink_0()
@@ -1247,19 +1266,34 @@ fn filter_popover(
             )
         })))
         .child(small("MORE", look).font_weight(FontWeight::SEMIBOLD))
-        .child(field_row("Session", look).children(session_ids.into_iter().map(|id| {
-            let name = sessions(&id).map_or_else(|| id.clone(), |c| c.name);
-            let on = filter.session.as_deref() == Some(id.as_str());
-            option(
-                format!("todo-session-{id}"),
-                name,
-                on,
-                A::SetFilter(ViewFilter {
-                    session: if on { None } else { Some(id) },
-                    ..filter.clone()
+        .child(
+            field_row("Session", look)
+                .children(session_ids.into_iter().map(|id| {
+                    let name = sessions(&id).map_or_else(|| id.clone(), |c| c.name);
+                    let on = filter.session.as_ref() == Some(&SessionPick::Session(id.clone()));
+                    option(
+                        format!("todo-session-{id}"),
+                        name,
+                        on,
+                        A::SetFilter(ViewFilter {
+                            session: if on { None } else { Some(SessionPick::Session(id)) },
+                            ..filter.clone()
+                        }),
+                    )
+                }))
+                .child({
+                    let on = filter.session.as_ref() == Some(&SessionPick::NoneYet);
+                    option(
+                        "todo-session-none".to_owned(),
+                        "None yet".to_owned(),
+                        on,
+                        A::SetFilter(ViewFilter {
+                            session: if on { None } else { Some(SessionPick::NoneYet) },
+                            ..filter.clone()
+                        }),
+                    )
                 }),
-            )
-        })))
+        )
         .child(field_row("Effort", look).children([Effort::S, Effort::M, Effort::L].into_iter().map(|v| {
             let on = filter.effort.contains(&v);
             let mut picked = filter.effort.clone();
@@ -1441,19 +1475,52 @@ pub(crate) fn drawer(
         ))
         .child(field(
             "Due",
-            row()
-                .gap(px(8.))
-                .child(div().child(due_label))
-                .child(link(send, "todo-due-today", "Today", A::SetDue(key.clone(), state.today), look))
-                .child(link(send, "todo-due-tomorrow", "Tomorrow", A::SetDue(key.clone(), state.today.add_days(1)), look))
-                .child(link(
-                    send,
-                    "todo-due-week",
-                    "Next week",
-                    A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
-                    look,
-                ))
-                .children(t.due.map(|_| link(send, "todo-due-clear", "Clear", A::ClearDue(key.clone()), look))),
+            col()
+                .gap(px(4.))
+                .child(if editing(EditField::Due) {
+                    edit_input("fri, nov 28, or 2026-12-01").into_any_element()
+                } else {
+                    row()
+                        .gap(px(8.))
+                        .child(clickable(
+                            send,
+                            "todo-due-edit",
+                            "Type a due date",
+                            A::StartEdit(key.clone(), EditField::Due),
+                            div().child(due_label),
+                        ))
+                        .child(link(
+                            send,
+                            "todo-due-today",
+                            "Today",
+                            A::SetDue(key.clone(), state.today),
+                            look,
+                        ))
+                        .child(link(
+                            send,
+                            "todo-due-tomorrow",
+                            "Tomorrow",
+                            A::SetDue(key.clone(), state.today.add_days(1)),
+                            look,
+                        ))
+                        .child(link(
+                            send,
+                            "todo-due-week",
+                            "Next week",
+                            A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
+                            look,
+                        ))
+                        .children(t.due.map(|_| {
+                            link(send, "todo-due-clear", "Clear", A::ClearDue(key.clone()), look)
+                        }))
+                        .into_any_element()
+                })
+                .children(state.due_error.as_ref().map(|err| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(crate::theme::RED))
+                        .child(err.to_string())
+                })),
         ))
         .child(field(
             "Effort",
@@ -1605,9 +1672,34 @@ fn ask_card(send: &Send, t: &Todo, ask_id: &str, ask: &Ask, look: Look) -> Div {
         .child(div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone()))
         .child(col().p(px(8.)).rounded(px(8.)).bg(rgb(look.card)).children(
             ask_rows(t, ask).into_iter().map(|r| {
-                row().gap(px(12.)).child(small(r.label, look).w(px(70.))).child(
-                    div().when(r.link, |d| d.text_color(rgb(look.accent))).child(r.text),
-                )
+                let body = if r.label == "Evidence" {
+                    let mut line = row().flex_wrap().gap(px(4.));
+                    for (i, (text, action)) in evidence_links(t).into_iter().enumerate() {
+                        if i > 0 {
+                            line = line.child(muted("·", look));
+                        }
+                        line = match action {
+                            Some(act) => line.child(link(
+                                send,
+                                SharedString::from(format!("todo-evidence-{i}")),
+                                text,
+                                act,
+                                look,
+                            )),
+                            None => line.child(div().child(text.to_owned())),
+                        };
+                    }
+                    line.into_any_element()
+                } else {
+                    div()
+                        .when(r.link, |d| d.text_color(rgb(look.accent)))
+                        .child(r.text)
+                        .into_any_element()
+                };
+                row()
+                    .gap(px(12.))
+                    .child(small(r.label, look).w(px(70.)))
+                    .child(body)
             }),
         ))
         .child(
@@ -1804,5 +1896,24 @@ mod tests {
         assert!(text.ends_with("in payments-rewrite"));
         let shown = s.shown().iter().filter(|t| t.state != State::Closed).count();
         assert!(text.starts_with(&shown.to_string()));
+    }
+
+    #[test]
+    fn evidence_links_produce_open_evidence_actions() {
+        let s = state();
+        let mut t = s
+            .items
+            .iter()
+            .map(|e| e.todo.clone())
+            .find(|t| !t.ask_detail.evidence.is_empty())
+            .expect("detailed ask");
+        t.ask_detail.evidence.push(humata2_todo::Evidence {
+            text: "plain note".to_owned(),
+            link: None,
+        });
+        let links = evidence_links(&t);
+        assert_eq!(links.len(), t.ask_detail.evidence.len());
+        assert_eq!(links[0].1, Some(A::OpenEvidence("commits".to_owned())));
+        assert_eq!(links.last().and_then(|(_, a)| a.clone()), None);
     }
 }

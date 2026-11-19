@@ -337,3 +337,46 @@ fn asking_why_and_opening_the_session_change_nothing_here() {
     store.send(A::ShowHistory("PAY-3".to_owned()), |_| {});
     assert_eq!(store.state().items, before);
 }
+
+#[test]
+fn typing_a_due_date_parses_it_and_bad_input_records_an_error() {
+    let fake = FakeTodo::frame_b1_1();
+    let mut store = store(&fake);
+    loaded(&mut store);
+
+    store.send(A::SetDueText("PAY-5".to_owned(), "nov 28".to_owned()), |_| {});
+    store.receive_matching("Written", |a| matches!(a, A::Written { .. }), |_| {});
+    assert_eq!(item(store.state(), "PAY-5").due, Day::from_ymd(2026, 11, 28));
+    assert!(store.state().due_error.is_none());
+
+    store.send(A::SetDueText("PAY-5".to_owned(), "not a date".to_owned()), |_| {});
+    assert_eq!(item(store.state(), "PAY-5").due, Day::from_ymd(2026, 11, 28));
+    assert!(store.state().due_error.is_some());
+}
+
+#[test]
+fn opening_an_evidence_link_changes_nothing_here() {
+    let fake = FakeTodo::frame_b1_1();
+    let mut store = store(&fake);
+    loaded(&mut store);
+
+    let before = store.state().items.clone();
+    store.send(A::OpenEvidence("commits".to_owned()), |_| {});
+    assert_eq!(store.state().items, before);
+}
+
+#[test]
+fn session_none_yet_filter_keeps_only_items_with_no_session() {
+    use humata2_todo_feature::SessionPick;
+    let fake = FakeTodo::frame_b1_1();
+    let mut store = store(&fake);
+    loaded(&mut store);
+
+    store.send(
+        A::SetFilter(ViewFilter { session: Some(SessionPick::NoneYet), ..ViewFilter::default() }),
+        |_| {},
+    );
+    let shown = store.state().shown();
+    assert!(!shown.is_empty());
+    assert!(shown.iter().all(|t| t.sessions.is_empty()));
+}

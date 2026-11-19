@@ -52,3 +52,27 @@ fn plain_line_is_just_a_title() {
     assert_eq!(got.title, "Call the bank");
     assert!(got.due.is_none() && got.tags.is_empty() && got.channel.is_none());
 }
+
+#[test]
+fn parses_relative_month_day_and_iso_dates_and_rejects_unreadable_input() {
+    assert_eq!(parse_day("fri", today()), Ok(d(11, 20)));
+    assert_eq!(parse_day("nov 28", today()), Ok(d(11, 28)));
+    assert_eq!(parse_day("28 Nov", today()), Ok(d(11, 28)));
+    assert_eq!(parse_day("2026-12-01", today()), Ok(d(12, 1)));
+    assert_eq!(parse_day("next week", today()), Ok(d(11, 23)));
+    assert_eq!(parse_day("today", today()), Ok(today()));
+    assert_eq!(parse_day("tomorrow", today()), Ok(d(11, 20)));
+    assert_eq!(
+        parse_day("jan 5", today()),
+        Ok(Day::from_ymd(2027, 1, 5).expect("valid date"))
+    );
+    assert!(matches!(parse_day("   ", today()), Err(ParseDayError::Empty)));
+    assert!(matches!(
+        parse_day("2026-02-30", today()),
+        Err(ParseDayError::InvalidDate { .. })
+    ));
+    assert!(matches!(
+        parse_day("not a date", today()),
+        Err(ParseDayError::Unrecognized { .. })
+    ));
+}

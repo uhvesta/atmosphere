@@ -8,6 +8,13 @@ pub enum ChannelFilter {
     NoChannel,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionFilter {
+    Session(String),
+    /// Items not in any session yet.
+    NoneYet,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DueFilter {
     Overdue,
@@ -30,7 +37,7 @@ pub enum Only {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     pub channel: Option<ChannelFilter>,
-    pub session: Option<String>,
+    pub session: Option<SessionFilter>,
     pub due: Vec<DueFilter>,
     pub tags: Vec<String>,
     pub search: String,
@@ -62,7 +69,11 @@ fn matches_rest(t: &Todo, f: &Filter) -> bool {
         Some(ChannelFilter::NoChannel) => t.channel.is_none(),
         Some(ChannelFilter::Channel(c)) => t.channel.as_deref() == Some(c.as_str()),
     };
-    let session_ok = f.session.as_ref().is_none_or(|s| t.sessions.contains(s));
+    let session_ok = match &f.session {
+        None => true,
+        Some(SessionFilter::NoneYet) => t.sessions.is_empty(),
+        Some(SessionFilter::Session(s)) => t.sessions.contains(s),
+    };
     let tags_ok = f.tags.is_empty()
         || f.tags
             .iter()
