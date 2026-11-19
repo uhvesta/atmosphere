@@ -22,6 +22,7 @@ rust_library(
         "src/setup.rs",
         "src/state.rs",
         "src/terminals.rs",
+        "src/todo.rs",
     ],
     aliases = {
         "//apps/humata2/clients:api": "humata2_clients",
@@ -47,6 +48,7 @@ rust_library(
         "//apps/humata2/clients/live_core",
         "//apps/humata2/clients/live_desk",
         "//apps/humata2/clients/live_diff",
+        "//apps/humata2/todo",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tonic",

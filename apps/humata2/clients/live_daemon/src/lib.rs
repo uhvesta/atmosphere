@@ -38,6 +38,7 @@ mod settings;
 mod setup;
 mod state;
 mod terminals;
+pub mod todo;
 
 pub(crate) use humata2_clients_live_core::{local_time, map};
 pub(crate) use state as connection;

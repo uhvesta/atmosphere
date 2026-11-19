@@ -18,6 +18,9 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("global_read", "Global board, or other channels and their boards: read", Some(Allow)),
     // D155: writes there ask by default.
     ("global_board_write", "Global board, or other channels' boards: change", Some(Ask)),
+    ("todo_suggest", "To-do: suggest items", Some(Allow)),
+    // D839: an agent's close is a request.
+    ("todo_close", "To-do: close items as done", Some(Ask)),
     ("shared_write", "Write into shared/ on its machine", Some(Allow)),
     (
         "files_fetch_local",
