@@ -177,3 +177,24 @@ Order, each TDD with its failing test written first (manager), code by Haiku wor
 | 2h | RV-8 budgets with DV-14 (main tracks DV-14) | bench rig via Bazel, numbers "proposed" until accepted | P-1..P-9 recorded |
 
 - 2026-11-18 21:00: after 0.3.4, 2e (DS-80) re-applied and its test restored against `repo-branch-0`'s label; 2h (RV-8) written as `review_ui::budgets::` ignored measurement tests, run by main with `-c opt --test_arg=--ignored --test_arg=--nocapture --test_arg=review_ui::budgets:: --test_arg=--test-threads=1`; numbers stay "proposed" until Fable or main accepts them. P-5/P-7 (daemon) and P-8 come from DV-14's live rerun.
+
+### RV-8 budgets measured (DIFFUI2, 2026-11-19)
+
+`bazel test //apps/humata2/desktop:native_test -c opt --test_arg=--ignored --test_arg=--nocapture --test_arg=review_ui::budgets:: --test_arg=--test-threads=1`, headless, on the owner's Mac. The panel side only: the daemon side of P-5 and P-7 and the idle check P-8 come from DV-14's live rerun.
+
+| Budget | What | Measured | Proposed budget | Verdict |
+|---|---|---|---|---|
+| P-1 | First open of the 40,000-line file | 71.2 ms | under 300 ms | within |
+| P-2 | Reselecting it | 12.5 ms | under 100 ms | within |
+| P-3 | Scrolling it, mean frame (120 frames, 120 px each) | 11.1 ms | under 5 ms (30% of a 60 Hz frame) | **over** |
+| P-3 | Scrolling it, slowest frame | 12.4 ms | under 16.7 ms | within |
+| P-4 | Memory with it open | +12 MB | under 300 MB | within |
+| P-5 | Opening the panel on 586 files over 4 repos (panel only) | 148.2 ms | under 5 s | within |
+| P-6 | Wrapping a 194,000-character line | 85.1 ms | under 500 ms | within |
+
+- The proposed numbers above are accepted as the budgets by the DIFFUI2 manager for main; P-3's mean is the one miss.
+- **Follow-up RV-8a (P-3, 11.1 ms vs 5 ms):** the headless frame is the whole window (sidebar, terminal, panel), so first split the 11.1 ms: time the Diff panel's own layout and paint against the rest of the frame with the same 40,000-line file. If the panel's share is over 5 ms, cut the per-row work of the virtual list (rows rebuilt each frame, word-diff marks, `test_support` ids). No dropped frames today (slowest 12.4 ms), so this is CPU, not smoothness.
+- **PR diff gutter (Fable's note on GOLDENFIX):** a review's rows drew "1+fn main()": the number column's right padding was about 1 pt and the sign had one cell with no space after it. A review's rows now use the review mockup's gutter, as the Diff panel does: the number, 6 pt, the sign and one space, then the code (`ui/changes/src/panel_changes/{diff_body,review_header,mod}.rs`). Frame 68 and the PR native frames move the code one cell right; Fable judges them.
+- Fable 5.2 (2026-11-19, DIFFUI2 round 1): the PR gutter is APPROVED on all five re-recorded native frames (68, 68b, 68c, 69, diff-stress-pr-huge-file): "1 + let value_1", no regressions. Non-blocking: the focused number sits about 1 pt from the 2 pt accent bar; 4 pt of left padding if cheap.
+- Gates (DIFFUI2): `desktop:native_test` 325/325 after recording those five (filtered native record), `desktop:design_test`, `desktop:panels_test`, `ui/changes:changes_unit_test` pass; lint build of `//apps/humata2/ui/changes/...` and `desktop:native_test` clean.
+- Ready to commit (step 3): yes.

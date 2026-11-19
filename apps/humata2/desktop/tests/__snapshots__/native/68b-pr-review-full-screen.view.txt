@@ -31,22 +31,22 @@ Complementary "Changes"
       #change-line-0
         Button "Comment on line 138"
           text "138"
+        text " "
         #change-code-0-0
           text "    let amount = capture.remaining();"
-        text " "
       #change-line-1
         Button "Comment on line 139"
           text "139"
+        text "−"
         #change-code-1-0
           text "    let cents = amount.floor();"
-        text "−"
       #review-focus-140
         #change-line-2
           Button "Comment on line 140"
             text "140"
+          text "+"
           #change-code-2-0
             text "    let cents = amount.round();"
-          text "+"
       #doc-comment-se_pr_1/c-1
         text "Draft for GitHub · by Claude Code"
         text "Draft"
@@ -56,9 +56,9 @@ Complementary "Changes"
       #change-line-3
         Button "Comment on line 141"
           text "141"
+        text " "
         #change-code-3-0
           text "    refund.issue(cents)?;"
-        text " "
     #review-repo-acme/ledger
       text "ledger"
       text "#91"

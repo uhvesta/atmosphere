@@ -269,21 +269,19 @@ fn review_code(
     let name = format!("{}/{}", diff.repo, file.path);
     let scroll = documents.session_diff_view(&diff.session, &name);
     let LineFacts { digits, widest } = scroll.facts(&file.lines, line_facts);
-    // Frame 68's code starts 36 in (wider only for longer numbers), the
-    // number ending 8 before it. The sign keeps its own cell, taken from
-    // the number column, so the number column is 36 less a cell. Metrics
-    // takes the width with its 8 added. Three digits still fit in 36, so
-    // the code starts where the design's does and the sign never overlaps it.
+    // The review mockup's gutter: the number, 6 pt, then the sign and a
+    // space (two cells), then the code, as in the Diff panel. The number
+    // column is at least 36 less a cell; Metrics takes it with its 8 added.
     let numbers = 36_f32.max(digits as f32 * cell_width + 6. + cell_width);
     let gutter_width = numbers - cell_width + 8.;
-    let code_width = avail - numbers;
+    let code_width = avail - numbers - cell_width;
     let columns = ((code_width / cell_width).floor().max(4.)) as usize;
     // Scroll (DS-42): the number and sign stay put, only the code slides,
     // as far as the widest line needs.
     let max_shift = if state.review.wrap {
         0.
     } else {
-        let start = code_start_of(gutter_width, cell_width, false, true);
+        let start = code_start_of(gutter_width, cell_width, false);
         (widest as f32 * cell_width + cell_width) - (avail - start)
     };
     let shift = scroll.shift(max_shift);

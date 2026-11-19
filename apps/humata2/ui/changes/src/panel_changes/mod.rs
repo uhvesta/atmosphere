@@ -334,7 +334,7 @@ pub fn changes(
             let view_width = width - if full { 300. } else { 0. };
             // DS-19: full screen draws an old and a new number column,
             // beside the terminal one.
-            let start = code_start_of(gutter_width, cell_width, full, false);
+            let start = code_start_of(gutter_width, cell_width, full);
             let code_width = view_width - start - 2.;
             let columns = ((code_width / cell_width).floor().max(4.)) as usize;
             // On Scroll only the code column moves sideways, as far as the

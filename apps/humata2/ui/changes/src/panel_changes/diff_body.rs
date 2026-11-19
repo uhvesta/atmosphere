@@ -33,9 +33,8 @@ pub(super) struct Metrics {
     /// The code view's visible width: on Scroll the rows are wider, but a
     /// comment stays inside what can be seen.
     pub(super) view_width: f32,
-    /// A pull request review's inline code (frame 68): the code starts
-    /// where the design's does, 36 in, so the sign's cell is taken from the
-    /// number column and the space after the number.
+    /// A pull request review's inline code (frame 68): the numbers keep a
+    /// 6 pt gap before the sign, and its cards keep frame 68's place.
     pub(super) review: bool,
     /// Two number columns, old then new (DS-19): full screen only.
     pub(super) old: bool,
@@ -44,17 +43,17 @@ pub(super) struct Metrics {
 impl Metrics {
     /// How far in from the row's left edge the code starts.
     fn code_start(&self) -> f32 {
-        code_start_of(self.gutter_width, self.cell_width, self.old, self.review)
+        code_start_of(self.gutter_width, self.cell_width, self.old)
     }
 }
 
 /// Where the code starts in a row (DS-19, DS-20): the number column, or two,
-/// then the sign's cell and, outside a review, one space after it. A
-/// review's rows keep frame 68's geometry, the sign in a cell of its own.
-pub(super) fn code_start_of(gutter_width: f32, cell_width: f32, old: bool, review: bool) -> f32 {
+/// then the sign's cell and one space after it, in a review as in the
+/// Diff panel (the review mockup's 14 pt sign column).
+pub(super) fn code_start_of(gutter_width: f32, cell_width: f32, old: bool) -> f32 {
     let one = (gutter_width - 8.).max(0.);
     let numbers = if old { one * 2. } else { one };
-    numbers + if review { cell_width } else { cell_width * 2. }
+    numbers + cell_width * 2.
 }
 
 /// The side a line's comments are on and its number there: a removed line
@@ -590,7 +589,7 @@ impl CodeRows {
                 .h(px(line_height))
                 .flex()
                 .justify_end()
-                .pr(px(if review { (8. - cell_width).max(1.) } else { 4. }))
+                .pr(px(if review { 6. } else { 4. }))
                 .text_color(rgb(look.term_dim))
                 .flex_shrink_0()
                 .id(SharedString::from(id))
@@ -683,16 +682,9 @@ impl CodeRows {
             .children(gutters)
             .child(
                 text(sign)
-                    .w(px(if review { cell_width } else { cell_width * 2. }))
+                    .w(px(cell_width * 2.))
                     .h(px(line_height))
                     .flex_shrink_0()
-                    // Frame 68 draws the sign in the code's first
-                    // cell, a cell clear of the number. A review moves
-                    // it there when that cell is indentation, so it
-                    // never covers code; the columns stay put.
-                    .when(review && line.text.starts_with([' ', '\t']), |sign| {
-                        sign.relative().left(px(cell_width))
-                    })
                     .text_color(rgb(look.term_text)),
             )
             .child(code)
