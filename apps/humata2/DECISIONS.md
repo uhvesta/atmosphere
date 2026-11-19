@@ -5029,3 +5029,38 @@ Claude Code's auto-mode offer stops the input gate and nothing else (AGENTS2 min
 - It holds no Needs you: `screen_ask` ignores an offer (`ScreenQuestion::needs_you`), because the agent isn't waiting on the person.
 - D845's freeze is narrowed, not lifted: a new gate pattern needs a recorded live screen and no hook, and only refuses.
 - **Reverse:** drop the `Offer` row if Claude Code fires a hook for the offer, removes it, or rewords it.
+
+## D863
+Shortened text keeps its whole text, and every full-screen arrow names its key. The accessibility tree changes to match (Fable 5.2, REVIEWUI batch 3; DS-17, DS-46, DS-57, DS-79, DS-80).
+- Through `full_text`, these elements get a hover and a label: the session title, the full-screen title line, the file row (`repo/path`), the file note, the diff-base and per-repo base chips, the repo error name, and the PR review's repo name. The repo name now ellipsizes after the branch (case 05 step 10).
+- Tooltips and descriptions:
+  - Exit full screen: "Exit full screen  ⌃⌘↩".
+  - The terminal arrow: "Expand terminal  ⇧⌘↩" or "Return to columns  ⇧⌘↩".
+- A force-push with new commits reads "The PR branch was force-pushed with N new commits" (case 12). The PR notice bar is a `Status` with its words as its label.
+- Native view snapshots gain the `Label`, `description` and `Status` lines. PNGs must not move; any PNG diff goes back to Fable.
+- **Reverse:** drop the `full_text` wrappers and the tooltips, then re-record the view snapshots.
+
+## D865
+The real Diff panel's stack view copies frames 119–121 (STACKVIEW minion; picks by Fable 5.2, 2026-11-19; round 1 rejected three goldens, round 2 approved all eight).
+- Stack header: "STACK · N LAYERS". The picked layer shows its drift strip; Whole never does. The drift strip's "Ask the agent to send it again" is a quiet bordered button.
+- The Whole stack row keeps the file count from its last Whole read while a layer is picked (`Fetch.whole_files`). Its repos include every repo in the stack's Whole specs, so untouched repos stay listed when a layer read replaces the diffs.
+- Footers:
+  - A layer steps to the layers beside it, and offers Looks good.
+  - Whole always shows one link, "N pull requests open" or "Push & PR…" when there are none. Both open the push menu.
+- In a stack:
+  - file rows and repo heads are 24 pt;
+  - the look tick is 13 pt with a line-colour border;
+  - the list caps at 240 pt;
+  - the key chip moves from the file header into the file row.
+- Repositories with the same short name show their full path, in the list and in the file header (`stack_repo_name`). A repo with no files draws no chevron and no totals.
+- A skim group names up to 3 files (`SKIM_NAMES`).
+- Deferred:
+  - the two-column old/new gutter with in-line word highlight (shared component);
+  - the full-screen uxs-2-2 layout (left column, layer stepper with key hints, "Layer N · x of y files looked at");
+  - in a tight header, shrink the directory before the repo name;
+  - count empty repos in "N repos";
+  - a dim "no changes" on an empty repo row;
+  - truncate, don't drop, the directory when count chips are shown;
+  - a shorter base label.
+- **Reverse:** revert panel_stack.rs and the stacked branches in panel_changes, then re-record the stack-* and looks-good-* goldens.
+

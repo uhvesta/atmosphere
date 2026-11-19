@@ -33,9 +33,9 @@ Every DS rule, DS-1 to DS-84, is cited by at least one case.
 
 | Cases | Rows tagged | Works (shell) | Works (daemon) | Fakes only | Code, no test | Not built | Likely bug |
 |---|---|---|---|---|---|---|---|
-| 16 | 279 | 0 | 23 | 73 | 60 | 111 | 12 |
+| 16 | 281 | 0 | 23 | 161 | 53 | 43 | 1 |
 
-A row with mixed tags counts under its first tag. Stack rows lead with the screen ("Not built (screen). Engine: Works (real daemon)"), so the engine tests don't count the unbuilt UI as working.
+Cases 01 to 14 were re-audited against the code on 2026-11-19 (after DV-5, DV-10 to DV-19 and RV-1 to RV-8); cases 15 and 16 keep their 2026-11-18 counts. The one Likely bug left is the PR review's dead repo chevron (case 02); the long repo name in a PR review's repo row (case 05) and the force-push with new commits (case 12) were fixed in REVIEWUI batch 3. A row with mixed tags counts under its first tag. Stack rows lead with the screen ("Not built (screen). Engine: Works (real daemon)"), so the engine tests don't count the unbuilt UI as working.
 
 ## The rig
 

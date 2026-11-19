@@ -198,3 +198,44 @@ Order, each TDD with its failing test written first (manager), code by Haiku wor
 - Fable 5.2 (2026-11-19, DIFFUI2 round 1): the PR gutter is APPROVED on all five re-recorded native frames (68, 68b, 68c, 69, diff-stress-pr-huge-file): "1 + let value_1", no regressions. Non-blocking: the focused number sits about 1 pt from the 2 pt accent bar; 4 pt of left padding if cheap.
 - Gates (DIFFUI2): `desktop:native_test` 325/325 after recording those five (filtered native record), `desktop:design_test`, `desktop:panels_test`, `ui/changes:changes_unit_test` pass; lint build of `//apps/humata2/ui/changes/...` and `desktop:native_test` clean.
 - Ready to commit (step 3): yes.
+
+### Batch 3 (minion REVIEWUI, 2026-11-19; target 0.3.9)
+
+State found: RV-1 shipped in 0.3.7 (D859–D862: footer "4 drafts · 3 by claude, 1 by you", no session-bar Submit while the Diff shows; the agent draft keeps a plain grey line, so `an_agent_draft_is_outlined` is dropped). RV-2, RV-3 (DS-73, DS-76, DS-83), RV-6, RV-7, ⌥Z context, RV-8 are in the tree with tests. Left:
+
+| Task | Worker | Files | Tests |
+|---|---|---|---|
+| 3a DS-80 hover on the rest of the shortened texts: file row, `diff-base` chip, file note, repo base chip, repo error name, session heading title | Haiku high | file_list.rs (`file_row`), mod.rs, review_header.rs, states.rs, ui/src/pages.rs | `review_ui::a_shortened_session_title_shows_in_full_on_hover` |
+| 3b DS-79 Exit full screen names its key; full-screen session line hover; RV-5 sheet check | Haiku high | ui/core/src/chrome.rs (`header_with`), ui/core/src/keys.rs tests | `diff_full_screen::the_full_screen_button_names_its_key`, `keys::tests::every_diff_key_is_in_the_shortcuts_sheet` |
+| 3c DS status column and cases 01–14 re-audited against today's code | Sonnet medium | DIFFVIEW-spec.md (not DS-60–68), flows/cases/diff/01–14 | none (docs) |
+
+Esc order (RV-5) is covered by `diff_full_screen::escape_leaves_full_screen_but_not_while_the_base_menu_is_open` and `escape_closes_the_new_agent_tab_menu_first`; DS-76 by `review_ui::{closing_and_reopening_the_panel_sends_no_fetch, full_screen_and_back_sends_no_fetch}` and `features/review:open_again_test`.
+
+Batch 3 results (2026-11-19):
+- **DS-80, built.** Shortened text keeps its whole text through `full_text`. This covers:
+  - the file row (`repo/path`), the diff-base chip, the file note, the per-repo base chip and the repo error name (worker W1, Haiku)
+  - the session heading title (`session-title`, now test-observed)
+  - the full-screen title line (`panel-session-line`)
+  - the PR review's repo name, which now ellipsizes after the branch. This fixes case 05 step 10, a likely bug.
+- **DS-17 and DS-79, built.** Exit full screen has "Exit full screen  ⌃⌘↩" (W2, Haiku). The session header's terminal arrow has "Expand terminal  ⇧⌘↩" or "Return to columns  ⇧⌘↩".
+- **RV-5:** `keys::tests::every_diff_key_is_in_the_shortcuts_sheet` (W2).
+- **Case 12, likely bug fixed.** A force-push with new commits reads "The PR branch was force-pushed with N new commits". The notice bar is a `Status` with its words as its label.
+- **Docs.** W3 (Sonnet) re-audited the DS status column (not DS-60 to DS-68) and cases 01 to 14. A Haiku pass then updated the rows batch 3 closed, and I updated DS-7, DS-17, DS-46, DS-57, DS-79, DS-80 and cases 05 and 12. README counts are now 161 Fakes only, 53 Code no test, 43 Not built and 1 Likely bug.
+- **New tests:**
+  - `review_ui::a_shortened_session_title_shows_in_full_on_hover`
+  - `diff_full_screen::{the_full_screen_button_names_its_key, the_terminal_arrow_names_its_key, the_full_screen_title_line_keeps_its_whole_text}`
+  - label asserts added to `diff_view::a_rename_names_where_it_came_from`
+  - `diff_stress::a_pull_request_long_repo_name_stays_inside_the_panel`
+  - `pr_session::a_force_push_with_new_commits_names_both`
+  - `keys::tests::every_diff_key_is_in_the_shortcuts_sheet`
+- **Fable 5.2 verdicts (D863):** APPROVE on all deltas in two rounds. Native view snapshots gain lines of these kinds:
+  - `+ Label "<session title>"`, `Label` for the note, the title line and the repo name
+  - `description=` on Exit full screen and on the terminal arrow
+  - `Status` on 68's notice
+
+  Condition: zero PNG diffs, and any moved PNG goes back to Fable.
+- **Needs main:** a full `native_test_record` run. Before recording, about 50 to 60 native view snapshots fail, all with the deltas above. Main's record run must show `.view.txt` changes only.
+- **Follow-ups (no owner):**
+  - **RV-9:** the inline PR review's repo chevron is still dead (case 02, DS-5, DS-77). The design call is fold vs pick-first-file.
+  - **RV-8a:** P-3, still open.
+  - Also open: DS-4, DS-9 in the review, DS-24 ↗ and the review file note, DS-28, DS-29, DS-36 (live_diff never fills `FileDiff.error`), DS-44, DS-69 and DS-83 gaps (see the W3 audit in the spec), and the staged "PR #482" shrink.

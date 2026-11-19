@@ -333,3 +333,52 @@ fn a_pull_request_reads_as_its_repository_and_number() {
     assert_eq!(pull_request_label("owner/api#412").as_deref(), Some("api #412"));
     assert_eq!(pull_request_label(""), None);
 }
+
+#[test]
+fn a_repository_the_whole_stack_names_is_untouched_by_a_layer_that_skips_it() {
+    // The session's own diffs list only api; the Whole stack also spans web.
+    let mut state = stacked();
+    state.layer.insert(session(), Some("schema".to_owned()));
+    let Some(rows) = state.stack_rows() else {
+        panic!("a stack has rows");
+    };
+    assert_eq!(rows.untouched_repos, vec!["acme/web"]);
+}
+
+#[test]
+fn the_whole_stack_keeps_its_file_count_while_a_layer_shows() {
+    // The session works in web too, so the daemon reads the Whole stack.
+    let mut both = workspace();
+    both.diffs = vec![humata2_clients::model::RepoDiff {
+        session: session(),
+        repo: "acme/web".to_owned(),
+        base: String::new(),
+        files: Vec::new(),
+        comments: Vec::new(),
+    }];
+    let clock = Arc::new(TestClock::new());
+    let daemon = FakeDaemon::new(both.clone(), clock.clone());
+    let mut state = stacked();
+    state.workspace = Arc::new(both);
+    let mut store = TestStore::new(state, Review::new(Arc::new(daemon), clock)).non_exhaustive();
+    store.send(A::PickLayer(Some("schema".to_owned())), |_| {});
+    read_of(&mut store, spec_of(&stack(), "schema"));
+    store.send(A::PickLayer(None), |_| {});
+    read_of(&mut store, DiffBase::Spec(stack().whole));
+    store.send(A::PickLayer(Some("schema".to_owned())), |_| {});
+    read_of(&mut store, spec_of(&stack(), "schema"));
+    // The fake daemon has no files for these ranges, so the Whole stack
+    // read listed none; the layers alone would add up to 10.
+    assert_eq!(store.state().stack_rows().map(|rows| rows.rows[0].files), Some(0));
+}
+
+#[test]
+fn a_picked_layer_shows_the_whole_stack_count_last_read_not_the_layers_sum() {
+    let mut state = stacked();
+    state.layer.insert(session(), Some("schema".to_owned()));
+    state.fetch.entry(session()).or_default().whole_files = Some(7);
+    let Some(rows) = state.stack_rows() else {
+        panic!("a stack has rows");
+    };
+    assert_eq!(rows.rows[0].files, 7, "the layers add up to 10");
+}

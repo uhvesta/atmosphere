@@ -107,9 +107,10 @@ Toolbar "Session panels"
 Link "Open channel"
 Button "Back" description="Back  ⌘["
 Button "Fork"
-Button "Expand terminal"
+Button "Expand terminal" description="Expand terminal  ⇧⌘↩"
 Button "Toggle side panel"
 Button "Session actions"
+Label "Ledger schema migration"
 Dialog "Fork session" focused
   RadioButton "fork-kind-0-on" selected
   RadioButton "fork-kind-1"

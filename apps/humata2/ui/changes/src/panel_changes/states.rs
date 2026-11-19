@@ -127,14 +127,16 @@ pub(super) fn repo_error_row(ui: &Rc<Ui>, look: Look, repo: &str, message: &str)
                 .gap(px(6.))
                 .h(px(26.))
                 .child(icon(IconName::FolderGit2, look.secondary, 12.))
-                .child(
+                .child(full_text(
                     text(repo_label(repo).to_owned())
+                        .id(SharedString::from(format!("repo-error-name-{repo}")))
                         .font_weight(FontWeight::SEMIBOLD)
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis(),
-                )
+                    repo_label(repo).to_owned(),
+                ))
                 .child(div().flex_1())
                 .child(Quiet {
                     button: Button::new(SharedString::from(format!("repo-retry-{repo}")))

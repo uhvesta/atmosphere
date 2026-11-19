@@ -351,6 +351,17 @@ fn a_rename_names_where_it_came_from() {
     assert!(app.contains("change-file-note"));
     assert!(app.contains("change-file-mark api/src/http.rs"));
     assert!(!app.contains("change-file-empty"));
+    // DS-80: the row and the note keep their whole text, however narrow.
+    app.draw();
+    let (row, note) = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            let label = |id: &'static str| window.find(id).label().map(str::to_owned);
+            (label("change-file api/src/http.rs"), label("change-file-note"))
+        })
+        .expect("window stays open");
+    assert_eq!(row.as_deref(), Some("api/src/http.rs"));
+    assert!(note.is_some_and(|note| note.contains("src/net.rs")));
 }
 
 /// A change of mode alone has no lines; its body says what the modes were.

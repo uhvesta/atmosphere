@@ -253,9 +253,9 @@ pub fn fold_skims<'a, F>(files: &'a [F], tier: impl Fn(&F) -> Tier) -> Folded<'a
 }
 
 /// The most file names the skim row lists before it says "…".
-const SKIM_NAMES: usize = 2;
+const SKIM_NAMES: usize = 3;
 
-/// The skim row's words: "3 files to skim · Cargo.lock, schema.rs, …",
+/// The skim row's words: "4 files to skim · Cargo.lock, schema.rs, mod.rs, …",
 /// with each path's file name. Empty for no paths.
 #[must_use]
 pub fn skim_label(paths: &[&str]) -> String {

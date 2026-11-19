@@ -55,6 +55,58 @@ fn alt_cmd_enter_enters_and_leaves_full_screen() {
     assert!(!app.contains("panel-full-screen"));
 }
 
+/// The accessibility description of a drawn control, which carries the
+/// Full screen key as its hover text does.
+fn description_of(app: &mut App, id: &'static str) -> String {
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            window.find(id).description().unwrap_or_default().to_owned()
+        })
+        .unwrap()
+}
+
+/// RV-4: the Full screen button and the Exit full screen button both name
+/// the chord that toggles full screen (⌃⌘↩).
+#[test]
+fn the_full_screen_button_names_its_key() {
+    const CHORD: &str = "⌃⌘↩";
+    let mut app = app();
+    let beside = description_of(&mut app, "expand-panel");
+    assert!(beside.contains(CHORD), "{beside}");
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    let full = description_of(&mut app, "show-terminal");
+    assert!(full.contains(CHORD), "{full}");
+}
+
+/// RV-4: the terminal's own arrow names its chord (⇧⌘↩) in both states.
+#[test]
+fn the_terminal_arrow_names_its_key() {
+    const CHORD: &str = "⇧⌘↩";
+    let mut app = app();
+    let expand = description_of(&mut app, "terminal-full-screen");
+    assert!(expand.contains(CHORD), "{expand}");
+    app.send(AppAction::ToggleFullScreen(FullScreen::Terminal));
+    let back = description_of(&mut app, "terminal-full-screen");
+    assert!(back.contains(CHORD), "{back}");
+    assert_ne!(expand, back);
+}
+
+/// DS-80: the full-screen title line keeps the whole session line.
+#[test]
+fn the_full_screen_title_line_keeps_its_whole_text() {
+    let mut app = app();
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.draw();
+    let label = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            window.find("panel-session-line").label().map(str::to_owned)
+        })
+        .expect("window stays open");
+    assert!(label.is_some_and(|line| !line.is_empty() && !line.contains('…')));
+}
+
 #[test]
 fn double_clicking_the_panel_header_enters_full_screen() {
     let mut app = app();

@@ -180,6 +180,9 @@ pub struct Fetch {
     /// Empty when every repository was read, or the whole read failed (then
     /// `error` says why).
     pub repo_errors: BTreeMap<String, String>,
+    /// How many files the last Whole stack read listed, so the Whole stack
+    /// row keeps that count while a layer is picked (frames 119 to 121).
+    pub whole_files: Option<u32>,
 }
 
 /// Where the keyboard cursor stands in a session's file list (DS-84): the
@@ -605,20 +608,25 @@ impl ReviewState {
         let session = self.session.as_ref()?;
         let stack = self.stack_of(session)?;
         let picked = self.layer_of(session);
+        let fetch = self.fetch.get(session);
         let whole_files = if picked.is_none() {
-            self.fetch
-                .get(session)
-                .and_then(|fetch| fetch.diffs.as_ref())
-                .map(|diffs| {
-                    diffs
-                        .iter()
-                        .map(|diff| u32::try_from(diff.files.len()).unwrap_or(u32::MAX))
-                        .sum()
-                })
+            fetch.and_then(|fetch| fetch.diffs.as_ref()).map(|diffs| {
+                let files = diffs.iter().map(|diff| diff.files.len()).sum::<usize>();
+                u32::try_from(files).unwrap_or(u32::MAX)
+            })
         } else {
-            None
+            fetch.and_then(|fetch| fetch.whole_files)
         };
-        Some(stack::rows(stack, picked, &repos_of(self, session), whole_files))
+        // The Whole stack names every repository the stack touches, so a
+        // layer leaves out the ones the session's diffs no longer list too.
+        let mut repos = repos_of(self, session);
+        for spec in &stack.whole {
+            if !repos.contains(&spec.repo) {
+                repos.push(spec.repo.clone());
+            }
+        }
+        repos.sort();
+        Some(stack::rows(stack, picked, &repos, whole_files))
     }
 
     /// What `session` reads: the picked layer's repositories while a stack
@@ -1046,6 +1054,7 @@ impl Review {
         outcome: Result<(Vec<RepoDiff>, BTreeMap<String, String>), DaemonError>,
     ) -> Effect<ReviewAction> {
         let current = state.current_base(&session);
+        let whole = state.stack_of(&session).is_some() && state.layer_of(&session).is_none();
         let fetch = state.fetch.entry(session.clone()).or_default();
         fetch.loading = false;
         let queued = std::mem::take(&mut fetch.queued);
@@ -1058,6 +1067,10 @@ impl Review {
                     fetch.repo_errors = repo_errors;
                     fetch.read_at = Some(self.clock.now());
                     fetch.diffs = Some(diffs.clone());
+                    if whole {
+                        let files = diffs.iter().map(|diff| diff.files.len()).sum::<usize>();
+                        fetch.whole_files = Some(u32::try_from(files).unwrap_or(u32::MAX));
+                    }
                     replace_diffs(&mut state.workspace, &session, &diffs);
                     rebuild_layer_looks(state, &session);
                     effects.push(prepare(state));

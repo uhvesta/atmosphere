@@ -41,36 +41,39 @@ Complementary "Changes"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
   #stack-top
+    #stack-caption
+      text "STACK · 3 LAYERS"
     ListBox "Layers"
       ListBoxOption "Whole stack"
         #stack-row-head-0
           text "Whole stack"
-          text ""
-          Label "2 repos · 10 files"
+          Label "2 repos · 3 files"
+          #stack-row-badge-0
       ListBoxOption "Layer 3: Not committed yet" selected
         #stack-row-picked
           text "Not committed yet"
-          text "3"
           Label "api"
           #stack-row-look-1
             text "✓ Looks good"
+          #stack-row-badge-1
       ListBoxOption "Layer 2: journal"
         #stack-row-head-2
           text "journal"
-          text "2"
           Label "api"
+          #stack-row-badge-2
       ListBoxOption "Layer 1: codec"
         #stack-row-head-3
           text "codec"
-          text "1"
           Label "api · web"
-    #stack-untouched ledger
-      text "ledger isn't in this layer"
+          #stack-row-badge-3
   #changes-files
-    text "acme/api"
-    Button "acme/api: against a2 and uncommitted changes" collapsed
-      text "against"
-      text "a2 and uncommitted changes"
+    #repo-row-0
+      Button "Collapse acme/api"
+      #repo-name-0
+        text "api"
+      #repo-totals-0
+        text "+143"
+        text "−24"
     ListBoxOption "acme/api/src/client.rs" selected
       #change-file-name acme/api/src/client.rs
         text "client.rs"
@@ -86,11 +89,12 @@ Complementary "Changes"
       text "+81"
       text "−3"
       CheckBox "Looked at"
+    #stack-untouched ledger
+      text "ledger isn't in this layer"
   text "client.rs"
   #diff-file-looked
     text "✓ You looked at this"
-  Button "Open in editor" description="Open in editor"
-  Button "Scroll long lines" description="Wrap long lines  ⌥Z"
+  Button "Open in editor"
   Code "acme/api/src/client.rs"
     #change-hunk-0
       text "impl Client {"
@@ -134,12 +138,9 @@ Complementary "Changes"
       text "+"
       #change-code-6-0
         text "        tx.commit().await?;"
-  #diff-looks-bar
-    Button "✓ Looks good"
-    Label "Layer 3 · 2 of 2 files looked at"
-  Button "Send to claude" disabled
-  Button "Push & PR…"
-  Button "Add repo…"
+  Button "✓ Looks good"
+  Button "‹ Previous"
+  Button "Next layer ›"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 1"
@@ -152,9 +153,10 @@ Toolbar "Session panels"
 Link "Open channel"
 Button "Back" description="Back  ⌘["
 Button "Fork"
-Button "Expand terminal"
+Button "Expand terminal" description="Expand terminal  ⇧⌘↩"
 Button "Toggle side panel"
 Button "Session actions"
+Label "Ledger schema migration"
 Button "Revert"
 Button "Keep"
 Tab "claude" selected

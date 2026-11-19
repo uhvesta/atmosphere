@@ -33,11 +33,11 @@ Covers DS-56, DS-57, DS-58 in `workflow/milestones/DIFFVIEW-spec.md`. Mockup:
 | 7 | A plan for the review cannot be made. | The sheet says why, and submits nothing. | The plan is not sent. | Fakes only. `desktop/tests/native/pr_review.rs::a_plan_that_cannot_be_made_says_why_and_submits_nothing`. |
 | 8 | New commits land on `acme/api` #482 while the review is open. | A bar under the terminal says "2 new commits on the PR branch", with **Update the clone**. (DS-57) | `review_notices` (`ui/src/pages.rs:500-580`) draws `pr-new-commits` from `pr_heads.notice`. The bar sums new commits over open PRs. | Works (real daemon). `desktop/tests/live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive`. Also `desktop/tests/native/pr_session.rs::update_the_clone_sends_the_update_and_clears_the_notice` on fakes. |
 | 9 | Click **Update the clone**. | The bar goes. The clone is at the new head. While the update runs, the button is hidden. (DS-57) | `HeadsAction::UpdateClone` (`pages.rs:500-580`, the `updating` flag hides the button). | Works (real daemon). The same live test as step 8 runs the update. |
-| 10 | The PR branch is force-pushed. | The bar says "The PR branch was force-pushed", with **Update the clone**. (DS-57) | The bar text is `pages.rs` (`(0, _)` arm). The fake in `pr_session.rs` always sends `force_pushed: false` (`pr_session.rs:270`), so the force-push text is not tested in the UI. The daemon detects force pushes in `daemon/humatad/tests/pr_refresh.rs`. | Code, no test. The UI wording has no test. |
+| 10 | The PR branch is force-pushed. | The bar says "The PR branch was force-pushed", with **Update the clone**. (DS-57) | The bar text is `pages.rs` (`(0, _)` arm). The fake in `pr_session.rs` always sends `force_pushed: false` (`pr_session.rs:270`), so the force-push text is not tested in the UI. The daemon detects force pushes in `daemon/humatad/tests/pr_refresh.rs`. | Code, no test. `ui/src/pages.rs::review_notices` has the "The PR branch was force-pushed" arm (`(0, _)`). The native helper in `pr_session.rs` always sends `force_pushed: false`, so no UI test reaches it. The daemon detects force pushes in `daemon/humatad/tests/pr_refresh.rs`. |
 | 11 | A PR is merged. | A bar says "acme/ledger#91 was merged. Archive this review when you are done with it.", with **Archive**. (DS-57) | `review_notices` draws `pr-ended` for a closed or merged PR (`pages.rs:500-580`). Archive sends `HeadsAction::Archive`. | Works (real daemon). `desktop/tests/live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive`. Also `pr_session.rs::a_merged_pull_request_offers_archive` on fakes. |
-| 12 | Look for a Back button in the session's top bar. | There is no ‹ button at the start of the bar. The bar starts with the channel's name and the session's title. (DS-58) | `session_header` (`ui/src/pages.rs:129-200`) draws crumbs only. The top bar's Back (`ui/src/shell.rs:187-216`) is drawn only off sessions (`shell.rs:507`). | Not built. DV-18. |
-| 13 | Press ⌘[ in the session. | The app goes back to where I was before this session. | `cmd-[` is bound to `Back` (`ui/src/keys.rs:204`). | Code, no test. No test presses ⌘[ in a session. The spec says ⌘[ works (DS-58). |
-| 14 | Open a page that is not a session, and look at its top bar. | A ‹ button at the start, with the tooltip "Back  ⌘[". It is disabled when there is nowhere to go. (DS-58) | `top_bar` (`ui/src/shell.rs:187-216`) draws it with `can_go_back`. | Code, no test. |
+| 12 | Look for a Back button in the session's top bar. | There is no ‹ button at the start of the bar. The bar starts with the channel's name and the session's title. (DS-58) | `session_header` (`ui/src/pages.rs:129-200`) draws crumbs only. The top bar's Back (`ui/src/shell.rs:187-216`) is drawn only off sessions (`shell.rs:507`). | Fakes only. Built (DV-18, D848): the session header starts with the 24 pt ghost Back, tooltip "Back  ⌘[" (`ui/src/pages.rs`, id `session-back`). `desktop/tests/native/diff_full_screen.rs::a_session_page_has_a_back_button` checks it exists. |
+| 13 | Press ⌘[ in the session. | The app goes back to where I was before this session. | `cmd-[` is bound to `Back` (`ui/src/keys.rs:204`). | Code, no test. `cmd-[` is bound to `Back` (`ui/core/src/keys.rs`) and is in the ⌘/ sheet. No test presses ⌘[ in a session. |
+| 14 | Open a page that is not a session, and look at its top bar. | A ‹ button at the start, with the tooltip "Back  ⌘[". It is disabled when there is nowhere to go. (DS-58) | `top_bar` (`ui/src/shell.rs:187-216`) draws it with `can_go_back`. | Code, no test. `ui/src/shell.rs` (`back`) draws it with the tooltip "Back  ⌘[", disabled when there is nowhere to go. No test. |
 
 ## Branches
 
@@ -61,7 +61,7 @@ When the PR branch is force-pushed and it also has new commits, so `new_commits`
 I see only the commit count, "2 new commits on the PR branch". The force-push is not named.
 Expected: the bar says both things, so I know the history was rewritten and not only added to.
 Why: `review_notices` (`ui/src/pages.rs:500-580`) matches on `(commits, rewritten)`. The `(n, _)` arm ignores `rewritten`, and the force-push text is used only when there are no new commits (`(0, _)`).
-**Status:** Likely bug. `ui/src/pages.rs:500-580`. To confirm: send a head change with `force_pushed: true` and `new_commits: 2` through `HeadsAction::Pushed` in a native test, and read the bar's text.
+**Status:** Fakes only. Fixed by REVIEWUI batch 3: `review_notices` says "The PR branch was force-pushed with 2 new commits"; the notice is a `Status` with its words as its label (`pr_session.rs::a_force_push_with_new_commits_names_both`).
 
 ## Expected outcomes
 
@@ -78,13 +78,13 @@ Why: `review_notices` (`ui/src/pages.rs:500-580`) matches on `(commits, rewritte
 
 ## Status table
 
-Counts per tag: Works (real shell) 0; Works (real daemon) 4; Fakes only 8;
-Code, no test 3; Not built 1; Likely bug 1. Total 17 rows: 14 steps and 3
+Counts per tag: Works (real shell) 0; Works (real daemon) 4; Fakes only 11;
+Code, no test 2; Not built 0; Likely bug 0. Total 17 rows: 14 steps and 3
 branches.
 
 | Step or branch | Status | Evidence |
 |---|---|---|
-| 1 Submit review opens the sheet | Fakes only | `pr_review.rs::a_review_session_opens_submit_review_from_its_header`, `::pr_submit_review_frame_69` |
+| 1 Submit review opens the sheet | Fakes only | `pr_review.rs::a_review_session_opens_submit_review_from_its_header`, `::pr_submit_review_frame_69`; the footer button by `pr_session.rs::submit_review_in_the_footer_opens_the_sheet` |
 | 2 Drafts and summary per PR | Fakes only | `pr_review.rs::drafts_are_listed_per_pull_request_with_a_verdict_each`, `::the_agents_summary_shows_and_another_can_be_added` |
 | 3 Verdicts | Fakes only | `pr_review.rs::drafts_are_listed_per_pull_request_with_a_verdict_each` |
 | 4 Cancel | Fakes only | `pr_review.rs::cancel_closes_submit_review_without_posting` |
@@ -92,21 +92,20 @@ branches.
 | 6 Failed post keeps drafts | Fakes only | `pr_review.rs::a_failed_post_shows_its_error_on_its_card_and_keeps_its_drafts` |
 | 7 Plan cannot be made | Fakes only | `pr_review.rs::a_plan_that_cannot_be_made_says_why_and_submits_nothing` |
 | 8 New commits bar | Works (real daemon) | `live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive` |
-| 9 Update the clone | Works (real daemon) | the same live test |
-| 10 Force-push text | Code, no test | `pages.rs:500-580`; `pr_session.rs:270` always sends `force_pushed: false` |
-| 11 Merged PR offers Archive | Works (real daemon) | `live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive` |
-| 12 Back in the session header | Not built | DV-18; `pages.rs:129-200` |
-| 13 ⌘[ in a session | Code, no test | `keys.rs:204` |
-| 14 Back on other pages | Code, no test | `shell.rs:187-216` |
+| 9 Update the clone | Works (real daemon) | the same live test; `pr_session.rs::update_the_clone_sends_the_update_and_clears_the_notice` |
+| 10 Force-push text | Fakes only | `pr_session.rs::a_force_push_with_new_commits_names_both` (force-push alone and with commits) |
+| 11 Merged PR offers Archive | Works (real daemon) | `live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive`; `pr_session.rs::a_merged_pull_request_offers_archive` |
+| 12 Back in the session header | Fakes only | `diff_full_screen.rs::a_session_page_has_a_back_button` |
+| 13 ⌘[ in a session | Code, no test | `ui/core/src/keys.rs` (`cmd-[`) |
+| 14 Back on other pages | Code, no test | `ui/src/shell.rs` (`back`) |
 | Submit fails, then again | Fakes only | `pr_review.rs::a_failed_post_shows_its_error_on_its_card_and_keeps_its_drafts` |
 | No pull request, no Submit | Fakes only | `pr_review.rs::a_session_that_reviews_no_pull_request_has_no_submit_review` |
-| Force-push with new commits | Likely bug | `pages.rs:500-580` |
+| Force-push with new commits | Fakes only | `pr_session.rs::a_force_push_with_new_commits_names_both` |
 
 ## Gaps and likely bugs
 
-- **Not built, DV-18:** the ‹ Back button at the start of a session's top bar (DS-58). `session_header` (`ui/src/pages.rs:129-200`) draws crumbs only. The top bar's Back is drawn only off sessions (`ui/src/shell.rs:507`). ⌘[ works (`ui/src/keys.rs:204`) but has no test in a session.
-- **Likely bug:** a force-push with new commits shows only the commit count (`ui/src/pages.rs:500-580`, the `(n, _)` arm ignores `rewritten`). The person does not learn the history was rewritten. Confirm with a native test that sends `force_pushed: true` with `new_commits: 2`.
-- **Code, no test:** the force-push text on its own (`pages.rs`, the `(0, _)` arm). The native helper `moved` in `pr_session.rs` always sends `force_pushed: false` (`pr_session.rs:270`), so no UI test reaches it.
-- **Code, no test:** ⌘[ in a session, and the top bar's Back on other pages. No headless test presses either.
-- **Still a gap, §8 item 4:** Submit review in the session bar while the Diff panel is open (see case 11). This case uses the header button, which is the path frame 68 draws.
-- **Not proven live:** the bar on a real GitHub PR, and a force-push on a real PR. The live test uses the fake `gh`.
+- Fixed (REVIEWUI batch 3): a force-push that also adds commits names both (`ui/src/pages.rs::review_notices`; `pr_session.rs::a_force_push_with_new_commits_names_both`).
+- Cleared: Back in the session header (DV-18, D848). Submit review is in the footer and hidden from the session bar while the Diff shows (RV-1, case 11).
+- Code, no test: the force-push text on its own (the helper in `pr_session.rs` always sends `force_pushed: false`); ⌘[ in a session; the top bar's Back on other pages.
+- Not proven live: the bar on a real GitHub PR, and a force-push on a real PR. The live test uses the fake `gh`.
+- The step narratives for 1, 12 and 13 describe the 2026-11-18 code; only the Status cells and the counts were re-audited.

@@ -274,3 +274,198 @@ fn the_full_screen_file_list_counts_a_files_note_in_orange() {
     assert!(app.contains(&format!("change-file-notes {path}")));
     app.snapshot("stack-layer-counts-full");
 }
+
+/// One changed file: `added` lines in, `removed` out, at `tier`, with a few
+/// of its lines so the code shows.
+fn changed(path: &str, added: u32, removed: u32, tier: humata2_clients::model::FileTier) -> humata2_clients::model::FileDiff {
+    use humata2_clients::model::{DiffLine, FileDiff, LineKind};
+    let lines = (1..=added.min(5))
+        .map(|at| DiffLine {
+            kind: LineKind::Added,
+            old: None,
+            new: Some(at),
+            text: format!("line {at} of {path}"),
+        })
+        .collect();
+    FileDiff {
+        path: path.to_owned(),
+        added,
+        removed,
+        lines,
+        tier,
+        ..FileDiff::default()
+    }
+}
+
+/// `file` with these code lines: each is its kind ('+', '-', ' ' or '@'),
+/// old and new numbers, then the text.
+fn with_code(
+    mut file: humata2_clients::model::FileDiff,
+    lines: &[(char, Option<u32>, Option<u32>, &str)],
+) -> humata2_clients::model::FileDiff {
+    use humata2_clients::model::{DiffLine, LineKind};
+    file.lines = lines
+        .iter()
+        .map(|&(kind, old, new, text)| DiffLine {
+            kind: match kind {
+                '+' => LineKind::Added,
+                '-' => LineKind::Removed,
+                '@' => LineKind::Hunk,
+                _ => LineKind::Context,
+            },
+            old,
+            new,
+            text: text.to_owned(),
+        })
+        .collect();
+    file
+}
+
+/// Frame 119's zstd.rs: the codec's first lines.
+fn zstd() -> humata2_clients::model::FileDiff {
+    let line = |at: u32, text| ('+', None, Some(at), text);
+    with_code(
+        changed("src/codec/zstd.rs", 212, 0, humata2_clients::model::FileTier::Key),
+        &[
+            line(1, "use zstd::stream::{encode_all, decode_all};"),
+            line(2, ""),
+            line(3, "pub struct Zstd { level: i32 }"),
+            line(4, ""),
+            line(5, "impl Codec for Zstd {"),
+        ],
+    )
+}
+
+/// Frame 120's pages.rs: the hunk that writes through the codec.
+fn pages() -> humata2_clients::model::FileDiff {
+    with_code(
+        changed("src/journal/pages.rs", 148, 52, humata2_clients::model::FileTier::Key),
+        &[
+            ('@', None, None, "@@ -40,5 +40,6 @@ impl Page"),
+            (' ', Some(40), Some(40), "    pub fn write(&mut self, entry: &Entry) -> Result<()> {"),
+            ('-', Some(41), None, "        self.buf.extend_from_slice(&entry.bytes);"),
+            ('+', None, Some(41), "        let packed = self.codec.encode(&entry.bytes)?;"),
+            ('+', None, Some(42), "        self.buf.extend_from_slice(&packed);"),
+            (' ', Some(42), Some(43), "        self.len += 1;"),
+            (' ', Some(43), Some(44), "        Ok(())"),
+            (' ', Some(44), Some(45), "    }"),
+        ],
+    )
+}
+
+/// Frames 119 to 121's stack: api and web; 1 "codec" in both (web moved
+/// since it was sent), 2 "journal" in api, 3 "Not committed yet" in api.
+fn frame_app() -> App {
+    use humata2_clients::model::{FileTier, RepoDiff};
+    use humata2_clients::views::LayerDrift;
+    let (key, normal, skim) = (FileTier::Key, FileTier::Normal, FileTier::Skim);
+    let mut workspace = fixture::design_session(Status::Working);
+    for session in &mut workspace.sessions {
+        if session.id == ledger() {
+            session.repo = "acme/api".to_owned();
+        }
+    }
+    let repo = |name: &str, files| RepoDiff {
+        session: ledger(),
+        repo: name.to_owned(),
+        base: "main".to_owned(),
+        files,
+        comments: Vec::new(),
+    };
+    let api = vec![
+        zstd(),
+        pages(),
+        changed("src/journal/writer.rs", 61, 9, normal),
+        changed("Cargo.lock", 31, 0, skim),
+        changed("src/journal/mod.rs", 31, 0, skim),
+        changed("README.md", 3, 0, skim),
+    ];
+    let web = vec![changed("src/lib/codec.ts", 31, 6, key), changed("package-lock.json", 8, 0, skim)];
+    workspace.diffs.retain(|diff| diff.session != ledger());
+    workspace.diffs.push(repo("acme/api", api.clone()));
+    workspace.diffs.push(repo("acme/web", web.clone()));
+    let mut app = App::new(workspace);
+    let session = ledger();
+    let daemon = &app.fakes.daemon;
+    daemon.set_range_files(&session, "acme/api", "a0", "a1", vec![
+        zstd(),
+        changed("Cargo.lock", 31, 0, skim),
+        changed("codec.rs", 14, 0, skim),
+        changed("README.md", 3, 0, skim),
+    ]);
+    daemon.set_range_files(&session, "acme/web", "w0", "w1", web);
+    daemon.set_range_files(&session, "acme/api", "a1", "a2", vec![
+        pages(),
+        changed("src/journal/writer.rs", 61, 9, normal),
+        changed("Cargo.lock", 0, 0, skim),
+        changed("src/journal/mod.rs", 0, 0, skim),
+        changed("README.md", 0, 0, skim),
+    ]);
+    let range = |base: &str, head: &str| RepoBase::Range { base: base.to_owned(), head: head.to_owned() };
+    let main = |repo: &str| RepoDiffSpec { repo: repo.to_owned(), base: RepoBase::Branch("main".to_owned()) };
+    let mut web_part = part("acme/web", range("w0", "w1"), "acme/web#88", 2);
+    web_part.drift = Some(LayerDrift::Moved);
+    let stack = StackView {
+        layers: vec![
+            layer(
+                "codec",
+                "Adds the zstd codec to api and web",
+                vec![part("acme/api", range("a0", "a1"), "acme/api#412", 4), web_part],
+            ),
+            layer(
+                "journal",
+                "Writes journal pages through the codec",
+                vec![part("acme/api", range("a1", "a2"), "acme/api#413", 5)],
+            ),
+            layer(
+                "Not committed yet",
+                "Work still in the api worktree",
+                vec![part(
+                    "acme/api",
+                    RepoBase::Overlay { base: "a2".to_owned(), paths: vec![".".to_owned()] },
+                    "",
+                    1,
+                )],
+            ),
+        ],
+        whole: vec![main("acme/api"), main("acme/web")],
+    };
+    app.open("ledger", Panel::Journal);
+    app.fakes.views.offer_view(
+        &ledger(),
+        "Review plan: the stack",
+        "Three layers",
+        "Claude Code",
+        ViewContent::ReviewPlan(PlanView { stack: Some(stack), ..PlanView::default() }),
+    );
+    app.settle();
+    app.click("offer-open");
+    app.click("view-keep");
+    // The frames clip long lines; the person's wrap preference decides.
+    if app.ui.read(|state| state.review.wrap) {
+        app.send(AppAction::Review(humata2_review::ReviewAction::ToggleWrap));
+    }
+    app
+}
+
+/// Frames 119 to 121 drawn by the app: Whole stack, layer 2 with web left
+/// out, and layer 1 in dark with web moved and api's skim files open.
+#[test]
+fn the_stack_frames_as_the_app_draws_them() {
+    let mut app = frame_app();
+    app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    assert!(app.contains("stack-caption"));
+    assert!(app.contains("change-key acme/api/src/codec/zstd.rs"));
+    assert!(!app.contains("stack-drift-3-acme/web"), "Whole stack shows no drift");
+    app.snapshot("stack-whole");
+    app.click("stack-row-2");
+    assert!(app.contains("stack-untouched acme/web"));
+    assert!(app.contains("stack-next-layer"));
+    app.snapshot("stack-layer");
+    app.click("stack-row-3");
+    assert!(app.contains("stack-drift-3-acme/web"));
+    app.click("stack-skim acme/api");
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("stack-skim-drift");
+    app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+}

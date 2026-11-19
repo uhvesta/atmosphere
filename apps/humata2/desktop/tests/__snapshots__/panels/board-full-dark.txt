@@ -1,6 +1,6 @@
 Complementary "Board"
-  text "# api › Token refresh retry"
-  Button "Exit full screen"
+  Label "# api › Token refresh retry"
+  Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
   Button "Minimize window"

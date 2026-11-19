@@ -1,7 +1,7 @@
 Complementary "Changes"
-  text "# pr-reviews › acme/api #482"
+  Label "# pr-reviews › acme/api #482"
   Button "New agent tab"
-  Button "Exit full screen"
+  Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
   Button "Minimize window"
@@ -21,7 +21,7 @@ Complementary "Changes"
     text "src/"
   #review-diff
     #review-repo-acme/api
-      text "api"
+      Label "api"
       text "#482"
     ListBoxOption "acme/api/src/refund.rs" selected
       text "refund.rs"
@@ -62,7 +62,7 @@ Complementary "Changes"
         #change-code-3-0
           text "    refund.issue(cents)?;"
     #review-repo-acme/ledger
-      text "ledger"
+      Label "ledger"
       text "#91"
   Button "Submit review…"
   Label "4 drafts · 3 by claude, 1 by you"

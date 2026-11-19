@@ -51,7 +51,7 @@ Complementary "Changes"
     text "src/"
   #review-diff
     #review-repo-acme/api
-      text "api"
+      Label "api"
       text "#482"
     ListBoxOption "acme/api/src/refund.rs" selected
       text "refund.rs"
@@ -92,7 +92,7 @@ Complementary "Changes"
         #change-code-3-0
           text "    refund.issue(cents)?;"
     #review-repo-acme/ledger
-      text "ledger"
+      Label "ledger"
       text "#91"
   Button "Submit review…"
   Label "4 drafts · 3 by claude, 1 by you"
@@ -108,9 +108,10 @@ Toolbar "Session panels"
 Link "Open channel"
 Button "Back" description="Back  ⌘["
 Button "Fork"
-Button "Expand terminal"
+Button "Expand terminal" description="Expand terminal  ⇧⌘↩"
 Button "Toggle side panel"
 Button "Session actions"
+Label "acme/api #482"
 Tab "claude" selected
   Button "Close claude"
 Tab "zsh"
@@ -121,5 +122,5 @@ Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n>
   #terminal-replica
     #terminal-pane
       #terminal focused
-#pr-new-commits
+Status "2 new commits on the PR branch"
   Button "Update the clone"

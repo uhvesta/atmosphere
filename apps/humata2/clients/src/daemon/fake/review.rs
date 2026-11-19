@@ -233,9 +233,17 @@ fn one_repo_diff(
         RepoBase::Rev(rev) => (rev.clone(), Vec::new(), Vec::new()),
         RepoBase::ForkPoint => ("since fork".to_owned(), Vec::new(), Vec::new()),
         RepoBase::Uncommitted => ("uncommitted changes".to_owned(), Vec::new(), Vec::new()),
-        // The fixture models no history between revs: a range is empty, and
-        // an overlay is the changes on disk.
-        RepoBase::Range { base, head } => (format!("{base}..{head}"), Vec::new(), Vec::new()),
+        // A range has the files a test set for it, none otherwise; an
+        // overlay is the changes on disk.
+        RepoBase::Range { base, head } => {
+            let range = format!("{base}..{head}");
+            let files = inner
+                .ranges
+                .get(&(session.clone(), repo.to_owned(), range.clone()))
+                .cloned()
+                .unwrap_or_default();
+            (range, files, Vec::new())
+        }
         RepoBase::Overlay { base, .. } => (
             format!("{base} and uncommitted changes"),
             own_files,

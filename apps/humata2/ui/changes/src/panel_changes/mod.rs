@@ -184,6 +184,9 @@ pub fn changes(
     let crumbs_hidden = shown_looked && crumbs_hidden_narrow;
     // D800: the stack's rows send through this.
     let stack_send = crate::panel_stack::sender(ui);
+    // Whether a stack shows (D800): its file header, list and footer follow
+    // frames 119 to 121.
+    let stacked = review.is_none() && crate::panel_stack::header_line(&state.review).is_some();
     // DS-84: while the file list has focus, the row at the keyboard cursor wears a ring.
     let cursor = session_id
         .as_ref()
@@ -577,11 +580,17 @@ pub fn changes(
                     .border_y_1()
                     .border_color(rgb(look.line))
                     .text_size(px(12.))
-                    .child(icon(IconName::FileCode, look.secondary, 12.))
+                    .when(!stacked, |header| header.child(icon(IconName::FileCode, look.secondary, 12.)))
                     .child({
                         // `repo · dir/name`: the directory gives way first and
                         // the name stays; the block ends before "Open in editor".
                         let (dir, file_name) = split_path(&file.path);
+                        // A stack names a repository by its last part, as its rows do.
+                        let shown_repo = if stacked {
+                            crate::panel_stack::stack_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()))
+                        } else {
+                            repo_label(&diff.repo)
+                        };
                         row()
                             .flex_1()
                             .min_w_0()
@@ -591,14 +600,14 @@ pub fn changes(
                             // the name stays: no stubs of the crumbs.
                             .when(!crumbs_hidden, |line| {
                                 line.child(full_text(
-                                secondary(look, repo_label(&diff.repo).to_owned())
+                                secondary(look, shown_repo.to_owned())
                                     .id("diff-file-header-repo")
                                     .flex_shrink_0()
                                     .max_w(relative(0.25))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis(),
-                                repo_label(&diff.repo).to_owned(),
+                                shown_repo.to_owned(),
                             ))
                             // The "·" stays when the repo itself ends in "…".
                             .child(secondary(look, "·").flex_shrink_0())
@@ -626,8 +635,9 @@ pub fn changes(
                                 file_name.to_owned(),
                             ))
                     })
-                    // The switch does nothing on a file with no code lines.
-                    .when(coded, |header| header.child(wrap_switch(ui, look, wrap)))
+                    // The switch does nothing on a file with no code lines. A
+                    // stack's header leaves it to ⌥Z (frames 119 to 121).
+                    .when(coded && !stacked, |header| header.child(wrap_switch(ui, look, wrap)))
                     .when(stepper, |header| {
                         header.child(change_stepper(ui, look, change, changes))
                     })
@@ -642,11 +652,13 @@ pub fn changes(
                                 .text_color(rgb(LOOK_GREEN)),
                         )
                     })
-                    .when(!bar, |header| header.child(open_in_editor(look))),
+                    .when(!bar && !stacked, |header| header.child(open_in_editor(look)))
+                    .when(!bar && stacked, |header| header.child(open_in_editor_words(look))),
             )
             // With no code lines the note is the body, so it isn't said twice.
             .children(note.filter(|_| coded).map(|note| {
-                secondary(look, note)
+                let whole = note.clone();
+                let line = secondary(look, note)
                     .id("change-file-note")
                     .test_support()
                     .flex_shrink_0()
@@ -655,7 +667,8 @@ pub fn changes(
                     .py(px(4.))
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
+                    .text_ellipsis();
+                full_text(line, whole)
             }))
             .child(code)
         })
@@ -688,6 +701,12 @@ pub fn changes(
         .as_ref()
         .is_some_and(|id| state.review.compares_per_repo(id));
     let toggle = ui.clone();
+    // The base chip's words: its label, and what its hover shows.
+    let base_chip = if per_repo {
+        "Comparing per repo".to_owned()
+    } else {
+        format!("Against {base}")
+    };
     let head = diff_header(
             ui,
             state,
@@ -697,15 +716,9 @@ pub fn changes(
                     div()
                         .relative()
                         .min_w_0()
-                        .child(
+                        .child(full_text(
                             row()
                                 .id("diff-base")
-                                .role(Role::Button)
-                                .aria_label(if per_repo {
-                                    "Comparing per repo".to_owned()
-                                } else {
-                                    format!("Against {base}")
-                                })
                                 .gap(px(6.))
                                 .min_w_0()
                                 .px(px(9.))
@@ -746,7 +759,9 @@ pub fn changes(
                                     )
                                 })
                                 .test_support(),
+                            base_chip,
                         )
+                        .role(Role::Button))
                         .when(menu_open, |wrap| {
                             // Deferred, so the menu paints over the panel and
                             // takes the clicks there; the scrim first, then the menu.
@@ -863,8 +878,11 @@ pub fn changes(
                                 .border_color(rgb(look.line))
                         })
                         // Narrow: the list takes at most 220 pt, so the code
-                        // below keeps the rest of the panel.
-                        .when(!full, |files| files.flex_shrink_0().max_h(px(220.)))
+                        // below keeps the rest of the panel. A stack's list
+                        // carries its repository heads too (frame 121).
+                        .when(!full, |files| {
+                            files.flex_shrink_0().max_h(px(if stacked { 240. } else { 220. }))
+                        })
                         .child(list)
                         .into_any_element(),
                     ),
@@ -879,7 +897,8 @@ pub fn changes(
         .children((!roomy).then(|| {
             let status = looks_status_el();
             let button = looks_button_el();
-            (review.is_none() && session_id.is_some()).then(|| {
+            // A stack's footer holds Looks good itself (frames 120, 121).
+            (review.is_none() && !stacked && session_id.is_some()).then(|| {
                 row()
                     .id("diff-looks-bar")
                     .test_support()
@@ -906,6 +925,21 @@ pub fn changes(
                 .border_color(rgb(look.line))
                 .flex_shrink_0()
                 .child(match (review, session_id.as_ref()) {
+                    // Frames 119 to 121: Whole stack counts its pull requests,
+                    // a layer steps to the layers beside it.
+                    (None, Some(_)) if stacked => {
+                        let links = crate::panel_stack::footer_links(&state.review, look, &stack_send, roomy)
+                            .unwrap_or_default();
+                        row()
+                            .gap(px(12.))
+                            .children(links)
+                            .when(state.review.push_menu && !diffs.is_empty(), |wrap| {
+                                wrap.relative()
+                                    .child(deferred(push_scrim(ui)))
+                                    .child(deferred(push_menu(ui, state, look, &diffs)))
+                            })
+                            .into_any_element()
+                    }
                     (Some(_), Some(id)) => {
                         let (agent, you) = github_draft_counts(state, id);
                         // The id carries the counts the line shows. The
@@ -1012,12 +1046,21 @@ pub fn changes(
                 // D852: what was looked at in the view shown, then the drafts,
                 // and Looks good, left of Send. Beside the terminal the panel is
                 // too narrow for them and the buttons, so they take a row above.
-                .children(looks_status_el().filter(|_| roomy))
-                .children(looks_button_el().filter(|_| roomy))
+                .children(looks_status_el().filter(|_| roomy && !stacked))
+                // A stack's layer is looked at as one (D852); Whole stack sends.
+                .children(looks_button_el().filter(|_| {
+                    if stacked { !crate::panel_stack::whole_picked(&state.review) } else { roomy }
+                }))
                 // The plain Diff always shows Send, neutral and disabled when
                 // nothing waits. A pull request review shows it only when a
                 // draft waits, as a secondary button left of Submit review….
-                .when_some(session_id.clone().filter(|_| review.is_none() || sendable > 0), |footer, session| {
+                .when_some(session_id.clone().filter(|_| {
+                    if stacked {
+                        crate::panel_stack::whole_picked(&state.review) || sendable > 0
+                    } else {
+                        review.is_none() || sendable > 0
+                    }
+                }), |footer, session| {
                     let agent = state
                         .workspace
                         .session(&session)

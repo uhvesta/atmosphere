@@ -1,7 +1,7 @@
 Complementary "Changes"
-  text "# payments-rewrite › Ledger schema migration"
+  Label "# payments-rewrite › Ledger schema migration"
   Button "New agent tab"
-  Button "Exit full screen"
+  Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
   Button "Minimize window"
@@ -10,42 +10,46 @@ Complementary "Changes"
   #stack-header
     text "Whole stack · 3 layers"
   #stack-top
+    #stack-caption
+      text "STACK · 3 LAYERS"
     ListBox "Layers"
       ListBoxOption "Whole stack" selected
         #stack-row-picked
           text "Whole stack"
-          text ""
           Label "2 repos · 3 files"
           #stack-row-counts-0
             text "1 draft · 1 note"
+          #stack-row-badge-0
       ListBoxOption "Layer 3: Not committed yet"
         #stack-row-head-1
           text "Not committed yet"
-          text "3"
           Label "api"
+          #stack-row-badge-1
       ListBoxOption "Layer 2: journal"
         #stack-row-head-2
           text "journal"
-          text "2"
           Label "api"
+          #stack-row-badge-2
       ListBoxOption "Layer 1: codec"
         #stack-row-head-3
           text "codec"
-          text "1"
           Label "api · web"
+          #stack-row-badge-3
   #changes-files
-    text "ledger"
-    Button "ledger: against main" collapsed
-      text "against"
-      text "main"
-    text "acme/ledger"
-    Button "acme/ledger: against main" collapsed
-      text "against"
-      text "main"
-    text "acme/api"
-    Button "acme/api: against main" collapsed
-      text "against"
-      text "main"
+    #repo-row-0
+      #repo-name-0
+        text "ledger"
+      #repo-base-0
+        text "against main"
+    #repo-row-1
+      Button "Collapse acme/ledger"
+      #repo-name-1
+        text "acme/ledger"
+      #repo-base-1
+        text "against main"
+      #repo-totals-1
+        text "+41"
+        text "−0"
     ListBoxOption "acme/ledger/migrations/0042_accounts.sql" selected
       #change-file-name acme/ledger/migrations/0042_accounts.sql
         text "0042_accounts.sql"
@@ -55,6 +59,15 @@ Complementary "Changes"
       text "+41"
       text "−0"
       CheckBox "Not looked at"
+    #repo-row-2
+      Button "Collapse acme/api"
+      #repo-name-2
+        text "api"
+      #repo-base-2
+        text "against main"
+      #repo-totals-2
+        text "+143"
+        text "−24"
     ListBoxOption "acme/api/src/client.rs"
       #change-file-name acme/api/src/client.rs
         text "client.rs"
@@ -71,14 +84,11 @@ Complementary "Changes"
       text "−3"
       CheckBox "Not looked at"
   text "0042_accounts.sql"
-  Button "Open in editor" description="Open in editor"
   text "acme/ledger"
   text "·"
   text "migrations/"
+  Button "Open in editor"
   #change-file-empty
     text "The changed lines aren't available"
-  Button "Looks good"
   Button "Send to claude"
-  Label "0 of 3 files looked at · 1 draft · 1 note"
-  Button "Push & PR…"
-  Button "Add repo…"
+  Button "3 pull requests open"

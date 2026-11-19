@@ -301,10 +301,15 @@ pub fn header_with(
                     .flex_shrink(1.)
                     .whitespace_nowrap()
                     .children(line.map(|line| {
-                        secondary(look, line)
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
+                        crate::full_text::full_text(
+                            secondary(look, line.clone())
+                                .id("panel-session-line")
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis(),
+                            line,
+                        )
+                        .test_support()
                     }))
                     .child(
                         row()
@@ -323,14 +328,17 @@ pub fn header_with(
             .children(actions.map(|actions| actions.flex_shrink_0()))
             // UXSIMPLE 2-2: the way back says what it does, and the panel
             // can close from full screen too (owner's mark).
-            .child(panel_action(
-                ui,
-                "show-terminal",
-                "Exit full screen",
-                AppAction::Session(SessionAction::ToggleWiden),
-                look,
-                false,
-            ))
+            .child(
+                panel_action(
+                    ui,
+                    "show-terminal",
+                    "Exit full screen",
+                    AppAction::Session(SessionAction::ToggleWiden),
+                    look,
+                    false,
+                )
+                .tooltip("Exit full screen  ⌃⌘↩"),
+            )
             .child(icon_action(
                 ui,
                 "close-panel",

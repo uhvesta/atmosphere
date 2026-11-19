@@ -1,0 +1,186 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" selected expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482"
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #panel-header
+    text "Diff"
+    #stack-header
+      text "Whole stack · 3 layers"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  #stack-top
+    #stack-caption
+      text "STACK · 3 LAYERS"
+    ListBox "Layers"
+      ListBoxOption "Whole stack" selected
+        #stack-row-picked
+          text "Whole stack"
+          Label "2 repos · 8 files"
+          #stack-row-badge-0
+      ListBoxOption "Layer 3: Not committed yet"
+        #stack-row-head-1
+          text "Not committed yet"
+          Label "api"
+          #stack-row-badge-1
+      ListBoxOption "Layer 2: journal"
+        #stack-row-head-2
+          text "journal"
+          Label "api"
+          #stack-row-badge-2
+      ListBoxOption "Layer 1: codec"
+        #stack-row-head-3
+          text "codec"
+          Label "api · web"
+          #stack-row-badge-3
+  #changes-files
+    #repo-row-0
+      Button "Collapse acme/api"
+      #repo-name-0
+        text "api"
+      #repo-base-0
+        text "against main"
+      #repo-totals-0
+        text "+486"
+        text "−61"
+    ListBoxOption "acme/api/src/codec/zstd.rs" selected
+      #change-file-name acme/api/src/codec/zstd.rs
+        text "zstd.rs"
+      text "src/codec/"
+      text "+212"
+      text "−0"
+      "Key file"
+        text "key"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/journal/pages.rs"
+      #change-file-name acme/api/src/journal/pages.rs
+        text "pages.rs"
+      text "src/journal/"
+      text "+148"
+      text "−52"
+      "Key file"
+        text "key"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/journal/writer.rs"
+      #change-file-name acme/api/src/journal/writer.rs
+        text "writer.rs"
+      text "src/journal/"
+      text "+61"
+      text "−9"
+      CheckBox "Not looked at"
+    Button "3 files to skim · Cargo.lock, mod.rs, README.md" collapsed
+    #repo-row-1
+      Button "Collapse acme/web"
+      #repo-name-1
+        text "web"
+      #repo-base-1
+        text "against main"
+      #repo-totals-1
+        text "+39"
+        text "−6"
+    ListBoxOption "acme/web/src/lib/codec.ts"
+      #change-file-name acme/web/src/lib/codec.ts
+        text "codec.ts"
+      text "src/lib/"
+      text "+31"
+      text "−6"
+      "Key file"
+        text "key"
+      CheckBox "Not looked at"
+    Button "1 file to skim · package-lock.json" collapsed
+  text "zstd.rs"
+  text "api"
+  text "·"
+  text "src/codec/"
+  Button "Open in editor"
+  Code "acme/api/src/codec/zstd.rs"
+    #change-line-0
+      Button "Comment on line 1"
+        text "1"
+      text "+"
+      #change-code-0-0
+        text "use zstd::stream::{encode_all, decode_all};"
+    #change-line-1
+      Button "Comment on line 2"
+        text "2"
+      text "+"
+      #change-code-1-0
+        text ""
+    #change-line-2
+      Button "Comment on line 3"
+        text "3"
+      text "+"
+      #change-code-2-0
+        text "pub struct Zstd { level: i32 }"
+    #change-line-3
+      Button "Comment on line 4"
+        text "4"
+      text "+"
+      #change-code-3-0
+        text ""
+    #change-line-4
+      Button "Comment on line 5"
+        text "5"
+      text "+"
+      #change-code-4-0
+        text "impl Codec for Zstd {"
+  Button "Send to claude" disabled
+  Button "3 pull requests open"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 1"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Back" description="Back  ⌘["
+Button "Fork"
+Button "Expand terminal" description="Expand terminal  ⇧⌘↩"
+Button "Toggle side panel"
+Button "Session actions"
+Label "Ledger schema migration"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+#terminal-peers-0
+  text "1 other can type here"
+Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

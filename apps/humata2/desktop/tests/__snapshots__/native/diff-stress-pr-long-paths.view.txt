@@ -51,7 +51,7 @@ Complementary "Changes"
     text "·"
   #review-diff
     #review-repo-acme/api
-      text "api"
+      Label "api"
       text "#482"
     ListBoxOption "acme/api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs" selected
       text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
@@ -79,9 +79,10 @@ Toolbar "Session panels"
 Link "Open channel"
 Button "Back" description="Back  ⌘["
 Button "Fork"
-Button "Expand terminal"
+Button "Expand terminal" description="Expand terminal  ⇧⌘↩"
 Button "Toggle side panel"
 Button "Session actions"
+Label "acme/api #482"
 Tab "claude" selected
   Button "Close claude"
 Tab "zsh"

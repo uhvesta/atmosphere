@@ -146,6 +146,7 @@ pub(super) fn file_row(
     let ui = ui.clone();
     let repo = diff.repo.clone();
     let path = file.path.clone();
+    let label = format!("{repo}/{path}");
     let comments = file_comments(state, diff, &file.path);
     let notes = file_notes(state, diff, &file.path);
     let done = file_done(state, diff, &file.path);
@@ -184,9 +185,12 @@ pub(super) fn file_row(
                 anchor,
             )
         });
+    // Frames 119 to 121: a stack's rows sit 24 pt apart, with a smaller,
+    // quieter circle.
+    let stacked = crate::panel_stack::header_line(&state.review).is_some();
     let tick = (!short && !reviewing(state, &diff.session)).then(|| {
         let seen = humata2_review::looks::file_look(&state.review, &diff.session, &repo, &path, file);
-        look_tick(&ui, look, &repo, &path, seen)
+        look_tick(&ui, look, &repo, &path, seen, stacked)
     });
     // The inline pull request review (`short`) has no Looks good (D852), so
     // its file row leads with the file glyph where the tick would stand, and
@@ -220,16 +224,14 @@ pub(super) fn file_row(
                         .text_color(rgb(color))
                 }))
         }.into_any_element();
-    row()
+    let row_el = row()
         .id(SharedString::from(format!("change-file {repo}/{path}")))
         .group(group.clone())
         .relative()
-        .role(Role::ListBoxOption)
-        .aria_label(format!("{repo}/{path}"))
         .aria_selected(on)
         .test_support()
         .gap(px(6.))
-        .h(px(if short { 24. } else { 25. }))
+        .h(px(if short || stacked { 24. } else { 25. }))
         // One level in: the file icon sits under the repo's
         // folder icon and its name under the repo name
         // (repo row: 4 inset + 12 chevron + 6 gap = 22).
@@ -258,10 +260,6 @@ pub(super) fn file_row(
                 .flex_1()
                 .min_w_0()
                 .gap(px(6.))
-                .when(
-                    crate::panel_stack::tier_of(&state.review, diff, file) == humata2_review::stack::Tier::Key,
-                    |line| line.child(crate::panel_stack::key_dot(look, &diff.repo, &file.path)),
-                )
                 .child(
                     text(name.to_owned())
                         .id(SharedString::from(format!("change-file-name {repo}/{path}")))
@@ -288,6 +286,11 @@ pub(super) fn file_row(
                 .into_any_element()
         })
         .child(mark)
+        // DS-67: a key file's chip stands before its counts.
+        .when(
+            !short && crate::panel_stack::tier_of(&state.review, diff, file) == humata2_review::stack::Tier::Key,
+            |row| row.child(crate::panel_stack::key_chip(look, format!("change-key {}/{}", diff.repo, file.path))),
+        )
         .when_some(done.filter(|_| !short), |row, done| {
             row.child(
                 text(format!("✓ {done} done"))
@@ -350,7 +353,9 @@ pub(super) fn file_row(
                 }),
                 cx,
             )
-        })
+        });
+    // The row's role is ListBoxOption, which wins over the label's role.
+    full_text(row_el, label).role(Role::ListBoxOption)
 }
 
 /// The green of a look (D852, UXSIMPLE frames 3-2 to 4-3).
@@ -368,6 +373,7 @@ fn look_tick(
     repo: &str,
     path: &str,
     seen: humata2_review::looks::FileLook,
+    quiet: bool,
 ) -> impl IntoElement {
     use humata2_review::looks::FileLook;
     let ui = ui.clone();
@@ -381,7 +387,7 @@ fn look_tick(
             FileLook::Changed => "Changed since you looked",
         })
         .test_support()
-        .size(px(14.))
+        .size(px(if quiet { 13. } else { 14. }))
         .flex_shrink_0()
         .rounded_full()
         .flex()
@@ -394,7 +400,9 @@ fn look_tick(
             FileLook::Looked => tick
                 .bg(rgb(LOOK_GREEN))
                 .child(icon(IconName::Check, 0xffffff, 9.)),
-            FileLook::Never => tick.border_1().border_color(rgb(look.tertiary)),
+            FileLook::Never => tick
+                .border_1()
+                .border_color(rgb(if quiet { look.line } else { look.tertiary })),
             // A 1.5 pt amber ring on the pale amber fill.
             FileLook::Changed => tick
                 .border(px(1.5))
@@ -549,6 +557,22 @@ pub(super) fn open_in_editor(look: Look) -> Button {
         .icon(icon(IconName::ArrowUpRight, look.secondary, 12.))
         .tooltip("Open in editor")
         .accessibility_label("Open in editor")
+}
+
+/// Open in editor in words, quiet, for a stack's file header (frames 119 to
+/// 121); inert, like the icon.
+pub(super) fn open_in_editor_words(look: Look) -> Quiet {
+    Quiet {
+        button: Button::new("change-open-editor")
+            .small()
+            .h(px(18.))
+            .text_size(px(11.5))
+            .label("Open in editor")
+            .accessibility_label("Open in editor")
+            .flex_shrink_0(),
+        color: look.secondary,
+        fill: look.fill,
+    }
 }
 
 /// Wrap / Scroll for a file's header (DS-40): it flips the preference

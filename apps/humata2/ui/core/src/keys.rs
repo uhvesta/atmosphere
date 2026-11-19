@@ -308,9 +308,12 @@ fn bindings() -> Vec<KeyBinding> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use gpui_kit::{Keystroke, OperatingSystem};
+    use gpui_kit::{Action, Keystroke, OperatingSystem};
 
-    use super::{SHORTCUTS, bindings, label, off_mac};
+    use super::{
+        Back, NextChange, NextFile, NextLayer, PanelFullScreen, PrevChange, PrevFile, PrevLayer,
+        SHORTCUTS, TerminalFullScreen, ToggleDiffWrap, bindings, label, off_mac,
+    };
 
     /// A chord as a Mac label writes it: ⌃⌥⇧⌘, then the key.
     fn mac_glyphs(keystroke: &Keystroke) -> String {
@@ -461,6 +464,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// RV-5: every key the Diff answers to is on the Shortcuts sheet, as a
+    /// Mac writes it.
+    #[test]
+    fn every_diff_key_is_in_the_shortcuts_sheet() {
+        let diff_actions = [
+            Back::name_for_type(),
+            NextFile::name_for_type(),
+            PrevFile::name_for_type(),
+            NextChange::name_for_type(),
+            PrevChange::name_for_type(),
+            NextLayer::name_for_type(),
+            PrevLayer::name_for_type(),
+            PanelFullScreen::name_for_type(),
+            TerminalFullScreen::name_for_type(),
+            ToggleDiffWrap::name_for_type(),
+        ];
+        let mut checked = 0;
+        for binding in bindings() {
+            if !diff_actions.contains(&binding.action().name()) {
+                continue;
+            }
+            for written in binding.keystrokes() {
+                let glyphs = mac_glyphs(written.inner());
+                let listed = SHORTCUTS
+                    .iter()
+                    .any(|(keys, _)| keys.split(' ').any(|part| part == glyphs.as_str()));
+                assert!(listed, "{glyphs} is on the shortcuts sheet");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 10, "the diff's keys were checked: {checked}");
     }
 
     #[test]

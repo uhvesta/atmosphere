@@ -4,7 +4,7 @@
 //! action to ask the agent to send it again.
 //!
 //! The Diff panel draws [`stack_top`] above its files, [`header_line`] in
-//! its header, [`skim_row`] at the end of each repository and [`key_dot`] on
+//! its header, [`skim_row`] at the end of each repository and [`key_chip`] on
 //! key files, hides its base picker when [`hides_base_picker`] says so, and
 //! takes the layer keys through [`stack_keys`]. This file only draws and
 //! sends [`ReviewAction`]s.
@@ -150,7 +150,8 @@ fn stack_row(
             format!("{number}"),
             format!("Layer {number}: {}", entry.title),
         ),
-        None => (String::new(), "Whole stack".to_owned()),
+        // Whole stack's badge is the ≡ mark (frame 119).
+        None => ("\u{2261}".to_owned(), "Whole stack".to_owned()),
     };
     let title = if entry.number.is_some() {
         entry.title.clone()
@@ -162,7 +163,7 @@ fn stack_row(
     // About how wide the parts draw, in points: the row's inside less the
     // number column, the title (semibold 6.7 a character) and the status
     // (5.7), with the gaps between them.
-    let inside = width - 34. - 18.;
+    let inside = width - 34. - 22.;
     let title_w = title.chars().count() as f32 * 6.7;
     let counts = layer_counts(review, comments, entry);
     let has_counts = counts.is_some();
@@ -180,12 +181,7 @@ fn stack_row(
         .gap(px(6.))
         .h(px(ROW_HEIGHT - 1.))
         .whitespace_nowrap()
-        .child(
-            secondary(look, name)
-                .w(px(12.))
-                .flex_shrink_0()
-                .text_color(rgb(look.tertiary)),
-        )
+        .child(badge(look, index, &name, on))
         .child(
             text(title)
                 .flex_shrink_0()
@@ -225,7 +221,7 @@ fn stack_row(
             secondary(look, entry.purpose.clone())
                 .id("stack-row-purpose")
                 .test_support()
-                .pl(px(18.))
+                .pl(px(22.))
                 .pb(px(4.)),
         );
     }
@@ -243,9 +239,35 @@ fn stack_row(
             click(AppAction::Review(ReviewAction::PickLayer(target.clone())), cx);
         })
         .child(body);
-    col().child(picked_row).children(entry.drifted.iter().map(|repo| {
-        drifted_line(look, index, &entry.title, repo, send)
-    }))
+    col().child(picked_row)
+}
+
+/// A row's round number (frames 119 to 121): 16 pt, a thin ring with the
+/// number in tertiary, or filled with the accent and a white number once
+/// picked. Whole stack's reads ≡.
+fn badge(look: Look, index: usize, number: &str, on: bool) -> impl IntoElement {
+    let badge = div()
+        .id(SharedString::from(format!("stack-row-badge-{index}")))
+        .test_support()
+        .size(px(16.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_size(px(10.))
+        .child(number.to_owned());
+    if on {
+        badge
+            .bg(rgb(look.accent))
+            .text_color(rgb(0xffffff))
+            .font_weight(FontWeight::SEMIBOLD)
+    } else {
+        badge
+            .border_1()
+            .border_color(rgb(look.line))
+            .text_color(rgb(look.tertiary))
+    }
 }
 
 /// "web moved since it was sent", with its one action (DS-65).
@@ -335,25 +357,42 @@ fn drifted_line(look: Look, index: usize, layer: &str, repo: &str, send: &Sender
         layer: layer.to_owned(),
         repo: repo.to_owned(),
     };
+    // A filled box under the list (frame 121); the button wraps under the
+    // line when the two don't fit side by side.
     row()
         .id(SharedString::from(format!("stack-drift-{index}-{repo}")))
         .test_support()
-        .gap(px(8.))
-        .pl(px(28.))
-        .pr(px(8.))
-        .py(px(2.))
+        .flex_wrap()
+        .justify_between()
+        .gap(px(6.))
+        .px(px(8.))
+        .py(px(5.))
+        .my(px(2.))
+        .rounded(px(6.))
+        .bg(rgb(look.card))
         .child(
             secondary(look, format!("{short} moved since it was sent"))
-                .flex_1()
-                .min_w_0(),
+                .text_size(px(12.))
+                .whitespace_nowrap(),
         )
         .child(
-            widgets::push(
+            // The footer's grey button with a hairline (frame 121).
+            widgets::push_quiet_shape(
                 SharedString::from(format!("stack-send-again-{index}-{repo}")),
                 "Ask the agent to send it again",
+                look,
             )
+            .border_1()
             .on_click(move |_, _, cx| send(AppAction::Review(ask.clone()), cx)),
         )
+}
+
+/// How a stack names `repo` beside the others in `all`: `web` for
+/// `acme/web`, or the whole name when another repository ends the same way.
+pub fn stack_repo_name<'a, 'b>(repo: &'a str, all: impl IntoIterator<Item = &'b str>) -> &'a str {
+    let short = short_repo(repo);
+    let clash = all.into_iter().any(|other| other != repo && short_repo(other) == short);
+    if clash { repo.strip_prefix('/').unwrap_or(repo) } else { short }
 }
 
 /// `web` for `acme/web`.
@@ -368,8 +407,23 @@ pub fn untouched_line(look: Look, repo: &str) -> impl IntoElement {
     secondary(look, format!("{} isn't in this layer", short_repo(repo)))
         .id(SharedString::from(format!("stack-untouched {repo}")))
         .test_support()
-        .px(px(8.))
+        .text_size(px(12.))
+        .text_color(rgb(look.tertiary))
+        // Under the file names: 22 pt in, the 14 pt tick and its 6 pt gap.
+        .pl(px(42.))
+        .pr(px(8.))
         .py(px(2.))
+}
+
+/// The quiet lines that end the file list while a layer is picked: one for
+/// each repository of the session the layer doesn't touch (DS-63).
+pub fn untouched_lines(review: &ReviewState, look: Look) -> Vec<AnyElement> {
+    review.stack_rows().map_or_else(Vec::new, |rows| {
+        rows.untouched_repos
+            .iter()
+            .map(|repo| untouched_line(look, repo).into_any_element())
+            .collect()
+    })
 }
 
 /// Everything a stack draws above the Diff panel's files: the layer list,
@@ -397,8 +451,31 @@ pub fn stack_top(
             .px(px(8.))
             .pt(px(8.))
             .gap(px(2.))
+            .child(
+                text(format!(
+                    "STACK \u{b7} {} {}",
+                    rows.rows.len().saturating_sub(1),
+                    if rows.rows.len() == 2 { "LAYER" } else { "LAYERS" }
+                ))
+                .id("stack-caption")
+                .test_support()
+                .px(px(8.))
+                .pb(px(4.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(look.secondary)),
+            )
             .child(stack_list(look, review, comments, &rows, &list_scroll(), send, width))
-            .children(rows.untouched_repos.iter().map(|repo| untouched_line(look, repo)))
+            // DS-65: the picked layer's moved repositories, under the list
+            // (frame 121; Whole stack and the other layers draw none).
+            .children(rows.rows.iter().enumerate().filter(|(index, entry)| *index == rows.picked && entry.number.is_some()).flat_map(
+                |(index, entry)| {
+                    entry
+                        .drifted
+                        .iter()
+                        .map(move |repo| drifted_line(look, index, &entry.title, repo, send))
+                },
+            ))
             .when_some(failed, |top, error| {
                 top.child(
                     secondary(look, format!("Couldn't ask the agent: {error}"))
@@ -409,6 +486,59 @@ pub fn stack_top(
             })
             .into_any_element(),
     )
+}
+
+/// A quiet accent link of the stack's footer.
+fn footer_link(look: Look, id: &'static str, words: String, action: ReviewAction, send: &Sender) -> AnyElement {
+    let send = send.clone();
+    text(words.clone())
+        .id(id)
+        .role(Role::Button)
+        .aria_label(words)
+        .test_support()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .text_size(px(12.))
+        .text_color(rgb(look.accent))
+        .cursor_pointer()
+        .on_click(move |_, _, cx| send(AppAction::Review(action.clone()), cx))
+        .into_any_element()
+}
+
+/// The left of a stack's footer (frames 119 to 121): with Whole stack
+/// picked, "3 pull requests open", which opens the push menu (nothing when
+/// the stack has none); with a layer picked, Previous and Next layer. `wide`
+/// (full screen) spells out "Previous layer". `None` when no stack shows.
+pub fn footer_links(review: &ReviewState, look: Look, send: &Sender, wide: bool) -> Option<Vec<AnyElement>> {
+    let rows = review.stack_rows()?;
+    let picked = rows.rows.get(rows.picked)?;
+    if picked.number.is_none() {
+        // The open pull requests, or Push & PR when none is open yet; both
+        // open the push menu.
+        let open = picked.pull_requests.len();
+        let (id, words) = if open > 0 {
+            let noun = if open == 1 { "request" } else { "requests" };
+            ("stack-pull-requests", format!("{open} pull {noun} open"))
+        } else {
+            ("stack-push", "Push & PR\u{2026}".to_owned())
+        };
+        return Some(vec![footer_link(look, id, words, ReviewAction::TogglePushMenu, send)]);
+    }
+    Some(vec![
+        footer_link(
+            look,
+            "stack-prev-layer",
+            if wide { "\u{2039} Previous layer" } else { "\u{2039} Previous" }.to_owned(),
+            ReviewAction::PrevLayer,
+            send,
+        ),
+        footer_link(look, "stack-next-layer", "Next layer \u{203a}".to_owned(), ReviewAction::NextLayer, send),
+    ])
+}
+
+/// Whether Whole stack is the stack's picked row.
+pub fn whole_picked(review: &ReviewState) -> bool {
+    review.stack_rows().is_some_and(|rows| rows.picked == 0)
 }
 
 /// The header's comparing line while a stack shows (DS-62); `None` keeps
@@ -486,16 +616,21 @@ pub fn skim_row(look: Look, repo: &str, paths: &[&str], open: bool, send: &Sende
     )
 }
 
-/// The dot a key file's row carries before its name (DS-67).
-pub fn key_dot(look: Look, repo: &str, path: &str) -> impl IntoElement {
-    div()
-        .id(SharedString::from(format!("change-key {repo}/{path}")))
+/// The "key" chip a key file carries before its counts (DS-67, frames 119
+/// to 121): accent text on a pale accent fill.
+pub fn key_chip(look: Look, id: impl Into<SharedString>) -> impl IntoElement {
+    let mut fill = Hsla::from(rgb(look.accent));
+    fill.a = 0.14;
+    text("key")
+        .id(id.into())
         .aria_label("Key file")
         .test_support()
         .flex_shrink_0()
-        .size(px(6.))
-        .rounded_full()
-        .bg(rgb(look.accent))
+        .px(px(5.))
+        .rounded(px(4.))
+        .bg(fill)
+        .text_size(px(10.5))
+        .text_color(rgb(look.accent))
 }
 
 #[cfg(test)]
@@ -596,8 +731,10 @@ mod tests {
                 &self.review,
             )
             .children(stack_top(&self.review, &humata2_review::comments::CommentsState::default(), look, &self.send, 340.))
+            .children(untouched_lines(&self.review, look))
+            .children(footer_links(&self.review, look, &self.send, false).unwrap_or_default())
             .children(skim_row(look, "acme/api", &self.skims, skim_open(&self.review, "acme/api"), &self.send))
-            .child(key_dot(look, "acme/api", "src/lib.rs"))
+            .child(key_chip(look, "change-key acme/api/src/lib.rs"))
         }
     }
 
@@ -735,7 +872,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_moved_repository_asks_the_agent_to_send_its_layer_again(cx: &mut TestAppContext) {
-        let drawn = run(cx, stacked(None), Vec::new(), &[], |window, cx| {
+        let drawn = run(cx, stacked(Some("screen")), Vec::new(), &[], |window, cx| {
             window.click("stack-send-again-1-acme/web", cx);
         });
         assert_eq!(
@@ -745,6 +882,54 @@ mod tests {
                 repo: "acme/web".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn repositories_ending_alike_keep_their_whole_names() {
+        assert_eq!(stack_repo_name("acme/web", ["acme/api", "acme/web"]), "web");
+        assert_eq!(stack_repo_name("acme/ledger", ["/ledger", "acme/ledger"]), "acme/ledger");
+        assert_eq!(stack_repo_name("/ledger", ["/ledger", "acme/ledger"]), "ledger");
+    }
+
+    #[gpui_kit::test]
+    fn only_the_picked_layer_shows_its_moved_repository(cx: &mut TestAppContext) {
+        let id = "stack-drift-1-acme/web";
+        assert!(run(cx, stacked(None), Vec::new(), &[id], |_, _| {}).ids.is_empty());
+        assert!(run(cx, stacked(Some("schema")), Vec::new(), &[id], |_, _| {}).ids.is_empty());
+        assert_eq!(run(cx, stacked(Some("screen")), Vec::new(), &[id], |_, _| {}).ids, vec![id]);
+    }
+
+    #[gpui_kit::test]
+    fn a_layers_footer_steps_to_the_layers_beside_it(cx: &mut TestAppContext) {
+        let drawn = run(cx, stacked(Some("schema")), Vec::new(), &[], |window, cx| {
+            window.click("stack-next-layer", cx);
+            window.click("stack-prev-layer", cx);
+        });
+        assert_eq!(review_sent(&drawn), vec![ReviewAction::NextLayer, ReviewAction::PrevLayer]);
+    }
+
+    #[gpui_kit::test]
+    fn whole_stack_opens_the_push_menu_from_its_pull_requests(cx: &mut TestAppContext) {
+        let ids = ["stack-pull-requests", "stack-next-layer"];
+        let none = run(cx, stacked(None), Vec::new(), &["stack-push"], |window, cx| {
+            window.click("stack-push", cx);
+        });
+        assert_eq!(review_sent(&none), vec![ReviewAction::TogglePushMenu], "no pull request yet: Push & PR");
+        let mut review = stacked(None);
+        if let Some(stack) = review.plans.get_mut(&session()).and_then(|plan| plan.stack.as_mut()) {
+            stack.layers[0].repos[0].pull_request = "acme/api#412".to_owned();
+        }
+        let drawn = run(cx, review, Vec::new(), &ids, |window, cx| {
+            window.click("stack-pull-requests", cx);
+        });
+        assert_eq!(drawn.ids, vec!["stack-pull-requests"]);
+        assert_eq!(review_sent(&drawn), vec![ReviewAction::TogglePushMenu]);
+    }
+
+    #[gpui_kit::test]
+    fn a_stack_names_its_layer_count_above_the_list(cx: &mut TestAppContext) {
+        let drawn = run(cx, stacked(None), Vec::new(), &["stack-caption", "stack-row-badge-0"], |_, _| {});
+        assert_eq!(drawn.ids, vec!["stack-caption", "stack-row-badge-0"]);
     }
 
     #[gpui_kit::test]

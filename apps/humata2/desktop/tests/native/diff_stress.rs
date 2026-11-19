@@ -478,6 +478,32 @@ fn a_pull_request_huge_file_stays_inside_the_panel() {
     app.snapshot("diff-stress-pr-huge-file");
 }
 
+/// Case 05 step 10: a long repository name in a pull request review ends in
+/// an ellipsis inside the panel and keeps its whole name for hover.
+#[test]
+fn a_pull_request_long_repo_name_stays_inside_the_panel() {
+    let repo = format!("acme/{}", "r".repeat(160));
+    let name = repo.rsplit('/').next().expect("a name after the owner").to_owned();
+    let mut app = app_with(
+        super::pr_session::review_workspace(Vec::new()),
+        REVIEW,
+        vec![(repo.as_str(), vec![small_file("src/refund.rs")])],
+        Some((repo.as_str(), "src/refund.rs")),
+    );
+    stays_inside(&mut app);
+    let id = gpui_kit::SharedString::from(format!("review-repo-name-{repo}"));
+    let (inside, label) = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            let panel = window.find("side-panel").bounds();
+            let shown = window.find(id);
+            (within(&shown.bounds(), &panel), shown.label().map(str::to_owned))
+        })
+        .expect("window stays open");
+    assert!(inside, "the repo name stays inside the panel");
+    assert_eq!(label.as_deref(), Some(name.as_str()));
+}
+
 /// Owner case long-paths in a pull request review: a 200-byte path stays
 /// inside.
 #[test]

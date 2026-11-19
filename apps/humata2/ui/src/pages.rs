@@ -18,6 +18,7 @@ use humata2_session::{MenuItem, SessionAction};
 
 use crate::bridge::Ui;
 use humata2_ui_core::clock::{ticked_now, until_next};
+use humata2_ui_core::full_text::full_text;
 use crate::widgets::{self, col, row};
 
 /// The screen's title, for the top bar.
@@ -217,16 +218,22 @@ pub(crate) fn session_header(
         .whitespace_nowrap()
         .gap(px(7.))
         .child(chrome::status(session.status))
-        .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_size(px(14.))
-                .child(session.shown_title()),
-        );
+        .child({
+            let title = session.shown_title();
+            full_text(
+                div()
+                    .id("session-title")
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(14.))
+                    .child(title.clone()),
+                title,
+            )
+            .test_support()
+        });
     let note = match session.status {
         Status::NeedsYou => Some(("Needs you".into(), 0xff9f0a)),
         Status::Exited { .. } => Some(("Agent exited".into(), 0xff453a)),
@@ -387,6 +394,12 @@ pub(crate) fn session_header(
             // Like `chrome::action`, with the shortcut in a tooltip so the
             // two arrows do not read as duplicates.
             let ui = ui.clone();
+            let hint: SharedString = if terminal_full {
+                "Return to columns  ⇧⌘↩".into()
+            } else {
+                "Expand terminal  ⇧⌘↩".into()
+            };
+            let shown = hint.clone();
             div()
                 .id("terminal-full-screen")
                 .role(Role::Button)
@@ -394,6 +407,10 @@ pub(crate) fn session_header(
                     "Return to columns"
                 } else {
                     "Expand terminal"
+                })
+                .aria_description(hint)
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(shown.clone()).build(window, cx)
                 })
                 .size(px(15.))
                 .flex_shrink_0()
@@ -631,6 +648,9 @@ fn review_notices(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) 
     let bar = |id: &'static str, glyph: IconName, color: u32, words: String, button: Option<AnyElement>| {
         row()
             .id(id)
+            // A notice: assistive technology reads what changed.
+            .role(Role::Status)
+            .aria_label(words.clone())
             .px(px(10.))
             .py(px(7.))
             .gap(px(8.))
@@ -648,8 +668,12 @@ fn review_notices(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) 
     if commits > 0 || rewritten {
         let words = match (commits, rewritten) {
             (0, _) => "The PR branch was force-pushed".to_owned(),
-            (1, _) => "1 new commit on the PR branch".to_owned(),
-            (n, _) => format!("{n} new commits on the PR branch"),
+            (1, false) => "1 new commit on the PR branch".to_owned(),
+            (n, false) => format!("{n} new commits on the PR branch"),
+            // A rewrite with new commits names both (case 12): the old
+            // commits are gone, not only added to.
+            (1, true) => "The PR branch was force-pushed with 1 new commit".to_owned(),
+            (n, true) => format!("The PR branch was force-pushed with {n} new commits"),
         };
         let update = (!updating).then(|| {
             widgets::push_quiet(

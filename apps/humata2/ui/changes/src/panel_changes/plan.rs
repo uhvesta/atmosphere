@@ -52,6 +52,46 @@ pub(super) fn plan_list(
         }
         drawn
     };
+    // Frames 119 to 121: a stack without groups reads repository by
+    // repository, each head over its files and its skim row.
+    let stacked = crate::panel_stack::header_line(&state.review).is_some()
+        && !plan.iter().any(|entry| matches!(entry, PlanRow::Group { .. }));
+    if stacked {
+        let mut out = Vec::with_capacity(diffs.len() + plan.len());
+        for (index, diff) in diffs.iter().enumerate() {
+            let folded = state.session.open.as_ref().is_some_and(|id| {
+                state.review.collapsed.contains(&(id.clone(), diff.repo.clone()))
+            });
+            out.push(ringed(
+                stack_repo_head(ui, state, look, index, diff, folded, diffs).into_any_element(),
+                at_repo(cursor, &diff.repo),
+                look,
+            ));
+            if folded {
+                continue;
+            }
+            for entry in &plan {
+                let PlanRow::File { repo, path, .. } = entry else { continue };
+                if *repo != diff.repo {
+                    continue;
+                }
+                let Some(file) = diff.files.iter().find(|file| &file.path == path) else {
+                    continue;
+                };
+                let on = picked.is_some_and(|(d, f)| d.repo == *repo && f.path == *path);
+                out.push(ringed(
+                    file_row(ui, state, look, diff, file, on, false),
+                    at_file(cursor, repo, path),
+                    look,
+                ));
+            }
+            for skim in skims.iter().filter(|skim| skim.repo == diff.repo) {
+                out.extend(draw_skim(skim));
+            }
+        }
+        out.extend(crate::panel_stack::untouched_lines(&state.review, look));
+        return out;
+    }
     let mut skims = skims.into_iter().peekable();
     let mut out = Vec::with_capacity(diffs.len() + plan.len());
     out.extend(
@@ -154,11 +194,96 @@ fn plan_repo_line(
 ) -> Div {
     row()
         .gap(px(6.))
-        .h(px(26.))
+        .h(px(24.))
         .px(px(4.))
         .pr(px(4.))
         .child(icon(IconName::FolderGit2, look.secondary, 12.))
         .child(text(repo_label(&diff.repo).to_owned()).font_weight(FontWeight::SEMIBOLD))
         .child(repo_base(ui, state, look, documents, index, diff))
         .child(div().flex_1())
+}
+
+/// A stack's line for one repository (frames 119 to 121): the fold chevron,
+/// its short name, "against main" while Whole stack shows (a layer's base is
+/// the layer under it), and its totals.
+fn stack_repo_head(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    index: usize,
+    diff: &RepoDiff,
+    folded: bool,
+    diffs: &[&RepoDiff],
+) -> impl IntoElement {
+    let (added, removed) = diff.files.iter().fold((0_u64, 0_u64), |(a, r), file| {
+        (a + u64::from(file.added), r + u64::from(file.removed))
+    });
+    let whole = state
+        .session
+        .open
+        .as_ref()
+        .is_some_and(|id| state.review.layer_of(id).is_none());
+    let toggle = ui.clone();
+    let repo = diff.repo.clone();
+    let name =
+        crate::panel_stack::stack_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str())).to_owned();
+    // A repository with nothing changed has nothing to fold or count.
+    let empty = diff.files.is_empty();
+    row()
+        .id(SharedString::from(format!("repo-row-{index}")))
+        .test_support()
+        .gap(px(6.))
+        .h(px(24.))
+        .px(px(4.))
+        .pr(px(8.))
+        .min_w_0()
+        .whitespace_nowrap()
+        .when(empty, |line| line.child(div().w(px(20.)).flex_shrink_0()))
+        .when(!empty, |line| line.child(
+            Button::new(SharedString::from(format!("repo-toggle-{index}")))
+                .ghost()
+                .small()
+                .w(px(20.))
+                .h(px(20.))
+                .flex_shrink_0()
+                .icon(icon(
+                    if folded { IconName::ChevronRight } else { IconName::ChevronDown },
+                    look.tertiary,
+                    12.,
+                ))
+                .accessibility_label(format!("{} {}", if folded { "Expand" } else { "Collapse" }, diff.repo))
+                .on_click(move |_, _, cx| {
+                    toggle.send(AppAction::Review(ReviewAction::ToggleRepo { repo: repo.clone() }), cx)
+                }),
+        ))
+        .child(
+            text(name)
+                .id(SharedString::from(format!("repo-name-{index}")))
+                .test_support()
+                .font_weight(FontWeight::SEMIBOLD)
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis(),
+        )
+        .when(whole && !diff.base.is_empty(), |line| {
+            line.child(
+                secondary(look, format!("against {}", diff.base))
+                    .id(SharedString::from(format!("repo-base-{index}")))
+                    .test_support()
+                    .min_w_0()
+                    .flex_shrink(8.)
+                    .overflow_hidden()
+                    .text_ellipsis(),
+            )
+        })
+        .child(div().flex_1())
+        .when(!empty, |line| line.child(
+            row()
+                .id(SharedString::from(format!("repo-totals-{index}")))
+                .test_support()
+                .gap(px(6.))
+                .flex_shrink_0()
+                .child(text(format!("+{added}")).text_size(px(11.)).text_color(rgb(GREEN)))
+                .child(text(format!("\u{2212}{removed}")).text_size(px(11.)).text_color(rgb(RED))),
+        ))
 }

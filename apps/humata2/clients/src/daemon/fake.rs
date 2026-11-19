@@ -90,6 +90,9 @@ struct Inner {
     viewing: Option<SessionId>,
     links: Vec<terminal_link::LinkTap>,
     diffs: HashMap<SessionId, Vec<RepoDiff>>,
+    /// A stack layer's files in one repository, by `(session, repo,
+    /// "base..head")`; a range not set here has none.
+    ranges: HashMap<(SessionId, String, String), Vec<crate::model::FileDiff>>,
     /// Repositories whose read fails, with the message (DS-35).
     failing_repos: HashMap<(SessionId, String), String>,
     reviewed: HashMap<SessionId, Vec<RepoDiff>>,
@@ -152,6 +155,7 @@ impl FakeDaemon {
                 viewing: None,
                 links: Vec::new(),
                 diffs: HashMap::new(),
+                ranges: HashMap::new(),
                 failing_repos: HashMap::new(),
                 reviewed: HashMap::new(),
                 looks: HashMap::new(),
@@ -326,6 +330,21 @@ impl FakeDaemon {
             }
         }
         self.inner().diffs.insert(session.clone(), merged);
+    }
+
+    /// Says what `repo` of `session` changes between the revs `base` and
+    /// `head`, as a stack layer shows it (D800).
+    pub fn set_range_files(
+        &self,
+        session: &SessionId,
+        repo: &str,
+        base: &str,
+        head: &str,
+        files: Vec<crate::model::FileDiff>,
+    ) {
+        self.inner()
+            .ranges
+            .insert((session.clone(), repo.to_owned(), format!("{base}..{head}")), files);
     }
 
     /// Says which pull request is open for `session`'s branch in `repo`.

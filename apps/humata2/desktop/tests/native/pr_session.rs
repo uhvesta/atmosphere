@@ -262,12 +262,16 @@ fn shown(app: &mut App) {
 }
 
 pub(super) fn moved(app: &mut App, pr: PullRequestRef, new_commits: u32, state: PullRequestState) {
+    pushed(app, pr, new_commits, false, state);
+}
+
+fn pushed(app: &mut App, pr: PullRequestRef, new_commits: u32, force_pushed: bool, state: PullRequestState) {
     app.send(AppAction::PrHeads(HeadsAction::Pushed(HeadsChanged {
         session: SessionId::new(REVIEW),
         changes: vec![HeadChange {
             pr,
             new_commits,
-            force_pushed: false,
+            force_pushed,
             state,
             base_branch: None,
             stack: None,
@@ -408,6 +412,31 @@ fn update_the_clone_sends_the_update_and_clears_the_notice() {
         .calls()
         .contains(&Call::UpdateClone(SessionId::new(REVIEW))));
     assert!(!app.contains("pr-new-commits"));
+}
+
+/// Case 12: a force-push that also adds commits says both, not just the
+/// count, and a force-push alone still reads as one.
+#[test]
+fn a_force_push_with_new_commits_names_both() {
+    let notice = |commits: u32, force: bool| {
+        let mut app = review();
+        shown(&mut app);
+        pushed(&mut app, api(), commits, force, PullRequestState::Open);
+        app.draw();
+        app.cx
+            .update_window(app.window, |_, window, _| {
+                window.find("pr-new-commits").label().map(str::to_owned)
+            })
+            .expect("window stays open")
+            .expect("the notice has its words")
+    };
+    let added = notice(2, false);
+    let rewritten = notice(0, true);
+    let both = notice(2, true);
+    assert!(added.contains('2'), "{added}");
+    assert!(both.contains('2'), "{both}");
+    assert_ne!(both, added);
+    assert_ne!(both, rewritten);
 }
 
 /// PR-17: a merged pull request offers Archive, not Update the clone.

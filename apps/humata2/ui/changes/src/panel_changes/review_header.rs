@@ -407,8 +407,27 @@ pub(super) fn review_repo_head(
             12.,
         ))
         .child(icon(IconName::FolderGit2, look.secondary, 12.))
-        .child(text(name.to_owned()).font_weight(FontWeight::SEMIBOLD))
-        .children(number.map(|number| text(format!("#{number}")).text_color(rgb(look.accent))))
+        .child(
+            // Gives way after the branch (DS-46), with the whole name on
+            // hover (DS-80).
+            full_text(
+                div()
+                    .id(SharedString::from(format!("review-repo-name-{}", diff.repo)))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name.to_owned()),
+                name.to_owned(),
+            )
+            .test_support(),
+        )
+        .children(number.map(|number| {
+            text(format!("#{number}"))
+                .flex_shrink_0()
+                .text_color(rgb(look.accent))
+        }))
         .child({
             let shown = div()
                 .id(SharedString::from(format!("review-repo-branch-{}", diff.repo)))
@@ -1099,10 +1118,8 @@ pub(super) fn repo_base(
             cx,
         )
     };
-    let against = row()
+    let chip = row()
         .id(id)
-        .role(Role::Button)
-        .aria_label(spoken)
         .aria_expanded(open)
         .text_size(px(11.5))
         .whitespace_nowrap()
@@ -1124,6 +1141,8 @@ pub(super) fn repo_base(
                 .on_click(pick)
         })
         .test_support();
+    // The chip is a button, so its role wins over the label's.
+    let against = full_text(chip, spoken).role(Role::Button);
     // Not clipped: the menu below is a deferred child that must draw past it.
     // The chip's text ellipsizes, but never below "against" and about ten
     // characters, so it can't slide over the totals.

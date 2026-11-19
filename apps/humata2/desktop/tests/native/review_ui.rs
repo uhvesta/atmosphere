@@ -418,6 +418,31 @@ fn a_shortened_path_shows_in_full_on_hover() {
     assert_eq!(label.as_deref(), Some(BRANCH));
 }
 
+/// A session title the page heading shortens still carries all of it: the
+/// heading ends in "…" when the window is narrow, and its hover and label
+/// show the whole title (DS-80).
+#[test]
+fn a_shortened_session_title_shows_in_full_on_hover() {
+    const TITLE: &str = "Reconcile the ledger export with the billing pipeline after the March migration and the audit fixes";
+    let mut workspace = fixture::design();
+    let ledger = SessionId::new("ledger");
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == ledger)
+        .expect("the fixture has ledger")
+        .title = TITLE.into();
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    let label = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            window.find("session-title").label().map(str::to_owned)
+        })
+        .expect("window stays open");
+    assert_eq!(label.as_deref(), Some(TITLE));
+}
+
 /// RV-8: the Diff panel's own cost, measured headless, for spec §5 P-1 to P-6.
 /// Not part of the normal run (`#[ignore]`) and with no timing asserts,
 /// because times vary by machine; each test prints its number beside the
