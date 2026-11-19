@@ -79,7 +79,8 @@ fn shell(look: Look, open: bool) -> Div {
         .my(px(6.))
         .p(px(9.))
         .gap(px(4.))
-        .max_w(px(640.))
+        // DS-15: cards are at most 720 pt wide.
+        .max_w(px(720.))
         .rounded(px(8.))
         .bg(rgb(look.card))
         .border_1()

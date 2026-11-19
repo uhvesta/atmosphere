@@ -33,11 +33,22 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Changes"
-  text "Diff"
-  #review-pr-line
-    text "PR #482 against main · 2 repos"
-  Button "Expand panel"
-  Button "Close panel"
+  #panel-header
+    text "Diff"
+    #review-pr-line
+      text "PR #482 against main · 2 repos"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  #diff-file-bar
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    #diff-file-count
+      text "1 of 2"
+    text "refund.rs"
+    text "acme/api"
+    text "·"
+    text "src/"
   #review-diff
     #review-repo-acme/api
       text "api"
@@ -81,8 +92,8 @@ Complementary "Changes"
     #review-repo-acme/ledger
       text "ledger"
       text "#91"
-  #review-drafts-3-1
-    text "Drafts: 4 (3 by agent, 1 by you)"
+  Button "Submit review…"
+  Label "4 drafts · 3 by Claude Code, 1 by you"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 1"
@@ -93,7 +104,7 @@ Toolbar "Session panels"
   Button "Journal"
   Button "Info"
 Link "Open channel"
-Button "Submit review"
+Button "Back" description="Back  ⌘["
 Button "Fork"
 Button "Expand terminal"
 Button "Toggle side panel"

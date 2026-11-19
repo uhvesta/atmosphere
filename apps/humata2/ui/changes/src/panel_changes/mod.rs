@@ -1,7 +1,7 @@
 //! The Diff panel: files, hunks, wrapped lines and comment cards.
 use crate::bridge::Ui;
 use crate::chrome::{
-    GREEN, RED, card, icon, panel_action as action, panel_header, secondary, selected, text,
+    GREEN, RED, card, icon, panel_action as action, panel_header_actions, secondary, selected, text,
 };
 use crate::code_wrap;
 use crate::document_tab::{Documents, LineFacts};
@@ -21,6 +21,7 @@ use humata2_review::comments::CommentsAction;
 use humata2_session::Panel;
 use std::rc::Rc;
 
+mod agent_tab;
 mod diff_body;
 mod file_list;
 mod plan;
@@ -70,7 +71,7 @@ pub fn changes(
     if let Some(body) = crate::doc_history::compare_body(ui, state, look) {
         return col()
             .size_full()
-            .child(panel_header(ui, state, Panel::Changes, full, None, look))
+            .child(diff_header(ui, state, full, None, look))
             .child(body);
     }
     let font_size = f32::from(state.settings.preferences.font_size) - 0.5;
@@ -450,7 +451,8 @@ pub fn changes(
             // DS-24, DS-36: a file with nothing to draw shows its note as
             // its body.
             let note = file_note(file);
-            let code = if file.lines.iter().any(is_code) {
+            let coded = file.lines.iter().any(is_code);
+            let code = if coded {
                 code
             } else {
                 col()
@@ -462,7 +464,18 @@ pub fn changes(
                     .justify_center()
                     .p(px(12.))
                     .child(
-                        secondary(look, note.clone().unwrap_or_else(|| "No changes to show".to_owned()))
+                        secondary(
+                            look,
+                            note.clone().unwrap_or_else(|| {
+                                // A file listed with counts has changes; only
+                                // its lines are missing.
+                                if file.added + file.removed > 0 {
+                                    "The changed lines aren't available".to_owned()
+                                } else {
+                                    "No changes to show".to_owned()
+                                }
+                            }),
+                        )
                             .text_size(px(12.)),
                     )
                     .into_any_element()
@@ -486,30 +499,51 @@ pub fn changes(
                             .min_w_0()
                             .overflow_hidden()
                             .gap(px(4.))
-                            .child(secondary(look, format!("{} ·", repo_label(&diff.repo))).flex_shrink_0())
+                            .child(full_text(
+                                secondary(look, repo_label(&diff.repo).to_owned())
+                                    .id("diff-file-header-repo")
+                                    .flex_shrink_0()
+                                    .max_w(relative(0.25))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis(),
+                                repo_label(&diff.repo).to_owned(),
+                            ))
+                            // The "·" stays when the repo itself ends in "…".
+                            .child(secondary(look, "·").flex_shrink_0())
                             .child(full_text(
                                 secondary(look, dir.to_owned())
                                     .id("diff-file-header-dir")
                                     .min_w_0()
+                                    .flex_shrink(1.)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis(),
                                 dir,
                             ))
-                            .child(
+                            // The name keeps most of the row, then ends in an ellipsis.
+                            .child(full_text(
                                 text(file_name.to_owned())
+                                    .id("diff-file-header-name")
                                     .flex_shrink_0()
+                                    .max_w(relative(0.68))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .font_weight(FontWeight::MEDIUM),
-                            )
+                                file_name.to_owned(),
+                            ))
                     })
-                    .child(wrap_switch(ui, look, wrap))
+                    // The switch does nothing on a file with no code lines.
+                    .when(coded, |header| header.child(wrap_switch(ui, look, wrap)))
                     .when(stepper, |header| {
                         header.child(change_stepper(ui, look, change, changes))
                     })
                     // With the file bar showing, Open in editor sits there.
                     .when(!bar, |header| header.child(open_in_editor(look))),
             )
-            .children(note.map(|note| {
+            // With no code lines the note is the body, so it isn't said twice.
+            .children(note.filter(|_| coded).map(|note| {
                 secondary(look, note)
                     .id("change-file-note")
                     .test_support()
@@ -552,10 +586,9 @@ pub fn changes(
         .as_ref()
         .is_some_and(|id| state.review.compares_per_repo(id));
     let toggle = ui.clone();
-    let head = panel_header(
+    let head = diff_header(
             ui,
             state,
-            Panel::Changes,
             full,
             Some(
                 row().gap(px(6.)).when(!per_repo, |line| line.child(secondary(look, "against").flex_shrink_0())).child(
@@ -628,19 +661,17 @@ pub fn changes(
         // of a base to pick (a pull request's base is GitHub's); Full screen
         // and Close stay, as on every panel.
         .child(match review {
-            Some(session) => panel_header(
+            Some(session) => diff_header(
                 ui,
                 state,
-                Panel::Changes,
                 full,
                 Some(review_line(state, look, session, &review_base, diffs.len())),
                 look,
             ),
             None => match crate::panel_stack::header_line(&state.review) {
-                Some(line) => panel_header(
+                Some(line) => diff_header(
                     ui,
                     state,
-                    Panel::Changes,
                     full,
                     Some(row().min_w_0().child(
                         secondary(look, line).id("stack-header").test_support(),
@@ -738,11 +769,18 @@ pub fn changes(
                     (Some(_), Some(id)) => {
                         let (agent, you) = github_draft_counts(state, id);
                         // The id carries the counts the line shows.
-                        secondary(
-                            look,
-                            drafts_line(state, id, agent, you),
+                        // The line gives way with an ellipsis so Submit
+                        // review… keeps its room inside the padding.
+                        let line = drafts_line(state, id, agent, you);
+                        full_text(
+                            secondary(look, line.clone())
+                                .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis(),
+                            line,
                         )
-                        .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
                         .test_support()
                         .into_any_element()
                     }
@@ -839,4 +877,10 @@ pub fn changes(
                     },
                 ),
         )
+}
+
+/// The Diff panel's header: full screen adds New agent tab (UXSIMPLE 3-3).
+fn diff_header(ui: &Rc<Ui>, state: &AppState, full: bool, extra: Option<Div>, look: Look) -> Div {
+    let actions = full.then(|| agent_tab::button(ui, state, look));
+    panel_header_actions(ui, state, Panel::Changes, full, extra, actions, look)
 }

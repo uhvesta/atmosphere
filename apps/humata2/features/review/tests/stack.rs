@@ -275,6 +275,25 @@ fn only_the_picked_row_shows_its_purpose_and_the_header_names_it() {
 }
 
 #[test]
+fn every_row_names_the_repositories_it_touches() {
+    let state = stacked();
+    let Some(rows) = state.stack_rows() else {
+        panic!("a stack has rows");
+    };
+    let repos: Vec<&[String]> = rows.rows.iter().map(|row| row.repos.as_slice()).collect();
+    // Whole stack, then screen (web), client (api and web), schema (api).
+    assert_eq!(
+        repos,
+        vec![
+            &["acme/api".to_owned(), "acme/web".to_owned()][..],
+            &["acme/web".to_owned()][..],
+            &["acme/api".to_owned(), "acme/web".to_owned()][..],
+            &["acme/api".to_owned()][..],
+        ]
+    );
+}
+
+#[test]
 fn drifted_repositories_are_listed_and_untouched_ones_noted() {
     let mut state = stacked();
     state.layer.insert(session(), Some("schema".to_owned()));

@@ -206,6 +206,9 @@ impl App {
             if state.review.base_menu {
                 return self.child(state, AppAction::Review(ReviewAction::ToggleBaseMenu));
             }
+            if state.review.agent_tab_menu {
+                return self.child(state, AppAction::Review(ReviewAction::ToggleAgentTabMenu));
+            }
             if state.review.repo_picker.is_some() || state.review.push_menu {
                 return Effect::none();
             }

@@ -57,3 +57,24 @@ fn opening_the_push_menu_closes_the_base_menu() {
     assert!(state.push_menu);
     assert!(!state.base_menu);
 }
+
+/// UXSIMPLE 3-3: the New agent tab menu opens alone, and a pick closes it
+/// and is remembered as last used.
+#[test]
+fn the_new_agent_tab_menu_opens_alone_and_remembers_the_pick() {
+    use humata2_clients::model::Agent;
+    let mut state = page();
+    send(&mut state, A::TogglePushMenu);
+    send(&mut state, A::ToggleAgentTabMenu);
+    assert!(state.agent_tab_menu);
+    assert!(!state.push_menu);
+    send(&mut state, A::ToggleBaseMenu);
+    assert!(!state.agent_tab_menu, "another menu closes it");
+    send(&mut state, A::ToggleAgentTabMenu);
+    send(&mut state, A::AgentTabPicked(Agent::Copilot));
+    assert!(!state.agent_tab_menu);
+    assert_eq!(state.last_agent_tab, Some(Agent::Copilot));
+    send(&mut state, A::ToggleAgentTabMenu);
+    send(&mut state, A::ToggleAgentTabMenu);
+    assert!(!state.agent_tab_menu);
+}

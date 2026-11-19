@@ -41,12 +41,14 @@ Complementary "Changes"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
   #diff-file-bar
-    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
     #diff-file-count
       text "1 of 1"
+    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
+    text "acme/api"
+    text "·"
   #review-diff
     #review-repo-acme/api
       text "api"
@@ -64,8 +66,7 @@ Complementary "Changes"
         #change-code-1-0
           text "fn main() {}"
   Button "Submit review…"
-  #review-drafts-0-0
-    text "No drafts"
+  Label "No drafts"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 1"

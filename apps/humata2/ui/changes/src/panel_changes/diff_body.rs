@@ -8,8 +8,10 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+/// DS-15: every comment card is at most 720 pt wide.
 fn sent_card(look: Look, comment: &Comment) -> Div {
     card(look)
+        .max_w(px(720.))
         .mx(px(10.))
         .my(px(6.))
         .p(px(9.))

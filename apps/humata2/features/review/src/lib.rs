@@ -22,7 +22,7 @@ use humata2_clients::model::FileTier;
 use humata2_clients::views::{PlanView, StackView};
 use humata2_clients::{Daemon, DaemonError, Workspace};
 use humata2_clients::model::{
-    Comment, DiffBase, DiffLine, DiffTargets, FileDiff, LineKind, PushChoice, RepoBase, RepoBases,
+    Agent, Comment, DiffBase, DiffLine, DiffTargets, FileDiff, LineKind, PushChoice, RepoBase, RepoBases,
     RepoDiff, SessionId, Status,
 };
 use serde::{Deserialize, Serialize};
@@ -298,6 +298,11 @@ pub struct ReviewState {
     /// The row each session's file list has its keyboard cursor on (DS-84).
     /// Not saved.
     pub list_cursor: HashMap<SessionId, ListCursor>,
+    /// Whether the full-screen Diff header's New agent tab menu is open
+    /// (UXSIMPLE 3-3). Not saved.
+    pub agent_tab_menu: bool,
+    /// The agent last picked there, marked "last used" in the menu. Not saved.
+    pub last_agent_tab: Option<Agent>,
 }
 
 /// The changes (hunks) of a file: its hunk headers, or one when it has none.
@@ -801,6 +806,12 @@ pub enum ReviewAction {
     /// Open the footer's Push & PR menu, or close it if it is open; the base
     /// menus close.
     TogglePushMenu,
+    /// Open the full-screen Diff header's New agent tab menu, or close it;
+    /// the other menus close (UXSIMPLE 3-3).
+    ToggleAgentTabMenu,
+    /// An agent (or the plain terminal) was picked there: the menu closes
+    /// and the pick is remembered as last used.
+    AgentTabPicked(Agent),
     /// Close the Push & PR menu.
     ClosePushMenu,
     /// Mark the open session's changes reviewed (RV-6).
@@ -1325,6 +1336,7 @@ impl Reducer for Review {
                 state.base_menu = !state.base_menu && !stacked;
                 state.repo_picker = None;
                 state.push_menu = false;
+                state.agent_tab_menu = false;
             }
             ReviewAction::CloseBaseMenu => state.base_menu = false,
             ReviewAction::PickLayer(layer) => return self.pick_layer(state, layer),
@@ -1366,6 +1378,17 @@ impl Reducer for Review {
                 state.push_menu = !state.push_menu;
                 state.base_menu = false;
                 state.repo_picker = None;
+                state.agent_tab_menu = false;
+            }
+            ReviewAction::ToggleAgentTabMenu => {
+                state.agent_tab_menu = !state.agent_tab_menu;
+                state.base_menu = false;
+                state.repo_picker = None;
+                state.push_menu = false;
+            }
+            ReviewAction::AgentTabPicked(agent) => {
+                state.agent_tab_menu = false;
+                state.last_agent_tab = Some(agent);
             }
             ReviewAction::ClosePushMenu => state.push_menu = false,
             ReviewAction::MarkReviewed => {

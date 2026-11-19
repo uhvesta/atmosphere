@@ -1,6 +1,7 @@
 Complementary "Board"
   text "# payments-rewrite › Ledger schema migration"
-  Button "Show the terminal"
+  Button "Exit full screen"
+  Button "Close panel" description="Close panel"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"

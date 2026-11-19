@@ -66,3 +66,8 @@ does.
 - Review chat session start: `daemon/humatad` review/PR session code, D59, D631, D751, D791.
 - Diff panel header: `ui/core/src/chrome.rs` `panel_header`, `ui/changes/src/panel_changes/`.
 - Frames to start from: 41, 68, 68c, 84–86.
+
+## Log
+- 2026-11-19 (DIFFUI): built as UXSIMPLE ruled (D849): New agent tab ⌄ in the full-screen Diff header. Its menu lists Terminal and the offered agents. A pick opens a tab in the session's own strip, leaves full screen and is marked "last used".
+  - Tests: native `diff_full_screen::new_agent_tab_*` and `escape_closes_the_new_agent_tab_menu_first`; review `push_menu::the_new_agent_tab_menu_*`.
+  - Not built yet: "not installed" (no daemon data), ⌘T, the opening prompt. The "copilot · Note" card with Send to claude / Edit / Drop comes with UXSIMPLE's comment states.

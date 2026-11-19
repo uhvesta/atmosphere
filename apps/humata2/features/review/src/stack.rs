@@ -33,6 +33,9 @@ pub struct StackRow {
     pub files: u32,
     /// The repositories of this layer that moved since it was sent (DS-65).
     pub drifted: Vec<String>,
+    /// The repositories the row touches, as `owner/name`, in the layer's
+    /// order; Whole stack lists every layer's, once each.
+    pub repos: Vec<String>,
 }
 
 /// What the header says the panel compares (DS-62).
@@ -148,6 +151,11 @@ pub fn rows(
     for layer in &stack.layers {
         pull_requests(&layer.repos, &mut whole.pull_requests);
         whole.files += layer.repos.iter().map(|repo| repo.files).sum::<u32>();
+        for repo in &layer.repos {
+            if !whole.repos.contains(&repo.repo) {
+                whole.repos.push(repo.repo.clone());
+            }
+        }
         for repo in layer.repos.iter().filter(|repo| repo.drift.is_some()) {
             if !whole.drifted.contains(&repo.repo) {
                 whole.drifted.push(repo.repo.clone());
@@ -168,6 +176,7 @@ pub fn rows(
                 String::new()
             },
             files: layer.repos.iter().map(|repo| repo.files).sum(),
+            repos: layer.repos.iter().map(|repo| repo.repo.clone()).collect(),
             ..StackRow::default()
         };
         pull_requests(&layer.repos, &mut row.pull_requests);

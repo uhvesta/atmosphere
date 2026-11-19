@@ -3,7 +3,7 @@ use humata2_clients::model::DiffBase;
 
 pub(super) fn nothing_against(ui: &Rc<Ui>, state: &AppState, look: Look, base: &DiffBase) -> impl IntoElement {
     let (id, message) = match base {
-        DiffBase::OriginMain => ("diff-no-changes-yet", "No changes yet"),
+        DiffBase::OriginMain => ("diff-no-changes-yet", "No changes against origin/main"),
         DiffBase::UncommittedOnly => ("diff-none-against-base", "Nothing uncommitted"),
         DiffBase::SinceLastReviewed => {
             ("diff-none-against-base", "No changes since you last reviewed")

@@ -317,7 +317,8 @@ fn app_showing(file: FileDiff) -> App {
     app
 }
 
-/// A binary file has no lines to draw: the note and the body say so.
+/// A binary file has no lines to draw: the body says so, once (the note
+/// line is left out so the words aren't doubled).
 #[test]
 fn a_binary_file_says_binary_instead_of_an_empty_diff() {
     let mut app = app_showing(FileDiff {
@@ -325,7 +326,7 @@ fn a_binary_file_says_binary_instead_of_an_empty_diff() {
         binary: true,
         ..FileDiff::default()
     });
-    assert!(app.contains("change-file-note"));
+    assert!(!app.contains("change-file-note"));
     assert!(app.contains("change-file-empty"));
     assert!(!app.contains("change-line-0"));
 }
@@ -352,7 +353,7 @@ fn a_rename_names_where_it_came_from() {
     assert!(!app.contains("change-file-empty"));
 }
 
-/// A change of mode alone has no lines and says what the modes were.
+/// A change of mode alone has no lines; its body says what the modes were.
 #[test]
 fn a_mode_only_change_shows_both_modes() {
     let mut app = app_showing(FileDiff {
@@ -361,7 +362,7 @@ fn a_mode_only_change_shows_both_modes() {
         new_mode: 100_755,
         ..FileDiff::default()
     });
-    assert!(app.contains("change-file-note"));
+    assert!(!app.contains("change-file-note"));
     assert!(app.contains("change-file-empty"));
 }
 

@@ -259,7 +259,7 @@ pub fn new_session_cloning(look: Look, under: Div) -> Div {
                         .child(button(look, Kind::Secondary, "Cancel"))
                         .child(button(look, Kind::Primary, "Starting…").opacity(0.5)),
                 )
-                .child(progress_line(look, "Cloning acme/api", Some("42%"), Some(0.42))),
+                .child(progress_line(look, "Cloning ledger · Receiving objects", Some("42%"), Some(0.42))),
         ),
     )
 }

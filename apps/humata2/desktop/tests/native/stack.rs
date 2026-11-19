@@ -116,9 +116,11 @@ fn a_stack_draws_whole_stack_then_its_layers_top_down() {
         assert!(app.contains(&format!("stack-row-{row}")), "row {row}");
     }
     assert!(!app.contains("stack-row-4"), "Whole stack and three layers");
-    // Whole stack is picked on arrival; the others carry their file counts.
+    // Whole stack is picked on arrival; every row says what it touches.
     assert!(inside(&mut app, "stack-row-picked", "stack-row-0"));
-    assert!(app.contains("stack-row-files-3"));
+    for row in 0..4 {
+        assert!(app.contains(&format!("stack-row-note-{row}")), "row {row} names its repos");
+    }
 }
 
 #[test]

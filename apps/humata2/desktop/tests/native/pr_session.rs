@@ -405,6 +405,19 @@ fn pr_review_session_frame_68() {
     // The agent has focused line 140, as the frame's accent shows.
     agent_focuses(&mut app, 1, "src/refund.rs", 140);
     assert!(app.contains("review-focus-140"));
+    // The drafts line gives way, so Submit review… keeps the footer's padding.
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let panel = window.find("side-panel").bounds();
+            let submit = window.find("diff-submit-review").bounds();
+            let right = panel.origin.x + panel.size.width;
+            assert!(
+                submit.origin.x + submit.size.width <= right - gpui_kit::px(8.),
+                "Submit review… ends inside the footer's padding"
+            );
+        })
+        .unwrap();
     app.snapshot("68-pr-review-session");
 }
 

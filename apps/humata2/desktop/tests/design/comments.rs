@@ -58,7 +58,7 @@ fn hunk(look: Look, threads: Threads) -> Div {
                 .text_size(px(11.5))
                 .line_height(px(17.))
                 .bg(c(look.term))
-                .child(div().px(px(10.)).text_color(c(look.term_dim)).child("@@ -40,7 +40,12 @@ impl Client {"))
+                .child(div().px(px(10.)).text_color(c(look.term_dim)).child("impl Client {"))
                 .child(row(look, "40", None, "    pub async fn post(&self, entry: Entry)", false))
                 .child(row(look, "41", Some(look.del_bg), "-       self.db.insert_legacy(&entry).await?;", false))
                 .child(row(look, "41", Some(look.add_bg), "+       let tx = self.db.begin().await?;", false)),
@@ -146,9 +146,8 @@ fn file_row(
         .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-/// A repo's one row: the fold chevron, its name, the quiet base chip (its
-/// chevron only: every repo shares the header's base and the session's
-/// branch), a spacer and the repo's totals.
+/// A repo's one row: the fold chevron, its name, the base it compares
+/// against in words (UXSIMPLE 1-2), a spacer and the repo's totals.
 fn repo_row(look: Look, name: &'static str, add: &'static str, del: &'static str) -> Div {
     div()
         .flex()
@@ -161,7 +160,7 @@ fn repo_row(look: Look, name: &'static str, add: &'static str, del: &'static str
         .overflow_hidden()
         .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronDown, look.tertiary)))
         .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-        .child(div().w(px(24.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
+        .child(div().flex_shrink(4.).min_w_0().overflow_hidden().text_ellipsis().text_size(px(11.5)).text_color(c(look.secondary)).child("against main"))
         .child(div().flex_1())
         .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(GREEN)).child(add))
         .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(RED)).child(del))
@@ -216,7 +215,7 @@ fn diff_screen(look: Look, count: &'static str, above: Option<Div>, file_extra: 
                         .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
                 )
                 .children(file_extra)
-                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
+                .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ArrowUpRight, look.secondary))),
         )
         .children(above)
         .child(div().flex_1().min_h_0().overflow_hidden().child(hunk(look, threads)));
@@ -252,6 +251,7 @@ fn full_diff(look: Look, body: Div) -> Div {
 /// A card under a hunk line, with room beside the line numbers.
 fn thread(look: Look, border: u32) -> Div {
     div()
+        .max_w(px(720.))
         .mx(px(10.))
         .my(px(6.))
         .p(px(9.))

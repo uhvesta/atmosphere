@@ -147,7 +147,7 @@ fn stays_inside(app: &mut App) {
         .read(|state| state.full_screen() == Some(FullScreen::Panel));
     let frame = if full { "panel-full-screen" } else { "side-panel" };
     let buttons: Vec<&str> = if full {
-        vec!["show-terminal"]
+        vec!["show-terminal", "close-panel"]
     } else {
         vec!["expand-panel", "close-panel"]
     };
@@ -303,6 +303,22 @@ fn a_long_repo_and_branch_stay_inside_the_panel() {
             let panel = window.find("side-panel").bounds();
             assert!(within(&window.find("repo-toggle-0").bounds(), &panel));
             assert!(within(&window.find("repo-branch-0").bounds(), &panel));
+            // The base keeps "against" in view, left of the totals.
+            let base = window.find("repo-base-0").bounds();
+            let totals = window.find("repo-totals-0").bounds();
+            assert!(base.size.width > px(40.), "the base keeps \"against\" in view");
+            assert!(
+                base.origin.x + base.size.width <= totals.origin.x + px(0.5),
+                "the base ends before the totals start"
+            );
+            // The file's name keeps room beside a long repo and folder.
+            for id in ["diff-file-bar-name", "diff-file-header-name"] {
+                if let Some(name) = window.try_find(gpui_kit::SharedString::from(id)) {
+                    let name = name.bounds();
+                    assert!(within(&name, &panel), "{id} lies inside the panel");
+                    assert!(name.size.width > px(40.), "{id} keeps room for client.rs");
+                }
+            }
         })
         .unwrap();
     stays_inside(&mut app);
@@ -324,6 +340,9 @@ fn a_binary_file_stays_inside_the_panel() {
         Some(("api", "assets/logo.png")),
     );
     stays_inside(&mut app);
+    // DS-24: the note is the body, said once, not also under the header.
+    assert!(app.contains("change-file-empty"));
+    assert!(!app.contains("change-file-note"));
     app.snapshot("diff-stress-binary");
 }
 
@@ -432,6 +451,9 @@ fn a_mode_only_change_stays_inside_the_panel() {
         Some(("api", "scripts/run.sh")),
     );
     stays_inside(&mut app);
+    // DS-24: the note is the body, said once, not also under the header.
+    assert!(app.contains("change-file-empty"));
+    assert!(!app.contains("change-file-note"));
     app.snapshot("diff-stress-mode-only");
 }
 

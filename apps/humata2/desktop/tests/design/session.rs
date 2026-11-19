@@ -507,9 +507,8 @@ fn diff_file(
         .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(RED)).child(del))
 }
 
-/// A repo's one row: the fold chevron, its name, the quiet base chip (its
-/// chevron only: every repo shares the header's base and the session's
-/// branch), a spacer and the repo's totals.
+/// A repo's one row: the fold chevron, its name, the base it compares
+/// against in words (UXSIMPLE 1-2), a spacer and the repo's totals.
 fn repo(look: Look, name: &'static str, add: &'static str, del: &'static str) -> Div {
     div()
         .flex()
@@ -522,7 +521,7 @@ fn repo(look: Look, name: &'static str, add: &'static str, del: &'static str) ->
         .overflow_hidden()
         .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronDown, look.tertiary)))
         .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-        .child(div().w(px(24.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
+        .child(div().flex_shrink(4.).min_w_0().overflow_hidden().text_ellipsis().text_size(px(11.5)).text_color(c(look.secondary)).child("against main"))
         .child(div().flex_1())
         .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(GREEN)).child(add))
         .child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.)).text_color(c(RED)).child(del))
@@ -550,7 +549,7 @@ fn diff_lines(look: Look) -> Div {
         .text_size(px(11.5))
         .line_height(px(17.))
         .bg(c(look.term))
-        .child(div().px(px(10.)).text_color(c(look.term_dim)).child("@@ -40,7 +40,12 @@ impl Client {"))
+        .child(div().px(px(10.)).text_color(c(look.term_dim)).child("impl Client {"))
         .child(line("40", None, "    pub async fn post(&self, entry: Entry)"))
         .child(line("41", Some(look.del_bg), "-       self.db.insert_legacy(&entry).await?;"))
         .child(line("41", Some(look.add_bg), "+       let tx = self.db.begin().await?;"))
@@ -570,6 +569,7 @@ fn draft_with_send(look: Look, who: &'static str, text: &'static str) -> Div {
 
 fn comment_card(look: Look, who: &'static str, text: &'static str, draft: bool, send: bool) -> Div {
     div()
+        .max_w(px(720.))
         .mx(px(10.))
         .my(px(6.))
         .p(px(9.))
@@ -638,7 +638,7 @@ fn diff_panel(look: Look, full: bool) -> Div {
                         .child(secondary(look, "src/").min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
                         .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
                 )
-                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
+                .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ArrowUpRight, look.secondary))),
         )
         .child(diff_lines(look))
         .child(comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
@@ -661,7 +661,8 @@ fn diff_panel(look: Look, full: bool) -> Div {
                 .border_color(c(look.line))
                 .child(quiet(look, "Push & PR…"))
                 .child(quiet(look, "Add repo…"))
-                .child(secondary(look, "1 draft comment"))
+                // Beside the terminal the button carries the count (DS-45).
+                .when(full, |row| row.child(secondary(look, "1 draft comment")))
                 .child(div().flex_1())
                 .child(button(look, Kind::Primary, "Send 1 comment")),
         )
@@ -996,7 +997,17 @@ fn panel_shell(look: Look, full: bool, title: &'static str, extra: Option<Div>, 
                             ),
                     )
                     .child(div().flex_1())
-                    .child(button(look, Kind::Secondary, "Show the terminal")),
+                    // UXSIMPLE 3-3: full screen, the Diff opens an agent tab
+                    // beside itself.
+                    .when(title == "Diff", |bar| {
+                        bar.child(
+                            button(look, Kind::Secondary, "New agent tab")
+                                .gap(px(6.))
+                                .child(small_icon(IconName::ChevronDown, look.secondary)),
+                        )
+                    })
+                    .child(button(look, Kind::Secondary, "Exit full screen"))
+                    .child(small_icon(IconName::X, look.secondary)),
             )
         })
         .child(body)
@@ -1233,7 +1244,7 @@ pub fn split(look: Look) -> Div {
 }
 
 /// Frame 124: a Working session's header with its run time after the
-/// title, "Working · 2m 10s" (PROGRESS; `pages::working_note`).
+/// title, "Working · 2m 14s, as the terminal shows" (PROGRESS; `pages::working_note`).
 pub fn working_elapsed(look: Look) -> Div {
     let screen = Screen::new(None, Term::Working);
     let middle = div()
@@ -1242,10 +1253,11 @@ pub fn working_elapsed(look: Look) -> Div {
             "# payments-rewrite",
             St::Working,
             "Ledger schema migration",
-            Some(("Working · 2m 10s", look.secondary)),
+            Some(("Working · 2m 14s", look.secondary)),
             vec![secondary(look, "Claude Code · devbox-1")],
         ))
         .child(tabs(look, screen))
         .child(terminal(look, Term::Working));
-    shell(look, Side::at("Ledger schema migration"), middle, None)
+    // Working, as in frame 01: green, and only the fork's request in the Inbox.
+    shell(look, Side { asking: false, ..Side::at("Ledger schema migration") }, middle, None)
 }

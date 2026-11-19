@@ -22,6 +22,7 @@ use humata2_review::{ReviewAction, ReviewState};
 
 use crate::bridge::Ui;
 use crate::chrome::icon;
+use crate::full_text::full_text;
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
 
@@ -38,8 +39,6 @@ pub fn sender(ui: &Rc<Ui>) -> Sender {
 const VISIBLE_ROWS: f32 = 6.;
 /// One row's height; the picked row's purpose adds a line to it.
 const ROW_HEIGHT: f32 = 26.;
-/// The most pull requests a row names before it says "+N".
-const MOST_PULL_REQUESTS: usize = 2;
 
 thread_local! {
     /// The picked row the list was last scrolled to, so a redraw does not
@@ -79,18 +78,24 @@ pub fn stack_header_line(header: &StackHeader) -> String {
     }
 }
 
-/// A row's pull requests: the first two, then "+N" for the rest.
-fn pull_requests_label(pull_requests: &[String]) -> String {
-    let mut label = pull_requests
-        .iter()
-        .take(MOST_PULL_REQUESTS)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" \u{b7} ");
-    if pull_requests.len() > MOST_PULL_REQUESTS {
-        label.push_str(&format!(" +{}", pull_requests.len() - MOST_PULL_REQUESTS));
+/// What a row says after its title (UXSIMPLE 2-2, owner's mark): a layer
+/// names the repositories it touches, "api · ledger · sdk"; Whole stack
+/// counts them and its files, "5 repos · 23 files".
+fn row_note(entry: &StackRow) -> String {
+    if entry.number.is_some() {
+        return entry
+            .repos
+            .iter()
+            .map(|repo| short_repo(repo))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ");
     }
-    label
+    let repos = entry.repos.len();
+    format!(
+        "{repos} {} \u{b7} {}",
+        if repos == 1 { "repo" } else { "repos" },
+        files_label(entry.files)
+    )
 }
 
 fn files_label(files: u32) -> String {
@@ -134,10 +139,11 @@ fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender
     } else {
         "Whole stack".to_owned()
     };
-    let pulls = pull_requests_label(&entry.pull_requests);
-    let mut head = row()
+    let note = row_note(entry);
+    let head = row()
         .gap(px(6.))
         .h(px(ROW_HEIGHT - 1.))
+        .whitespace_nowrap()
         .child(
             secondary(look, name)
                 .w(px(12.))
@@ -146,33 +152,23 @@ fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender
         )
         .child(
             text(title)
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
+                .flex_shrink_0()
                 .when(entry.number.is_none() || on, |title| {
                     title.font_weight(FontWeight::SEMIBOLD)
                 }),
-        );
-    if !pulls.is_empty() {
-        head = head.child(
-            secondary(look, pulls)
-                .id(SharedString::from(format!("stack-row-pulls-{index}")))
+        )
+        // The note gives way first, ending in an ellipsis; hover names it
+        // in full.
+        .child(full_text(
+            secondary(look, note.clone())
+                .id(SharedString::from(format!("stack-row-note-{index}")))
                 .test_support()
-                .flex_shrink_0()
-                .max_w(px(150.))
+                .text_color(rgb(look.tertiary))
+                .min_w_0()
                 .overflow_hidden()
-                .whitespace_nowrap()
                 .text_ellipsis(),
-        );
-    }
-    head = head.child(
-        secondary(look, files_label(entry.files))
-            .id(SharedString::from(format!("stack-row-files-{index}")))
-            .test_support()
-            .flex_shrink_0(),
-    );
+            note,
+        ));
     let mut body = col().w_full().child(head);
     if on {
         body = body.child(
@@ -553,11 +549,22 @@ mod tests {
     }
 
     #[test]
-    fn a_row_names_two_pull_requests_and_counts_the_rest() {
-        let prs = |n: usize| (0..n).map(|i| format!("api #{i}")).collect::<Vec<_>>();
-        assert_eq!(pull_requests_label(&prs(0)), "");
-        assert_eq!(pull_requests_label(&prs(2)), "api #0 \u{b7} api #1");
-        assert_eq!(pull_requests_label(&prs(5)), "api #0 \u{b7} api #1 +3");
+    fn a_layer_names_its_repositories_and_whole_stack_counts_them() {
+        let layer = StackRow {
+            number: Some(2),
+            repos: vec!["acme/api".to_owned(), "acme/ledger".to_owned()],
+            files: 4,
+            ..StackRow::default()
+        };
+        assert_eq!(row_note(&layer), "api \u{b7} ledger");
+        let whole = StackRow {
+            repos: vec!["acme/api".to_owned(); 5],
+            files: 23,
+            ..StackRow::default()
+        };
+        assert_eq!(row_note(&whole), "5 repos \u{b7} 23 files");
+        let one = StackRow { repos: vec!["acme/api".to_owned()], files: 1, ..StackRow::default() };
+        assert_eq!(row_note(&one), "1 repo \u{b7} 1 file");
     }
 
     #[test]

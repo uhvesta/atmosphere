@@ -43,7 +43,7 @@ Complementary "Changes"
     Button "Close panel" description="Close panel"
   #changes-files
   #diff-no-changes-yet
-    text "No changes yet"
+    text "No changes against origin/main"
   Button "Compare with…"
   Button "Add repo…"
 Toolbar "Session panels"

@@ -868,14 +868,9 @@ pub(super) fn repo_base(
     let fixed = state.session.open.as_ref().is_some_and(|id| {
         matches!(state.review.targets_of(id).preset, DiffBase::OtherSession(_))
     });
-    // While every repository shares the header's base, the chip shows only
-    // its chevron: the words are the header's (D510, amended by D739).
-    let words = fixed
-        || state
-            .session
-            .open
-            .as_ref()
-            .is_some_and(|id| state.review.compares_per_repo(id));
+    // Every repository row says what it compares against in words, even
+    // while the bases agree (UXSIMPLE 1-2, reverses D739's chevron-only
+    // chip): a bare chevron didn't say what it changed.
     let tone = if open { look.accent } else { look.secondary };
     let toggle = ui.clone();
     let repo = diff.repo.clone();
@@ -887,58 +882,42 @@ pub(super) fn repo_base(
             cx,
         )
     };
-    let against = if words {
-        row()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(spoken)
-            .aria_expanded(open)
-            .text_size(px(11.5))
-            .whitespace_nowrap()
-            .min_w_0()
-            .child(text("against").flex_shrink_0().mr(px(3.)).text_color(rgb(tone)))
-            // A long base (the daemon's "not reviewed yet: …") ends in
-            // an ellipsis rather than pushing Push & PR out of the panel.
-            .child(
-                text(diff.base.clone())
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(rgb(if open { look.accent } else { look.text })),
-            )
-            .when(!fixed, |chip| {
-                chip.cursor_pointer()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .ml(px(3.))
-                            .child(icon(IconName::ChevronsUpDown, tone, 12.)),
-                    )
-                    .on_click(pick)
-            })
-            .test_support()
-            .into_any_element()
-    } else {
-        // The chevron alone: a small icon button, so it keeps a target, a
-        // hover fill, a focus ring and a tooltip that says what it changes.
-        Quiet {
-            button: Button::new(id)
-                .small()
-                .w(px(24.))
-                .h(px(20.))
-                .flex_shrink_0()
-                .icon(icon(IconName::ChevronsUpDown, tone, 12.))
-                .tooltip(format!("{}: against {} · change", diff.repo, diff.base))
-                .accessibility_label(spoken)
-                .on_click(pick),
-            color: tone,
-            fill: look.fill,
-        }
-        .into_any_element()
-    };
+    let against = row()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(spoken)
+        .aria_expanded(open)
+        .text_size(px(11.5))
+        .whitespace_nowrap()
+        .min_w_0()
+        .overflow_hidden()
+        .text_color(rgb(tone))
+        .child(text("against").flex_shrink_0().mr(px(3.)))
+        // A long base (the daemon's "not reviewed yet: …") ends in
+        // an ellipsis rather than pushing Push & PR out of the panel.
+        .child(
+            text(diff.base.clone())
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis(),
+        )
+        .when(!fixed, |chip| {
+            chip.cursor_pointer()
+                .hover(|chip| chip.text_color(rgb(look.accent)))
+                .on_click(pick)
+        })
+        .test_support();
     // Not clipped: the menu below is a deferred child that must draw past it.
-    // The chip's text ellipsizes, and it gives way before the repo name.
-    div().relative().min_w_0().flex_shrink(4.).child(against).when_some(picker, |wrap, picker| {
+    // The chip's text ellipsizes, but never below "against" and about ten
+    // characters, so it can't slide over the totals.
+    // A short base never shrinks; a long one keeps "against" and about ten
+    // characters before its ellipsis, and the repo name gives way first.
+    let long = diff.base.chars().count() > 10;
+    div()
+        .relative()
+        .when(long, |wrap| wrap.min_w(px(112.)).flex_shrink(4.))
+        .when(!long, |wrap| wrap.flex_shrink_0())
+        .child(against).when_some(picker, |wrap, picker| {
         // Deferred, so the menu paints over the panel and takes the clicks
         // there; the scrim first, then the menu.
         wrap.child(deferred(repo_base_scrim(ui)))

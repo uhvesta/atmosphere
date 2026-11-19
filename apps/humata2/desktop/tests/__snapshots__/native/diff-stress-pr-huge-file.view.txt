@@ -41,14 +41,15 @@ Complementary "Changes"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
   #diff-file-bar
-    text "refund.rs"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
-    text "acme/api ·"
-    text "src/"
     #diff-file-count
       text "1 of 1"
+    text "refund.rs"
+    text "acme/api"
+    text "·"
+    text "src/"
   #review-diff
     #review-repo-acme/api
       text "api"
@@ -270,8 +271,7 @@ Complementary "Changes"
         #change-code-35-0
           text "let value_35 = 35;"
   Button "Submit review…"
-  #review-drafts-0-0
-    text "No drafts"
+  Label "No drafts"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 1"

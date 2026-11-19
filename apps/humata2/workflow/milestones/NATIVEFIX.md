@@ -20,3 +20,14 @@ Manager: NATIVEFIX (Opus). Claims: the failing tests' code paths in `ui/src/pane
 - After those fixes every remaining native and panels failure was a snapshot. The view-tree diffs all come from the shipped Diff redesign (shared `#panel-header` with Full screen, the file bar with Previous/Next file, footer Push & PR… / Add repo…, Submit review… moved to the footer, new drafts wording, the Back button, the reordered shortcuts sheet), plus 15 new `diff-stress-*` frames. Re-recorded native and panels: 160 files, every PNG paired with a changed view text.
 - design_test: 19 of 108 frames differ, all in the Diff panel (same redesign); 122/123/124 have no golden yet. Not recorded: they wait for Fable through main. New images are parked in the scratchpad `nativefix/design-new/`.
 - Gate run: native_test, panels_test and holder_swap_identity_test pass together (native 252 s). design_test needs only the 19 golden picks. Under load native gets close to its 300 s timeout (252 s), and design_test hit it once (300 s) when run beside the other suites.
+- 2026-11-19 (DIFFUI manager, GOLDENFIX) fixes for Fable's rejects:
+  - The Diff panel fits every width. The file-bar and file-header names keep room and ellipsize, with the full name on hover. The repo base chip can't slide over the totals.
+  - No label is said twice: a binary or mode-only file says it once, in the body. The review footer shows its drafts line only in full screen.
+  - The ↗ Open in editor icon draws; ArrowUpRight was added to both icon lists.
+  - Cards are capped at 720 pt (DS-15). OriginMain reads "No changes against main" (DS-32).
+  - Back is a ghost in the session header and the top bar (DS-58).
+  - Behaviour asserts were added in `diff_stress.rs`, `pr_session.rs` (frame 68 submit inside the panel), `diff_view.rs` (one note) and `diff_full_screen.rs` (Close in full screen).
+- 2026-11-19, the owner's marks (D848):
+  - Repo rows say "against X" in words.
+  - Full screen reads "Exit full screen", with Close.
+  - Stack rows name their repos.

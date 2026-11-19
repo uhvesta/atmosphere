@@ -228,7 +228,7 @@ pub fn title(panel: Panel) -> &'static str {
 /// the panel puts beside it, and the Full screen and Close buttons; a
 /// double-click on it goes full screen. In full screen it is the one 52 pt
 /// title bar: the window lights, "# place › session", the title with the
-/// extra beside it, and Show the terminal. The Desk session's panels draw it
+/// extra beside it, Exit full screen and Close. The Desk session's panels draw it
 /// too.
 pub fn panel_header(
     ui: &Rc<Ui>,
@@ -238,7 +238,22 @@ pub fn panel_header(
     extra: Option<Div>,
     look: Look,
 ) -> Div {
-    header_with(ui, panel, full, extra, look, session_line(state))
+    header_with(ui, panel, full, extra, None, look, session_line(state))
+}
+
+/// [`panel_header`] with `actions` drawn before Exit full screen in the
+/// full-screen bar (the Diff's New agent tab, UXSIMPLE 3-3); beside the
+/// terminal they don't show.
+pub fn panel_header_actions(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    panel: Panel,
+    full: bool,
+    extra: Option<Div>,
+    actions: Option<Div>,
+    look: Look,
+) -> Div {
+    header_with(ui, panel, full, extra, actions, look, session_line(state))
 }
 
 /// "# place › session" of the open session, for the full-screen title bar.
@@ -261,6 +276,7 @@ pub fn header_with(
     panel: Panel,
     full: bool,
     extra: Option<Div>,
+    actions: Option<Div>,
     look: Look,
     line: Option<SharedString>,
 ) -> Div {
@@ -276,7 +292,7 @@ pub fn header_with(
             .child(lights())
             .child(div().w(px(4.)))
             .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
-            // The names ellipsize; Show the terminal always stays. The title
+            // The names ellipsize; Exit full screen and Close always stay. The title
             // column is not clipped: the base menu is a deferred child that
             // must draw past it.
             .child(
@@ -304,13 +320,25 @@ pub fn header_with(
                     ),
             )
             .child(div().flex_1())
+            .children(actions.map(|actions| actions.flex_shrink_0()))
+            // UXSIMPLE 2-2: the way back says what it does, and the panel
+            // can close from full screen too (owner's mark).
             .child(panel_action(
                 ui,
                 "show-terminal",
-                "Show the terminal",
+                "Exit full screen",
                 AppAction::Session(SessionAction::ToggleWiden),
                 look,
                 false,
+            ))
+            .child(icon_action(
+                ui,
+                "close-panel",
+                "Close panel",
+                "Close panel",
+                IconName::X,
+                AppAction::Session(SessionAction::SetPanel(None)),
+                look,
             ));
     }
     let toggle = ui.clone();

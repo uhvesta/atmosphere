@@ -24,8 +24,7 @@ fn repo_head(look: Look, name: &'static str, base: &'static str, add: &'static s
         .text_size(px(11.5))
         .whitespace_nowrap()
         .child(div().flex_shrink_0().mr(px(3.)).text_color(c(if open { look.accent } else { look.secondary })).child("against"))
-        .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(c(if open { look.accent } else { look.text })).child(base))
-        .child(div().flex_shrink_0().ml(px(3.)).child(small_icon(IconName::ChevronsUpDown, if open { look.accent } else { look.secondary })));
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(c(if open { look.accent } else { look.secondary })).child(base));
     div()
         .flex()
         .items_center()
@@ -115,7 +114,7 @@ fn diff_lines(look: Look) -> Div {
         .text_size(px(11.5))
         .line_height(px(17.))
         .bg(c(look.term))
-        .child(div().px(px(10.)).text_color(c(look.term_dim)).child("@@ -40,7 +40,12 @@ impl Client {"))
+        .child(div().px(px(10.)).text_color(c(look.term_dim)).child("impl Client {"))
         .child(line("40", None, "    pub async fn post(&self, entry: Entry)"))
         .child(line("41", Some(look.del_bg), "-       self.db.insert_legacy(&entry).await?;"))
         .child(line("41", Some(look.add_bg), "+       let tx = self.db.begin().await?;"))
@@ -127,6 +126,7 @@ fn diff_lines(look: Look) -> Div {
 /// A saved draft with its Send, as session.rs draws a draft in the panel.
 fn draft_card(look: Look, who: &'static str, text: &'static str) -> Div {
     div()
+        .max_w(px(720.))
         .mx(px(10.))
         .my(px(6.))
         .p(px(9.))
@@ -182,14 +182,16 @@ fn file_view(look: Look) -> Div {
                         .child(secondary(look, "src/").min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
                         .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("client.rs")),
                 )
-                .child(secondary(look, "Open in editor").flex_shrink_0().opacity(0.5)),
+                .child(div().w(px(20.)).h(px(20.)).flex_shrink_0().flex().items_center().justify_center().child(small_icon(IconName::ArrowUpRight, look.secondary))),
         )
         .child(diff_lines(look))
         .child(session::comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
         .child(draft_card(look, "You", "Keep insert_legacy until the backfill ends."))
 }
 
-fn footer(look: Look) -> Div {
+/// Beside the terminal the footer drops the drafts text: the button already
+/// carries the count, and it never shrinks (DS-45). Full screen keeps it.
+fn footer(look: Look, full: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -199,7 +201,7 @@ fn footer(look: Look) -> Div {
         .border_color(c(look.line))
         .child(session::quiet(look, "Push & PR…"))
         .child(session::quiet(look, "Add repo…"))
-        .child(secondary(look, "1 draft comment"))
+        .when(full, |row| row.child(secondary(look, "1 draft comment")))
         .child(div().flex_1())
         .child(button(look, Kind::Primary, "Send 1 comment"))
 }
@@ -243,7 +245,7 @@ fn panel_body(look: Look, full: bool, overlay: Option<Div>) -> Div {
         // Full screen has one title bar (the shell's), carrying the picker.
         .when(!full, |panel| panel.child(session::panel_header(look, "Diff", false, Some(popup(look, "Comparing per repo")))))
         .child(content)
-        .child(footer(look))
+        .child(footer(look, full))
         .children(overlay)
 }
 

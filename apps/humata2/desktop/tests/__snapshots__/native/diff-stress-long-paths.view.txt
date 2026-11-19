@@ -42,17 +42,21 @@ Complementary "Changes"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
   Button "Files" expanded
-    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
     #diff-file-count
       text "1 of 1"
+    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
+    text "api"
+    text "·"
   #changes-files
     #repo-row-0
       Button "Collapse api"
       text "api"
-      Button "api: against main" description="api: against main · change"
+      Button "api: against main" collapsed
+        text "against"
+        text "main"
       #repo-totals-0
         text "+1"
         text "−0"
@@ -62,7 +66,9 @@ Complementary "Changes"
       text "+1"
       text "−0"
   text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
-  text "api ·"
+  text "api"
+  text "·"
+  text "a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
     #change-hunk-0

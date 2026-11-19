@@ -204,6 +204,7 @@ pub(super) fn file_row(
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
+                .text_ellipsis()
                 .into_any_element()
         } else {
             // The name comes first and keeps its room; the directory,
@@ -221,8 +222,10 @@ pub(super) fn file_row(
                     text(name.to_owned())
                         .id(SharedString::from(format!("change-file-name {repo}/{path}")))
                         .test_support()
-                        .flex_shrink_0()
-                        .max_w_full()
+                        // Shrinks only once the folder (basis 0) has none left,
+                        // so a long name ends in "…" before the counts.
+                        .min_w_0()
+                        .flex_shrink(1.)
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis(),
@@ -405,7 +408,8 @@ fn step_button(
         })
 }
 
-/// Open in editor: drawn dimmed and inert, as no editor client exists yet.
+/// Open in editor: the ↗ icon (DS-24), inert, as no editor client
+/// exists yet.
 pub(super) fn open_in_editor(look: Look) -> Button {
     Button::new("change-open-editor")
         .ghost()
@@ -414,7 +418,6 @@ pub(super) fn open_in_editor(look: Look) -> Button {
         .h(px(20.))
         .p_0()
         .flex_shrink_0()
-        .opacity(0.5)
         .icon(icon(IconName::ArrowUpRight, look.secondary, 12.))
         .tooltip("Open in editor")
         .accessibility_label("Open in editor")
@@ -522,33 +525,47 @@ pub(super) fn file_bar(
                 )))
         })
         .child(
-            // The folder gives way first, then the repo; the name keeps its room.
+            // The folder gives way first: below 40 pt it wraps onto a hidden
+            // second line instead of showing a sliver. The repo keeps a quarter
+            // of the row and the name most of the rest, each ending in "…";
+            // the "·" after the repo always shows.
             row()
                 .flex_1()
                 .min_w_0()
+                .h(px(18.))
+                .flex_wrap()
                 .overflow_hidden()
                 .gap(px(4.))
                 .child(full_text(
-                    secondary(look, format!("{} ·", repo_label(&diff.repo)))
+                    secondary(look, repo_label(&diff.repo))
                         .id("diff-file-bar-repo")
-                        .min_w_0()
-                        .flex_shrink(4.)
+                        .flex_shrink_0()
+                        .max_w(relative(0.25))
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis(),
                     repo_label(&diff.repo),
                 ))
-                .child(
+                .child(secondary(look, "·").flex_shrink_0())
+                .child(full_text(
                     text(file_name.to_owned())
+                        .id("diff-file-bar-name")
                         .flex_shrink_0()
+                        // With the repo's quarter, the "·" and the gaps this
+                        // still fits line one at any panel width over ~180 pt,
+                        // so only the folder ever wraps away.
+                        .max_w(relative(0.68))
+                        .overflow_hidden()
                         .whitespace_nowrap()
+                        .text_ellipsis()
                         .font_weight(FontWeight::MEDIUM),
-                )
+                    file_name.to_owned(),
+                ))
                 .child(full_text(
                     secondary(look, dir.to_owned())
                         .id("diff-file-bar-dir")
-                        .min_w_0()
-                        .flex_shrink(8.)
+                        .min_w(px(40.))
+                        .flex_shrink(1.)
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis(),

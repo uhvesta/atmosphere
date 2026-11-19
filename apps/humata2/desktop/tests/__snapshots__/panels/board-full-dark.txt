@@ -1,6 +1,7 @@
 Complementary "Board"
   text "# api › Token refresh retry"
-  Button "Show the terminal"
+  Button "Exit full screen"
+  Button "Close panel" description="Close panel"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"

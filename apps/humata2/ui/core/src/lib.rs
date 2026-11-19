@@ -42,6 +42,7 @@ gpui_kit::assets::icon_assets!(
         X,
         ArrowUp,
         ArrowRight,
+        ArrowUpRight,
         Ellipsis,
         Circle,
         CircleX,

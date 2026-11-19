@@ -1,0 +1,111 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" selected expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482"
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #panel-header
+    Button "Against main"
+      text "main"
+    text "Diff"
+    text "against"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  Button "Files" expanded
+    Button "Previous file" description="Previous file  ⌥⌘↑"
+    Button "Next file" description="Next file  ⌥⌘↓"
+    Button "Open in editor" description="Open in editor"
+    #diff-file-count
+      text "1 of 1"
+    text "client.rs"
+    text "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+    text "·"
+    text "src/"
+  #changes-files
+    #repo-row-0
+      Button "Collapse rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      text "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      Button "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr: against main" collapsed
+        text "against"
+        text "main"
+      #repo-totals-0
+        text "+1"
+        text "−0"
+    ListBoxOption "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr/src/client.rs" selected
+      #change-file-name rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr/src/client.rs
+        text "client.rs"
+      text "src/"
+      text "+1"
+      text "−0"
+  text "client.rs"
+  text "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+  text "·"
+  text "src/"
+  Button "Scroll long lines" description="Wrap long lines  ⌥Z"
+  Code "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr/src/client.rs"
+    #change-hunk-0
+    #change-line-1
+      Button "Comment on line 1"
+        text "1"
+      text "+"
+      #change-code-1-0
+        text "fn main() {}"
+  Button "Push & PR…"
+  Button "Add repo…"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 2"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Back" description="Back  ⌘["
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Button "Open it"
+Button "Later"
+Button "Not now"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused
