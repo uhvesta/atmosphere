@@ -30,7 +30,7 @@ fn held(repo: &str, last_used_at_ms: i64) -> LibraryRepo {
 fn setup() -> (TestStore<App>, Fakes, Arc<TestClock>) {
     let workspace = fixture::design();
     let clock = Arc::new(TestClock::new());
-    let (clients, fakes) = Clients::fake(workspace.clone(), clock.clone());
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), clock.clone());
     fakes.daemon.set_github_repos(
         ["acme/ledger", "acme/api", "acme/web", "octo/notes", "octo/infra"]
             .map(str::to_owned)

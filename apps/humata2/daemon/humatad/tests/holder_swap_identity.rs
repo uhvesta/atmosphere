@@ -5,7 +5,7 @@
 //! VERIFY 0.2.3: the tab still named the old holder until the resume was
 //! checked, so the agent's MCP child was refused and its token revoked.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

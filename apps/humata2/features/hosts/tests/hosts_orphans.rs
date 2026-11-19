@@ -37,7 +37,7 @@ fn holder(session: Option<&str>, stopped: bool) -> RunningHolder {
 /// The Hosts page on the design workspace, its daemon listing `holders`.
 fn page(holders: Vec<RunningHolder>) -> (TestStore<Hosts>, FakeDaemon, Arc<Workspace>) {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     fakes.daemon.set_running_holders(holders);
     let store = TestStore::new(HostsState::default(), Hosts::new(clients))
         .with_timeout(Duration::from_secs(30))

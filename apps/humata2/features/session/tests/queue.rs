@@ -16,7 +16,7 @@ fn setup(agent: Agent, turn: Turn) -> (TestStore<Sessions>, Fakes) {
         .unwrap();
     session.agent = agent;
     session.turn = turn;
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         open: Some(SessionId::new("ledger")),

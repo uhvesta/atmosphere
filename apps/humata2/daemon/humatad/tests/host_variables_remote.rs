@@ -2,9 +2,8 @@
 //! it belongs to over the link; the box keeps it in its own state folder and
 //! no other; listing shows names only; a box that is offline answers at once.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 

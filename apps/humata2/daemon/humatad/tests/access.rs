@@ -2,7 +2,7 @@
 //! rules and the defaults new channels start with, a restart keeps them,
 //! and no agent can change them.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

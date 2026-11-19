@@ -11,9 +11,8 @@
 //! new run answers with what only it can say (its new bundle id); a call
 //! that fails while the daemon is between runs is asked again.
 
-mod common;
-#[path = "common/upgrade.rs"]
-mod upgrade;
+use humatad_test_common as common;
+use humatad_test_common::upgrade;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

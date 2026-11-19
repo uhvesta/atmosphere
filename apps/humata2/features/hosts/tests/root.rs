@@ -29,7 +29,7 @@ fn plan(running: &[&str]) -> RootPlan {
 /// The hosts page on the standard fakes, whose root plan is `plan`.
 fn page(plan: RootPlan) -> (TestStore<Hosts>, FakeMachines) {
     let workspace = Arc::new(fixture::standard());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     fakes.machines.set_root_plan(Ok(plan));
     let state = HostsState { workspace, ..HostsState::default() };
     let store = TestStore::new(state, Hosts::new(clients)).non_exhaustive();

@@ -2,7 +2,7 @@
 //! shell whose holder died with it comes back, and the start says so in
 //! GetServerInfo's `last_start`.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Command;

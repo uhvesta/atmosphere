@@ -6,9 +6,8 @@
 //!
 //! Waits are on the host's feeds (the rig's `wait_session`, `ended`).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use common::git;
 use humata2_grpc::humata::v1 as pb;

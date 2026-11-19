@@ -3,7 +3,7 @@
 //! FileChanged event on the session's topic, so the palette's Files group
 //! stays current without asking again.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::time::Duration;

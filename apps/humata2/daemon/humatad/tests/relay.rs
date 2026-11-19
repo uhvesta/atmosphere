@@ -6,7 +6,7 @@
 //! DaemonService.BeginRelay and CompleteRelay, and Hello offers the nonce
 //! BeginRelay gave. Enabling this file is a move to `tests/relay.rs`.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

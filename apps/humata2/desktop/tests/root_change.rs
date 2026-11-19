@@ -44,7 +44,7 @@ impl App {
         cx.update(humata2_ui::init);
         let mut workspace = fixture::standard();
         workspace.machines.retain(|machine| machine.id == mac());
-        let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+        let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
         fakes.machines.set_root_plan(Ok(plan));
         let fake = fakes.machines.clone();
         let ui = Ui::new(runtime.handle(), clients, Recorder::new());

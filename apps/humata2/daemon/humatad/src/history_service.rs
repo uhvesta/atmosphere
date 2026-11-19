@@ -32,7 +32,7 @@
 
 mod follow;
 mod remote;
-pub(crate) mod rfc3339;
+pub(crate) use humata2_rpc_kit::rfc3339;
 mod source;
 
 use std::path::PathBuf;
@@ -458,9 +458,7 @@ fn other_channel(channel: &str) -> Status {
     )
 }
 
-pub(crate) fn timestamp(text: &str) -> Option<humata2_grpc::Timestamp> {
-    rfc3339::parse(text)
-}
+pub(crate) use humata2_rpc_kit::rfc3339::timestamp;
 
 /// The scrubber for this machine's host variable values, for a read that
 /// leaves the daemon; it fails rather than read unscrubbed (D189.3).

@@ -28,29 +28,18 @@ rust_tonic_services(
     proto = "//apps/humata2/api/proto:humata2_proto",
 )
 
-# The message types and the generated clients and servers, as one module.
-rust_library(
+# The message types and the generated clients and servers, as one module
+# (alias to //apps/humata2/api/grpc:all so every domain crate shares nominal
+# tonic trait and prost message identity with humatad).
+alias(
     name = "grpc",
-    srcs = ["codegen/grpc.rs"],
-    compile_data = [":tonic_gen"],
-    crate_name = "humata2_grpc",
-    # The generated code is written for this edition.
-    edition = "2021",
-    rustc_env = {"HUMATA2_TONIC_RS": "$(execpath :tonic_gen)"},
-    # Generated code: clippy has nothing to say that we could act on.
-    tags = ["noclippy"],
-    # The app's real daemon client speaks the same generated clients.
+    actual = "//apps/humata2/api/grpc:all",
     visibility = [
         "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
         # The desktop live flows call ViewService as a session's agent.
         "//apps/humata2/desktop:__pkg__",
-    ],
-    deps = [
-        "//apps/humata2/api/proto:humata2_rust",
-        "@crates//:prost",
-        "@crates//:tonic",
-        "@crates//:tonic-prost",
     ],
 )
 
@@ -61,6 +50,7 @@ FAULT_SWAPPED = [
     "//apps/humata2/daemon/durable",
     "//apps/humata2/daemon/holder",
     "//apps/humata2/daemon/revive",
+    "//apps/humata2/daemon/runtime",
     "//apps/humata2/daemon/sessions",
     "//apps/humata2/daemon/store",
     "//apps/humata2/daemon/transfers",
@@ -75,6 +65,7 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/app_peer",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/marks",
+    "//apps/humata2/daemon/ports",
     # REPOS (RL-5): the repo library.
     "//apps/humata2/daemon/repo_library",
     "//apps/humata2/daemon/mcp",
@@ -82,6 +73,7 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/contain",
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
+    "//apps/humata2/daemon/rpc_kit",
     "//apps/humata2/daemon/vt_authority",
     "//apps/humata2/terminal/vt:ghostty_vt",
     "@crates//:clap",
@@ -111,9 +103,47 @@ FAULTS_DEPS = SHARED_DEPS + [
     "//apps/humata2/daemon/durable:durable_faults",
     "//apps/humata2/daemon/holder:holder_faults",
     "//apps/humata2/daemon/revive:revive_faults",
+    "//apps/humata2/daemon/runtime:runtime_faults",
     "//apps/humata2/daemon/sessions:sessions_faults",
     "//apps/humata2/daemon/store:store_faults",
     "//apps/humata2/daemon/transfers:transfers_faults",
+]
+
+FULL_DAEMON_DEPS = DAEMON_DEPS + ["//apps/humata2/daemon/svc_catalog"]
+
+FULL_FAULTS_DEPS = FAULTS_DEPS + ["//apps/humata2/daemon/svc_catalog:svc_catalog_faults"]
+
+EXTRACTED_SRCS = [
+    "src/agent_gate.rs",
+    "src/agent_service.rs",
+    "src/agent_switches.rs",
+    "src/compression.rs",
+    "src/history_service/rfc3339.rs",
+    "src/link_proof.rs",
+    "src/log.rs",
+    "src/paste.rs",
+    "src/ready.rs",
+    "src/screen_question.rs",
+    "src/sync.rs",
+    "src/terminal_uuid.rs",
+    "src/tool_path.rs",
+]
+
+EXTRACTED_NO_CATALOG_SRCS = [s for s in EXTRACTED_SRCS if s != "src/agent_gate.rs"]
+
+BOARD_SRCS = ["src/board_service.rs"] + glob(["src/board_service/**/*.rs"])
+
+MCP_SRCS = ["src/mcp.rs"] + glob(["src/mcp/**/*.rs"])
+
+REVIEW_SRCS = ["src/review.rs"] + glob(["src/review/**/*.rs"])
+
+ALL_SVC_FEATURES = [
+    "svc_away",
+    "svc_board",
+    "svc_catalog",
+    "svc_files",
+    "svc_mcp",
+    "svc_review",
 ]
 
 # The signed app's identity, which the daemon checks socket peers against
@@ -126,10 +156,14 @@ APP_IDENTITY = {
 # The release daemon: a call with no credential is refused (SEC-9).
 rust_binary(
     name = "humatad2",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS,
+    ),
+    crate_features = ALL_SVC_FEATURES,
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS,
 )
 
 # TS-2: humatad2, the holder, the humata CLI and the stack CLI for every
@@ -187,8 +221,11 @@ tools_bundle(
 rust_binary(
     name = "humatad2_admin",
     testonly = True,
-    srcs = glob(["src/**/*.rs"]),
-    crate_features = ["admin"],
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS,
+    ),
+    crate_features = ["admin"] + ALL_SVC_FEATURES,
     rustc_env = APP_IDENTITY,
     # The app client's parity suite and the app's live flows run against it too.
     visibility = [
@@ -196,7 +233,7 @@ rust_binary(
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
     ],
-    deps = DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS,
 )
 
 # The admin test daemon with every fault point live, its own and its
@@ -206,7 +243,56 @@ rust_binary(
 rust_binary(
     name = "humatad2_faults",
     testonly = True,
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "faults",
+    ] + ALL_SVC_FEATURES,
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_FAULTS_DEPS,
+)
+
+# ---------------------------------------------------------------------------
+# Scoped Tier-B test daemon profiles (SPLIT §3.3): omit MCP and unneeded
+# domain services so unrelated edits keep these test binaries cached.
+# ---------------------------------------------------------------------------
+
+rust_binary(
+    name = "humatad2_test_power_cut",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = ["admin"],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_power_cut_release",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_power_cut_faults",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
     crate_features = [
         "admin",
         "faults",
@@ -214,6 +300,161 @@ rust_binary(
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
     deps = FAULTS_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_machines",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "svc_away",
+        "svc_catalog",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_machines_release",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "svc_away",
+        "svc_catalog",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_review_remote",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "svc_files",
+        "svc_review",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_review_remote_faults",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "faults",
+        "svc_files",
+        "svc_review",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_catalog_remote",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "svc_away",
+        "svc_catalog",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_away_board",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "svc_away",
+        "svc_board",
+        "svc_catalog",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_away_board_release",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "svc_away",
+        "svc_board",
+        "svc_catalog",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_transfers",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "svc_catalog",
+        "svc_files",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_DAEMON_DEPS,
+)
+
+rust_binary(
+    name = "humatad2_test_transfers_faults",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+    ),
+    crate_features = [
+        "admin",
+        "faults",
+        "svc_catalog",
+        "svc_files",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FULL_FAULTS_DEPS,
 )
 
 # The holder, for the app client's parity suite: the daemon there needs one
@@ -277,6 +518,37 @@ rust_library(
         "//apps/humata2/daemon/machines:fake_machine",
         "//apps/humata2/daemon/store",
         "//apps/humata2/testing/tmp_folder",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
+# Shared integration-test harness compiled once instead of 216x.
+rust_library(
+    name = "test_common",
+    testonly = True,
+    srcs = glob(["tests/common/**/*.rs"]),
+    crate_name = "humatad_test_common",
+    crate_root = "tests/common/lib.rs",
+    deps = [
+        ":grpc",
+        "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/daemon/machines",
+        "//apps/humata2/daemon/machines:fake_machine",
+        "//apps/humata2/daemon/passphrase",
+        "//apps/humata2/daemon/repo_library",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/testing/tmp_folder",
+        "@crates//:hmac",
         "@crates//:hyper-util",
         "@crates//:prost",
         "@crates//:rustix",
@@ -1004,9 +1276,249 @@ TEST_NEEDS = {
     ],
 }
 
+# Proven Tier-B power-cut / move / upgrade / lifecycle / terminal / inbox /
+# channel / desk / session tests routed onto `:humatad2_test_power_cut`
+# (+ `_release` / `_faults`) so edits to MCP, review, board, files, catalog,
+# or away keep these suites cached (SPLIT_CAPABILITY_MATRIX.md §3.1).
+POWER_CUT_SCOPED_TESTS = [
+    "adopt_holder",
+    "agent_send_machine",
+    "archive",
+    "archive_live",
+    "change_root",
+    "channel_add",
+    "channel_delete_live",
+    "channel_delete_remote",
+    "channel_desk",
+    "channel_desk_close",
+    "channel_desk_retarget",
+    "channel_folder_follows",
+    "channel_grid",
+    "channel_rename_live",
+    "channel_rename_roam",
+    "channel_repo_propose",
+    "channels",
+    "checkpoint",
+    "context_fork",
+    "continue_in",
+    "continue_in_journal",
+    "continue_in_remote",
+    "conversation_follows",
+    "daemon",
+    "delete_channel",
+    "delete_launching",
+    "desk",
+    "desk_agent_missing",
+    "desk_close_remote",
+    "desk_events",
+    "desk_events_remote",
+    "desk_folder_files",
+    "desk_folder_migration",
+    "desk_hide_live",
+    "desk_into_channel",
+    "desk_into_channel_roam",
+    "desk_migrate_remote",
+    "desk_move",
+    "desk_move_live",
+    "desk_picked_remote",
+    "desk_roam",
+    "desk_roam_upgrade",
+    "desk_start_host_cut",
+    "desk_stuck_remote",
+    "desk_versions_remote",
+    "destroy_holders",
+    "detach_live",
+    "doc_comments",
+    "doc_history",
+    "doc_version_diff",
+    "doc_versions",
+    "doctor",
+    "faults",
+    "fork",
+    "fork_channel",
+    "fork_remote",
+    "gh_repos",
+    "holder_gone",
+    "holder_swap_identity",
+    "hooks",
+    "hooks_remote",
+    "host_variables_move",
+    "inbox",
+    "lagged_attach",
+    "matrix",
+    "move_cheap",
+    "move_session",
+    "move_session_freeze",
+    "move_typing",
+    "own_copy_remote",
+    "paste",
+    "pointers",
+    "power_cut_both",
+    "power_cut_focus",
+    "power_cut_host",
+    "power_cut_machine",
+    "power_cut_start_box",
+    "push",
+    "push_base",
+    "push_many",
+    "push_remote",
+    "push_remote_restart",
+    "ready",
+    "ready_gate",
+    "rebuild_session",
+    "remote_archive",
+    "remote_rename",
+    "remove_machine_cut",
+    "remove_machine_live",
+    "remove_machine_plan",
+    "replies",
+    "repo_library_adds",
+    "restart",
+    "restart_operations",
+    "restore_channel_cut",
+    "resume_exits_at_once",
+    "resume_exits_at_once_remote",
+    "running_holders",
+    "running_holders_remote",
+    "screen_questions",
+    "screen_questions_remote",
+    "session_add_repo",
+    "session_events",
+    "session_model",
+    "session_notes",
+    "sessions",
+    "socket_paths",
+    "start_fresh",
+    "start_resume_failed_remote",
+    "start_stuck_remote",
+    "state_lock",
+    "stop",
+    "stop_box",
+    "stop_launching",
+    "stop_sessions",
+    "tab_tools",
+    "terminal",
+    "terminal_program",
+    "turns",
+    "upgrade_box",
+    "upgrade_cut",
+    "upgrade_holders",
+    "upgrade_inbox",
+    "upgrade_kinds",
+    "upgrade_refusals",
+    "upgrade_remote_holders",
+]
+
+# Proven Tier-B machines / peer tests routed onto `:humatad2_test_machines`
+# (+ `_release`) (SPLIT_CAPABILITY_MATRIX.md §3.2).
+MACHINES_SCOPED_TESTS = [
+    "host_variables",
+    "host_variables_remote",
+    "machine_shell_remote",
+    "machine_shell_remote_linux",
+    "machines",
+    "peer_stdio",
+    "relay",
+    "remote",
+    "remote_history",
+    "storage_remote",
+    "two_machines",
+]
+
+# Proven Tier-B review / PR / views tests routed onto `:humatad2_test_review_remote`
+# (+ `_faults`) (SPLIT_CAPABILITY_MATRIX.md §3.3).
+REVIEW_SCOPED_TESTS = [
+    "comment_tools",
+    "comments",
+    "pr_base",
+    "pr_commits",
+    "pr_diff_stress",
+    "pr_refresh",
+    "pr_review",
+    "pr_review_move",
+    "pr_review_remote",
+    "pr_stopped",
+    "review",
+    "review_bases",
+    "review_file_trees",
+    "review_per_repo",
+    "review_snapshots",
+    "review_stack",
+    "views_forks",
+    "views_plan_notes",
+    "views_remote",
+]
+
+# Proven Tier-B catalog tests routed onto `:humatad2_test_catalog_remote`
+# (SPLIT_CAPABILITY_MATRIX.md §3.4).
+CATALOG_SCOPED_TESTS = [
+    "branch_names",
+    "branch_settings",
+    "codex_trust",
+    "history",
+    "history_tools",
+    "login",
+    "marks",
+    "provider_import",
+    "provider_remove",
+    "providers",
+    "read_marks",
+    "read_marks_remote",
+    "repo_owners",
+    "repo_tools",
+    "repos",
+    "skills",
+    "trash",
+]
+
+# Proven Tier-B away / board tests routed onto `:humatad2_test_away_board`
+# (+ `_release`) (SPLIT_CAPABILITY_MATRIX.md §3.5).
+AWAY_BOARD_SCOPED_TESTS = [
+    "away_approved_board",
+    "away_board_journal",
+    "away_boundary",
+    "away_contain_copy",
+    "away_forward",
+    "away_inbox",
+    "away_left_out",
+    "away_link",
+    "away_login",
+    "away_login_pipe",
+    "away_policy_copy",
+    "away_replay",
+    "board_tools",
+    "boards",
+    "flow_26_10",
+    "stop_access",
+]
+
+# Proven Tier-B files / transfers tests routed onto `:humatad2_test_transfers`
+# (+ `_faults`) (SPLIT_CAPABILITY_MATRIX.md §3.6).
+TRANSFERS_SCOPED_TESTS = [
+    "file_changes",
+    "file_ops",
+    "files",
+    "find_files",
+    "inbox_copy",
+    "received_root",
+    "remote_files",
+    "remote_transfers",
+    "transfer_end",
+    "transfers",
+]
+
 NEED_DATA = {
+    "AB_BASE": [
+        ":humatad2_test_away_board",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "AB_RELEASE": [":humatad2_test_away_board_release"],
     "BASE": [
         ":humatad2_admin",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "CAT_BASE": [
+        ":humatad2_test_catalog_remote",
         "//apps/humata2/daemon/holder:humata2_holder",
     ],
     "FAULTS": [
@@ -1014,24 +1526,93 @@ NEED_DATA = {
         "//apps/humata2/daemon/holder:humata2_holder_faults",
     ],
     "HUMATA": ["//apps/humata2/cli:humata"],
+    "MACH_BASE": [
+        ":humatad2_test_machines",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "MACH_RELEASE": [":humatad2_test_machines_release"],
+    "PC_BASE": [
+        ":humatad2_test_power_cut",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "PC_FAULTS": [
+        ":humatad2_test_power_cut_faults",
+        "//apps/humata2/daemon/holder:humata2_holder_faults",
+    ],
+    "PC_RELEASE": [":humatad2_test_power_cut_release"],
     "RELEASE": [":humatad2"],
+    "REV_BASE": [
+        ":humatad2_test_review_remote",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "REV_FAULTS": [
+        ":humatad2_test_review_remote_faults",
+        "//apps/humata2/daemon/holder:humata2_holder_faults",
+    ],
     "SETSID": [":setsid"],
     "STACK": ["//tools/stack"],
+    "TR_BASE": [
+        ":humatad2_test_transfers",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    "TR_FAULTS": [
+        ":humatad2_test_transfers_faults",
+        "//apps/humata2/daemon/holder:humata2_holder_faults",
+    ],
 }
 
 NEED_ENV = {
+    "AB_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_away_board)",
+    },
+    "AB_RELEASE": {"HUMATAD2_RELEASE": "$(rootpath :humatad2_test_away_board_release)"},
     "BASE": {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
         "HUMATAD2": "$(rootpath :humatad2_admin)",
+    },
+    "CAT_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_catalog_remote)",
     },
     "FAULTS": {
         "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
         "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
     },
     "HUMATA": {"HUMATA": "$(rootpath //apps/humata2/cli:humata)"},
+    "MACH_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_machines)",
+    },
+    "MACH_RELEASE": {"HUMATAD2_RELEASE": "$(rootpath :humatad2_test_machines_release)"},
+    "PC_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_power_cut)",
+    },
+    "PC_FAULTS": {
+        "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
+        "HUMATAD2_FAULTS": "$(rootpath :humatad2_test_power_cut_faults)",
+    },
+    "PC_RELEASE": {"HUMATAD2_RELEASE": "$(rootpath :humatad2_test_power_cut_release)"},
     "RELEASE": {"HUMATAD2_RELEASE": "$(rootpath :humatad2)"},
+    "REV_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_review_remote)",
+    },
+    "REV_FAULTS": {
+        "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
+        "HUMATAD2_FAULTS": "$(rootpath :humatad2_test_review_remote_faults)",
+    },
     "SETSID": {"HUMATA2_SETSID": "$(rootpath :setsid)"},
     "STACK": {"STACK": "$(rootpath //tools/stack:stack)"},
+    "TR_BASE": {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_transfers)",
+    },
+    "TR_FAULTS": {
+        "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
+        "HUMATAD2_FAULTS": "$(rootpath :humatad2_test_transfers_faults)",
+    },
 }
 
 # Each test starts humatad2 and humata2_holder as the real binaries and
@@ -1048,7 +1629,7 @@ NEED_ENV = {
         # 300 s of a medium test. Every wait in them has its own deadline.
         size = "large" if src.removeprefix("tests/").removesuffix(".rs") in RIG_TESTS else "medium",
         timeout = "eternal" if src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_TESTS else None,
-        srcs = [src] + glob(["tests/common/*.rs"]),
+        srcs = [src],
         crate_root = src,
         data = [
             label
@@ -1056,7 +1637,27 @@ NEED_ENV = {
                 src.removeprefix("tests/").removesuffix(".rs"),
                 [],
             )
-            for label in NEED_DATA[need]
+            for label in NEED_DATA[
+                ("PC_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS", "RELEASE"]
+                ) else ("MACH_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in MACHINES_SCOPED_TESTS and
+                    need in ["BASE", "RELEASE"]
+                ) else ("REV_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in REVIEW_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS"]
+                ) else ("CAT_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in CATALOG_SCOPED_TESTS and
+                    need == "BASE"
+                ) else ("AB_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in AWAY_BOARD_SCOPED_TESTS and
+                    need in ["BASE", "RELEASE"]
+                ) else ("TR_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in TRANSFERS_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS"]
+                ) else need
+            ]
         ],
         env = {
             variable: path
@@ -1064,7 +1665,27 @@ NEED_ENV = {
                 src.removeprefix("tests/").removesuffix(".rs"),
                 [],
             )
-            for variable, path in NEED_ENV[need].items()
+            for variable, path in NEED_ENV[
+                ("PC_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS", "RELEASE"]
+                ) else ("MACH_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in MACHINES_SCOPED_TESTS and
+                    need in ["BASE", "RELEASE"]
+                ) else ("REV_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in REVIEW_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS"]
+                ) else ("CAT_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in CATALOG_SCOPED_TESTS and
+                    need == "BASE"
+                ) else ("AB_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in AWAY_BOARD_SCOPED_TESTS and
+                    need in ["BASE", "RELEASE"]
+                ) else ("TR_" + need) if (
+                    src.removeprefix("tests/").removesuffix(".rs") in TRANSFERS_SCOPED_TESTS and
+                    need in ["BASE", "FAULTS"]
+                ) else need
+            ].items()
         },
         # A shard of a power-cut suite traces its operations and cuts each
         # at all of its points: long, but each wait in it has a deadline.
@@ -1075,6 +1696,7 @@ NEED_ENV = {
         target_compatible_with = ["@platforms//os:linux"] if src.removeprefix("tests/").removesuffix(".rs") in LINUX_VM_TESTS else [],
         deps = [
             ":grpc",
+            ":test_common",
             "//apps/humata2/chunk:humata2_chunk",
             "//apps/humata2/daemon/machines",
             "//apps/humata2/daemon/machines:fake_machine",

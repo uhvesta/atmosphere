@@ -3,7 +3,7 @@
 //! session to keep. Nothing is left running for the session, and the
 //! machine lists no holder for its tab.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;

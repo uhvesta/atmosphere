@@ -4,7 +4,7 @@
 //! other one. The folder's own repository is a plain git repository, so the
 //! agent's versions here are plain `git commit`s.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

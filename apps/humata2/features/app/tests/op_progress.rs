@@ -33,7 +33,7 @@ fn refused() -> DaemonError {
 /// A store on the "ledger" session; `prepare` shapes the state first.
 fn store(prepare: impl FnOnce(&mut AppState)) -> TestStore<App> {
     let workspace = fixture::design();
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let id = SessionId::new("ledger");
     let workspace = Arc::new(workspace);
     let mut state = AppState::launch(&clients);
@@ -53,7 +53,7 @@ fn new_session(waiting: bool) -> TestStore<App> {
     if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
         sheet.creating = waiting;
     }
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     TestStore::new(state, App::new(clients)).non_exhaustive()
 }
 
@@ -160,7 +160,7 @@ fn a_waiting_add_repo_sheet_follows_its_operation_and_forgets_it_on_failure() {
             sheet.adding = Some("acme/web".into());
         }
     }
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     let sheet = |store: &TestStore<App>| -> SessionAddRepo {
         store

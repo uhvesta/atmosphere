@@ -4,7 +4,7 @@
 //! reviewed" must show each repo's own change since its own snapshot, whatever
 //! base each repo was shown against when it was marked.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -14,10 +14,10 @@ const SEVEN_DAYS_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// How long a closed scratch folder stays. A test daemon built with the
 /// `admin` feature takes `HUMATA2_DESK_EXPIRE_MS` in milliseconds instead.
 pub(crate) fn expiry_ms() -> i64 {
-    #[cfg(feature = "admin")]
-    if let Some(ms) = std::env::var("HUMATA2_DESK_EXPIRE_MS")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
+    if humata2_rpc_kit::admin::is_admin_mode()
+        && let Some(ms) = std::env::var("HUMATA2_DESK_EXPIRE_MS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
     {
         return ms.max(0);
     }

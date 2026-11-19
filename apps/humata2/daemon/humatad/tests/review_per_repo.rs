@@ -4,7 +4,7 @@
 //! shows against its default branch (origin/HEAD), and a spec that names a
 //! repo outside the session, or one twice, is refused.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Command;

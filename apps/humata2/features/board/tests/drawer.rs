@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn store_with(workspace: Workspace) -> (TestStore<Board>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let store = TestStore::new(
         BoardState {
             workspace: Arc::new(workspace),
@@ -309,7 +309,7 @@ fn a_move_from_an_old_copy_shows_why_refreshes_and_keeps_the_drawer() {
     // In progress (revision 1).
     let on_daemon = with_pay7(fixture::design(), 2, S::InReview);
     let on_screen = with_pay7(fixture::design(), 1, S::InProgress);
-    let (clients, fakes) = Clients::fake(on_daemon, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(on_daemon, Arc::new(TestClock::new()));
     let store = TestStore::new(
         BoardState {
             workspace: Arc::new(on_screen),

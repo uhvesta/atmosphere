@@ -5,9 +5,8 @@
 //! open, which clears the mark there and so here. A host and one box on
 //! the multi-machine rig; every wait is on the host's Sessions feed.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use humata2_grpc::humata::v1 as pb;
 use pb::mark_service_client::MarkServiceClient;

@@ -30,7 +30,7 @@
 //! - A repo added while the machine is offline waits there, then clones
 //!   when the link returns (flow 26.21).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};

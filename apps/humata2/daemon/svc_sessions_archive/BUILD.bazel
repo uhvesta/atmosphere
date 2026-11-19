@@ -1,0 +1,59 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Archive and forget domain service for the 3-way SessionService split
+# (`svc_sessions_archive`; SPLIT_PHASE3_DAEMON §2.3).
+COMMON_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
+    "//apps/humata2/api/grpc:sessions",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:prost",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tonic",
+]
+
+rust_library(
+    name = "svc_sessions_archive",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_sessions_archive",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = COMMON_DEPS + [
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_sessions_common",
+    ],
+)
+
+rust_library(
+    name = "svc_sessions_archive_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_sessions_archive",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = COMMON_DEPS + [
+        "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_sessions_common:svc_sessions_common_faults",
+    ],
+)
+
+rust_test(
+    name = "svc_sessions_archive_unit_test",
+    crate = ":svc_sessions_archive",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

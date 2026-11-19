@@ -152,7 +152,10 @@ rust_library(
     crate_name = "humata2_conversation",
     visibility = [
         "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/sessions_carry:__pkg__",
+        "//apps/humata2/daemon/sessions_core:__pkg__",
         "//apps/humata2/daemon/store:__pkg__",
     ],
     deps = [

@@ -6,7 +6,7 @@
 //! restoring it brings the channel back with its sessions archived. Only the
 //! user can delete. Through a real `humatad2`.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

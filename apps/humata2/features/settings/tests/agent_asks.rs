@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn setup() -> (TestStore<Settings>, FakeDaemon) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     // Pin the switches so the tests don't hang on the fake's defaults.
     fakes.daemon.set_agent_switches(all_on());
     let store = TestStore::new(SettingsState::default(), Settings::new(clients));
@@ -98,7 +98,7 @@ fn a_refused_change_goes_back_and_says_why() {
 
 #[test]
 fn a_custom_kind_has_its_own_switch_and_pickers_still_offer_only_built_in_agents() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let custom = AgentSwitch {
         kind: "my-agent".to_owned(),
         name: "My agent".to_owned(),

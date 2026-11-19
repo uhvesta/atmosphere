@@ -68,7 +68,6 @@ pub(crate) enum Caller {
 pub(crate) enum UserVia {
     /// The app. Only an admin test daemon finds it today: it takes a call
     /// with no credential for the user.
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     App,
     /// A process in the terminal session that this `humata login` bound.
     /// `on_host` says the daemon taking the call is the host's, not a
@@ -730,21 +729,11 @@ pub(crate) struct Authenticate {
     /// none where nothing relays.
     relay: Option<Arc<RelayAuth>>,
     /// Admin mode: a call with no credential is the user. Test daemons
-    /// only; release builds don't have the feature, so not the code.
-    #[cfg(feature = "admin")]
+    /// only; release builds pass `None`.
     admin: Option<Admin>,
 }
 
-/// Whose calls with no credential an admin test daemon takes for the user.
-#[cfg(feature = "admin")]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Admin {
-    /// Anyone's (`--admin`).
-    Anyone,
-    /// Only this process's (`--admin-pid`), so a test can play the app
-    /// while every other process is judged as by a release daemon.
-    Process(i32),
-}
+pub(crate) use humata2_daemon_ports::Admin;
 
 impl Authenticate {
     pub(crate) fn new(
@@ -763,33 +752,15 @@ impl Authenticate {
             processes,
             role,
             relay: None,
-            #[cfg(feature = "admin")]
             admin: None,
         }
     }
 
-    /// Takes a call with no credential from `who` for the user, as a test
+    /// Takes a call with no credential from `admin` for the user, as a test
     /// daemon run with `--admin` or `--admin-pid` does.
-    #[cfg(feature = "admin")]
-    pub(crate) fn admin(
-        identities: Arc<Identities>,
-        logins: Arc<CliLogins>,
-        scripts: Arc<ScriptTokens>,
-        store: Arc<Store>,
-        processes: Arc<dyn Processes>,
-        role: pb::DaemonRole,
-        who: Admin,
-    ) -> Self {
-        Self {
-            identities,
-            logins,
-            scripts,
-            store,
-            processes,
-            role,
-            relay: None,
-            admin: Some(who),
-        }
+    pub(crate) fn with_admin(mut self, admin: Option<Admin>) -> Self {
+        self.admin = admin;
+        self
     }
 
     /// Takes a connection that completed the relay's proof (D144) for the
@@ -804,7 +775,6 @@ impl Authenticate {
     /// then a process inside a session's terminal is not the user, so an
     /// agent can't borrow the app's binary to act as the user.
     fn without_credential(&self, pid: Option<i32>, app: bool) -> Option<Caller> {
-        #[cfg(feature = "admin")]
         match self.admin {
             Some(Admin::Anyone) => return Some(Caller::User(UserVia::App)),
             Some(Admin::Process(admin)) if pid == Some(admin) => {
@@ -864,7 +834,6 @@ impl Authenticate {
     fn token_is_in_its_tree(&self, holder: &Holder, pid: Option<i32>) -> Result<(), Status> {
         // An `--admin` test daemon lets the test process stand in for any
         // tab's shell. `--admin-pid` and release daemons enforce.
-        #[cfg(feature = "admin")]
         if matches!(self.admin, Some(Admin::Anyone)) {
             return Ok(());
         }

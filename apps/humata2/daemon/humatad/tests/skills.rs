@@ -9,7 +9,7 @@
 //! takes `--skills-home` and registers SkillsService (see the enable lines);
 //! then move it to tests/skills.rs, where the BUILD glob gives it its target.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};

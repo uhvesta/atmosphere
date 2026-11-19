@@ -2,9 +2,8 @@
 //! box changes it (the agent saves a version), with no call to the host
 //! and no poll. A host and one box on the multi-machine rig.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use common::{WAIT, git};
 use humata2_grpc::humata::v1 as pb;

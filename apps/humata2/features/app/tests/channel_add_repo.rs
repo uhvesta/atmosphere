@@ -31,7 +31,7 @@ fn setup() -> (TestStore<App>, Fakes, ChannelId) {
     let Some(channel) = workspace.channels.first().map(|channel| channel.id.clone()) else {
         panic!("the design workspace has a channel");
     };
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes
         .daemon
         .set_github_repos(["octo/notes", "octo/infra"].map(str::to_owned).to_vec());

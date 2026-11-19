@@ -3,7 +3,7 @@
 //! a clone that fails records nothing. The library file is opened here
 //! beside the daemon, which is fine for a WAL database.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Daemon, create_channel, error_of, finished, repo_ref, shell_token, start_session, start_world, wait_status,

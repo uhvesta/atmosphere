@@ -1,7 +1,7 @@
 //! A terminal tab keeps what its program says about itself (its title and
 //! working folder) apart from the name the user gave the tab.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::Duration;
 

@@ -16,7 +16,7 @@ fn setup(
     let mut workspace = fixture::design();
     edit(&mut workspace);
     let workspace = Arc::new(workspace);
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = workspace.clone();
     state.inbox.workspace = workspace.clone();

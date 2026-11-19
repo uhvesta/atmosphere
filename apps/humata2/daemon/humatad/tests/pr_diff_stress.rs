@@ -5,14 +5,9 @@
 //! files. Its review's Diff lists all of them against the pull request's
 //! base, and the big file comes in pages to its last line.
 
-#[allow(dead_code)]
-mod common;
-#[allow(dead_code)]
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
-#[allow(dead_code)]
-#[path = "common/pr_github.rs"]
-mod pr_github;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
 
 use std::fmt::Write as _;
 

@@ -8,9 +8,8 @@
 //! every new channel uses, also after a restart. A box does the same on its own
 //! daemon, which the host relays to: the plan and its token are the box's.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::PathBuf;
 

@@ -22,7 +22,7 @@
 //! Enabling is a move to `tests/remote_history.rs` with the REMOTE_MIRROR
 //! seam (HistoryService.ReadMirror and the host's follower).
 
-mod common;
+use humatad_test_common as common;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

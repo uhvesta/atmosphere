@@ -10,13 +10,10 @@
 //! a `humata` in a tab can't express (the CLI's ask-ahead targets are
 //! sessions and networks), and reads the journal as the host would.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
-#[path = "common/away_machine.rs"]
-mod away_machine;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::away;
+use humatad_test_common::away_machine;
+use humatad_test_common::remote_rig;
 
 use std::time::{Duration, Instant};
 

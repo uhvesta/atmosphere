@@ -2,7 +2,7 @@
 //! no credential except WhoAmI, the admin test daemon run with `--admin`
 //! takes one for the user, and a session token works on either.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

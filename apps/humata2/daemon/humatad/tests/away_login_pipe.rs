@@ -4,9 +4,8 @@
 //! passphrase into `humata login` doesn't log the terminal in, and the
 //! person who then types it at the prompt still can.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
+use humatad_test_common as common;
+use humatad_test_common::away;
 
 use away::{
     Host, OK, PASSPHRASE, Terminal, host_reachable_becomes, verifier,

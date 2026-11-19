@@ -3,7 +3,7 @@
 //! restart does to a transfer under way (FM-2, FM-4, FM-6, FM-7, FM-8,
 //! FM-14, PER-27).
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

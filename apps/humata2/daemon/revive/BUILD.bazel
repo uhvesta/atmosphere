@@ -21,7 +21,11 @@ rust_library(
     crate_name = "humata2_revive",
     visibility = [
         "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/sessions_carry:__pkg__",
+        "//apps/humata2/daemon/sessions_core:__pkg__",
+        "//apps/humata2/daemon/sessions_desk:__pkg__",
     ],
     deps = REVIVE_DEPS + [
         "//apps/humata2/daemon/holder",
@@ -43,8 +47,12 @@ rust_library(
     crate_name = "humata2_revive",
     visibility = [
         "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
         "//apps/humata2/daemon/revive:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/sessions_carry:__pkg__",
+        "//apps/humata2/daemon/sessions_core:__pkg__",
+        "//apps/humata2/daemon/sessions_desk:__pkg__",
     ],
     deps = REVIVE_DEPS + [
         "//apps/humata2/daemon/holder:holder_faults",

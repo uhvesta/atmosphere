@@ -3,9 +3,8 @@
 //! machine it was set on, and the machine the session moves to holds no
 //! copy of it, in its state, its folders or the host's.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 

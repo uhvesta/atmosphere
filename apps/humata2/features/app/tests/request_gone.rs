@@ -9,7 +9,7 @@ use tca::{TestClock, TestStore};
 
 fn setup() -> TestStore<App> {
     let workspace = Arc::new(fixture::design());
-    let (clients, _fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = workspace.clone();
     state.inbox.workspace = workspace.clone();

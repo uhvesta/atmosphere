@@ -1,0 +1,40 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Cross-service port traits and tiny shared value types for humatad2's
+# service crates (SPLIT §3.1, §6.2; SPLIT_PHASE3_DAEMON §2.2).
+rust_library(
+    name = "ports",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_daemon_ports",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:inbox",
+        "//apps/humata2/api/grpc:machines",
+        "//apps/humata2/api/grpc:peer",
+        "//apps/humata2/api/grpc:review",
+        "//apps/humata2/api/grpc:sessions",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/machines",
+        "@crates//:clap",
+        "@crates//:prost",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "ports_unit_test",
+    crate = ":ports",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

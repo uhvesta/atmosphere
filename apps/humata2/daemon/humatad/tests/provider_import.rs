@@ -7,7 +7,7 @@
 //!
 //! No provider command runs here: importing only saves the file.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

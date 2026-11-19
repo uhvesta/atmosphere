@@ -7,7 +7,7 @@
 //! lists its Desk sessions and closes each into its own trash item; a
 //! closed one stays closed across a restart.
 
-mod common;
+use humatad_test_common as common;
 
 use std::future::Future;
 use std::path::PathBuf;

@@ -6,9 +6,8 @@
 //! between starting a holder and saving it running leaves. Waits are
 //! bounded by `LONG`.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{AgentState, TabKind};

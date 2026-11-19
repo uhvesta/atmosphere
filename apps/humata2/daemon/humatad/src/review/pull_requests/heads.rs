@@ -582,10 +582,10 @@ struct Update {
 /// How long a finished check's answer stands for the next check of the
 /// same session (D298). An admin build takes `HUMATA2_PR_CHECK_REUSE_MS`.
 fn reuse_window() -> Duration {
-    #[cfg(feature = "admin")]
-    if let Some(ms) = std::env::var("HUMATA2_PR_CHECK_REUSE_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if humata2_rpc_kit::admin::is_admin_mode()
+        && let Some(ms) = std::env::var("HUMATA2_PR_CHECK_REUSE_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
     {
         return Duration::from_millis(ms);
     }

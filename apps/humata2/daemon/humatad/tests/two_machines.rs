@@ -1,9 +1,8 @@
 //! The multi-machine rig itself: a host and two machines behind one fake
 //! `ssh`, each with conversations of its own (`common/remote_rig.rs`).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use common::holder_answers;
 use remote_rig::{Rig, is_live, is_offline};

@@ -8,7 +8,7 @@ use tca::{TestClock, TestStore};
 
 #[test]
 fn switching_screens_clears_the_drill_in_trail() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.route = Route::Session(SessionId::new("ledger"));
     state.session.open = Some(SessionId::new("ledger"));
@@ -35,7 +35,7 @@ fn switching_screens_clears_the_drill_in_trail() {
 }
 
 fn on_ledger(trail: Vec<Route>) -> TestStore<App> {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.route = Route::Session(SessionId::new("ledger"));
     state.session.open = Some(SessionId::new("ledger"));

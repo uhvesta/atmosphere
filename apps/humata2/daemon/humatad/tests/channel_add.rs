@@ -7,7 +7,7 @@
 //! refused by AddMachine and CreateChannel (D164); an agent's AddRepo is refused by
 //! default and waits in the Inbox when the channel's rule says Ask.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{error_of, finished, machine_id, repo_ref, start_world, wait_for_path};
 use humata2_grpc::humata::v1 as pb;

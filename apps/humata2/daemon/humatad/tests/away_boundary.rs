@@ -10,11 +10,9 @@
 //! journaled board write) are in `tests/away_board_journal.rs`.
 //! Row 7's last-copy read of the rules is D220's.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
-#[path = "common/away_machine.rs"]
-mod away_machine;
+use humatad_test_common as common;
+use humatad_test_common::away;
+use humatad_test_common::away_machine;
 
 use std::time::Duration;
 

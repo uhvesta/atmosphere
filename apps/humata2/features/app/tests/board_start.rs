@@ -12,7 +12,7 @@ use tca::{TestClock, TestStore};
 /// session with the item as the daemon has it afterwards.
 fn start_for(item: &str) -> (SessionId, ItemStatus, Vec<SessionId>, Option<SessionId>) {
     let workspace = fixture::design();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = Arc::new(workspace);
     state.route = Route::Channel(ChannelId::new("payments-rewrite"));

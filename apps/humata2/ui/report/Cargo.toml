@@ -1,0 +1,21 @@
+[package]
+name = "humata2-ui-report"
+description = "Bug-report recording, video sampling, drawing, and report sheet GPUI views for Humata 2."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_ui_report"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = { workspace = true }
+humata2-app = { path = "../../features/app" }
+humata2-clients = { path = "../../clients" }
+humata2-report = { path = "../../report" }
+humata2-ui-core = { path = "../core" }
+image = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

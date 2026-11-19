@@ -14,9 +14,8 @@
 //! with the store's own copy and put-back (`store:last_good_test`) and the
 //! unit tests of `upgrade/rollback.rs`.
 
-mod common;
-#[path = "common/upgrade.rs"]
-mod upgrade;
+use humatad_test_common as common;
+use humatad_test_common::upgrade;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

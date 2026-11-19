@@ -1,0 +1,30 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "live_test_support",
+    testonly = True,
+    srcs = [
+        "src/cases.rs",
+        "src/fake.rs",
+        "src/lib.rs",
+        "src/real.rs",
+    ],
+    crate_name = "humata2_clients_live_test_support",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live:wire",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

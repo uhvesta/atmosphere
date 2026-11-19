@@ -3,7 +3,7 @@
 //! folder would do that is refused at start, and an ordinary one still
 //! runs a terminal.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 

@@ -4,7 +4,7 @@
 //! holders keep running while the daemon is away, so the shell sits waiting
 //! for its answer.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Attach, Daemon, open};
 use humata2_grpc::humata::v1 as pb;

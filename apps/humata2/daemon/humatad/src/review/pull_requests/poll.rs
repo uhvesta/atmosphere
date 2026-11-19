@@ -36,10 +36,10 @@ struct Cadence {
 
 impl Cadence {
     fn current() -> Self {
-        #[cfg(feature = "admin")]
-        if let Some(ms) = std::env::var("HUMATA2_PR_POLL_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        if humata2_rpc_kit::admin::is_admin_mode()
+            && let Some(ms) = std::env::var("HUMATA2_PR_POLL_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
         {
             let open = Duration::from_millis(ms.max(1));
             return Self {

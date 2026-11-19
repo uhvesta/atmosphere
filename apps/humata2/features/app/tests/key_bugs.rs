@@ -39,7 +39,7 @@ fn a_window_too_narrow_for_the_sidebar_shows_it_over_the_page() {
 #[test]
 fn move_with_no_session_open_says_so_and_moves_nothing() {
     let workspace = fixture::design();
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});
@@ -55,7 +55,7 @@ fn move_with_no_session_open_says_so_and_moves_nothing() {
 
 #[test]
 fn a_desk_dialog_or_add_machine_holds_the_keys_from_a_terminal() {
-    let (clients, _fakes) = Clients::fake(fixture::empty(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(fixture::empty(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     assert!(!store.state().dialog_holds_keys(), "nothing is open at launch");
@@ -64,7 +64,7 @@ fn a_desk_dialog_or_add_machine_holds_the_keys_from_a_terminal() {
     store.send(A::Escape, |_| {});
     store.skip_received();
     assert!(!store.state().dialog_holds_keys(), "Escape gives them back");
-    let mut state = AppState::launch(&Clients::fake(fixture::empty(), Arc::new(TestClock::new())).0);
+    let mut state = AppState::launch(&humata2_clients::fake_clients(fixture::empty(), Arc::new(TestClock::new())).0);
     state.add_machine.open = true;
     assert!(state.dialog_holds_keys(), "the Add machine dialog holds the keys");
 }

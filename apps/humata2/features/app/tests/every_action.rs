@@ -20,7 +20,7 @@ use tca::Reducer;
 
 /// The keyboard map, as written. Its path is from tests/, where this file
 /// runs once it leaves pending/.
-const KEYS: &str = include_str!("../../../ui/src/keys.rs");
+const KEYS: &str = include_str!("../../../ui/core/src/keys.rs");
 
 /// The session the palette opens over: a channel session on devbox-1 in
 /// payments-rewrite, which also lists This Mac.

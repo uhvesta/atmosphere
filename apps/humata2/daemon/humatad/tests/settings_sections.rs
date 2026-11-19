@@ -9,7 +9,7 @@
 //!
 //! Waits are on the start's operation; nothing sleeps.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Build, Daemon, World, create_channel, folder, get_session, invalid_field};
 use humata2_grpc::humata::v1 as pb;

@@ -21,7 +21,7 @@ fn desk() -> SessionId {
 fn store() -> (TestStore<Sessions>, FakeDaemon) {
     let mut workspace = fixture::design();
     fixture::desk(&mut workspace);
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = SessionState {
         workspace: Arc::new(fakes.daemon.workspace()),
         open: Some(desk()),

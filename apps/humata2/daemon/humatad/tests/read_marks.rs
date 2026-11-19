@@ -4,7 +4,7 @@
 //! views; a session the host doesn't know is not found. A repaint after a
 //! resize of the agent's tab marks nothing, but new words in it do (D393).
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Attach, Daemon, WAIT, World, agent_tab, create_channel, error_of, get_session, open,

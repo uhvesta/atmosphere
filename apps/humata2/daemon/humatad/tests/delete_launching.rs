@@ -2,7 +2,7 @@
 //! still launching or being resumed included, even when no tab records its
 //! holder yet: the holder is found by the agent's own socket.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

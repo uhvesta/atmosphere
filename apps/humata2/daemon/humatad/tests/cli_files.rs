@@ -5,7 +5,7 @@
 //! channel and one session, and checks the exit code, the JSON it printed
 //! and the disk.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -5,13 +5,10 @@
 //! showing what the machine is now; withdrawn as resolved once the machine
 //! is at the host's release again.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[path = "common/upgrade.rs"]
-mod upgrade;
-#[path = "common/upgrade_rig.rs"]
-mod upgrade_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::upgrade;
+use humatad_test_common::upgrade_rig;
 
 use common::{error_of, shell_token};
 use humata2_grpc::humata::v1 as pb;

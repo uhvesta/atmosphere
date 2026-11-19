@@ -5,12 +5,9 @@
 //! in `carry/remote_archive/start`, and no half-made `.partial` clone or
 //! folder.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[allow(dead_code)]
-#[path = "common/power_cut.rs"]
-mod power_cut;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::power_cut;
 
 use power_cut::{Cut, Operation, Side};
 

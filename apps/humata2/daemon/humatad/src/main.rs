@@ -5,18 +5,21 @@
 //! agent starts (MCP.md), a client of that socket.
 
 mod access_service;
+#[cfg(feature = "svc_catalog")]
+pub(crate) use humata2_svc_catalog::{agent_gate, agent_service};
+#[cfg(not(feature = "svc_catalog"))]
 mod agent_gate;
-mod agent_service;
-mod agent_switches;
+pub(crate) use humata2_daemon_runtime::agent_switches;
 mod attach;
 mod away;
+#[cfg(feature = "svc_board")]
 mod board_service;
 mod bridge;
 mod carry;
 mod carry_service;
 mod channel_service;
 mod cli_login;
-mod compression;
+pub(crate) use humata2_rpc_kit::compression;
 mod contained;
 mod daemon;
 mod desk_service;
@@ -36,16 +39,17 @@ mod identity;
 mod inbox;
 mod input_gate;
 mod last_good;
-mod link_proof;
-mod log;
+pub(crate) use humata2_rpc_kit::link_proof;
+pub(crate) use humata2_rpc_kit::log;
 mod login_service;
 mod machine_scripts;
 mod machine_service;
 mod mark_service;
+#[cfg(feature = "svc_mcp")]
 mod mcp;
 mod not_built;
 mod operations;
-mod paste;
+pub(crate) use humata2_daemon_runtime::paste;
 mod peer;
 mod peer_client;
 mod peer_link;
@@ -54,7 +58,7 @@ mod peer_skills;
 mod provider_service;
 mod read_marks;
 mod running_holders;
-mod ready;
+pub(crate) use humata2_daemon_runtime::ready;
 mod settings_service;
 mod relay;
 mod relay_auth;
@@ -64,10 +68,11 @@ mod remote_work;
 // REPOS (RL-5): the repo library and the one repo search.
 mod repo_service;
 mod restart;
+#[cfg(feature = "svc_review")]
 mod review;
 mod rules_kept;
 mod screen_ask;
-mod screen_question;
+pub(crate) use humata2_daemon_runtime::screen_question;
 mod script_tokens;
 mod serve;
 mod start_message;
@@ -77,11 +82,11 @@ mod skills_service;
 mod status;
 mod stop;
 mod storage;
-mod sync;
+pub(crate) use humata2_rpc_kit::sync;
 mod terminal;
 mod terminal_session;
-mod terminal_uuid;
-mod tool_path;
+pub(crate) use humata2_daemon_runtime::terminal_uuid;
+pub(crate) use humata2_daemon_runtime::tool_path;
 mod transfer_end_service;
 mod transfer_service;
 mod trash_service;
@@ -110,6 +115,7 @@ enum Command {
     Bridge(bridge::BridgeArgs),
     /// Serves MCP on stdin and stdout for the agent of the session whose
     /// token is in HUMATA_SESSION_TOKEN.
+    #[cfg(feature = "svc_mcp")]
     Mcp(mcp::McpArgs),
     /// Stops this machine's sessions, even when its daemon doesn't answer
     /// (D262).
@@ -117,6 +123,9 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    if cfg!(feature = "admin") {
+        humata2_rpc_kit::admin::set_admin_mode(true);
+    }
     let cli = Cli::parse();
     // Before the runtime starts any thread: this sets PATH.
     if matches!(cli.command, Command::Serve(_)) && tool_path::asked() {
@@ -133,6 +142,7 @@ fn main() -> ExitCode {
                 match cli.command {
                     Command::Serve(args) => serve::run(args).await,
                     Command::Bridge(args) => bridge::run(args).await,
+                    #[cfg(feature = "svc_mcp")]
                     Command::Mcp(args) => mcp::run(args).await,
                     Command::Stop(args) => stop::cli::run(args).await,
                 }

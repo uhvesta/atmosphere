@@ -27,7 +27,7 @@ fn form(kind: ReportKind) -> ReportForm {
 }
 
 fn store(state: impl FnOnce(&mut AppState)) -> TestStore<App> {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut initial = AppState::launch(&clients);
     state(&mut initial);
     TestStore::new(initial, App::new(clients)).non_exhaustive()
@@ -251,7 +251,7 @@ fn opening_the_palette_tells_it_about_the_report() {
 /// Each machine's daemon version the report reads when it starts, and
 /// only for the machines the app has no version for yet.
 fn reads_when_started(workspace: humata2_clients::Workspace) -> Vec<humata2_clients::model::MachineId> {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut initial = AppState::launch(&clients);
     initial.workspace = Arc::new(workspace);
     let mut store = TestStore::new(initial, App::new(clients)).non_exhaustive();

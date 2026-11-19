@@ -13,7 +13,6 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
@@ -115,10 +114,7 @@ const NAME_MAX: usize = 100;
 
 /// What a guarded handler body got to: the answer, or the rule that sent
 /// the call to Ask me before it could run (D38.6).
-pub(crate) enum Gated<T> {
-    Done(T),
-    Ask(Box<AccessRequest>),
-}
+pub(crate) use humata2_rpc_kit::{Gated, blocking, error_of, failed, timestamp_ms};
 
 /// Checks `call` for `caller`. `Ok(None)` means go on; `Ok(Some(..))` means
 /// the rule says Ask. An `approved` call (the user said yes in the Inbox)
@@ -670,15 +666,6 @@ impl ChannelSvc {
     }
 }
 
-/// Runs store and file work off the async threads.
-pub(crate) async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, Status> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))
-}
-
 fn no_channel(id: &str) -> Status {
     status::not_found(
         pb::EntityKind::Channel,
@@ -702,15 +689,6 @@ fn live_sessions(store: &humata2_store::Store, channel: &str) -> Result<u32, Sto
         .filter(|agent| in_channel.contains(&agent.session) && agent.state.should_run())
         .count();
     Ok(u32::try_from(live).unwrap_or(u32::MAX))
-}
-
-pub(crate) fn timestamp_ms(ms: i64) -> humata2_grpc::Timestamp {
-    let since = UNIX_EPOCH + Duration::from_millis(u64::try_from(ms).unwrap_or(0));
-    let since = since.duration_since(UNIX_EPOCH).unwrap_or_default();
-    humata2_grpc::Timestamp {
-        seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-        nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
-    }
 }
 
 ///
@@ -747,10 +725,12 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32, agent: &str) -> pb::C
             value: channel.revision,
         }),
         created_at: Some(timestamp_ms(channel.created_unix_ms)),
-        is_pr_reviews: channel.folder == crate::review::PR_REVIEWS_FOLDER,
+        is_pr_reviews: channel.folder == PR_REVIEWS_FOLDER,
         ..pb::Channel::default()
     }
 }
+
+pub(super) const PR_REVIEWS_FOLDER: &str = "pr-reviews";
 
 /// The agent a start that names none runs in `channel`, as `agent_for` picks
 /// it: the channel's own default, then Settings', then the one it was made
@@ -857,29 +837,6 @@ fn setup_status(error: SetupError, machine: &str) -> Status {
             "restart humatad2 and try again",
             None,
         ),
-    }
-}
-
-/// An error with its causes, said for the person who fixes it.
-pub(crate) fn failed(
-    code: Code,
-    error: &dyn std::error::Error,
-    fix: &str,
-    kind: Option<pb::error::Kind>,
-) -> Status {
-    status::failure(code, error_of(error, fix, kind))
-}
-
-pub(crate) fn error_of(
-    error: &dyn std::error::Error,
-    fix: &str,
-    kind: Option<pb::error::Kind>,
-) -> pb::Error {
-    pb::Error {
-        message: status::chain(error),
-        fix: fix.to_owned(),
-        retry: None,
-        kind,
     }
 }
 

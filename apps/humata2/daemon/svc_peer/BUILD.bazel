@@ -1,0 +1,66 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# PeerService, peer client/link/reports/skills, relay/relay_auth, host_relay,
+# remote_end, and remote_work.
+COMMON_DEPS = [
+    "//apps/humata2/chunk:humata2_chunk",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/machines",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:hyper-util",
+    "@crates//:prost",
+    "@crates//:prost-types",
+    "@crates//:rand",
+    "@crates//:rustix",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+    "@crates//:tower",
+]
+
+NORMAL_DEPS = COMMON_DEPS + [
+    "//apps/humata2/daemon/runtime",
+    "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/transfers",
+]
+
+FAULTS_DEPS = COMMON_DEPS + [
+    "//apps/humata2/daemon/runtime:runtime_faults",
+    "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/transfers:transfers_faults",
+]
+
+rust_library(
+    name = "svc_peer",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_peer",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = NORMAL_DEPS,
+)
+
+rust_library(
+    name = "svc_peer_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_peer",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
+rust_test(
+    name = "svc_peer_unit_test",
+    crate = ":svc_peer",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

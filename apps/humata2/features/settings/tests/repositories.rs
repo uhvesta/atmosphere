@@ -21,7 +21,7 @@ fn held(repo: &str, last_used_at_ms: i64) -> LibraryRepo {
 }
 
 fn setup() -> (TestStore<Settings>, FakeDaemon) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     fakes.daemon.set_repo_library(vec![
         held("acme/ledger", 10),
         held("acme/api", 30),

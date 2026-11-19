@@ -8,7 +8,7 @@
 //! Code's `/clear` and Codex's `/new` are followed the same way, from the
 //! `session_id` their hooks (Claude) and wrapper (Codex) name (D799).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

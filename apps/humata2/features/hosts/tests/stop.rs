@@ -288,7 +288,7 @@ fn opening_a_stopped_session_still_goes_to_the_parent() {
 /// The Hosts page on the design workspace with devbox-1's sessions
 /// stopped as `stop`.
 fn hosts(stop: Option<MachineStop>) -> (TestStore<Hosts>, Clients, humata2_clients::Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     fakes.machines.set_stop(&id("devbox-1"), stop);
     let workspace = Arc::new(fakes.daemon.workspace());
     let mut store = TestStore::new(HostsState::default(), Hosts::new(clients.clone()))

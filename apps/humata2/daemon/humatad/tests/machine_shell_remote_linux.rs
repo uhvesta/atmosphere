@@ -7,9 +7,8 @@
 //! there; its holder is a process the box's /proc shows while it runs and
 //! not once it is stopped or ended through the host.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

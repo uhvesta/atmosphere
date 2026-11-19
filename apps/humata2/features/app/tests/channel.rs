@@ -14,7 +14,7 @@ use tca::{TestClock, TestStore};
 #[test]
 fn channel_filters_keep_ancestors_and_the_page_restores_after_restart() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let id = ChannelId::new("payments-rewrite");
     let mut state = AppState::launch(&clients);
     state.workspace = workspace;

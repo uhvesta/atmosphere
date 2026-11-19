@@ -2,7 +2,7 @@
 //! matched and paged. `gh` is a fake script (admin builds read
 //! `HUMATA2_GH`); it prints what `gh api --paginate user/repos --jq` would.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Build, Daemon, World, folder};
 use humata2_grpc::humata::v1 as pb;

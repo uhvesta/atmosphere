@@ -3,7 +3,7 @@
 //! subscribed to them, an agent that exits is told as exited, and an agent
 //! hears of no session it may not read.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::Duration;
 

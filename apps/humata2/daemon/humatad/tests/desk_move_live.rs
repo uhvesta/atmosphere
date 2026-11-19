@@ -6,7 +6,7 @@
 //! before the switch is undone at the next start by renaming the folder back
 //! (the same holders, the same programs), and one cut after it is finished.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

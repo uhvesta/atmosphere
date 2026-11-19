@@ -17,7 +17,7 @@ fn setup() -> (TestStore<Inbox>, Fakes, Request) {
     request.choices = vec!["Yes, proceed".to_owned(), "No, exit".to_owned()];
     request.on_screen = Some(2);
     let request = request.clone();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = InboxState {
         workspace: Arc::new(workspace),
         selected: Some(request.id.clone()),

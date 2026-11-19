@@ -9,7 +9,7 @@
 //! Enabling it: move this file up one folder to `tests/login.rs` once
 //! `login_service` is wired in (see the enable lines in the report).
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;

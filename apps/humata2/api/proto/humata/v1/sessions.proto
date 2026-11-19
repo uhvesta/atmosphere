@@ -8,9 +8,7 @@ package humata.v1;
 import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
 import "humata/v1/operations.proto";
-import "humata/v1/channels.proto";
 import "humata/v1/errors.proto";
-import "humata/v1/review.proto";
 
 service SessionService {
   // SE-1..4. Returns at once; the operation writes and fsyncs the record

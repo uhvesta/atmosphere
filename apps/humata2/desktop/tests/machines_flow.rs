@@ -49,7 +49,7 @@ impl App {
         let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets))
             .expect("the headless context starts");
         cx.update(humata2_ui::init);
-        let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+        let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
         let fake = fakes.machines.clone();
         let ui = Ui::new(runtime.handle(), clients, Recorder::new());
         let options = WindowOptions {

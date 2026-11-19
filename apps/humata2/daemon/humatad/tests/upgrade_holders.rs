@@ -29,9 +29,8 @@
 //! every holder stands for one from before LIVEHOLDER, which Migrate
 //! restarts. Moving holders is `tests/upgrade_holders_move.rs`.
 
-mod common;
-#[path = "common/upgrade.rs"]
-mod upgrade;
+use humatad_test_common as common;
+use humatad_test_common::upgrade;
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;

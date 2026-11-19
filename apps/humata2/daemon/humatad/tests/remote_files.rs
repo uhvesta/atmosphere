@@ -12,7 +12,7 @@
 //! offline, or online again, on its machine events (see `mod rig` at the
 //! end of the file).
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::BTreeSet;
 use std::path::Path;

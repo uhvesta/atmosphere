@@ -8,16 +8,15 @@
 //! it and never stops the daemon. Items 30 days old are removed whenever
 //! the trash is used and once at start ([`Bin::sweep`]), with no timer.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_transfers::{EmptyPlan, KEEP_MS, Trash, TrashError, TrashItem};
 use pb::invalid_field::Problem;
-use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
 use crate::desk_service::channel_desk_close::DeskHandle;
@@ -28,14 +27,15 @@ use crate::host_relay::Links;
 use crate::identity::{self, Caller};
 use crate::status;
 
+pub(crate) use humata2_rpc_kit::{
+    Answers, REMEMBERED_MAX, caller_data, decode_caller_data, lock, now_ms,
+};
+
 /// How long a plan to empty the trash can be used.
 const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 
 /// Between two sweeps of items past their 30 days.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
-
-/// Finished answers kept for retries with the same idempotency key.
-pub(crate) const REMEMBERED_MAX: usize = 1024;
 
 /// Items per page when the caller names no size.
 const PAGE_DEFAULT: usize = 100;
@@ -120,43 +120,6 @@ impl Bin {
     }
 }
 
-/// What a deleter and the deleted thing were, kept with the item.
-#[derive(Clone, PartialEq, Message)]
-struct Data {
-    #[prost(message, optional, tag = "1")]
-    deleted_by: Option<pb::Actor>,
-    #[prost(message, optional, tag = "2")]
-    was: Option<pb::EntityRef>,
-}
-
-/// `deleted_by` and `was` as the string the trash keeps with an item.
-pub(crate) fn caller_data(deleted_by: &pb::Actor, was: &pb::EntityRef) -> String {
-    let data = Data {
-        deleted_by: Some(deleted_by.clone()),
-        was: Some(was.clone()),
-    };
-    data.encode_to_vec()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-/// What [`caller_data`] kept; nothing for data it can't read.
-pub(crate) fn decode_caller_data(text: &str) -> (Option<pb::Actor>, Option<pb::EntityRef>) {
-    let bytes: Option<Vec<u8>> = (text.len() % 2 == 0)
-        .then(|| {
-            (0..text.len())
-                .step_by(2)
-                .map(|at| text.get(at..at + 2).and_then(|pair| u8::from_str_radix(pair, 16).ok()))
-                .collect()
-        })
-        .flatten();
-    match bytes.and_then(|bytes| Data::decode(bytes.as_slice()).ok()) {
-        Some(data) => (data.deleted_by, data.was),
-        None => (None, None),
-    }
-}
-
 /// Runs `work` on a blocking thread.
 pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
@@ -164,46 +127,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| status::internal(format!("a trash worker stopped: {error}"), ""))
-}
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
-/// Answers kept by idempotency key, oldest forgotten first.
-pub(crate) struct Answers<T> {
-    inner: Mutex<(HashMap<String, T>, VecDeque<String>)>,
-}
-
-impl<T: Clone> Answers<T> {
-    pub(crate) fn new() -> Self {
-        Self {
-            inner: Mutex::new((HashMap::new(), VecDeque::new())),
-        }
-    }
-
-    pub(crate) fn get(&self, key: &str) -> Option<T> {
-        lock(&self.inner).0.get(key).cloned()
-    }
-
-    pub(crate) fn put(&self, key: String, answer: T) {
-        let mut inner = lock(&self.inner);
-        if inner.0.insert(key.clone(), answer).is_none() {
-            inner.1.push_back(key);
-        }
-        while inner.1.len() > REMEMBERED_MAX {
-            if let Some(oldest) = inner.1.pop_front() {
-                inner.0.remove(&oldest);
-            }
-        }
-    }
 }
 
 /// The key a retry is recognised by: the call, who made it and its key.
@@ -214,8 +137,7 @@ pub(crate) fn answer_key(
     key: Option<&pb::IdempotencyKey>,
     what: &str,
 ) -> Option<String> {
-    let key = key.map(|key| key.value.as_str()).filter(|key| !key.is_empty())?;
-    Some(format!("{call}\0{:?}\0{what}\0{key}", identity::actor(caller)))
+    humata2_rpc_kit::answer_key_for_actor(call, &identity::actor(caller), key, what)
 }
 
 pub(crate) struct TrashSvc {

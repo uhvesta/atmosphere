@@ -8,9 +8,8 @@
 //! Waits are on the host's feeds and on its process ending at the stop
 //! point; nothing sleeps.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::time::Duration;
 

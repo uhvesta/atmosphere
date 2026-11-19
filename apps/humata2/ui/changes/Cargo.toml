@@ -1,0 +1,24 @@
+[package]
+name = "humata2-ui-changes"
+description = "Diff, review, document history, and code editor GPUI views for Humata 2."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_ui_changes"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = { workspace = true }
+humata2-app = { path = "../../features/app" }
+humata2-clients = { path = "../../clients" }
+humata2-markdown = { path = "../../markdown" }
+humata2-pr-review = { path = "../../features/pr_review" }
+humata2-review = { path = "../../features/review" }
+humata2-session = { path = "../../features/session" }
+humata2-settings = { path = "../../features/settings" }
+humata2-ui-core = { path = "../core" }
+unicode-segmentation = "=1.13.3"
+unicode-width = "=0.2.3"

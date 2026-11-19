@@ -7,13 +7,10 @@
 //!
 //! The PR milestone's A8.
 
-mod common;
+use humatad_test_common as common;
 // The shared fixture's agent speaks MCP; these tests never start one.
-#[path = "common/mcp_client.rs"]
-#[allow(dead_code)]
-mod mcp_client;
-#[path = "common/pr_github.rs"]
-mod pr_github;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 

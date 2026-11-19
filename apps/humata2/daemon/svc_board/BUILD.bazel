@@ -1,0 +1,39 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Standalone BoardService crate (`humata2_svc_board`) extracted from humatad2.
+rust_library(
+    name = "svc_board",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_board",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:board",
+        "//apps/humata2/api/grpc:catalog",
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:events",
+        "//apps/humata2/api/grpc:files",
+        "//apps/humata2/api/grpc:inbox",
+        "//apps/humata2/api/grpc:machines",
+        "//apps/humata2/api/grpc:peer",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/store",
+        "@crates//:prost",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "svc_board_unit_test",
+    crate = ":svc_board",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

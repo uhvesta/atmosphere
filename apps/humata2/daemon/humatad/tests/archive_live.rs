@@ -2,7 +2,7 @@
 //! request says to end them, and an agent may only end them under the
 //! machine-destroy switch.
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::BTreeSet;
 use std::process::Command;

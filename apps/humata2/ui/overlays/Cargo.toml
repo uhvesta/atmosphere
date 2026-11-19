@@ -1,0 +1,14 @@
+[package]
+name = "humata2-ui-overlays"
+description = "Overlays, command palette, dialogs, and toasts for Humata 2's GPUI desktop UI."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_ui_overlays"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = { workspace = true }

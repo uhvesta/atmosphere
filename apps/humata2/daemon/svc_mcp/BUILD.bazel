@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# `humatad2 mcp`: the MCP stdio server bridging tool calls to the daemon's gRPC API.
+rust_library(
+    name = "svc_mcp",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_mcp",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/daemon/humatad:grpc",
+        "//apps/humata2/daemon/mcp",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "@crates//:clap",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
+rust_test(
+    name = "svc_mcp_unit_test",
+    crate = ":svc_mcp",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

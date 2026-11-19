@@ -3,7 +3,7 @@
 //! JSONL by the test, and the world's agent declares that format. Moves up
 //! from tests/pending with FORK's context-fork batch.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 

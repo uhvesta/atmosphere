@@ -17,7 +17,7 @@
 //! conversation moved with it. Everything runs under a HOME of the test's
 //! own.
 
-mod common;
+use humatad_test_common as common;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};

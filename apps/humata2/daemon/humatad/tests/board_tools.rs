@@ -2,7 +2,7 @@
 //! session makes, lists, changes, moves, reads the history of and deletes
 //! items on its session board; the Global board asks the user first.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Stdio;

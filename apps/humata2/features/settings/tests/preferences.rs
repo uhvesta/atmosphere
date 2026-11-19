@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 #[test]
 fn preferences_change_without_losing_other_choices() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     fakes.daemon.set_agent_switches(all_on());
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::SetTheme(Theme::Light), |s| {
@@ -24,7 +24,7 @@ fn preferences_change_without_losing_other_choices() {
 }
 #[test]
 fn picking_a_font_size_sets_it_and_closes_the_list() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::FontMenu, |s| s.font_menu = true);
     store.send(A::SetFontSize(15), |s| {
@@ -35,7 +35,7 @@ fn picking_a_font_size_sets_it_and_closes_the_list() {
 }
 #[test]
 fn switching_section_closes_an_open_font_list() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::FontMenu, |s| s.font_menu = true);
     store.send(A::Section(Section::General), |s| {

@@ -3,7 +3,7 @@
 //! after its holder died, and in a fork that keeps the parent's agent. A
 //! session started with no model runs the agent on its own default.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

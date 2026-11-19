@@ -2,7 +2,7 @@
 //! its size changes can't be queued for it without end, so the daemon
 //! sends a new checkpoint instead of skipping bytes or ending the attach.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Attach, Daemon, open};
 use ghostty_vt::Terminal;

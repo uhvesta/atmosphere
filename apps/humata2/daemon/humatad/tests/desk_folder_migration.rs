@@ -2,7 +2,7 @@
 //! repository in each, with no commit; folders that already have one post
 //! nothing.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

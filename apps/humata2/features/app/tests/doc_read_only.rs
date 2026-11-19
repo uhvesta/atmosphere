@@ -34,7 +34,7 @@ fn anchor(path: &str) -> Anchor {
 fn setup() -> TestStore<App> {
     let mut workspace = fixture::design();
     fixture::desk(&mut workspace);
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     fakes.daemon.commit_as_agent(&desk(), PATH, "# Plan\none\n", "First draft");
     fakes.daemon.commit_as_agent(&desk(), PATH, "# Plan\none\ntwo\n", "Add two");
     let workspace = Arc::new(fakes.daemon.workspace());

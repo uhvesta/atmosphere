@@ -46,7 +46,7 @@ struct Rig {
 /// ready before the app starts, and answers the view to open.
 fn rig(offer: impl FnOnce(&FakeViews) -> ViewId) -> (Rig, ViewId) {
     let workspace = fixture::design();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.comments.set_repos(&ledger(), &["api", "ledger"]);
     let id = offer(&fakes.views);
     let mut state = AppState::launch(&clients);
@@ -766,7 +766,7 @@ fn opening_a_review_plan_shows_its_notes_as_read_now() {
 fn a_walkthrough_step_opens_its_file_when_the_sessions_files_arrive_later() {
     let mut workspace = fixture::design();
     workspace.session_files.clear();
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     fakes.comments.set_repos(&ledger(), &["api", "ledger"]);
     let id = walkthrough(&fakes.views);
     // Home is shown while the workspace loads: a session page asks for its

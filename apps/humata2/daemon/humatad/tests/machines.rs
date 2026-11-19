@@ -3,7 +3,7 @@
 //! its steps, needs the host key confirmed, and lists the machine; removing
 //! it needs a plan; agents are held to the access policy.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};

@@ -29,7 +29,7 @@ fn store() -> (TestStore<Sessions>, FakeHistory) {
         s.unread = 0;
         s.recovery = None;
     }
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     for turn in 0..=LAST_TURN {
         let role = if turn % 2 == 0 { TurnRole::User } else { TurnRole::Agent };
         fakes.history.push_turn(&ledger(), turn, role, &format!("Step {turn} of the ledger migration."));

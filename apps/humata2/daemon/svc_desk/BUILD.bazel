@@ -1,0 +1,72 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# DeskService (DK-1..DK-19, CD-1..CD-5, MV-17, UP-1): Desk sessions, channel
+# desks, document watching/versions, and moving Desk sessions into channels.
+COMMON_DEPS = [
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/repo_library",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:notify",
+    "@crates//:prost",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
+NORMAL_DEPS = COMMON_DEPS + [
+    "//apps/humata2/daemon/durable",
+    "//apps/humata2/daemon/revive",
+    "//apps/humata2/daemon/runtime",
+    "//apps/humata2/daemon/sessions",
+    "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/svc_channels",
+    "//apps/humata2/daemon/transfers",
+]
+
+FAULTS_DEPS = COMMON_DEPS + [
+    "//apps/humata2/daemon/durable:durable_faults",
+    "//apps/humata2/daemon/revive:revive_faults",
+    "//apps/humata2/daemon/runtime:runtime_faults",
+    "//apps/humata2/daemon/sessions:sessions_faults",
+    "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/svc_channels:svc_channels_faults",
+    "//apps/humata2/daemon/transfers:transfers_faults",
+]
+
+rust_library(
+    name = "svc_desk",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_desk",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = NORMAL_DEPS,
+)
+
+rust_library(
+    name = "svc_desk_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_desk",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
+rust_test(
+    name = "svc_desk_unit_test",
+    crate = ":svc_desk",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

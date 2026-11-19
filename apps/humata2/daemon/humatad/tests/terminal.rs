@@ -1,7 +1,7 @@
 //! Terminal tabs through `humatad2`'s gRPC API: a real shell in a real
 //! holder, typed into and read back over the socket.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::Duration;

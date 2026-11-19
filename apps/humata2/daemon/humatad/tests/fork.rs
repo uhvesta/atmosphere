@@ -2,7 +2,7 @@
 //! real `humatad2`. Needs FORK's seams (store lifecycle tables, the fork
 //! handlers); moves up from tests/pending with them.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

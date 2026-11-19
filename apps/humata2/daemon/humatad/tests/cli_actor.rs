@@ -3,7 +3,7 @@
 //! real `humata whoami` runs against `humatad2`; each test checks the tier
 //! and the actor the daemon names, never a message's wording.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Attach, Daemon, binary, create_script_token, folder, shell_token, state_folder};
 use humata2_grpc::humata::v1 as pb;

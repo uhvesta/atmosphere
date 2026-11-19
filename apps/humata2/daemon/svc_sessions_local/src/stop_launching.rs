@@ -1,0 +1,1 @@
+//! StopSession during launch module.

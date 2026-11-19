@@ -5,9 +5,8 @@
 //! runs in a terminal of its own (a pty, its shell the session leader),
 //! and the test types at its prompt as the person would.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
+use humatad_test_common as common;
+use humatad_test_common::away;
 
 use away::{
     Host, NEEDS_USER, OK, PASSPHRASE, RESOURCES, Terminal, WRONG, host_reachable_becomes,

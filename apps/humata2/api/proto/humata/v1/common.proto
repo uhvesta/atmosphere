@@ -307,3 +307,264 @@ message SessionsStopped {
   string reason = 4;
   StopEnded ended = 5;  // unset until the sweep has run
 }
+
+// ---------------------------------------------------------------------------
+// Shared diff specification and pull request state.
+// ---------------------------------------------------------------------------
+
+// RV-31: per repo, what a review shows. Every base of RV-1 is one, and
+// review_prepare and the skills write one (D55, D57). Computed on the
+// session's machine by humata2_review_diff.
+message DiffSpec {
+  repeated RepoDiffSpec repos = 1;
+}
+
+message RepoDiffSpec {
+  RepoRef repo = 1;
+  // The old side.
+  DiffSpecBase base = 2;
+  // The new side: how much of the work in progress counts.
+  DiffSpecCompare compare = 3;
+  // Git pathspecs relative to the repo root (`src/`, `*.sql`). An empty
+  // include shows every path.
+  repeated string include_paths = 4;
+  repeated string exclude_paths = 5;
+  DiffWhitespace whitespace = 6;
+  // Renames are detected (git -M) unless this is set; then a moved file
+  // is a deletion and an addition.
+  bool no_renames = 7;
+}
+
+message DiffSpecBase {
+  oneof base {
+    // The merge base of HEAD and this branch, as GitHub shows a pull
+    // request (`origin/main...HEAD`).
+    string merge_base_with = 1;
+    // A branch, tag or commit as it is.
+    string rev = 2;
+    // A reviewed snapshot of this session (RV-28): its n, or 0 for the
+    // latest.
+    uint32 reviewed_snapshot = 3;
+    // The parent's fork point (forks only).
+    ForkPointBase fork_point = 4;
+    // What is staged, for "only my unstaged changes".
+    IndexBase index = 5;
+    // This repo's pull request's base, merge-base form (PR-10). PR review
+    // sessions only; a repo that is no pull request's is refused.
+    PullRequestBaseRef pull_request_base = 6;
+  }
+}
+
+message ForkPointBase {}
+message IndexBase {}
+// PR-10: this repo's pull request's base, merge-base form, PR review
+// sessions only.
+message PullRequestBaseRef {}
+
+message DiffSpecCompare {
+  enum Upto {
+    UPTO_UNSPECIFIED = 0;  // as UNSTAGED
+    UPTO_COMMITS = 1;      // HEAD's commit only
+    UPTO_STAGED = 2;       // plus the index
+    UPTO_UNSTAGED = 3;     // plus tracked files as they are on disk
+  }
+  enum Untracked {
+    UNTRACKED_UNSPECIFIED = 0;  // as ALL
+    UNTRACKED_NONE = 1;
+    UNTRACKED_ALL = 2;          // every file git doesn't ignore
+    UNTRACKED_PATHS = 3;        // only under untracked_paths
+  }
+  Upto upto = 1;
+  Untracked untracked = 2;
+  repeated string untracked_paths = 3;
+  // The new side ends at this commit, branch or tag, not at the
+  // checkout (D800). Upto and untracked must then be left unset.
+  string head = 4;
+  // Working-tree files under these pathspecs (tracked changes and
+  // untracked files git doesn't ignore) laid over the new side, which is
+  // HEAD unless head is set. Nothing else from the working tree counts.
+  repeated string worktree_paths = 5;
+}
+
+enum DiffWhitespace {
+  DIFF_WHITESPACE_UNSPECIFIED = 0;     // whitespace counts
+  DIFF_WHITESPACE_IGNORE_CHANGES = 1;  // git -b
+  DIFF_WHITESPACE_IGNORE_ALL = 2;      // git -w
+}
+
+enum PullRequestState {
+  PULL_REQUEST_STATE_UNSPECIFIED = 0;
+  PULL_REQUEST_STATE_OPEN = 1;
+  PULL_REQUEST_STATE_MERGED = 2;
+  PULL_REQUEST_STATE_CLOSED = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Shared session work and archive dispositions.
+// ---------------------------------------------------------------------------
+
+message SessionWork {
+  SessionId session = 1;
+  string title = 2;
+  uint32 dirty_files = 3;
+  uint32 unpushed_commits = 4;
+}
+
+// What to do with one session on a machine that leaves (CH-8, LD-10).
+message SessionDisposition {
+  SessionId session = 1;
+  oneof disposition {
+    MachineId move_to = 2;
+    ArchiveChoice archive = 3;
+  }
+}
+
+// MV-9's three answers, minus Cancel.
+enum ArchiveChoice {
+  ARCHIVE_CHOICE_UNSPECIFIED = 0;
+  // Only valid without unpushed work.
+  ARCHIVE_CHOICE_ARCHIVE = 1;
+  ARCHIVE_CHOICE_COMMIT_PUSH_PR_THEN_ARCHIVE = 2;
+  ARCHIVE_CHOICE_ARCHIVE_AND_DELETE_WORK = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Shared board change previews.
+// ---------------------------------------------------------------------------
+
+message FieldChange {
+  string field = 1;     // "status"
+  string before = 2;    // "To do"
+  string after = 3;     // "In review"
+}
+
+message BoardChangePreview {
+  BoardItemId item = 1;
+  string item_title = 2;
+  repeated FieldChange changes = 3;
+  bool deletes_item = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Shared file locations and chunks.
+// ---------------------------------------------------------------------------
+
+message FileLocation {
+  MachineId machine = 1;
+  oneof root {
+    SessionClone session_clone = 2;
+    ChannelShared channel_shared = 3;
+    MainClone main_clone = 4;          // read-only (FC-2)
+    ChannelFolder channel_folder = 5;  // FM-10, FM-11
+    // FM-10: the user's home folder on the machine. The user only: an
+    // agent that names it gets Error.outside_humata_folders.
+    MachineHome home = 7;
+    // D335: what was pasted into a session's terminals, on the session's
+    // machine. The user only, like home.
+    SessionPastes session_pastes = 8;
+    // D382: a session's own folder, where a Desk session's documents sit,
+    // outside every clone. An agent reaches it as it reaches a clone of
+    // that session: by the session's own grants.
+    SessionFolder session_folder = 9;
+    // PL-4, D540: where files sent machine-only from a place that is not a
+    // channel's land on this machine, `<root>/received/<from>/`. The user
+    // only, like home: an agent that names it gets
+    // Error.outside_humata_folders.
+    MachineReceived received = 10;
+  }
+  // Relative to the root; "..", absolute paths and symlinks out fail with
+  // Error.outside_humata_folders.
+  string path = 6;
+}
+
+message SessionClone {
+  SessionId session = 1;
+  RepoRef repo = 2;
+}
+
+message ChannelShared { ChannelId channel = 1; }
+
+message MainClone {
+  ChannelId channel = 1;
+  RepoRef repo = 2;
+}
+
+message ChannelFolder { ChannelId channel = 1; }
+
+message MachineHome {}
+
+message SessionPastes { SessionId session = 1; }
+
+message SessionFolder { SessionId session = 1; }
+
+// The received place for files that came from machine `from` (PL-4). `from`
+// is one machine id: no "/" and no "..".
+message MachineReceived { MachineId from = 1; }
+
+// At most 1 MiB of the file, before encoding (TR-11).
+message FileChunk {
+  // Where the chunk's decoded bytes start in the file.
+  uint64 offset = 1;
+  // The chunk's bytes, encoded with `codec`.
+  bytes data = 2;
+  // On the last chunk: the whole file's SHA-256.
+  string sha256 = 3;
+  bool last = 4;
+  // Only a codec the receiver listed (accept_codecs, ServerInfo or Hello
+  // chunk_codecs); a chunk that doesn't shrink is sent as NONE.
+  ChunkCodec codec = 5;
+  // The decoded length; 0 with NONE means len(data).
+  uint32 raw_size = 6;
+  // CRC-32 (IEEE) of the decoded bytes. Always set on a compressed chunk.
+  optional uint32 crc32 = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Shared status and event vocabulary.
+// ---------------------------------------------------------------------------
+
+enum Change {
+  CHANGE_UNSPECIFIED = 0;
+  CHANGE_CREATED = 1;
+  CHANGE_UPDATED = 2;
+  CHANGE_DELETED = 3;   // the snapshot is the last state, then a tombstone
+}
+
+enum DaemonRole {
+  DAEMON_ROLE_UNSPECIFIED = 0;
+  // The Mac: source of truth (SL-1).
+  DAEMON_ROLE_HOST = 1;
+  // Any other machine: clones and live context only (SL-2).
+  DAEMON_ROLE_MACHINE = 2;
+}
+
+enum Reachability {
+  REACHABILITY_UNSPECIFIED = 0;
+  REACHABILITY_ONLINE = 1;
+  REACHABILITY_CONNECTING = 2;
+  // HO-5: the link is down; sessions may well be running.
+  REACHABILITY_OFFLINE = 3;
+  // MP-16: interactive machine whose login lapsed.
+  REACHABILITY_NEEDS_LOGIN = 4;
+  // MP-21: the provider's status says stopped.
+  REACHABILITY_STOPPED = 5;
+  // MP-9: the pinned host key no longer matches; nothing is sent.
+  REACHABILITY_HOST_KEY_CHANGED = 6;
+  // LD-12: the machine answered the peer link without proof that it holds
+  // the enrollment key on record (re-imaged, swapped, or posing as it), or
+  // refused the host's proof. The host stops dialling it; add it again as
+  // a new machine.
+  REACHABILITY_IDENTITY_MISMATCH = 7;
+}
+
+enum ViewState {
+  VIEW_STATE_UNSPECIFIED = 0;
+  VIEW_STATE_DRAFT = 1;              // prepared, not ready
+  VIEW_STATE_WAITING = 2;            // "Waiting for you"
+  VIEW_STATE_LATER = 3;
+  VIEW_STATE_NOT_NOW = 4;
+  VIEW_STATE_OPENED = 5;
+  VIEW_STATE_REVERTED = 6;
+  VIEW_STATE_OPENED_AND_CLOSED = 7;
+  VIEW_STATE_KEPT = 8;
+}

@@ -1,0 +1,61 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# TransferService, TransferEndService, SessionCarryService, Carry driver,
+# and RemoteEnd/RouterEnd for humatad2 (SPLIT §3.2; SPLIT_PHASE3_DAEMON §2.3).
+SHARED_DEPS = [
+    "//apps/humata2/chunk:humata2_chunk",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "//apps/humata2/daemon/svc_files",
+    "@crates//:prost",
+    "@crates//:rustix",
+    "@crates//:serde_json",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
+rust_library(
+    name = "svc_transfers",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_transfers",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SHARED_DEPS + [
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/transfers",
+    ],
+)
+
+rust_library(
+    name = "svc_transfers_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_transfers",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SHARED_DEPS + [
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/transfers:transfers_faults",
+    ],
+)
+
+rust_test(
+    name = "svc_transfers_unit_test",
+    crate = ":svc_transfers",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

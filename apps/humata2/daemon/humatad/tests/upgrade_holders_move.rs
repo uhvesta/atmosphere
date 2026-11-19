@@ -14,9 +14,8 @@
 //! Every test ends only the holders its own daemon started, in its own
 //! temporary folder.
 
-mod common;
-#[path = "common/upgrade.rs"]
-mod upgrade;
+use humatad_test_common as common;
+use humatad_test_common::upgrade;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

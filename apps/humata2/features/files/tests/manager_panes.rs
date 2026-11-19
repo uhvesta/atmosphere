@@ -53,7 +53,7 @@ struct Page {
 }
 
 fn launch(fakes: Fakes, workspace: &Arc<Workspace>) -> Page {
-    let (clients, fakes) = Clients::with_fakes(fakes, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::clients_with_fakes(fakes, Arc::new(TestClock::new()));
     let fake = fakes.file_manager.clone();
     let mut store = TestStore::new(FilesState::default(), Files::new(clients)).non_exhaustive();
     store.send(A::Show(workspace.clone()), |_| {});
@@ -65,7 +65,7 @@ fn launch(fakes: Fakes, workspace: &Arc<Workspace>) -> Page {
 
 fn page() -> Page {
     let workspace = workspace(true);
-    let (_, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (_, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     launch(fakes, &workspace)
 }
 

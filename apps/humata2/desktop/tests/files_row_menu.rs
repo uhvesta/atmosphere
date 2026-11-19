@@ -43,7 +43,7 @@ impl App {
         let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets))
             .expect("the headless context starts");
         cx.update(humata2_ui::init);
-        let (clients, fakes) = Clients::fake(fixture::standard(), Arc::new(TestClock::new()));
+        let (clients, fakes) = humata2_clients::fake_clients(fixture::standard(), Arc::new(TestClock::new()));
         for machine in ["this-mac", "gpu-box"] {
             fakes
                 .file_manager

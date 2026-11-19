@@ -12,7 +12,7 @@ use tca::{TestClock, TestStore};
 #[test]
 fn picking_a_search_hit_opens_its_session_and_closes_the_palette() {
     let workspace = fixture::design();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let ledger = SessionId::new("ledger");
     fakes.history.push_turn(&ledger, 3, TurnRole::Agent, "The ledger totals reconcile now.");
     let mut state = AppState::launch(&clients);
@@ -46,7 +46,7 @@ fn picking_a_search_hit_opens_its_session_and_closes_the_palette() {
 
 #[test]
 fn a_pin_made_on_another_client_shows_in_the_pinned_section() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Launch, |_| {});

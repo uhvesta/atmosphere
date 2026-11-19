@@ -1767,7 +1767,7 @@ fn check_host_variables(rig: &Rig, operation: Operation) -> Vec<String> {
     problems
 }
 
-pub(crate) async fn run_case(cut: Cut, operation: Operation, origin: Side, name: &str) -> Vec<String> {
+pub async fn run_case(cut: Cut, operation: Operation, origin: Side, name: &str) -> Vec<String> {
     eprintln!("power cut: {operation:?}, {cut:?}, {origin:?} at {name}");
     let scratch = common::folder();
     let faults = Faults {

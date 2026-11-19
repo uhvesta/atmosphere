@@ -10,6 +10,7 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/review_diff:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/sessions_core:__pkg__",
     ],
 )
 

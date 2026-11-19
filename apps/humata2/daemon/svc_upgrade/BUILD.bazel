@@ -1,0 +1,65 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Same-release peers, Migrate inbox items, release gating, local/remote
+# upgrade execution, rollback, and holder migration (SPLIT_PHASE3_DAEMON §2.1).
+SVC_UPGRADE_COMMON_DEPS = [
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/durable",
+    "//apps/humata2/daemon/holder",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/machines",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/revive",
+    "//apps/humata2/daemon/rpc_kit",
+    "//apps/humata2/daemon/sessions",
+    "//apps/humata2/daemon/store",
+    "@crates//:notify",
+    "@crates//:prost-types",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tonic",
+    "@crates//:tower",
+    "@crates//:uuid",
+]
+
+rust_library(
+    name = "svc_upgrade",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_upgrade",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SVC_UPGRADE_COMMON_DEPS + [
+        "//apps/humata2/daemon/runtime",
+    ],
+)
+
+# The upgrade service crate with fault points active (`feature = "faults"`).
+rust_library(
+    name = "svc_upgrade_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_upgrade",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = SVC_UPGRADE_COMMON_DEPS + [
+        "//apps/humata2/daemon/runtime:runtime_faults",
+    ],
+)
+
+rust_test(
+    name = "svc_upgrade_unit_test",
+    crate = ":svc_upgrade",
+    deps = [
+        "@crates//:prost",
+        "@crates//:rusqlite",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

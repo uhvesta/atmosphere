@@ -12,7 +12,7 @@ fn setup(rule: &str) -> (TestStore<Inbox>, Fakes, Request) {
     };
     request.rule = rule.to_owned();
     let request = request.clone();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = InboxState {
         workspace: Arc::new(workspace),
         ..InboxState::default()

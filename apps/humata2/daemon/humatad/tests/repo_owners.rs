@@ -3,7 +3,7 @@
 //! builds read `HUMATA2_GH`). A `gh` that cannot list them is a problem in
 //! the answer, not a failed call, and a peer may not ask.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Build, Daemon, folder};
 use humata2_grpc::humata::v1 as pb;

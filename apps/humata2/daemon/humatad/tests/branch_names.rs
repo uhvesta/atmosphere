@@ -3,7 +3,7 @@
 //! numbered name for a taken one, a branch edited before the start, and
 //! "Rename the branch too" only while the branch was never pushed.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

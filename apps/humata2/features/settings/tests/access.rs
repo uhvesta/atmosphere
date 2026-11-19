@@ -25,7 +25,7 @@ fn setup_with(
     ChannelId,
     Capability,
 ) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let workspace = fakes.daemon.workspace();
     let (channel, rules) = workspace
         .rules

@@ -4,7 +4,7 @@
 //! scripts are refused, and agents started after a change get the values in
 //! their environment while running ones keep theirs.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;

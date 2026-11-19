@@ -22,7 +22,7 @@ use humata2_flow::{Action, Driver as _, FrameMode, GpuiDriver, GpuiDriverError, 
 use humata2_report::remote::{self, RefusalKind, Request};
 use humata2_report::{Compare, Event, FlowAction, FlowTarget, Gesture, Player, Trees, read_events};
 use humata2_ui::bridge::Ui;
-use humata2_ui::record::{Recorder, RpcCall, state_text};
+use humata2_ui::record::{Recorder, RpcCall, UiRecorderExt as _, state_text};
 use tca::TestClock;
 use tokio::runtime::Runtime;
 
@@ -74,7 +74,7 @@ impl App {
         let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets))
             .expect("the headless context starts");
         cx.update(humata2_ui::init);
-        let (clients, fakes) = Clients::fake(fixture::standard(), Arc::new(TestClock::new()));
+        let (clients, fakes) = humata2_clients::fake_clients(fixture::standard(), Arc::new(TestClock::new()));
         let ui = Ui::new(runtime.handle(), clients, recorder);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(

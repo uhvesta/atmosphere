@@ -29,7 +29,7 @@ fn setup() -> (TestStore<Sessions>, Fakes) {
         .expect("the design fixture has ledger");
     session.agent = Agent::Codex;
     session.turn = Turn::Ended;
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         open: Some(ledger()),

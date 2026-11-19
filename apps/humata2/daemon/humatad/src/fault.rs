@@ -20,63 +20,26 @@ pub(crate) fn point(name: &str) {
 /// Kills the daemon here when `HUMATA2_STOP_AT` names this point, so a
 /// test can show what a crash here leaves behind. Test daemons only: a
 /// release build never reads the variable.
-#[cfg(all(feature = "admin", not(feature = "faults")))]
+#[cfg(not(feature = "faults"))]
 pub(crate) fn point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        // SIGKILL, as the store's fault points use: no handler runs and no
-        // crash report is written. It can't be refused, so the abort after
-        // it is never reached.
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
+    humata2_daemon_runtime::fault::point(name);
 }
-
-#[cfg(not(any(feature = "admin", feature = "faults")))]
-#[inline(always)]
-pub(crate) fn point(_name: &str) {}
 
 /// Holds the task here when `HUMATA2_HOLD_AT` names this point, until the
 /// test opens `HUMATA2_HOLD_FIFO` for writing: opening a FIFO to read waits
 /// for a writer, so a test sees the state mid-way with no timing. Test
 /// daemons only.
-#[cfg(any(feature = "admin", feature = "faults"))]
 pub(crate) async fn hold_point(name: &str) {
-    if std::env::var("HUMATA2_HOLD_AT").is_ok_and(|wanted| wanted == name)
-        && let Ok(fifo) = std::env::var("HUMATA2_HOLD_FIFO")
-    {
-        let _ = tokio::task::spawn_blocking(move || std::fs::File::open(fifo)).await;
-    }
+    humata2_daemon_runtime::fault::hold_point(name).await;
 }
-
-#[cfg(not(any(feature = "admin", feature = "faults")))]
-#[inline(always)]
-pub(crate) async fn hold_point(_name: &str) {}
 
 /// As [`hold_point`] for code already on a blocking thread, and for a point
 /// reached many times: `HUMATA2_HOLD_AT=name@n` holds the nth time it is
 /// reached (`name` alone, the first). Only the calling thread waits, so the
 /// runtime's workers go on serving. Test daemons only.
-#[cfg(any(feature = "admin", feature = "faults"))]
 pub(crate) fn hold_blocking(name: &str) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static REACHED: AtomicU64 = AtomicU64::new(0);
-    let Ok(wanted) = std::env::var("HUMATA2_HOLD_AT") else { return };
-    let (point, nth) = match wanted.split_once('@') {
-        Some((point, nth)) => (point, nth.parse().unwrap_or(1)),
-        None => (wanted.as_str(), 1),
-    };
-    if point != name || REACHED.fetch_add(1, Ordering::SeqCst) + 1 != nth {
-        return;
-    }
-    if let Ok(fifo) = std::env::var("HUMATA2_HOLD_FIFO") {
-        let _ = std::fs::File::open(fifo);
-    }
+    humata2_daemon_runtime::fault::hold_blocking(name);
 }
-
-#[cfg(not(any(feature = "admin", feature = "faults")))]
-#[inline(always)]
-pub(crate) fn hold_blocking(_name: &str) {}
 
 /// Test builds only: SIGUSR2 stops the daemon as a power cut would, with
 /// what it wrote and didn't sync undone (see humata2_durable). Needs a
@@ -103,7 +66,7 @@ mod tests {
     /// A shipped daemon never stops or holds at a test point, whatever its
     /// environment says: the test runs itself again with the variables set
     /// and a FIFO no one writes to, and that run returns.
-    #[cfg(not(feature = "admin"))]
+    #[cfg(not(feature = "faults"))]
     #[test]
     fn a_release_build_ignores_the_stop_and_hold_variables() {
         const CHILD: &str = "HUMATA2_TEST_POINTS_CHILD";

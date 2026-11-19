@@ -6,9 +6,8 @@
 //! sending one to another machine is refused as a write outside its own
 //! folders, not misread as a path in its clone.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::time::{Duration, Instant};
 

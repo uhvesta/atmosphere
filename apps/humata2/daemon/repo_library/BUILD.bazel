@@ -9,7 +9,7 @@ rust_library(
     name = "repo_library",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_repo_library",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = [
         "@crates//:rusqlite",
         "@crates//:thiserror",

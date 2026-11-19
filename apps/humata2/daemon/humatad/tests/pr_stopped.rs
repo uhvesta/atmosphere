@@ -8,14 +8,9 @@
 //!
 //! The PR milestone's Start hook.
 
-#[allow(dead_code)]
-mod common;
-#[allow(dead_code)]
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
-#[allow(dead_code)]
-#[path = "common/pr_github.rs"]
-mod pr_github;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
 
 use std::time::{Duration, Instant};
 

@@ -44,7 +44,7 @@ fn setup() -> (TestStore<Inbox>, Fakes, Request, Request) {
     copy.id = RequestId::new("rq_copy");
     copy.preview = Preview::CrossMachineCopy(card());
     workspace.requests.push(copy.clone());
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = InboxState {
         workspace: Arc::new(workspace),
         ..InboxState::default()
@@ -144,7 +144,7 @@ fn reveal_on_another_machine_asks_finder_for_nothing() {
 #[test]
 fn a_finder_that_refuses_a_path_shows_an_error() {
     let workspace = fixture::design();
-    let (mut clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (mut clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let refusing: Arc<dyn Reveal> = Arc::new(RefusingFinder);
     clients.reveal = refusing;
     let state = InboxState {

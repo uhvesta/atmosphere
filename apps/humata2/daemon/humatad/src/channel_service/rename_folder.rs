@@ -538,7 +538,7 @@ impl ChannelSvc {
     /// The folder `name` gives `channel`, when it is not the one it has.
     /// The PR reviews channel's folder is Humata's own and stays.
     pub(super) fn folder_for(&self, channel: &ChannelRecord, name: &str) -> Result<Option<String>, Status> {
-        if channel.folder == crate::review::PR_REVIEWS_FOLDER {
+        if channel.folder == super::PR_REVIEWS_FOLDER {
             return Ok(None);
         }
         let folder = channel_folder(name).map_err(|error| setup_status(SetupError::Name(error), &self.machine))?;

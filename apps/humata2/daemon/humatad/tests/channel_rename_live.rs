@@ -10,7 +10,7 @@
 //! as Claude does, so it resumes only if its conversation moved to the new
 //! folder's key. Everything runs under a HOME of the test's own.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

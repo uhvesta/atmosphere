@@ -6,7 +6,7 @@
 //!
 //! No provider command runs here.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};

@@ -4,9 +4,8 @@
 //! Desk sessions are not channel-mates (D182.3). There is no tool that saves
 //! or restores.
 
-mod common;
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
 
 use std::path::PathBuf;
 

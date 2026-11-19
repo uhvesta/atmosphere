@@ -3,7 +3,7 @@
 //! scope in config/repos.toml. `gh` is a fake script (admin builds read
 //! `HUMATA2_GH`); it records what it was asked in files beside it.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 

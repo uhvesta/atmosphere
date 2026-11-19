@@ -56,14 +56,6 @@ service DaemonService {
   rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
 }
 
-enum DaemonRole {
-  DAEMON_ROLE_UNSPECIFIED = 0;
-  // The Mac: source of truth (SL-1).
-  DAEMON_ROLE_HOST = 1;
-  // Any other machine: clones and live context only (SL-2).
-  DAEMON_ROLE_MACHINE = 2;
-}
-
 // Optional behaviour a peer may lack. Unknown values are ignored.
 enum Feature {
   FEATURE_UNSPECIFIED = 0;

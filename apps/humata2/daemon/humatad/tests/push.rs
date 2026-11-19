@@ -5,7 +5,7 @@
 //! the world's bare repositories. Moves up from tests/pending with FORK's
 //! push batch.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

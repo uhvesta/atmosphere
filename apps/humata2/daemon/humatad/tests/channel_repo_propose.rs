@@ -6,7 +6,7 @@
 //! nothing, the other channel changes stay Never, and an agent can't name a
 //! local path.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{create_channel, error_of, finished, repo_ref, shell_token, start_session, start_world, wait_status};
 use humata2_grpc::humata::v1 as pb;

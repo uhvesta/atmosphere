@@ -16,8 +16,7 @@ use crate::upgrade::build::Release;
 
 /// This API's version. `api_minor` grows with every addition once Humata 2
 /// ships; until then the protos change in place.
-pub(crate) const API_MAJOR: u32 = 1;
-pub(crate) const API_MINOR: u32 = 0;
+pub(crate) use humata2_rpc_kit::{API_MAJOR, API_MINOR};
 
 pub(crate) struct Daemon {
     machine: String,

@@ -12,7 +12,7 @@ fn resume_on_an_open_archived_session_asks_the_daemon_nothing() {
         panic!("the design fixture has ledger");
     };
     session.archived = true;
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = SessionState {
         workspace: Arc::new(workspace),
         open: Some(id),

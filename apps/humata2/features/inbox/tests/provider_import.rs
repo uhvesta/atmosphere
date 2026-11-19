@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn store(workspace: humata2_clients::Workspace) -> TestStore<Inbox> {
-    let (clients, _fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = InboxState {
         workspace: Arc::new(workspace),
         ..InboxState::default()

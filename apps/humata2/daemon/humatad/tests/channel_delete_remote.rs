@@ -5,9 +5,8 @@
 //! tells online machines from offline ones as they are. A host and one box
 //! on the multi-machine rig; every wait is on the host's feeds.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use humata2_grpc::humata::v1 as pb;
 use remote_rig::{Rig, is_live};

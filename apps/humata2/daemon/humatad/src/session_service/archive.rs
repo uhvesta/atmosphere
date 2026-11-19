@@ -160,10 +160,10 @@ impl Lifecycle {
 /// How long the clones wait after an archive. Test daemons read
 /// `HUMATA2_ARCHIVE_UNDO_MS`; a release build always waits the 10 seconds.
 pub(crate) fn undo_window_ms() -> i64 {
-    #[cfg(feature = "admin")]
-    if let Some(ms) = std::env::var("HUMATA2_ARCHIVE_UNDO_MS")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
+    if humata2_rpc_kit::admin::is_admin_mode()
+        && let Some(ms) = std::env::var("HUMATA2_ARCHIVE_UNDO_MS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
     {
         return ms.max(0);
     }
@@ -416,6 +416,7 @@ fn store_failure(status: &Status, session: &str) -> pb::Error {
 
 impl SessionSvc {
     /// Gives archive the review service, to count a review's drafts. Once.
+    #[cfg(feature = "svc_review")]
     pub(crate) fn use_review(&self, review: crate::review::Review) {
         let _ = self.review.set(review);
     }
@@ -455,10 +456,13 @@ impl SessionSvc {
                 None,
             )
         })?;
+        #[cfg(feature = "svc_review")]
         let unsubmitted_drafts = match (&loaded.review, self.review.get()) {
             (Some(_), Some(review)) => review.unsubmitted_pr_drafts(&id)?,
             _ => 0,
         };
+        #[cfg(not(feature = "svc_review"))]
+        let unsubmitted_drafts = 0;
         let unpushed: Vec<pb::UnpushedRepo> = works.iter().filter_map(Work::unpushed).collect();
         let choices = if unpushed.is_empty() {
             vec![pb::ArchiveChoice::Archive]

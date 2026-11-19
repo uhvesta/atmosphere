@@ -26,7 +26,7 @@
 //!   `error.details.field`, or the server's own invalid-params error naming
 //!   it in `error.data.field` when the schema already refuses it.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

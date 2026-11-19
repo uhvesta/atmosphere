@@ -7,9 +7,8 @@
 //! Every wait is on the host's event feed with the rig's LONG as a safety
 //! net; nothing depends on how often a machine looks at its clones.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 

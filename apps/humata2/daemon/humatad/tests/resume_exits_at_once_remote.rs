@@ -3,9 +3,8 @@
 //! started there (D784). Nothing runs for the session on the box, and the
 //! host lists no holder of box-1's for its tab.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;

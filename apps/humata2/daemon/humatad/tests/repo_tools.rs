@@ -5,7 +5,7 @@
 //! call, and has no way to save the scope or remove a repo. `gh` is a fake
 //! script (admin builds read `HUMATA2_GH`).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

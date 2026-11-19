@@ -7,9 +7,8 @@
 //! reads the host's Inbox again each time its Inbox feed says something
 //! changed, so nothing sleeps.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use humata2_grpc::humata::v1 as pb;
 use remote_rig::{LONG, Rig, is_live};

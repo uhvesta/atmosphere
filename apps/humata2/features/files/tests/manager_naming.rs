@@ -51,7 +51,7 @@ struct Page {
 /// A page opened on This Mac, after `prepare` set the fake up.
 fn page_with(prepare: impl FnOnce(&FakeFileManager)) -> Page {
     let workspace = workspace();
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let fake = fakes.file_manager.clone();
     prepare(&fake);
     let mut store = TestStore::new(FilesState::default(), Files::new(clients)).non_exhaustive();

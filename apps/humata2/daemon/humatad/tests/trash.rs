@@ -1,7 +1,7 @@
 //! The Humata trash through `humatad2`'s gRPC API: files deleted in the
 //! file manager (FM-3) can be listed, restored and emptied (LD-6, LD-7).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

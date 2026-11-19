@@ -22,7 +22,7 @@ fn desk_workspace() -> Workspace {
 
 /// An app on `workspace`, at `route`, with the daemon holding the same one.
 fn setup(workspace: Workspace, route: Route) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let workspace = Arc::new(workspace);
     let mut state = AppState::launch(&clients);
     state.workspace = workspace.clone();

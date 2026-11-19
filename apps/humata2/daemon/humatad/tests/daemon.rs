@@ -1,6 +1,6 @@
 //! DaemonService, and what services not built yet answer.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Daemon, error_of};
 use humata2_grpc::humata::v1 as pb;

@@ -1,0 +1,43 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Shared transport, server facts, operation polling, error mapping, time
+# formatting, and pure proto-to-model converters for the live daemon clients.
+rust_library(
+    name = "live_core",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_clients_live_core",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:machines",
+        "//apps/humata2/api/grpc:peer",
+        "//apps/humata2/api/grpc:review",
+        "//apps/humata2/api/grpc:sessions",
+        "//apps/humata2/api/grpc:terminal",
+        "//apps/humata2/clients:api",
+        "@crates//:http-body-util",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "live_core_unit_test",
+    crate = ":live_core",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

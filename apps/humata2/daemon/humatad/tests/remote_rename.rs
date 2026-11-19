@@ -2,9 +2,8 @@
 //! on another machine with "Rename the branch too" renames the branch in
 //! that machine's clone, and the host shows the new name.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 

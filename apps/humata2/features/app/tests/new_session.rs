@@ -17,7 +17,7 @@ fn changing_channel_selects_an_online_host_in_that_channel() {
         .unwrap()
         .machines = vec![MachineId::new("devbox-1")];
     workspace.sessions.retain(|s| s.channel.as_str() != "infra");
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = Arc::new(workspace);
     state.route = Route::Channel(ChannelId::new("infra"));
@@ -45,7 +45,7 @@ fn changing_channel_selects_an_online_host_in_that_channel() {
 
 #[test]
 fn a_pending_launch_ignores_repeated_start_and_field_changes() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = Arc::new(fixture::design());
     state.route = Route::Channel(ChannelId::new("payments-rewrite"));
@@ -60,7 +60,7 @@ fn a_pending_launch_ignores_repeated_start_and_field_changes() {
     };
     sheet.creating = true;
     let count = fakes.daemon.workspace().sessions.len();
-    let (clients, fakes) = Clients::fake(fakes.daemon.workspace(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fakes.daemon.workspace(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(state, App::new(clients));
     store.send(A::NewSession(N::Create), |_| {});
     store.send(A::NewSession(N::Title("Changed".into())), |_| {});
@@ -71,7 +71,7 @@ fn a_pending_launch_ignores_repeated_start_and_field_changes() {
 
 #[test]
 fn a_default_agent_that_is_turned_off_falls_back_to_the_first_that_is_on() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.settings.preferences.default_agent = Agent::Claude;
     state.settings.agents.switches = Some(
@@ -98,7 +98,7 @@ fn a_default_agent_that_is_turned_off_falls_back_to_the_first_that_is_on() {
 
 #[test]
 fn a_default_agent_that_is_on_stays_the_choice() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.settings.preferences.default_agent = Agent::Codex;
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn store(open: &str) -> (TestStore<Sessions>, FakeDaemon) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = SessionState {
         workspace: Arc::new(fakes.daemon.workspace()),
         open: Some(SessionId::new(open)),

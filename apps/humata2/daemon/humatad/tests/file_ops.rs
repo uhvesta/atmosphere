@@ -2,7 +2,7 @@
 //! stat, make a folder, rename and move to the trash, in a session's clone,
 //! a channel's folder, its `shared/` and a main clone (FM-2, FM-3, FM-10).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

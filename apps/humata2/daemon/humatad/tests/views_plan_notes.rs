@@ -4,7 +4,7 @@
 //! lines; a note whose lines changed is kept and marked outdated. The store
 //! keeps the plan as it was prepared. Real git clones, a real daemon.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

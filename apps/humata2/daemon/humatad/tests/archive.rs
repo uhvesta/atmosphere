@@ -2,7 +2,7 @@
 //! LD-4, FK-13, D110, D170) through a real `humatad2`. Needs FORK's seams;
 //! moves up from tests/pending with them.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

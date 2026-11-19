@@ -12,7 +12,7 @@ use humata2_palette::{Command, Delegate, Marked, PaletteAction};
 use tca::{TestClock, TestStore};
 
 fn launched() -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Launch, |_| {});

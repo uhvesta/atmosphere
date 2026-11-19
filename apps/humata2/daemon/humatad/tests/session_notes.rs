@@ -5,7 +5,7 @@
 //! no) is what the asking call returns, or it expires. Only the asked
 //! session answers, and a session whose agent isn't running gets nothing.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

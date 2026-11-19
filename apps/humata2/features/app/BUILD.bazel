@@ -23,13 +23,14 @@ FEATURES = [
 rust_library(
     name = "app",
     srcs = glob(["src/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_name = "humata2_app",
     visibility = [
         "//apps/humata2/desktop:__pkg__",
-        "//apps/humata2/ui:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
     ],
     deps = [
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "//libs/tca-rust:tca",
         "@crates//:serde",
         "@crates//:serde_json",
@@ -41,7 +42,7 @@ rust_library(
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
         srcs = [src],
-        compile_data = ["//apps/humata2/ui:src/keys.rs"],
+        compile_data = ["//apps/humata2/ui/core:src/keys.rs"],
         crate_root = src,
         deps = [
             ":app",

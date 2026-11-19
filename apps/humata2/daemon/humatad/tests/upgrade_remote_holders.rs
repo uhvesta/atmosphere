@@ -21,13 +21,10 @@
 //! so working, until it creates a file. Every wait ends on a pushed change
 //! or on a status the daemons report; none is a guessed time.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[path = "common/upgrade.rs"]
-mod upgrade;
-#[path = "common/upgrade_rig.rs"]
-mod upgrade_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::upgrade;
+use humatad_test_common::upgrade_rig;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

@@ -11,7 +11,7 @@ use tca::{TestClock, TestStore};
 /// An app on `workspace` showing session `id`, the daemon holding the same
 /// workspace.
 fn on_session(workspace: Workspace, id: &SessionId) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let workspace = Arc::new(workspace);
     let mut state = AppState::launch(&clients);
     state.workspace = workspace.clone();

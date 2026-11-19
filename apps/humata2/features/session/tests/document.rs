@@ -9,7 +9,7 @@ use tca::{TestClock, TestStore};
 
 fn store() -> TestStore<Sessions> {
     let workspace = fixture::design();
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         ..Default::default()
@@ -171,7 +171,7 @@ fn doc_tab() -> Tab {
 /// selected.
 fn one_group() -> TestStore<Sessions> {
     let workspace = fixture::design();
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         ..Default::default()

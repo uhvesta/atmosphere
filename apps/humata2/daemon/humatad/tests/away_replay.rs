@@ -5,9 +5,8 @@
 //! real role-machine daemon and a real `serve --stdio` link; the test plays
 //! the host.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
+use humatad_test_common as common;
+use humatad_test_common::away;
 
 use away::{Host, OK, PASSPHRASE, Terminal, host_reachable_becomes, verifier};
 use common::{Attach, Build, Daemon, folder, open, state_folder};

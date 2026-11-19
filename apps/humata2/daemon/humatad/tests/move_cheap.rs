@@ -10,9 +10,8 @@
 //! is what crossed between the machines. The files are random bytes, so no
 //! compression makes them small.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

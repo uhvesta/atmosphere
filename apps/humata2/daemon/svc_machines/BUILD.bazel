@@ -1,0 +1,63 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# MachineService (host + box storage/root/forget/scripts) and the machine
+# scripts run engine (`humata2_svc_machines`).
+SHARED_DEPS = [
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/machines",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:prost",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
+NORMAL_DEPS = SHARED_DEPS + [
+    "//apps/humata2/daemon/runtime",
+    "//apps/humata2/daemon/sessions",
+    "//apps/humata2/daemon/store",
+]
+
+FAULTS_DEPS = SHARED_DEPS + [
+    "//apps/humata2/daemon/runtime:runtime_faults",
+    "//apps/humata2/daemon/sessions:sessions_faults",
+    "//apps/humata2/daemon/store:store_faults",
+]
+
+rust_library(
+    name = "svc_machines",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_machines",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = NORMAL_DEPS,
+)
+
+# The svc_machines crate with fault points active (`feature = "faults"`).
+rust_library(
+    name = "svc_machines_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_machines",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
+rust_test(
+    name = "svc_machines_unit_test",
+    crate = ":svc_machines",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

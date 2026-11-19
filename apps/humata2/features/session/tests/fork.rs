@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 #[test]
 fn a_failed_fork_keeps_its_title_and_kind_for_retry() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     fakes.daemon.fail_next(Operation::Fork, "link unavailable");
     let state = SessionState {
         workspace: Arc::new(fakes.daemon.workspace()),
@@ -61,7 +61,7 @@ fn a_failed_fork_keeps_its_title_and_kind_for_retry() {
 }
 #[test]
 fn pending_forks_ignore_repeated_create_and_edits() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = SessionState {
         open: Some(SessionId::new("ledger")),
         fork: Some(ForkDraft {

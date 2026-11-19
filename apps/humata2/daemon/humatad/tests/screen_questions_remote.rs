@@ -5,11 +5,9 @@
 //! the screen and left, the box grows it to 50 rows and the card offers
 //! every choice.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[path = "common/trust_box.rs"]
-mod trust_box;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::trust_box;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

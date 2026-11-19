@@ -4,7 +4,7 @@
 //! mark. Needs FIND T4a's seams (the service registered, the feed's marks
 //! filter); moves up from tests/pending with them.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Daemon, WAIT, error_of, folder, get_session, invalid_field, machine_id, shell_token, state_folder,

@@ -5,7 +5,7 @@
 //! code, the JSON printed and what the Inbox holds, never a message's
 //! wording.
 
-mod common;
+use humatad_test_common as common;
 
 use std::process::Stdio;
 use std::time::Duration;

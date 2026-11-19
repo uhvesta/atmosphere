@@ -3,7 +3,7 @@
 //! says they need trusting. A turn report from such a session clears it,
 //! and a kind without them never shows it.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

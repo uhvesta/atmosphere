@@ -3,7 +3,7 @@
 //! agent's identity. Only the class of outcome is checked: allowed, held
 //! for the user, refused at once, or the user's alone.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Stdio;

@@ -7,7 +7,7 @@
 //! move leaves a Desk session with nothing half-moved; a power cut is
 //! desk_into_channel.rs's.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

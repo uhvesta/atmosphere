@@ -13,7 +13,7 @@ fn payments() -> ChannelId {
 }
 
 fn launch(workspace: Workspace) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});

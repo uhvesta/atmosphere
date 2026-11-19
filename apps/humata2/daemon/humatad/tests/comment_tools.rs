@@ -2,7 +2,7 @@
 //! lists the comments typed into its terminal, replies to them and resolves
 //! them, only its own session's, only when its channel's rules allow it.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};

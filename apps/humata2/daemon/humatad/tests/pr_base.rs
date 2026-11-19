@@ -9,14 +9,9 @@
 //!
 //! GitHub is the fake `gh` of `common/pr_github.rs`.
 
-#[allow(dead_code)]
-mod common;
-#[allow(dead_code)]
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
-#[allow(dead_code)]
-#[path = "common/pr_github.rs"]
-mod pr_github;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
 
 use common::{create_channel, error_of, finished, git, repo_ref, start_session, wait_running};
 use humata2_grpc::humata::v1 as pb;

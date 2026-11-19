@@ -13,7 +13,7 @@ use humata2_settings::Section;
 use tca::{TestClock, TestStore};
 
 fn store(route: Route) -> TestStore<App> {
-    let (mut clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (mut clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     clients.machines = Arc::new(FakeMachines::new());
     let mut state = AppState::launch(&clients);
     state.route = route;

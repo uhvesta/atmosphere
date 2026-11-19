@@ -130,13 +130,6 @@ message AddRepoRequest {
   RepoRef repo = 3;
 }
 
-message SessionWork {
-  SessionId session = 1;
-  string title = 2;
-  uint32 dirty_files = 3;
-  uint32 unpushed_commits = 4;
-}
-
 message RemoveRepoPlan {
   ChannelId channel = 1;
   RepoRef repo = 2;
@@ -166,24 +159,6 @@ message AddChannelMachineRequest {
 message PlanRemoveChannelMachineRequest {
   ChannelId channel = 1;
   MachineId machine = 2;
-}
-
-// What to do with one session on a machine that leaves (CH-8, LD-10).
-message SessionDisposition {
-  SessionId session = 1;
-  oneof disposition {
-    MachineId move_to = 2;
-    ArchiveChoice archive = 3;
-  }
-}
-
-// MV-9's three answers, minus Cancel.
-enum ArchiveChoice {
-  ARCHIVE_CHOICE_UNSPECIFIED = 0;
-  // Only valid without unpushed work.
-  ARCHIVE_CHOICE_ARCHIVE = 1;
-  ARCHIVE_CHOICE_COMMIT_PUSH_PR_THEN_ARCHIVE = 2;
-  ARCHIVE_CHOICE_ARCHIVE_AND_DELETE_WORK = 3;
 }
 
 message RemoveChannelMachinePlan {

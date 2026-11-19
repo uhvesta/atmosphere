@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn store() -> TestStore<Settings> {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     TestStore::new(SettingsState::default(), Settings::new(clients))
 }
 

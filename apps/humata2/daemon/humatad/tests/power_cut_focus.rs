@@ -4,12 +4,9 @@
 //! the point, both started again, and the same checks as the suites. Quick
 //! enough to queue for routine checks; the suites stay the full promise.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[allow(dead_code)]
-#[path = "common/power_cut.rs"]
-mod power_cut;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::power_cut;
 
 use power_cut::{Cut, Operation, Side};
 

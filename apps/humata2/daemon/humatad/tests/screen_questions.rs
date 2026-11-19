@@ -6,9 +6,8 @@
 //! the terminal instead is withdrawn. An agent whose "Ask in the Inbox" is
 //! off (D782) raises no card; the session still needs you while it asks.
 
-mod common;
-#[path = "common/trust_box.rs"]
-mod trust_box;
+use humatad_test_common as common;
+use humatad_test_common::trust_box;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -7,11 +7,9 @@
 //!
 //! Waits are on the host's feeds (the rig's `wait_session`, `ended`).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::mcp_client;
 
 use std::path::Path;
 

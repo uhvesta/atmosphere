@@ -1,0 +1,65 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The app's real FileManager client over FileService, TransferService,
+# TrashService, and MachineService.
+rust_library(
+    name = "live_files",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_clients_live_files",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:files",
+        "//apps/humata2/api/grpc:machines",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "@crates//:prost",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "live_files_unit_test",
+    crate = ":live_files",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# The file manager on the fake and on a real humatad2 (admin build).
+rust_test(
+    name = "file_manager_test",
+    srcs = ["tests/file_manager.rs"],
+    crate_root = "tests/file_manager.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_transfers",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_transfers)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_files",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//apps/humata2/clients/live_desk",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

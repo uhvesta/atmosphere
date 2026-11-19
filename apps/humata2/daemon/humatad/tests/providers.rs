@@ -4,7 +4,7 @@
 //! delete, a failed create and Delete what was made, and agents seeing no
 //! providers.
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

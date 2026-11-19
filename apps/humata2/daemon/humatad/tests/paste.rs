@@ -1,7 +1,7 @@
 //! PasteImage: an image saved on the session's machine for the agent to
 //! read, at a path to type into the tab.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

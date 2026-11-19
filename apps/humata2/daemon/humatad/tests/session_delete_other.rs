@@ -5,9 +5,8 @@
 //! that acts does, so the user's yes carries out the action and a no leaves
 //! the session as it was (D730).
 
-mod common;
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
 
 use common::{
     create_channel, error_of, is_running, shell_token, start_session, start_world, wait_running,

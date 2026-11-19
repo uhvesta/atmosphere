@@ -11,9 +11,8 @@
 //! on its agent's screen raises no screen card; before, it still does
 //! (D798).
 
-mod common;
-#[path = "common/trust_box.rs"]
-mod trust_box;
+use humatad_test_common as common;
+use humatad_test_common::trust_box;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -19,7 +19,7 @@
 //! (EventService), after the change is written.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target};
@@ -120,9 +120,11 @@ pub(crate) struct Work {
     pub(crate) inbox: std::sync::OnceLock<Arc<crate::inbox::Inbox>>,
     /// The boards each link runs a machine's forwarded board calls in and replays its
     /// journaled board writes into (D227); set once by `serve` before any link starts.
+    #[cfg(feature = "svc_board")]
     pub(crate) boards: std::sync::OnceLock<crate::board_service::BoardSvc>,
     /// The views each link keeps the offers of a machine's agents in, replayed
     /// from its journal (VW-12); set once by `serve` before any link starts.
+    #[cfg(feature = "svc_review")]
     pub(crate) views: std::sync::OnceLock<crate::review::Review>,
     /// Each machine's live link, for the services that relay calls to it
     /// (D139). Told at the same hook as `skills`.
@@ -405,7 +407,9 @@ impl Work {
             skills: std::sync::OnceLock::new(),
             policy: std::sync::OnceLock::new(),
             inbox: std::sync::OnceLock::new(),
+            #[cfg(feature = "svc_board")]
             boards: std::sync::OnceLock::new(),
+            #[cfg(feature = "svc_review")]
             views: std::sync::OnceLock::new(),
             relay_links: Links::default(),
             reports: PeerReports::default(),
@@ -534,20 +538,23 @@ impl Work {
         });
         let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
         let key_file = self.machines.peer_key(machine);
-        let host = self
-            .policy
-            .get()
-            .cloned()
-            .zip(self.inbox.get().cloned())
-            .zip(self.boards.get().cloned())
-            .zip(self.views.get().cloned())
-            .map(|(((policy, inbox), boards), views)| peer_client::HostSide {
+        let host = (|| {
+            let policy = self.policy.get()?.clone();
+            let inbox = self.inbox.get()?.clone();
+            #[cfg(feature = "svc_board")]
+            let boards = self.boards.get()?.clone();
+            #[cfg(feature = "svc_review")]
+            let views = self.views.get()?.clone();
+            Some(peer_client::HostSide {
                 policy,
                 inbox,
+                #[cfg(feature = "svc_board")]
                 boards,
+                #[cfg(feature = "svc_review")]
                 views,
                 upgrade: self.upgrade.get().cloned(),
-            });
+            })
+        })();
         let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, host));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
@@ -1238,9 +1245,7 @@ pub(crate) fn machine_of(id: Option<pb::MachineId>) -> Result<String, Status> {
         .ok_or_else(|| status::missing("id"))
 }
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+pub(crate) use humata2_rpc_kit::lock;
 
 /// The reachability a failed connect leaves.
 pub(crate) fn reach_after(error: &ManageError) -> pb::Reachability {

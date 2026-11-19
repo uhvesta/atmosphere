@@ -4,7 +4,7 @@
 //! location as the session's own: its agent reaches it, another session's
 //! agent does not, and a path that leaves the folder is refused.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 

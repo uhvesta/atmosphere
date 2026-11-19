@@ -13,7 +13,7 @@ use humata2_settings::{Section, Settings, SettingsAction as A, SettingsState};
 use tca::{TestClock, TestStore};
 
 fn setup() -> (TestStore<Settings>, FakeMachines, FakeReveal) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let store = TestStore::new(SettingsState::default(), Settings::new(clients)).non_exhaustive();
     (store, fakes.machines, fakes.reveal)
 }

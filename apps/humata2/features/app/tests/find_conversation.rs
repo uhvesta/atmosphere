@@ -34,7 +34,7 @@ fn seed(fakes: &Fakes) {
 }
 
 fn store_with(workspace: Workspace, view: Option<SessionView>) -> TestStore<App> {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     seed(&fakes);
     let mut state = AppState::launch(&clients);
     let workspace = Arc::new(workspace);
@@ -178,7 +178,7 @@ fn a_hit_on_an_offline_machine_opens_the_same_conversation() {
 
 #[test]
 fn a_saved_conversation_tab_comes_back_after_a_restart_and_reads_again() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     seed(&fakes);
     let target = ConversationTarget { turn: HIT_TURN, seq: u64::from(HIT_TURN) };
     let view = SessionView {

@@ -1,0 +1,228 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load(":tonic.bzl", "rust_grpc_domain", "rust_grpc_umbrella")
+
+# Per-domain tonic gRPC client and server crates for humata.v1.
+
+_GRPC_VISIBILITY = ["//apps/humata2:__subpackages__"]
+
+# protoc-gen-tonic, the protoc plugin for tonic, built from the workspace's
+# pinned crate.
+rust_binary(
+    name = "protoc-gen-tonic",
+    srcs = ["protoc_gen_tonic.rs"],
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:protoc-gen-prost",
+        "@crates//:protoc-gen-tonic",
+    ],
+)
+
+rust_grpc_domain(
+    name = "core",
+    crate_name = "humata2_grpc_core",
+    proto = "//apps/humata2/api/proto:core_proto",
+    proto_crate_name = "humata2_proto_core",
+    proto_rust = "//apps/humata2/api/proto:core_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "terminal",
+    crate_name = "humata2_grpc_terminal",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:terminal_proto",
+    proto_crate_name = "humata2_proto_terminal",
+    proto_rust = "//apps/humata2/api/proto:terminal_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "catalog",
+    crate_name = "humata2_grpc_catalog",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:catalog_proto",
+    proto_crate_name = "humata2_proto_catalog",
+    proto_rust = "//apps/humata2/api/proto:catalog_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "files",
+    crate_name = "humata2_grpc_files",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:files_proto",
+    proto_crate_name = "humata2_proto_files",
+    proto_rust = "//apps/humata2/api/proto:files_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "inbox",
+    crate_name = "humata2_grpc_inbox",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:inbox_proto",
+    proto_crate_name = "humata2_proto_inbox",
+    proto_rust = "//apps/humata2/api/proto:inbox_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "board",
+    crate_name = "humata2_grpc_board",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:board_proto",
+    proto_crate_name = "humata2_proto_board",
+    proto_rust = "//apps/humata2/api/proto:board_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "review",
+    crate_name = "humata2_grpc_review",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:review_proto",
+    proto_crate_name = "humata2_proto_review",
+    proto_rust = "//apps/humata2/api/proto:review_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "desk",
+    crate_name = "humata2_grpc_desk",
+    dep_proto_crates = [
+        "humata2_proto_core",
+        "humata2_proto_review",
+    ],
+    dep_proto_rusts = [
+        "//apps/humata2/api/proto:core_rust",
+        "//apps/humata2/api/proto:review_rust",
+    ],
+    proto = "//apps/humata2/api/proto:desk_proto",
+    proto_crate_name = "humata2_proto_desk",
+    proto_rust = "//apps/humata2/api/proto:desk_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "machines",
+    crate_name = "humata2_grpc_machines",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:machines_proto",
+    proto_crate_name = "humata2_proto_machines",
+    proto_rust = "//apps/humata2/api/proto:machines_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "sessions",
+    crate_name = "humata2_grpc_sessions",
+    dep_proto_crates = ["humata2_proto_core"],
+    dep_proto_rusts = ["//apps/humata2/api/proto:core_rust"],
+    proto = "//apps/humata2/api/proto:sessions_proto",
+    proto_crate_name = "humata2_proto_sessions",
+    proto_rust = "//apps/humata2/api/proto:sessions_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "peer",
+    crate_name = "humata2_grpc_peer",
+    dep_proto_crates = [
+        "humata2_proto_core",
+        "humata2_proto_inbox",
+        "humata2_proto_sessions",
+    ],
+    dep_proto_rusts = [
+        "//apps/humata2/api/proto:core_rust",
+        "//apps/humata2/api/proto:inbox_rust",
+        "//apps/humata2/api/proto:sessions_rust",
+    ],
+    proto = "//apps/humata2/api/proto:peer_proto",
+    proto_crate_name = "humata2_proto_peer",
+    proto_rust = "//apps/humata2/api/proto:peer_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+rust_grpc_domain(
+    name = "events",
+    crate_name = "humata2_grpc_events",
+    dep_proto_crates = [
+        "humata2_proto_board",
+        "humata2_proto_catalog",
+        "humata2_proto_core",
+        "humata2_proto_desk",
+        "humata2_proto_files",
+        "humata2_proto_inbox",
+        "humata2_proto_machines",
+        "humata2_proto_review",
+        "humata2_proto_sessions",
+    ],
+    dep_proto_rusts = [
+        "//apps/humata2/api/proto:board_rust",
+        "//apps/humata2/api/proto:catalog_rust",
+        "//apps/humata2/api/proto:core_rust",
+        "//apps/humata2/api/proto:desk_rust",
+        "//apps/humata2/api/proto:files_rust",
+        "//apps/humata2/api/proto:inbox_rust",
+        "//apps/humata2/api/proto:machines_rust",
+        "//apps/humata2/api/proto:review_rust",
+        "//apps/humata2/api/proto:sessions_rust",
+    ],
+    proto = "//apps/humata2/api/proto:events_proto",
+    proto_crate_name = "humata2_proto_events",
+    proto_rust = "//apps/humata2/api/proto:events_rust",
+    visibility = _GRPC_VISIBILITY,
+)
+
+# Umbrella facade re-exporting all 34 gRPC services and all humata.v1 messages.
+rust_grpc_umbrella(
+    name = "all",
+    crate_name = "humata2_grpc",
+    reexport_crates = [
+        "humata2_grpc_board",
+        "humata2_grpc_catalog",
+        "humata2_grpc_core",
+        "humata2_grpc_desk",
+        "humata2_grpc_events",
+        "humata2_grpc_files",
+        "humata2_grpc_inbox",
+        "humata2_grpc_machines",
+        "humata2_grpc_peer",
+        "humata2_grpc_review",
+        "humata2_grpc_sessions",
+        "humata2_grpc_terminal",
+    ],
+    visibility = _GRPC_VISIBILITY,
+    deps = [
+        ":board",
+        ":catalog",
+        ":core",
+        ":desk",
+        ":events",
+        ":files",
+        ":inbox",
+        ":machines",
+        ":peer",
+        ":review",
+        ":sessions",
+        ":terminal",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "tonic.bzl",
+    ],
+    tags = ["starlark"],
+)

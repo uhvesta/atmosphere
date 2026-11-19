@@ -261,19 +261,6 @@ message AccessAheadPreview {
   string target_label = 3;
 }
 
-message FieldChange {
-  string field = 1;     // "status"
-  string before = 2;    // "To do"
-  string after = 3;     // "In review"
-}
-
-message BoardChangePreview {
-  BoardItemId item = 1;
-  string item_title = 2;
-  repeated FieldChange changes = 3;
-  bool deletes_item = 4;
-}
-
 message NewBoardItemPreview {
   BoardRef board = 1;
   string title = 2;

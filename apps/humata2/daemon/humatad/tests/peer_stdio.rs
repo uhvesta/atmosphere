@@ -4,7 +4,7 @@
 //! The link serves nothing but the handshake until the host proves it holds
 //! the machine's enrollment key.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

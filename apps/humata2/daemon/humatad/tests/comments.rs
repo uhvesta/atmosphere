@@ -3,7 +3,7 @@
 //! folder: drafting, sending into the agent's terminal, what a restart
 //! keeps, and how a comment follows its lines.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

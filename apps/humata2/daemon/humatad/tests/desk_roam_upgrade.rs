@@ -3,13 +3,10 @@
 //! it does, the start is refused with `migration_needed` naming the
 //! machine's Migrate item, and nothing is made on any machine.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
-#[path = "common/upgrade.rs"]
-mod upgrade;
-#[path = "common/upgrade_rig.rs"]
-mod upgrade_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
+use humatad_test_common::upgrade;
+use humatad_test_common::upgrade_rig;
 
 use common::error_of;
 use humata2_grpc::humata::v1 as pb;

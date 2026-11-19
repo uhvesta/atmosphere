@@ -4,7 +4,7 @@
 //! channel without changing anything. A target that went shows the session's
 //! `target_gone`, and a new target runs the stopped session again.
 
-mod common;
+use humatad_test_common as common;
 
 use std::future::Future;
 use std::path::PathBuf;

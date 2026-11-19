@@ -8,7 +8,7 @@
 //! as Claude does, so a session whose folder moved resumes only if its
 //! conversation moved with it.
 
-mod common;
+use humatad_test_common as common;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

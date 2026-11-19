@@ -6,8 +6,6 @@
 //! the restart cut off asks its agent to repeat the call with the same
 //! idempotency key, which then runs it without asking again.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
@@ -27,27 +25,7 @@ use crate::status;
 /// How long an approved call's result stays available to a wait (TP-12).
 const RESULT_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// What an approved call produced: its response, encoded, and the response
-/// message's full name (e.g. "humata.v1.ListChannelsResponse").
-pub(crate) struct Deferred {
-    pub(crate) result: Vec<u8>,
-    pub(crate) result_type: String,
-}
-
-/// What the card of a deferred board call shows in place of the access
-/// preview (BD-15): the change field by field, or the new item, and the
-/// agent's reason.
-pub(crate) struct BoardAsk {
-    pub(crate) preview: pb::request_preview::Preview,
-    pub(crate) reason: String,
-}
-
-/// The call, to run once the user approves it. It is given the id of the
-/// request that was approved, for a call that records which approval it ran
-/// under (D268).
-pub(crate) type Run = Box<
-    dyn FnOnce(String) -> Pin<Box<dyn Future<Output = Result<Deferred, Status>> + Send>> + Send,
->;
+pub(crate) use humata2_daemon_ports::{BoardAsk, Deferred, Run};
 
 /// How an approved call ended.
 #[derive(Clone)]

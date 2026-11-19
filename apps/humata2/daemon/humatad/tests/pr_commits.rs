@@ -11,11 +11,9 @@
 //!
 //! The PR milestone's A9.
 
-mod common;
-#[path = "common/mcp_client.rs"]
-mod mcp_client;
-#[path = "common/pr_github.rs"]
-mod pr_github;
+use humatad_test_common as common;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
 
 use std::collections::BTreeSet;
 use std::path::Path;

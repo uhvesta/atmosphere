@@ -5,9 +5,8 @@
 //! survive, the box starts nothing twice, and the host's record names the
 //! folder the box works in. Waits are bounded by `LONG`.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

@@ -165,7 +165,7 @@ fn the_scope_picker_offers_forks_only_for_sessions_that_have_them() {
 #[test]
 fn picking_a_channel_view_saves_it_and_closes_the_menu() {
     let workspace = Arc::new(workspace());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(state(channel(), ChannelView::Channel), Board::new(clients));
     store.send(A::ScopeMenu, |s| s.scope_menu = true);
     store.send(A::SetChannelView(ChannelView::OneSession(sid("solo"))), |s| {
@@ -178,7 +178,7 @@ fn picking_a_channel_view_saves_it_and_closes_the_menu() {
 
 fn create_in(view: ChannelView) -> Scope {
     let workspace = Arc::new(workspace());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(state(channel(), view), Board::new(clients));
     store.send(A::StartNew, |s| s.new_title = Some(String::new()));
     store.send(A::NewTitle("fresh".into()), |s| s.new_title = Some("fresh".into()));

@@ -10,7 +10,7 @@ use humata2_session::{Delegate as SessionDelegate, SessionAction};
 use tca::{TestClock, TestStore};
 
 fn on_session(workspace: Workspace, id: &SessionId) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});

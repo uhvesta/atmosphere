@@ -3,7 +3,7 @@
 //! write on a board it needs approval for (BD-1..BD-16, SL-6..SL-8, D155).
 //! Move to `tests/boards.rs` once BoardService is wired.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

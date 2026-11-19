@@ -47,7 +47,7 @@ fn workspace() -> Workspace {
 /// The app on Home, after the workspace loaded.
 fn rig() -> (TestStore<App>, humata2_clients::Fakes) {
     let workspace = workspace();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.pull_requests.add_pull_request(info());
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();

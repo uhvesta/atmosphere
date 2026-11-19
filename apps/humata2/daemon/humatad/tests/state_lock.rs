@@ -1,7 +1,7 @@
 //! One state folder, one daemon: a second daemon on a state folder that a
 //! live one holds is refused, and the first one keeps serving.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Daemon, folder, serve_and_exit};
 use humata2_grpc::humata::v1 as pb;

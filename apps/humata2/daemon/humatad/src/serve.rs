@@ -21,6 +21,7 @@ use tonic::transport::Server;
 use tower::util::MapRequestLayer;
 
 use crate::access_service::Access;
+#[cfg(feature = "svc_board")]
 use crate::board_service::BoardSvc;
 use crate::channel_service::ChannelSvc;
 use crate::cli_login::{CliAuth, CliLogins};
@@ -55,10 +56,7 @@ use crate::trash_service::{Bin, TrashSvc};
 use crate::upgrade::build::Release;
 
 /// What Unix sockets allow in a path, without its terminating NUL.
-#[cfg(target_os = "linux")]
-pub(crate) const SOCKET_PATH_MAX: usize = 107;
-#[cfg(not(target_os = "linux"))]
-pub(crate) const SOCKET_PATH_MAX: usize = 103;
+pub(crate) use humata2_rpc_kit::SOCKET_PATH_MAX;
 
 /// How long a stopping daemon gives its connections to finish once its
 /// streams have ended (D270), before it cuts them and exits: only a call
@@ -360,45 +358,23 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             .map_err(|source| DaemonError::ScriptTokens { source })?,
     );
     #[cfg(feature = "admin")]
-    let authenticate = match (args.admin, args.admin_pid) {
+    let admin = match (args.admin, args.admin_pid) {
         (true, _) => {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
             );
-            Authenticate::admin(
-                identities.clone(),
-                logins.clone(),
-                scripts.clone(),
-                store.clone(),
-                Arc::new(Kernel),
-                role,
-                identity::Admin::Anyone,
-            )
+            Some(identity::Admin::Anyone)
         }
         (false, Some(pid)) => {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential from process {pid} acts as the user. This is a test daemon; don't use it as your real one"
             );
-            Authenticate::admin(
-                identities.clone(),
-                logins.clone(),
-                scripts.clone(),
-                store.clone(),
-                Arc::new(Kernel),
-                role,
-                identity::Admin::Process(pid),
-            )
+            Some(identity::Admin::Process(pid))
         }
-        (false, None) => Authenticate::new(
-            identities.clone(),
-            logins.clone(),
-            scripts.clone(),
-            store.clone(),
-            Arc::new(Kernel),
-            role,
-        ),
+        (false, None) => None,
     };
     #[cfg(not(feature = "admin"))]
+    let admin = None;
     let authenticate = Authenticate::new(
         identities.clone(),
         logins.clone(),
@@ -406,7 +382,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         store.clone(),
         Arc::new(Kernel),
         role,
-    );
+    )
+    .with_admin(admin);
     // D144: a connection that completes the relay's proof is the host's.
     // The session check inside it uses the interceptor as it is now, with
     // no relay, so there is no cycle.
@@ -525,10 +502,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         None => agents,
     };
     // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
+    #[cfg(feature = "svc_catalog")]
     let agent_service = crate::agent_service::AgentSvc::new(agents.clone(), args.agents.is_none());
     // D782: a write to agents.toml reaches every linked machine, once the
     // machines are served (below).
+    #[cfg(feature = "svc_catalog")]
     let agents_changed = agent_service.on_change();
+    #[cfg(not(feature = "svc_catalog"))]
+    let agents_changed = crate::agent_switches::OnChange::default();
     // D782's upgrade: D199's one "ask in the agent" switch becomes every
     // kind's own `asks_in_inbox`, once.
     if let Err(error) = crate::inbox::permission::move_global_switch(&store, &agents) {
@@ -832,6 +813,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             transfers.recover();
         }
     });
+    #[cfg(feature = "svc_review")]
     let review = crate::review::Review::new(
         store.clone(),
         guard.clone(),
@@ -840,11 +822,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Arc::new(crate::review::TerminalSink::new(terminals.core())),
     );
     // BUG 42: the user's own write of a file is not the agent's change.
+    #[cfg(feature = "svc_review")]
     files.use_user_writes(Arc::new(review.clone()));
     files.use_changes(file_changes);
     // D138: a batch of comments the last run was still typing is settled
     // before anyone asks.
     // A stopped machine types nothing, so it settles them at its Start.
+    #[cfg(feature = "svc_review")]
     if !stopped_now {
         let review = review.clone();
         let operations = last_start.operations().clone();
@@ -886,6 +870,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         agent_home(std::env::var_os("HOME"), &home),
     ));
     let operations = Arc::new(Operations::new(feed.clone()));
+    #[cfg(feature = "svc_review")]
     let pull_requests = crate::review::PullRequests::new(
         store.clone(),
         guard.clone(),
@@ -899,6 +884,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     );
     // D286: a stopped machine asks GitHub nothing on its own; its Start
     // (the daemon starting itself again, running) follows the reviews again.
+    #[cfg(feature = "svc_review")]
     if !stopped_now {
         pull_requests.spawn_poll();
     }
@@ -925,6 +911,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D194: a delete a restart cut short is finished once the start is done.
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
+    #[cfg(feature = "svc_board")]
     let board_svc = BoardSvc::new(
         guard.clone(),
         store.clone(),
@@ -985,11 +972,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // REPOS (CH-21): AddRepoToSession adds a repo the channel lacks.
     session_svc.use_channels(channel_svc.clone());
     // PR-17: Archive names a review's unsubmitted drafts.
+    #[cfg(feature = "svc_review")]
     session_svc.use_review(review.clone());
+    #[cfg(feature = "svc_review")]
     pull_requests.use_sessions(session_svc.clone());
     // D287: a submit cut short is settled against GitHub before anyone
     // posts again. A stopped machine asks GitHub nothing; its records stay
     // until the next start.
+    #[cfg(feature = "svc_review")]
     if !stopped_now {
         let pull_requests = pull_requests.clone();
         tokio::spawn(async move { pull_requests.reconcile_submits().await });
@@ -1054,8 +1044,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 remote.use_upgrade(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
             }
             // D227: each link runs its machine's forwarded board calls and replays its board journal.
+            #[cfg(feature = "svc_board")]
             let _ = work.boards.set(board_svc.clone());
             // VW-12: each link keeps the views its machine's agents offered.
+            #[cfg(feature = "svc_review")]
             let _ = work.views.set(review.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
@@ -1154,11 +1146,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine_svc.use_sessions(session_svc.clone());
     }
     match &machines {
+        #[cfg(feature = "svc_board")]
         Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::board_service::HostCalls {
             machines: machine_svc.clone(),
             files: files.clone(),
             transfers: transfers.clone(),
         }),
+        #[cfg(not(feature = "svc_board"))]
+        Some(_) => {}
         None if role == pb::DaemonRole::Machine => {
             files.ask_host_for_agents(uplinks.forwarder());
             transfers.ask_host_for_agents(uplinks.forwarder());
@@ -1221,15 +1216,6 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::inbox_service_server::InboxServiceServer::from_arc(
             inbox,
         ))
-        .add_service(pb::diff_service_server::DiffServiceServer::new(
-            review.clone(),
-        ))
-        .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
-        .add_service(pb::pull_request_review_service_server::PullRequestReviewServiceServer::new(pull_requests))
-        .add_service(pb::comment_service_server::CommentServiceServer::new(
-            review.clone(),
-        ))
-        .add_service(pb::view_service_server::ViewServiceServer::new(review))
         .add_service(pb::access_service_server::AccessServiceServer::new(access))
         .add_service(pb::channel_service_server::ChannelServiceServer::new(
             channel_svc,
@@ -1238,8 +1224,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             session_svc,
         ))
         .add_service(pb::session_carry_service_server::SessionCarryServiceServer::from_arc(carry_svc))
-        .add_service(desk)
-        .add_service(pb::board_service_server::BoardServiceServer::new(board_svc))
+        .add_service(desk);
+    #[cfg(feature = "svc_review")]
+    let router = router
+        .add_service(pb::diff_service_server::DiffServiceServer::new(
+            review.clone(),
+        ))
+        .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
+        .add_service(pb::pull_request_review_service_server::PullRequestReviewServiceServer::new(pull_requests))
+        .add_service(pb::comment_service_server::CommentServiceServer::new(
+            review.clone(),
+        ))
+        .add_service(pb::view_service_server::ViewServiceServer::new(review));
+    #[cfg(feature = "svc_board")]
+    let router = router.add_service(pb::board_service_server::BoardServiceServer::new(board_svc));
+    let router = router
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
             CliAuth {
                 logins,
@@ -1284,6 +1283,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         ))
     };
     let router = router.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
+    #[cfg(feature = "svc_catalog")]
     let router = router.add_service(pb::agent_service_server::AgentServiceServer::new(agent_service));
     let router = not_built::register(router);
 

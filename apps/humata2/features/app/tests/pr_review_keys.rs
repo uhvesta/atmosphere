@@ -11,7 +11,7 @@ use tca::{TestClock, TestStore};
 
 fn rig() -> TestStore<App> {
     let workspace = fixture::design();
-    let (clients, _fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(workspace)), |_| {});

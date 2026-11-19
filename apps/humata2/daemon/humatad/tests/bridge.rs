@@ -1,7 +1,7 @@
 //! `humatad2 bridge` carries the API over its stdin and stdout, the way SSH
 //! would, starting the daemon when none answers.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};

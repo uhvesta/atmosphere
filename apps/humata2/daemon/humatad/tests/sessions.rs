@@ -4,7 +4,7 @@
 //! matrix (the app, the daemon, the holder, a reboot) brings the session
 //! back in its conversation or says what was lost.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

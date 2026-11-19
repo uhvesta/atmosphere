@@ -1,8 +1,366 @@
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
+load(":prost.bzl", "rust_prost_domain", "rust_prost_umbrella")
 
 # Humata 2's internal gRPC protocol between the app and the daemons
 # (humata/v1/*.proto), described in ../GRPC.md.
+
+# protoc-gen-prost-domain: injects per-type extern_path for imported humata.v1
+# files so every message/enum is generated in exactly one domain crate.
+rust_binary(
+    name = "protoc-gen-prost-domain",
+    srcs = ["protoc_gen_prost_domain.rs"],
+    deps = [
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:protoc-gen-prost",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# Per-domain proto_library and same-package prost rust_library targets.
+# ---------------------------------------------------------------------------
+
+_PROTO_VISIBILITY = [
+    "//apps/humata2/api/grpc:__pkg__",
+    "//apps/humata2/cli:__pkg__",
+    "//apps/humata2/daemon/humatad:__pkg__",
+]
+
+_RUST_VISIBILITY = ["//apps/humata2:__subpackages__"]
+
+proto_library(
+    name = "core_proto",
+    srcs = [
+        "humata/v1/access.proto",
+        "humata/v1/build.proto",
+        "humata/v1/capabilities.proto",
+        "humata/v1/common.proto",
+        "humata/v1/errors.proto",
+        "humata/v1/operations.proto",
+    ],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        "@protobuf//:duration_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "core_rust",
+    crate_name = "humata2_proto_core",
+    proto = ":core_proto",
+    visibility = _RUST_VISIBILITY,
+)
+
+proto_library(
+    name = "terminal_proto",
+    srcs = ["humata/v1/terminal.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "terminal_rust",
+    crate_name = "humata2_proto_terminal",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":terminal_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "catalog_proto",
+    srcs = [
+        "humata/v1/history.proto",
+        "humata/v1/repos.proto",
+        "humata/v1/settings.proto",
+    ],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "catalog_rust",
+    crate_name = "humata2_proto_catalog",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":catalog_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "files_proto",
+    srcs = ["humata/v1/files.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "files_rust",
+    crate_name = "humata2_proto_files",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":files_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "inbox_proto",
+    srcs = ["humata/v1/inbox.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "inbox_rust",
+    crate_name = "humata2_proto_inbox",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":inbox_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "board_proto",
+    srcs = ["humata/v1/boards.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "board_rust",
+    crate_name = "humata2_proto_board",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":board_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "review_proto",
+    srcs = ["humata/v1/review.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "review_rust",
+    crate_name = "humata2_proto_review",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":review_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "desk_proto",
+    srcs = ["humata/v1/desk.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        ":review_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "desk_rust",
+    crate_name = "humata2_proto_desk",
+    dep_proto_crates = {
+        ":core_proto": "humata2_proto_core",
+        ":review_proto": "humata2_proto_review",
+    },
+    proto = ":desk_proto",
+    reexport_crates = [
+        "humata2_proto_core",
+        "humata2_proto_review",
+    ],
+    visibility = _RUST_VISIBILITY,
+    deps = [
+        ":core_rust",
+        ":review_rust",
+    ],
+)
+
+proto_library(
+    name = "machines_proto",
+    srcs = ["humata/v1/hosts.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "machines_rust",
+    crate_name = "humata2_proto_machines",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":machines_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "sessions_proto",
+    srcs = [
+        "humata/v1/channels.proto",
+        "humata/v1/sessions.proto",
+    ],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "sessions_rust",
+    crate_name = "humata2_proto_sessions",
+    dep_proto_crates = {":core_proto": "humata2_proto_core"},
+    proto = ":sessions_proto",
+    reexport_crates = ["humata2_proto_core"],
+    visibility = _RUST_VISIBILITY,
+    deps = [":core_rust"],
+)
+
+proto_library(
+    name = "peer_proto",
+    srcs = [
+        "humata/v1/daemon.proto",
+        "humata/v1/peer.proto",
+    ],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":core_proto",
+        ":inbox_proto",
+        ":sessions_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "peer_rust",
+    crate_name = "humata2_proto_peer",
+    dep_proto_crates = {
+        ":core_proto": "humata2_proto_core",
+        ":inbox_proto": "humata2_proto_inbox",
+        ":sessions_proto": "humata2_proto_sessions",
+    },
+    proto = ":peer_proto",
+    reexport_crates = [
+        "humata2_proto_core",
+        "humata2_proto_inbox",
+        "humata2_proto_sessions",
+    ],
+    visibility = _RUST_VISIBILITY,
+    deps = [
+        ":core_rust",
+        ":inbox_rust",
+        ":sessions_rust",
+    ],
+)
+
+proto_library(
+    name = "events_proto",
+    srcs = ["humata/v1/events.proto"],
+    strip_import_prefix = "",
+    visibility = _PROTO_VISIBILITY,
+    deps = [
+        ":board_proto",
+        ":catalog_proto",
+        ":core_proto",
+        ":desk_proto",
+        ":files_proto",
+        ":inbox_proto",
+        ":machines_proto",
+        ":review_proto",
+        ":sessions_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_domain(
+    name = "events_rust",
+    crate_name = "humata2_proto_events",
+    dep_proto_crates = {
+        ":board_proto": "humata2_proto_board",
+        ":catalog_proto": "humata2_proto_catalog",
+        ":core_proto": "humata2_proto_core",
+        ":desk_proto": "humata2_proto_desk",
+        ":files_proto": "humata2_proto_files",
+        ":inbox_proto": "humata2_proto_inbox",
+        ":machines_proto": "humata2_proto_machines",
+        ":review_proto": "humata2_proto_review",
+        ":sessions_proto": "humata2_proto_sessions",
+    },
+    proto = ":events_proto",
+    reexport_crates = [
+        "humata2_proto_board",
+        "humata2_proto_catalog",
+        "humata2_proto_core",
+        "humata2_proto_desk",
+        "humata2_proto_files",
+        "humata2_proto_inbox",
+        "humata2_proto_machines",
+        "humata2_proto_review",
+        "humata2_proto_sessions",
+    ],
+    visibility = _RUST_VISIBILITY,
+    deps = [
+        ":board_rust",
+        ":catalog_rust",
+        ":core_rust",
+        ":desk_rust",
+        ":files_rust",
+        ":inbox_rust",
+        ":machines_rust",
+        ":review_rust",
+        ":sessions_rust",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# Umbrella targets (kept as rust_prost_library until M1 zero-duplication is verified).
+# ---------------------------------------------------------------------------
 
 proto_library(
     name = "humata2_proto",
@@ -20,10 +378,38 @@ proto_library(
     ],
 )
 
-rust_prost_library(
+rust_prost_umbrella(
     name = "humata2_rust",
-    proto = ":humata2_proto",
+    crate_name = "humata2_proto",
+    reexport_crates = [
+        "humata2_proto_board",
+        "humata2_proto_catalog",
+        "humata2_proto_core",
+        "humata2_proto_desk",
+        "humata2_proto_events",
+        "humata2_proto_files",
+        "humata2_proto_inbox",
+        "humata2_proto_machines",
+        "humata2_proto_peer",
+        "humata2_proto_review",
+        "humata2_proto_sessions",
+        "humata2_proto_terminal",
+    ],
     visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        ":board_rust",
+        ":catalog_rust",
+        ":core_rust",
+        ":desk_rust",
+        ":events_rust",
+        ":files_rust",
+        ":inbox_rust",
+        ":machines_rust",
+        ":peer_rust",
+        ":review_rust",
+        ":sessions_rust",
+        ":terminal_rust",
+    ],
 )
 
 # What humatad2's store keeps whole on disk (humata/store/v1). Storage
@@ -39,13 +425,15 @@ rust_prost_library(
     name = "humata2_store_rust",
     proto = ":humata2_store_proto",
     visibility = [
-        "//apps/humata2/daemon/humatad:__pkg__",
-        "//apps/humata2/daemon/store:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
     ],
 )
 
 filegroup(
     name = "starlark",
-    srcs = ["BUILD.bazel"],
+    srcs = [
+        "BUILD.bazel",
+        "prost.bzl",
+    ],
     tags = ["starlark"],
 )

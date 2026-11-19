@@ -16,7 +16,7 @@ fn filters_select_the_first_visible_request_and_a_refresh_advances_it() {
     answered.answer = Some(Answer::Approved);
     let last = answered.id.clone();
     let first = workspace.requests[0].id.clone();
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(InboxState::default(), Inbox::new(clients));
     let workspace = Arc::new(workspace);
     store.send(A::Show(workspace.clone()), |s| {

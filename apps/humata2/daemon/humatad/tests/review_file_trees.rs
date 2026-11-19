@@ -2,7 +2,7 @@
 //! file come from those trees, listed again, even after the file's working
 //! copy has changed back; without them the file is the spec's as it is now.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

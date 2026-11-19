@@ -57,13 +57,6 @@ enum Topic {
   TOPIC_JOURNAL = 14;
 }
 
-enum Change {
-  CHANGE_UNSPECIFIED = 0;
-  CHANGE_CREATED = 1;
-  CHANGE_UPDATED = 2;
-  CHANGE_DELETED = 3;   // the snapshot is the last state, then a tombstone
-}
-
 message Event {
   EventSeq seq = 1;
   google.protobuf.Timestamp at = 2;

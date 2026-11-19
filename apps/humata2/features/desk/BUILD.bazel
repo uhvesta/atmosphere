@@ -5,14 +5,15 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 rust_library(
     name = "desk",
     srcs = glob(["src/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
     crate_name = "humata2_desk",
     visibility = [
         "//apps/humata2/desktop:__pkg__",
         "//apps/humata2/features/app:__pkg__",
-        "//apps/humata2/ui:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
     ],
     deps = [
-        "//apps/humata2/clients",
+        "//apps/humata2/clients:api",
         "//libs/tca-rust:tca",
         "@crates//:serde",
     ],

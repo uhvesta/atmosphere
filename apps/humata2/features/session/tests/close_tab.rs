@@ -45,7 +45,7 @@ fn store_with(online: bool, extra: Option<Agent>) -> (TestStore<Sessions>, Fakes
     for machine in &mut workspace.machines {
         machine.online = online;
     }
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         open: Some(ledger()),
@@ -288,7 +288,7 @@ fn ending_a_desk_sessions_agent_for_good_closes_it_on_the_desk() {
     let mut workspace = fixture::design();
     fixture::desk(&mut workspace);
     let plan = SessionId::new("desk-plan-q4");
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         open: Some(plan.clone()),

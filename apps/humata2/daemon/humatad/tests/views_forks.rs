@@ -8,7 +8,7 @@
 //! tests/review.rs does, and a view is offered when its agent marks it ready.
 //! Views are listed by the daemon's answer, not by waiting on anything.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

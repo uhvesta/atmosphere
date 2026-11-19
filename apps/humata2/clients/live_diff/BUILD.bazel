@@ -1,0 +1,62 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Session diffs, push plans, and session file reads over DiffService,
+# FileService, and SessionService.
+rust_library(
+    name = "live_diff",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_clients_live_diff",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:files",
+        "//apps/humata2/api/grpc:review",
+        "//apps/humata2/api/grpc:sessions",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "live_diff_unit_test",
+    crate = ":live_diff",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# A session's changes through the live client against a real humatad2
+# (admin build) and a real git clone (REVIEW).
+rust_test(
+    name = "diffs_live_test",
+    srcs = ["tests/diffs.rs"],
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_root = "tests/diffs.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_review_remote",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_review_remote)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_diff",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -4,9 +4,8 @@
 //! requests. A host and one box on the multi-machine rig, with a fake `gh`
 //! (each box is an admin daemon; the rig gives it `HUMATA2_GH`).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 

@@ -11,7 +11,7 @@ use tca::{TestClock, TestStore};
 
 #[test]
 fn the_session_opens_with_a_new_shell_tab_started_in_the_folder() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let id = SessionId::new("ledger");
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();

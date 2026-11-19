@@ -1,7 +1,7 @@
 //! FileService through `humatad2`'s gRPC API: files in a session's clone
 //! read and written as chunks, compressed when both ends can (TR-11, D65).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 

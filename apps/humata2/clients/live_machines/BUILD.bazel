@@ -1,0 +1,72 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The app's real Machines client over MachineService, ProviderService,
+# SkillsService, OperationService, DaemonService, SessionService, and
+# ChannelService.
+rust_library(
+    name = "live_machines",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_clients_live_machines",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:machines",
+        "//apps/humata2/api/grpc:peer",
+        "//apps/humata2/api/grpc:sessions",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "live_machines_unit_test",
+    crate = ":live_machines",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# The machines client against a real humatad2 and a fake machine: no network,
+# never the real ~/.ssh.
+rust_test(
+    name = "machines_test",
+    srcs = ["tests/machines.rs"],
+    crate_root = "tests/machines.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_machines",
+        "//apps/humata2/daemon/humatad:humatad2_test_machines_release",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_machines)",
+        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_machines_release)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_machines",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live:fake_machine",
+        "//apps/humata2/clients/live:grpc",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "@crates//:hyper-util",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

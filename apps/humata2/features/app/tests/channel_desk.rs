@@ -16,7 +16,7 @@ fn payments() -> ChannelId {
 fn launch() -> (TestStore<App>, Fakes) {
     let mut workspace: Workspace = fixture::design();
     fixture::channel_desk(&mut workspace);
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});

@@ -1,0 +1,51 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Stateful daemon runtime internals and pure runtime helpers for humatad2
+# (SPLIT §3.1, §3.2; SPLIT_PHASE3_DAEMON §2.1 Step 6a).
+RUNTIME_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:terminal",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:rustix",
+    "@crates//:serde",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:toml",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
+rust_library(
+    name = "runtime",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/api/grpc:terminal": "humata2_grpc"},
+    crate_name = "humata2_daemon_runtime",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = RUNTIME_DEPS,
+)
+
+# The runtime crate with fault points active (`feature = "faults"`).
+rust_library(
+    name = "runtime_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/api/grpc:terminal": "humata2_grpc"},
+    crate_features = ["faults"],
+    crate_name = "humata2_daemon_runtime",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = RUNTIME_DEPS,
+)
+
+rust_test(
+    name = "runtime_unit_test",
+    crate = ":runtime",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

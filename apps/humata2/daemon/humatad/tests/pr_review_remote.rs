@@ -7,15 +7,11 @@
 //! A host and one box on the multi-machine rig; GitHub is the fake `gh` of
 //! `common/pr_github.rs`, on the host alone.
 
-mod common;
+use humatad_test_common as common;
 // The shared fixture's agent speaks MCP; these tests never start one.
-#[path = "common/mcp_client.rs"]
-#[allow(dead_code)]
-mod mcp_client;
-#[path = "common/pr_github.rs"]
-mod pr_github;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common::mcp_client;
+use humatad_test_common::pr_github;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

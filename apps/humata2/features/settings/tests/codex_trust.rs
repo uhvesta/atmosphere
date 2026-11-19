@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn setup() -> (TestStore<Settings>, FakeDaemon) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     // Pin the switches so the tests don't hang on the fake's defaults.
     fakes.daemon.set_agent_switches(all_on());
     let store = TestStore::new(SettingsState::default(), Settings::new(clients));

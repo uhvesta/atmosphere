@@ -140,9 +140,29 @@ pub(crate) struct SessionSvc {
     /// REPOS (CH-21): the channel service, for the channel add of a repo it lacks; set once.
     channels: add_repo::Channels,
     /// PR-17: the review service, which knows a review's drafts; set once.
+    #[cfg(feature = "svc_review")]
     review: Arc<std::sync::OnceLock<crate::review::Review>>,
     /// MACHINESCRIPTS (D681): the engine a move fires session triggers on; set once.
     scripts: Arc<std::sync::OnceLock<Arc<crate::machine_scripts::MachineScripts>>>,
+}
+
+/// A pull request review session's binding, as the Session shows it.
+fn pr_binding(record: &humata2_store::ReviewSessionRecord) -> pb::PullRequestBinding {
+    pb::PullRequestBinding {
+        pull_requests: record
+            .prs
+            .iter()
+            .map(|pr| pb::PullRequestRef {
+                repo: Some(pb::RepoRef {
+                    owner: pr.owner.clone(),
+                    name: pr.name.clone(),
+                }),
+                number: pr.number,
+                ..pb::PullRequestRef::default()
+            })
+            .collect(),
+        push_allowed: record.push_allowed,
+    }
 }
 
 /// Puts a session as the store holds it now on the event feed.
@@ -258,7 +278,7 @@ impl Tell {
             &self.machine,
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
-        shown.pull_request = loaded.review.as_ref().map(crate::review::binding);
+        shown.pull_request = loaded.review.as_ref().map(pr_binding);
         if let Some(remote) = self.remote.get()
             && remote::elsewhere(&loaded.record, &self.machine)
         {
@@ -363,6 +383,7 @@ impl SessionSvc {
             restart: Arc::default(),
             raw_lines: rebuild::Lines::default(),
             channels: Arc::default(),
+            #[cfg(feature = "svc_review")]
             review: Arc::default(),
             scripts: Arc::default(),
             migrations,
@@ -1396,7 +1417,7 @@ impl SessionSvc {
             &self.machine,
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
-        shown.pull_request = loaded.review.as_ref().map(crate::review::binding);
+        shown.pull_request = loaded.review.as_ref().map(pr_binding);
         self.merge_remote(&loaded.record, &mut shown);
         if !remote::elsewhere(&loaded.record, &self.machine) {
             self.tell.pointers.fill(&loaded.record.id, &mut shown);
@@ -2447,7 +2468,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
             let reviews: HashMap<String, pb::PullRequestBinding> = store
                 .review_sessions()?
                 .iter()
-                .map(|review| (review.session.clone(), crate::review::binding(review)))
+                .map(|review| (review.session.clone(), pr_binding(review)))
                 .collect();
             let agents = store.agents()?;
             // Read from the disk, so here and not in the handler.

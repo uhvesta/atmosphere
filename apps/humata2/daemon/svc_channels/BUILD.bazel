@@ -1,0 +1,68 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+SHARED_DEPS = [
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/conversation",
+    "//apps/humata2/daemon/humatad:grpc",
+    "//apps/humata2/daemon/machines",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/repo_library",
+    "//apps/humata2/daemon/rpc_kit",
+    "//apps/humata2/daemon/transfers",
+    "@crates//:prost",
+    "@crates//:rustix",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tonic",
+    "@crates//:uuid",
+]
+
+NORMAL_DEPS = SHARED_DEPS + [
+    "//apps/humata2/daemon/durable",
+    "//apps/humata2/daemon/revive",
+    "//apps/humata2/daemon/runtime",
+    "//apps/humata2/daemon/sessions",
+    "//apps/humata2/daemon/store",
+]
+
+FAULTS_DEPS = SHARED_DEPS + [
+    "//apps/humata2/daemon/durable:durable_faults",
+    "//apps/humata2/daemon/revive:revive_faults",
+    "//apps/humata2/daemon/runtime:runtime_faults",
+    "//apps/humata2/daemon/sessions:sessions_faults",
+    "//apps/humata2/daemon/store:store_faults",
+]
+
+rust_library(
+    name = "svc_channels",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_channels",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = NORMAL_DEPS,
+)
+
+rust_library(
+    name = "svc_channels_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_channels",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
+rust_test(
+    name = "svc_channels_unit_test",
+    crate = ":svc_channels",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -8,7 +8,7 @@ use tca::{TestClock, TestStore};
 const PATH: &str = "/home/dev/Humata/pay/sessions/two/api";
 
 fn store(open: &str) -> (TestStore<Sessions>, Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = SessionState {
         workspace: Arc::new(fakes.daemon.workspace()),
         open: Some(SessionId::new(open)),

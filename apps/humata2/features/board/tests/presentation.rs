@@ -9,7 +9,7 @@ use tca::{TestClock, TestStore};
 #[test]
 fn global_board_includes_channel_items_and_drills_without_leaking_other_items() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let state = BoardState {
         workspace,
         ..Default::default()
@@ -58,7 +58,7 @@ fn global_board_includes_channel_items_and_drills_without_leaking_other_items() 
 #[test]
 fn drawer_rejects_unknown_items_and_new_items_keep_the_requested_column() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(
         BoardState {
             workspace,
@@ -102,7 +102,7 @@ fn drawer_rejects_unknown_items_and_new_items_keep_the_requested_column() {
 #[test]
 fn a_new_item_on_a_column_is_made_there_with_one_create() {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     // Any move the daemon is asked for is refused.
     fakes.daemon.fail_next(Operation::MoveItem, "the daemon refused the move");
     let mut store = TestStore::new(
@@ -137,7 +137,7 @@ fn a_new_item_on_a_column_is_made_there_with_one_create() {
 #[test]
 fn dashboard_drills_show_exactly_the_counted_items() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(
         BoardState {
             workspace,

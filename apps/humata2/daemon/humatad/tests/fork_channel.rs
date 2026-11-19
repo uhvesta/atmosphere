@@ -3,7 +3,7 @@
 //! usage error that points at `session continue --channel` (CV-8), and no
 //! fork is made anywhere. Naming the parent's own channel forks as usual.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

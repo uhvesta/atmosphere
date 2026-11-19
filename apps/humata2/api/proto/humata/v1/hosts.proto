@@ -7,7 +7,6 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/access.proto";
-import "humata/v1/channels.proto";
 import "humata/v1/common.proto";
 import "humata/v1/errors.proto";
 import "humata/v1/operations.proto";
@@ -215,25 +214,6 @@ message ListPortForwardsRequest {
 message ListPortForwardsResponse { repeated PortForward forwards = 1; }
 
 // ---------------------------------------------------------------------------
-
-enum Reachability {
-  REACHABILITY_UNSPECIFIED = 0;
-  REACHABILITY_ONLINE = 1;
-  REACHABILITY_CONNECTING = 2;
-  // HO-5: the link is down; sessions may well be running.
-  REACHABILITY_OFFLINE = 3;
-  // MP-16: interactive machine whose login lapsed.
-  REACHABILITY_NEEDS_LOGIN = 4;
-  // MP-21: the provider's status says stopped.
-  REACHABILITY_STOPPED = 5;
-  // MP-9: the pinned host key no longer matches; nothing is sent.
-  REACHABILITY_HOST_KEY_CHANGED = 6;
-  // LD-12: the machine answered the peer link without proof that it holds
-  // the enrollment key on record (re-imaged, swapped, or posing as it), or
-  // refused the host's proof. The host stops dialling it; add it again as
-  // a new machine.
-  REACHABILITY_IDENTITY_MISMATCH = 7;
-}
 
 message Machine {
   MachineId id = 1;

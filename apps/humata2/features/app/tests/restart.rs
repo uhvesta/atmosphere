@@ -10,7 +10,7 @@ use humata2_clients::{Clients, Event, Fakes, Workspace, fixture};
 use tca::{TestClock, TestStore};
 
 fn setup(workspace: Workspace) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = Arc::new(workspace);
     (TestStore::new(state, App::new(clients)).non_exhaustive(), fakes)
@@ -44,13 +44,13 @@ fn first_session(workspace: &Workspace) -> SessionId {
 fn a_restart_the_first_load_brings_is_told_once() {
     let mut workspace = fixture::design();
     workspace.restarts = vec![restart("devbox-1", &["a"], 1)];
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     let quiet = {
         let mut quiet = workspace.clone();
         quiet.restarts.clear();
-        let (clients, _) = Clients::fake(quiet.clone(), Arc::new(TestClock::new()));
+        let (clients, _) = humata2_clients::fake_clients(quiet.clone(), Arc::new(TestClock::new()));
         let mut control = TestStore::new(AppState::launch(&clients), App::new(clients)).non_exhaustive();
         control.send(A::Loaded(Ok(quiet)), |_| {});
         let told = control.state().toasts.len();

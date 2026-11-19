@@ -6,9 +6,8 @@
 //! box alone. A change to the host's `config/agents.toml` while a box is
 //! linked reaches it then, not only at its next link (D782).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

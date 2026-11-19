@@ -1,0 +1,57 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Catalog leaf services for humatad2 (SPLIT §3.2): starts with the zero-cycle
+# agent_gate + agent_service slice; additional catalog services (repo, skills,
+# provider, settings, history, mark, trash, access, login) absorb here once
+# guard + identity move into daemon/rpc_kit.
+rust_library(
+    name = "svc_catalog",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_catalog",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:catalog",
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions_core",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_library(
+    name = "svc_catalog_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_catalog",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:catalog",
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/sessions_core:sessions_core_faults",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "svc_catalog_unit_test",
+    crate = ":svc_catalog",
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

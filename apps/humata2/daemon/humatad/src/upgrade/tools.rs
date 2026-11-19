@@ -4,13 +4,10 @@
 //! stack are one host tools item: it waits while either differs. Only a file
 //! that is there and differs counts: a missing one is nothing to migrate.
 
-use std::io::ErrorKind;
-use std::path::Path;
-
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::InstalledFile;
 
-use super::run::hash_file;
+pub(super) use humata2_daemon_ports::release::installed_tools as installed;
 
 /// The tools a release is checked for, each with the thing its Migrate item is.
 pub(super) const TOOLS: [(InstalledFile, pb::MigrateThing); 3] = [
@@ -28,31 +25,6 @@ pub(super) const THINGS: [pb::MigrateThing; 2] =
 /// when neither does.
 pub(super) fn wants(differing: &[InstalledFile], thing: pb::MigrateThing) -> bool {
     TOOLS.iter().any(|(file, tool)| *tool == thing && differing.contains(file))
-}
-
-/// The sha256 of each tool found in `bin`. A file that isn't there is left
-/// out; one that can't be read is left out too, with a log line.
-pub(super) fn installed(bin: &Path) -> Vec<pb::BuildFile> {
-    TOOLS
-        .iter()
-        .filter_map(|(file, _)| {
-            let path = bin.join(file.file_name());
-            match hash_file(&path) {
-                Ok(sha256) => Some(pb::BuildFile {
-                    name: file.file_name().to_owned(),
-                    sha256,
-                }),
-                Err(source) if source.kind() == ErrorKind::NotFound => None,
-                Err(source) => {
-                    crate::log::say!(
-                        "humatad2: couldn't read {} to compare it with the release, so it isn't checked ({source}); make the file readable by your user, or install Humata again",
-                        path.display()
-                    );
-                    None
-                }
-            }
-        })
-        .collect()
 }
 
 /// The tools that are in `installed` and are not the ones `files` names.

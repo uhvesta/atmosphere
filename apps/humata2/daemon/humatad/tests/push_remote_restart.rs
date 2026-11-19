@@ -6,9 +6,8 @@
 //! when the host is killed. Every wait is on a pushed change or on a
 //! condition read with a deadline.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 use std::time::Duration;

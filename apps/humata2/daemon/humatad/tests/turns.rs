@@ -4,7 +4,7 @@
 //! quiet makes it Probably idle when no hook has spoken; only the session's
 //! own agent may report; and a plain shell has no turns.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Attach, Build, Daemon, WAIT, World, agent_tab, binary, create_channel, create_script_token,

@@ -3,9 +3,8 @@
 //! it; the machine acks its revision, judges by it, keeps it across a
 //! restart, and nothing on the machine changes it.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
+use humatad_test_common as common;
+use humatad_test_common::away;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

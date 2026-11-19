@@ -19,7 +19,7 @@ struct Rig {
 
 fn rig(prepare: impl FnOnce(&mut AppState)) -> Rig {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let id = SessionId::new("ledger");
     fakes.comments.set_repos(&id, &["api", "ledger"]);
     let mut state = AppState::launch(&clients);
@@ -143,7 +143,7 @@ fn comments_saved_by_older_builds_are_handed_over_once() {
 
 #[test]
 fn string_queues_saved_before_comment_messages_still_load() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     clients.storage.save(saved::KEY, br#"{"sessions":{"ledger":{"tab":0,"panel":null,"widened":false,"draft":"","queue":["older waiting text"]}}}"#).unwrap();
     let state = AppState::launch(&clients);
     assert!(state.restore_error.is_none());

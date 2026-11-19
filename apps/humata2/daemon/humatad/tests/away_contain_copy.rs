@@ -4,9 +4,8 @@
 //! role-machine daemon is linked by a test that plays the host, so the test
 //! decides when the copy is sent.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
+use humatad_test_common as common;
+use humatad_test_common::away;
 
 use std::time::Duration;
 

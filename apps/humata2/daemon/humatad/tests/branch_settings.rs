@@ -4,7 +4,7 @@
 //!
 //! Waits are on the Settings feed or the fork's operation; nothing sleeps.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

@@ -11,7 +11,7 @@
 //! what only it can say (`sessions_stopped.ended`, `after_stop`); a call
 //! that fails while the daemon is between runs is asked again.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Command;

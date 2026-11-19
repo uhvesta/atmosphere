@@ -1,0 +1,120 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Review comments, prepared views, pull request reviews, and review chat
+# over CommentService, ViewService, PullRequestReviewService, and
+# ReviewChatService.
+rust_library(
+    name = "live_review",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_clients_live_review",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:events",
+        "//apps/humata2/api/grpc:review",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_diff",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "live_review_unit_test",
+    crate = ":live_review",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# Review comments parity suite against FakeComments and LiveComments on a
+# real humatad2 (admin build).
+rust_test(
+    name = "parity_comments_test",
+    srcs = ["tests/parity_comments.rs"],
+    crate_root = "tests/parity_comments.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_review_remote",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_review_remote)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_review",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//apps/humata2/clients/live_test_support",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# Pasted pull requests through the live client against a real humatad2 (admin
+# build) and a fake gh: the same answers as the fake client, and each gh failure
+# as its own error (PR-1, PR-3).
+rust_test(
+    name = "pull_requests_live_test",
+    srcs = ["tests/pull_requests.rs"],
+    crate_root = "tests/pull_requests.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_review_remote",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_review_remote)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_review",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live_core",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# The review chat through the live client against a real humatad2 (admin build)
+# in a review session: the reported view comes back, and the switches hold
+# (PR-22, PR-25).
+rust_test(
+    name = "review_chat_live_test",
+    srcs = ["tests/review_chat.rs"],
+    crate_root = "tests/review_chat.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_review_remote",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_review_remote)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_review",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live:wire",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//apps/humata2/clients/live_test_support",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -3,7 +3,7 @@
 //! Mark reviewed snapshots, and the review chat's view, switches and Undo,
 //! with what a session's agent may and may not do.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

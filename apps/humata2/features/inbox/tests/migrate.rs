@@ -109,7 +109,7 @@ fn store(first: Vec<Request>) -> (TestStore<Inbox>, Fakes) {
 fn store_with_clock(first: Vec<Request>) -> (TestStore<Inbox>, Fakes, Arc<TestClock>) {
     let workspace = workspace(first);
     let clock = Arc::new(TestClock::new());
-    let (clients, fakes) = Clients::fake(workspace.clone(), clock.clone());
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), clock.clone());
     let mut store = TestStore::new(InboxState::default(), Inbox::new(clients)).non_exhaustive();
     store.send(A::Show(Arc::new(workspace)), |_| {});
     (store, fakes, clock)

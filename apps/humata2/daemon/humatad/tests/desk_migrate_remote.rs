@@ -6,9 +6,8 @@
 //! link comes up. A host and one box on the multi-machine rig. Waits for the
 //! host's Inbox are bounded by `LONG`, the rig's safety net.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

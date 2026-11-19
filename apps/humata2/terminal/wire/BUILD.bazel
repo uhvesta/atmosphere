@@ -13,7 +13,7 @@ rust_library(
         "//apps/humata2/terminal/host:__pkg__",
         "//apps/humata2/terminal/session:__pkg__",
         "//apps/humata2/terminal/web:__pkg__",
-        "//apps/humata2/ui:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
     ],
     deps = [
         "//apps/humata2/terminal/codec",

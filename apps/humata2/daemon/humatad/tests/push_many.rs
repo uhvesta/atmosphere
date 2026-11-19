@@ -3,7 +3,7 @@
 //! Through a real `humatad2`; GitHub is a fake `gh` that logs every call and
 //! answers per repository, as in tests/push_base.rs.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

@@ -1,369 +1,168 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
-# The app's real daemon client: `Daemon` and `Terminals` over gRPC to a
-# `humatad2` on its Unix socket.
+# The app's real daemon client facade: re-exports `live_core` and the
+# per-domain live client crates so existing callers build unchanged.
 rust_library(
     name = "live",
-    srcs = glob(["src/**/*.rs"]),
-    # SPLIT: the traits and the model only, under the name the code uses, so
-    # a change to a fake or a fixture doesn't rebuild the live clients.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    srcs = ["src/lib.rs"],
     crate_name = "humata2_clients_live",
     visibility = ["//apps/humata2/desktop:__subpackages__"],
     deps = [
-        "//apps/humata2/clients:api",
-        "//apps/humata2/clients/terminal_link",
-        "//apps/humata2/daemon/humatad:grpc",
-        "//apps/humata2/terminal/wire",
-        "@crates//:http-body-util",
-        "@crates//:hyper-util",
-        "@crates//:prost",
-        "@crates//:sha2",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tokio-stream",
-        "@crates//:tonic",
-        "@crates//:tower",
-        "@crates//:uuid",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//apps/humata2/clients/live_desk",
+        "//apps/humata2/clients/live_diff",
+        "//apps/humata2/clients/live_files",
+        "//apps/humata2/clients/live_machines",
+        "//apps/humata2/clients/live_review",
     ],
 )
 
-# Unit tests of the pure mapping inside the library.
-rust_test(
+# Shared dependencies forwarded to the per-domain live client packages under
+# `//apps/humata2/clients/...`.
+alias(
+    name = "grpc",
+    actual = "//apps/humata2/daemon/humatad:grpc",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "terminal_link",
+    actual = "//apps/humata2/clients/terminal_link:terminal_link",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "wire",
+    actual = "//apps/humata2/terminal/wire:wire",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "fake_machine",
+    testonly = True,
+    actual = "//apps/humata2/daemon/machines:fake_machine",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "clients",
+    testonly = True,
+    actual = "//apps/humata2/clients:clients",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "humatad2_admin",
+    testonly = True,
+    actual = "//apps/humata2/daemon/humatad:humatad2_admin",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+alias(
+    name = "holder_for_clients",
+    testonly = True,
+    actual = "//apps/humata2/daemon/humatad:holder_for_clients",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# Unit tests across all split live crates.
+test_suite(
     name = "live_unit_test",
-    crate = ":live",
+    tests = [
+        "//apps/humata2/clients/live_core:live_core_unit_test",
+        "//apps/humata2/clients/live_daemon:live_daemon_unit_test",
+        "//apps/humata2/clients/live_desk:live_desk_unit_test",
+        "//apps/humata2/clients/live_diff:live_diff_unit_test",
+        "//apps/humata2/clients/live_files:live_files_unit_test",
+        "//apps/humata2/clients/live_machines:live_machines_unit_test",
+        "//apps/humata2/clients/live_review:live_review_unit_test",
+    ],
 )
 
-# One suite, run against the fake and against a real humatad2 (admin build).
-rust_test(
+# Parity suites across daemon and review comments.
+test_suite(
     name = "parity_test",
-    srcs = ["tests/parity.rs"] + glob(["tests/support/*.rs"]),
-    crate_root = "tests/parity.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "//apps/humata2/terminal/wire",
-        "//libs/tca-rust:tca",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
+    tests = [
+        "//apps/humata2/clients/live_daemon:parity_daemon_test",
+        "//apps/humata2/clients/live_review:parity_comments_test",
     ],
 )
 
-# The Desk on the fake and on a real humatad2 (admin build). Manual while
-# the live client does not call DeskService yet; drop the tag then.
-rust_test(
+alias(
     name = "desk_live_test",
-    srcs = ["tests/desk.rs"] + glob(["tests/support/*.rs"]),
-    crate_root = "tests/desk.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "//apps/humata2/terminal/wire",
-        "//libs/tca-rust:tca",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
+    testonly = True,
+    actual = "//apps/humata2/clients/live_desk:desk_live_test",
 )
 
-# The file manager on the fake and on a real humatad2 (admin build).
-rust_test(
+alias(
     name = "file_manager_test",
-    srcs = ["tests/file_manager.rs"],
-    crate_root = "tests/file_manager.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
+    testonly = True,
+    actual = "//apps/humata2/clients/live_files:file_manager_test",
 )
 
-# The machines client against a real humatad2 and a fake machine: no network, never the
-# real ~/.ssh.
-rust_test(
+alias(
     name = "machines_test",
-    srcs = ["tests/machines.rs"],
-    crate_root = "tests/machines.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "//apps/humata2/daemon/humatad:grpc",
-        "//apps/humata2/daemon/machines:fake_machine",
-        "@crates//:hyper-util",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-        "@crates//:tonic",
-        "@crates//:tower",
-    ],
+    testonly = True,
+    actual = "//apps/humata2/clients/live_machines:machines_test",
+)
+
+alias(
+    name = "inbox_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:inbox_test",
+)
+
+alias(
+    name = "github_repos_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:github_repos_live_test",
+)
+
+alias(
+    name = "boards_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:boards_test",
+)
+
+alias(
+    name = "diffs_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_diff:diffs_live_test",
+)
+
+alias(
+    name = "marks_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:marks_live_test",
+)
+
+alias(
+    name = "term_restart_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:term_restart_live_test",
+)
+
+alias(
+    name = "history_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_daemon:history_live_test",
+)
+
+alias(
+    name = "pull_requests_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_review:pull_requests_live_test",
+)
+
+alias(
+    name = "review_chat_live_test",
+    testonly = True,
+    actual = "//apps/humata2/clients/live_review:review_chat_live_test",
 )
 
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],
     tags = ["starlark"],
-)
-
-# The Inbox and access rules through the live client against a real humatad2
-# (admin build); the agent there asks with the real `humata` from its own tab.
-rust_test(
-    name = "inbox_test",
-    srcs = ["tests/inbox.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/inbox.rs",
-    data = [
-        "//apps/humata2/cli:humata",
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# The repos gh sees through the live client against a real humatad2 (admin
-# build) and a fake gh: owner/name mapping and paging (CH-3, D272).
-rust_test(
-    name = "github_repos_live_test",
-    srcs = ["tests/github_repos.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/github_repos.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# Boards through the live client against a real humatad2 (admin build):
-# items, columns, dependencies, sessions, history and pushed changes.
-rust_test(
-    name = "boards_test",
-    srcs = ["tests/boards.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/boards.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# A session's changes through the live client against a real humatad2
-# (admin build) and a real git clone (REVIEW).
-rust_test(
-    name = "diffs_live_test",
-    srcs = ["tests/diffs.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/diffs.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# Pins and VIP marks through the live client against a real humatad2
-# (admin build): two clients at once, and what a restart keeps.
-rust_test(
-    name = "marks_live_test",
-    srcs = ["tests/marks.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/marks.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# A shell tab across an app restart on a real humatad2 (admin build): the
-# same holder, the output printed meanwhile, typing only once synced.
-rust_test(
-    name = "term_restart_live_test",
-    srcs = ["tests/term_restart.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/term_restart.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "//apps/humata2/terminal/vt:ghostty_vt",
-        "//apps/humata2/terminal/wire",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# Searching and reading conversations through the live client against a real humatad2 (admin build) and a Claude conversation file.
-rust_test(
-    name = "history_live_test",
-    srcs = ["tests/history.rs"],
-    # SPLIT: no fakes, so a fake or fixture edit leaves it cached.
-    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
-    crate_root = "tests/history.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients:api",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# Pasted pull requests through the live client against a real humatad2 (admin
-# build) and a fake gh: the same answers as the fake client, and each gh failure
-# as its own error (PR-1, PR-3).
-rust_test(
-    name = "pull_requests_live_test",
-    srcs = ["tests/pull_requests.rs"],
-    crate_root = "tests/pull_requests.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# The review chat through the live client against a real humatad2 (admin build)
-# in a review session: the reported view comes back, and the switches hold
-# (PR-22, PR-25).
-rust_test(
-    name = "review_chat_live_test",
-    srcs = ["tests/review_chat.rs"] + glob(["tests/support/*.rs"]),
-    crate_root = "tests/review_chat.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    deps = [
-        ":live",
-        "//apps/humata2/clients",
-        "//apps/humata2/terminal/wire",
-        "//libs/tca-rust:tca",
-        "@crates//:serde_json",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
 )

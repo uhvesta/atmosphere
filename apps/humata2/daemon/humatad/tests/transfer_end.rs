@@ -1,7 +1,7 @@
 //! TransferEndService through `humatad2`'s gRPC API: the steps of a
 //! transfer the host drives, one by one (FM-6, FM-8, FM-9, D142).
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::PathBuf;

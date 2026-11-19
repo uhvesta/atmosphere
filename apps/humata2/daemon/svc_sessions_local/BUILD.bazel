@@ -1,0 +1,58 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Local SessionService crate (`humata2_svc_sessions_local`, SPLIT_PHASE3_DAEMON §2.3):
+# owns local session lifecycle, turns, hooks, lineage, pointers, watch, local fork,
+# own_copy, add_repo, rename_branch, notes, and delegates transfer/archive RPCs
+# through SessionTransferPort / SessionArchivePort in svc_sessions_common.
+LOCAL_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
+    "//apps/humata2/api/grpc:sessions",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/ports",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+]
+
+rust_library(
+    name = "svc_sessions_local",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_sessions_local",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = LOCAL_DEPS + [
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_sessions_common",
+    ],
+)
+
+rust_library(
+    name = "svc_sessions_local_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_svc_sessions_local",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = LOCAL_DEPS + [
+        "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_sessions_common:svc_sessions_common_faults",
+    ],
+)
+
+rust_test(
+    name = "svc_sessions_local_unit_test",
+    crate = ":svc_sessions_local",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

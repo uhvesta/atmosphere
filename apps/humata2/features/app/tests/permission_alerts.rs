@@ -14,7 +14,7 @@ fn setup() -> (TestStore<App>, Clients, Request) {
     request.id = RequestId::new("new-permission-alert");
     request.kind = RequestKind::Command;
     request.answer = None;
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = workspace.clone();
     state.inbox.workspace = workspace.clone();

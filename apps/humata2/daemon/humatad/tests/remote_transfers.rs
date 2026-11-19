@@ -14,7 +14,7 @@
 //! group the rig recorded for it, and kept away with the fake machine's own
 //! `hang` flag (see `mod rig` at the end of the file).
 
-mod common;
+use humatad_test_common as common;
 
 use std::collections::BTreeMap;
 use std::path::Path;

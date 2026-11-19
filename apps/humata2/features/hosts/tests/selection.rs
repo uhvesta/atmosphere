@@ -6,7 +6,7 @@ use tca::{TestClock, TestStore};
 #[test]
 fn selected_host_survives_refresh_and_falls_back_when_removed() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(HostsState::default(), Hosts::new(clients));
     store.send(A::Show(workspace.clone()), |s| {
         s.workspace = workspace.clone();

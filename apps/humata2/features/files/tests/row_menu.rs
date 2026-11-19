@@ -90,8 +90,8 @@ struct Page {
 }
 
 fn page(world: &World) -> Page {
-    let (_, fakes) = Clients::fake((*world.workspace).clone(), Arc::new(TestClock::new()));
-    let (clients, fakes) = Clients::with_fakes(fakes, Arc::new(TestClock::new()));
+    let (_, fakes) = humata2_clients::fake_clients((*world.workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::clients_with_fakes(fakes, Arc::new(TestClock::new()));
     let fake = fakes.file_manager.clone();
     let mut store = TestStore::new(FilesState::default(), Files::new(clients)).non_exhaustive();
     store.send(A::Show(world.workspace.clone()), |_| {});

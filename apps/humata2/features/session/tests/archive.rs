@@ -6,7 +6,7 @@ use tca::{TestClock, TestStore};
 #[test]
 fn failed_archive_keeps_the_open_session() {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     fakes
         .daemon
         .fail_next(Operation::Archive, "link unavailable");
@@ -45,7 +45,7 @@ fn failed_archive_keeps_the_open_session() {
 #[test]
 fn archive_asks_first_when_a_review_has_unsubmitted_drafts() {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let id = SessionId::new("ledger");
     fakes.daemon.set_unsubmitted_drafts(&id, 2);
     let state = SessionState {
@@ -70,7 +70,7 @@ fn archive_asks_first_when_a_review_has_unsubmitted_drafts() {
 #[test]
 fn archive_goes_ahead_when_a_review_has_no_unsubmitted_drafts() {
     let workspace = Arc::new(fixture::design());
-    let (clients, _fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let state = SessionState {
         workspace,
         open: Some(SessionId::new("ledger")),
@@ -98,7 +98,7 @@ fn the_archive_confirm_names_the_agent_and_machine_it_ends() {
             session.machine = humata2_clients::model::MachineId::new("this-mac");
         }
     }
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.daemon.set_unsubmitted_drafts(&id, 1);
     let state = SessionState {
         workspace: Arc::new(workspace),

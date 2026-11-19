@@ -23,7 +23,6 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
-import "humata/v1/files.proto";
 import "humata/v1/operations.proto";
 import "humata/v1/review.proto";
 

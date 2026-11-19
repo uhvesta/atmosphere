@@ -2,7 +2,7 @@
 //! user answers, an approved ask-ahead makes a grant that covers exactly
 //! what was asked, and a revoked grant asks again.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

@@ -3,7 +3,7 @@
 //! counting the sessions with a clone of that repo there, and `humata
 //! channel grid` answers it.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{create_channel, humata, start_session, start_world};
 use humata2_grpc::humata::v1 as pb;

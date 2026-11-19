@@ -4,7 +4,7 @@
 //! repo library hears of it; adding what the session has changes nothing; an
 //! agent may add only what its channel has, and is asked first.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Attach, Daemon, World, agent_tab, create_channel, finished, machine_id, open, repo_ref, shell_token,

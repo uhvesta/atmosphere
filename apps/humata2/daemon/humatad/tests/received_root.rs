@@ -3,7 +3,7 @@
 //! The user names it; an agent that names it is refused, like the home
 //! folder; a machine id that is not one folder name is refused.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::Duration;
 

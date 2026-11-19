@@ -6,166 +6,44 @@
 //! control carries a role and a label, so flow tests, recordings and screen
 //! readers find it by what it says.
 
-pub mod bridge;
-pub mod keys;
-pub mod record;
-pub mod report_view;
+pub use humata2_ui_changes::{
+    changes_loading, code_editor, comment_cards, doc_history, document_tab, panel_changes,
+    panel_stack,
+};
+pub use humata2_ui_core::{
+    Assets, WINDOW, action_menu, bridge, chrome, code_wrap, full_text, init, keys,
+    repo_search_field, theme, widgets,
+};
+pub use humata2_ui_desk::{
+    channel_desk, desk, desk_bar, desk_board, desk_files, desk_info, sidebar_desk,
+};
+pub use humata2_ui_machines::{
+    away_left_out, hosts, machine_page, machine_running, transfers_tray,
+};
+pub use humata2_ui_overlays::{overlays, palette_hits};
+pub use humata2_ui_report::{record, record_video, report_view};
+pub use humata2_ui_settings::{access, settings, settings_providers, settings_repositories};
+pub use humata2_ui_workspace::{
+    board, channel, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_board,
+    panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed,
+    session_tabs, sidebar, sidebar_pinned, terminals, view_tab,
+};
 
-mod access;
-mod action_menu;
-mod away_left_out;
-mod board;
-mod changes_loading;
-mod channel;
-mod channel_desk;
-mod chrome;
-mod code_editor;
-mod code_wrap;
-mod comment_cards;
-mod conversation_tab;
-mod desk;
-mod desk_bar;
-mod desk_board;
-mod desk_files;
-mod desk_info;
-mod doc_history;
-mod document_tab;
-mod file_manager;
-mod full_text;
-mod hosts;
-mod inbox_terminal;
 mod lists;
-mod machine_page;
-mod machine_running;
-mod overlays;
 mod pages;
-mod palette_hits;
-mod record_video;
-mod panel_stack;
 mod panels;
-mod request_card;
 mod restart_report;
-mod resume_failed;
-mod session_tabs;
-// REPOS (RL-5, ST-21): the repo search field and its Settings section.
-mod repo_search_field;
-mod settings_repositories;
-mod settings;
-mod settings_providers;
 mod shell;
-mod sidebar_pinned;
 mod starting;
-mod sidebar;
-mod sidebar_desk;
-mod terminals;
-mod view_tab;
-mod theme;
-mod transfers_tray;
-mod widgets;
 
-use std::borrow::Cow;
 use std::rc::Rc;
 
-use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{prelude::*, *};
 
 pub use shell::Shell;
 pub use starting::{STARTING_WINDOW, Starting};
 
 use crate::bridge::Ui;
-
-gpui_kit::assets::icon_assets!(
-    Icons,
-    [
-        Search,
-        Plus,
-        ChevronDown,
-        ChevronRight,
-        ChevronLeft,
-        PanelLeft,
-        PanelRight,
-        Terminal,
-        GitBranch,
-        GitFork,
-        GitPullRequest,
-        Files,
-        File,
-        Folder,
-        Settings,
-        Inbox,
-        LayoutDashboard,
-        House,
-        Server,
-        Check,
-        X,
-        ArrowUp,
-        ArrowRight,
-        Ellipsis,
-        Circle,
-        CircleX,
-        Pin,
-        Sun,
-        Moon,
-        Maximize,
-        MessageSquare,
-        MessageSquareText,
-        Columns2,
-        Square,
-        FileCode,
-        FileDiff,
-        FolderGit2,
-        FolderTree,
-        SquareKanban,
-        BookOpenText,
-        Info,
-        Maximize2,
-        Minimize2,
-        ChevronsUpDown,
-        PanelLeftOpen,
-        Sparkles,
-        FolderOpen,
-        FileText,
-        ShieldCheck,
-        Bot,
-        SquarePen,
-        SquareTerminal,
-        Archive,
-        HardDrive,
-        Bell,
-        Keyboard,
-        SquareTerminal,
-        WifiOff,
-    ]
-);
-
-/// The app's icons, for the engine's `Resources`. Text uses the
-/// platform's fonts.
-pub struct Assets;
-
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
-        Icons.load(path)
-    }
-
-    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
-        Icons.list(path)
-    }
-}
-
-/// Sets the theme and binds the shortcuts. Call once, after the engine's
-/// own init.
-pub fn init(cx: &mut App) {
-    Theme::change(ThemeMode::from(cx.window_appearance()), None, cx);
-    Theme::update(cx, |theme| {
-        theme.font_size = px(13.);
-        theme.mono_font_size = px(12.);
-        theme.focus_ring = true;
-    });
-    keys::bind(cx);
-}
-
-/// The window's size when nothing was saved.
-pub const WINDOW: (f32, f32) = (1440., 900.);
 
 /// Opens the app's window on `ui` with `options`, starts the store and
 /// launches the app.

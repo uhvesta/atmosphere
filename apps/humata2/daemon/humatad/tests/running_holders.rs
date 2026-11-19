@@ -4,7 +4,7 @@
 //! program. A shell stops and resumes where it was; an agent's tab is its
 //! session's to stop, resume or end.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

@@ -1,0 +1,1 @@
+//! GiveOwnCopy local module.

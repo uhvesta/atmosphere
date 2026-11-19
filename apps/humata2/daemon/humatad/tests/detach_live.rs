@@ -5,9 +5,8 @@
 //!
 //! The move test uses the two-machine rig, as move_session.rs does.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::time::{Duration, Instant};
 

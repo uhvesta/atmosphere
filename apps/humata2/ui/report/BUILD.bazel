@@ -1,0 +1,44 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "report",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {
+        "//apps/humata2/clients:api": "humata2_clients",
+    },
+    # GPUI's macros find gpui-kit through it.
+    compile_data = ["Cargo.toml"],
+    crate_name = "humata2_ui_report",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/clients:api",
+        "//apps/humata2/features/app",
+        "//apps/humata2/report",
+        "//apps/humata2/ui/core",
+        "@crates//:gpui-kit",
+        "@crates//:image",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "report_unit_test",
+    aliases = {
+        "//apps/humata2/clients": "humata2_clients_fakes",
+    },
+    crate = ":report",
+    deps = [
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -8,9 +8,8 @@
 //!
 //! Every wait is on the host's Sessions feed; `LONG` is only a safety net.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 

@@ -13,23 +13,31 @@ def _import_path(source):
     return proto_common.get_import_path(source)
 
 def _proto_descriptor_set_impl(ctx):
-    info = ctx.attr.proto[ProtoInfo]
+    targets = list(ctx.attr.protos)
+    if ctx.attr.proto != None:
+        targets.append(ctx.attr.proto)
+    if not targets:
+        fail("proto_descriptor_set requires `proto` or `protos`")
+
+    infos = [t[ProtoInfo] for t in targets]
+    transitive_sets = depset(transitive = [info.transitive_descriptor_sets for info in infos])
+    direct_sources = depset(transitive = [depset(info.direct_sources) for info in infos])
     out = ctx.actions.declare_file(ctx.label.name + ".binpb")
 
     args = ctx.actions.args()
     args.add_joined(
-        info.transitive_descriptor_sets,
+        transitive_sets,
         join_with = ctx.configuration.host_path_separator,
         format_joined = "--descriptor_set_in=%s",
     )
     args.add(out, format = "--descriptor_set_out=%s")
     args.add("--include_imports")
-    args.add_all(info.direct_sources, map_each = _import_path)
+    args.add_all(direct_sources, map_each = _import_path)
 
     ctx.actions.run(
         executable = ctx.executable._protoc,
         arguments = [args],
-        inputs = info.transitive_descriptor_sets,
+        inputs = transitive_sets,
         outputs = [out],
         mnemonic = "ProtoDescriptorSet",
         progress_message = "Writing the descriptor set of %{label}",
@@ -38,11 +46,14 @@ def _proto_descriptor_set_impl(ctx):
 
 proto_descriptor_set = rule(
     implementation = _proto_descriptor_set_impl,
-    doc = "Writes `<name>.binpb`: the FileDescriptorSet of `proto`'s sources and their imports.",
+    doc = "Writes `<name>.binpb`: the FileDescriptorSet of `proto`/`protos`'s sources and their imports.",
     attrs = {
         "proto": attr.label(
-            doc = "The proto_library whose sources, with their imports, are written.",
-            mandatory = True,
+            doc = "A single proto_library whose sources, with their imports, are written.",
+            providers = [ProtoInfo],
+        ),
+        "protos": attr.label_list(
+            doc = "Multiple proto_library targets whose sources, with their imports, are written.",
             providers = [ProtoInfo],
         ),
         "_protoc": attr.label(

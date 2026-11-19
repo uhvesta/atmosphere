@@ -257,15 +257,10 @@ pub(crate) fn allows(path: &str) -> bool {
 
 /// Test daemons only: `HUMATA2_PEER_WITHHOLD=GiveOwnCopy` makes this daemon
 /// refuse that method as an older humatad2 would, which doesn't list it.
-#[cfg(any(feature = "admin", feature = "faults"))]
 fn withheld(path: &str) -> bool {
-    std::env::var("HUMATA2_PEER_WITHHOLD")
-        .is_ok_and(|method| path.rsplit('/').next() == Some(method.as_str()))
-}
-
-#[cfg(not(any(feature = "admin", feature = "faults")))]
-fn withheld(_path: &str) -> bool {
-    false
+    (humata2_rpc_kit::admin::is_admin_mode() || cfg!(feature = "faults"))
+        && std::env::var("HUMATA2_PEER_WITHHOLD")
+            .is_ok_and(|method| path.rsplit('/').next() == Some(method.as_str()))
 }
 
 /// Calls the link process makes itself on its proven socket connection,

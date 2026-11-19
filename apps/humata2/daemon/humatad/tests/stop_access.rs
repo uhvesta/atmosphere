@@ -8,7 +8,7 @@
 //! The daemon restarts itself after a stop and after a start, so the
 //! waits ask the socket until the new run says it is stopped or started.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

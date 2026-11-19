@@ -9,7 +9,7 @@ use tca::{TestClock, TestStore};
 
 #[test]
 fn expanding_either_area_and_returning_preserves_the_columns() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     let id = SessionId::new("ledger");
     state.route = Route::Session(id.clone());
@@ -58,7 +58,7 @@ fn expanding_either_area_and_returning_preserves_the_columns() {
 
 #[test]
 fn closing_the_full_screen_panel_returns_to_the_terminal() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     let id = SessionId::new("ledger");
     state.route = Route::Session(id.clone());
@@ -103,7 +103,7 @@ fn half_screen_and_wide_again_restore_sizes_without_saving_automatic_folds() {
 #[test]
 fn a_restart_restores_both_tab_groups_and_the_selected_file() {
     use humata2_session::{Tab, TabGroup};
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     let id = SessionId::new("ledger");
     state.route = Route::Session(id.clone());
@@ -138,7 +138,7 @@ fn a_restart_restores_both_tab_groups_and_the_selected_file() {
 fn board_view_scope_and_filters_restore_together() {
     use humata2_board::{BoardAction as B, Filter, Mode};
     use humata2_clients::model::{ChannelId, ItemStatus, Scope};
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.route = Route::Board(Scope::Global);
     let mut store = TestStore::new(state, App::new(clients.clone()));
@@ -168,7 +168,7 @@ fn board_view_scope_and_filters_restore_together() {
 fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
     use humata2_clients::model::MachineId;
     use humata2_settings::{SettingsAction as T, Theme};
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.hosts.selected = Some(MachineId::new("devbox-1"));
     let mut store = TestStore::new(state, App::new(clients.clone()));
@@ -196,7 +196,7 @@ fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
 #[test]
 fn long_lines_survive_a_restart_both_ways() {
     use humata2_settings::SettingsAction as T;
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let first = state.review.wrap;
     let mut store = TestStore::new(state, App::new(clients.clone()));

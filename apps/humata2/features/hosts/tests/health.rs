@@ -57,7 +57,7 @@ fn detail(machine: &str, gh_version: &str) -> MachineDetail {
 /// with nothing shown yet.
 fn page() -> (TestStore<Hosts>, FakeMachines, Arc<Workspace>) {
     let workspace = Arc::new(fixture::design());
-    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), Arc::new(TestClock::new()));
     let store = TestStore::new(HostsState::default(), Hosts::new(clients))
         .with_timeout(Duration::from_secs(30))
         .non_exhaustive();

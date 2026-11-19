@@ -7,11 +7,9 @@
 //! the host and the host's mirror of the request is Approved. In the other
 //! case the user approves the mirror on the host after the link is back.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::away;
+use humatad_test_common::remote_rig;
 
 use away::{OK, PASSPHRASE, Terminal};
 use humata2_grpc::humata::v1 as pb;

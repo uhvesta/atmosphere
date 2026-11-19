@@ -4,7 +4,7 @@
 //! layers. A fake `stack` on the daemon's PATH prints the metadata a test
 //! writes; the clone is real git.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

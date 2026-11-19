@@ -14,7 +14,7 @@ fn ledger() -> SessionId {
 }
 
 fn on_ledger() -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});

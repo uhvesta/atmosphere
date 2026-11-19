@@ -13,9 +13,8 @@
 //! the start is made to fail by removing the channel's record from the box's
 //! store while the box is down, so the restart can't launch the agent.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;

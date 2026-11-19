@@ -1,7 +1,7 @@
 //! SIGTERM stops a daemon even while an app holds an event subscription
 //! open: the subscription ends cleanly, and the daemon exits.
 
-mod common;
+use humatad_test_common as common;
 
 use common::Daemon;
 use humata2_grpc::humata::v1 as pb;

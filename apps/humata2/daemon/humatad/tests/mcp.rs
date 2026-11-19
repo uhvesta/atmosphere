@@ -2,7 +2,7 @@
 //! agent, the daemon checks what that agent may do, and an Inbox question
 //! the agent gives up on is withdrawn.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

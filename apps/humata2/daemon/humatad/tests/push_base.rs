@@ -4,7 +4,7 @@
 //! counts against its base in the spec. Through a real `humatad2`; GitHub is
 //! a fake `gh` that logs every call, as in tests/push.rs.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

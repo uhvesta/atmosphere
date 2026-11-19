@@ -13,7 +13,7 @@ fn on_channel() -> (TestStore<App>, ChannelId) {
     let Some(channel) = workspace.channels.first().map(|channel| channel.id.clone()) else {
         panic!("the design workspace has a channel");
     };
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.workspace = Arc::new(workspace);
     state.route = Route::Channel(channel.clone());

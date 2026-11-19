@@ -5,7 +5,7 @@
 //! its token is refused from anywhere else, after logout, and once it
 //! expires, and a session's tab can't log in at all.
 
-mod common;
+use humatad_test_common as common;
 
 use std::fs::File;
 use std::io::Write;

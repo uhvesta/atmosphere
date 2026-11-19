@@ -21,7 +21,7 @@ fn file_requests(fakes: &Fakes) -> usize {
 /// The app on a session's page, its first file list read, and that
 /// session: one the design workspace gives files.
 fn on_a_session_page() -> (TestStore<App>, Fakes, SessionId) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let session = fakes
         .daemon
         .workspace()

@@ -1,7 +1,7 @@
 //! DESKWATCH: the feed tells of Desk sessions as they change, so a client
 //! keeps the Desk without listing it again. Through a real `humatad2`.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Build, Daemon, World, WAIT, create_channel, folder, wait_status};
 use humata2_grpc::humata::v1 as pb;

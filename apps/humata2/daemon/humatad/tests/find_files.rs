@@ -2,7 +2,7 @@
 //! a session's repos, ranked, paged, and limited to the files git knows or
 //! would add (RV-9, RV-11, RV-14).
 
-mod common;
+use humatad_test_common as common;
 
 use std::fs;
 use std::path::Path;

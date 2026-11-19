@@ -357,7 +357,7 @@ fn run() -> Result<(), StartError> {
         let storage = Arc::new(FileStorage::new(args.data));
         match &args.backend {
             live::Backend::Fakes => {
-                let (clients, _daemon) = Clients::demo(Arc::new(SystemClock::new()), storage);
+                let (clients, _daemon) = humata2_clients::demo_clients(Arc::new(SystemClock::new()), storage);
                 open_main(cx, &handle, clients, recorder, None);
             }
             live::Backend::Live { socket } => {

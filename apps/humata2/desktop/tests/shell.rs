@@ -35,7 +35,7 @@ fn home_on_the_standard_fakes() {
         .expect("a current-thread runtime starts");
     let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets)).expect("the headless context starts");
     cx.update(humata2_ui::init);
-    let (clients, _fakes) = Clients::fake(fixture::standard(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(fixture::standard(), Arc::new(TestClock::new()));
     let ui = Ui::new(runtime.handle(), clients, Recorder::new());
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -79,7 +79,7 @@ fn a_sessions_side_panel_hides_shows_and_survives_switching_screens() {
     cx.update(humata2_ui::init);
     let workspace = fixture::standard();
     let session = workspace.sessions.first().expect("the fakes have a session").id.clone();
-    let (clients, _fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let ui = Ui::new(runtime.handle(), clients, Recorder::new());
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(

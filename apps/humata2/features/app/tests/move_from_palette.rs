@@ -33,7 +33,7 @@ fn elsewhere(workspace: &Workspace, session: &SessionId) -> MachineId {
 fn opened_on_ledger() -> (TestStore<App>, Fakes, MachineId) {
     let workspace = fixture::design();
     let to = elsewhere(&workspace, &ledger());
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     // The host's workspace arrives as it does at launch, so every feature sees it.

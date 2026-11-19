@@ -39,7 +39,11 @@ rust_library(
     ),
     crate_name = "humata2_client_api",
     crate_root = "src/api.rs",
-    visibility = ["//apps/humata2/clients/live:__pkg__"],
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/features:__subpackages__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
     deps = CLIENT_DEPS,
 )
 
@@ -55,7 +59,7 @@ rust_library(
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
         "//apps/humata2/features:__subpackages__",
-        "//apps/humata2/ui:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
     ],
     deps = CLIENT_DEPS + [":api"],
 )

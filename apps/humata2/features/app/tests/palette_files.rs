@@ -12,7 +12,7 @@ use tca::{TestClock, TestStore};
 /// The app loaded from a daemon whose workspace carries no file lists, as a
 /// real host's does.
 fn loaded() -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut workspace = fakes.daemon.workspace();
     workspace.session_files.clear();
     let state = AppState::launch(&clients);

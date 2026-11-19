@@ -14,9 +14,8 @@
 //! record), so finishing the start fails at once and it is undone; the undo
 //! then can't remove the folder, which leaves the session stuck.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

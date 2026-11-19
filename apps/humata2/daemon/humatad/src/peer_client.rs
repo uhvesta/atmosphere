@@ -35,6 +35,7 @@ use tonic::Status;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use crate::away::PolicySource;
+#[cfg(feature = "svc_board")]
 use crate::board_service::BoardSvc;
 use crate::inbox::{Inbox, Replayed};
 use crate::daemon::{API_MAJOR, API_MINOR};
@@ -59,11 +60,11 @@ const RETRY_MOST: Duration = Duration::from_secs(30);
 /// `HUMATA2_PEER_RETRY_MS` names for both, so a test's machine restart is
 /// dialled again as soon as its daemon listens. Releases always wait HO-5's.
 fn retry_waits() -> (Duration, Duration) {
-    #[cfg(feature = "admin")]
-    if let Some(wait) = std::env::var("HUMATA2_PEER_RETRY_MS")
-        .ok()
-        .and_then(|ms| ms.parse::<u64>().ok())
-        .map(Duration::from_millis)
+    if humata2_rpc_kit::admin::is_admin_mode()
+        && let Some(wait) = std::env::var("HUMATA2_PEER_RETRY_MS")
+            .ok()
+            .and_then(|ms| ms.parse::<u64>().ok())
+            .map(Duration::from_millis)
     {
         return (wait, wait);
     }
@@ -186,8 +187,10 @@ pub(crate) struct HostSide {
     pub(crate) policy: Arc<PolicySource>,
     pub(crate) inbox: Arc<Inbox>,
     /// Runs the board calls a machine forwards and replays its board writes (D227).
+    #[cfg(feature = "svc_board")]
     pub(crate) boards: BoardSvc,
     /// Keeps the views a machine's agents offered, replayed from its journal (VW-12).
+    #[cfg(feature = "svc_review")]
     pub(crate) views: crate::review::Review,
     /// Compares each machine's build with this host's at link-up (UP-1).
     pub(crate) upgrade: Option<crate::upgrade::items::Watch>,
@@ -198,13 +201,17 @@ impl HostSide {
     /// the boards, `view.` to the views, anything else to the Inbox, which
     /// leaves out what isn't its own (D226, D227, VW-12).
     async fn replay_at(&self, machine: &str, entry: &pb::JournalEntry, link_up: i64) -> Replayed {
+        #[cfg(feature = "svc_board")]
         if entry.operation.starts_with("board.") {
-            self.boards.replay_at(machine, entry, link_up).await
-        } else if entry.operation.starts_with("view.") {
-            self.views.replay_offered(machine, entry).await
-        } else {
-            self.inbox.replay(machine, entry).await
+            return self.boards.replay_at(machine, entry, link_up).await;
         }
+        #[cfg(not(feature = "svc_board"))]
+        let _ = link_up;
+        #[cfg(feature = "svc_review")]
+        if entry.operation.starts_with("view.") {
+            return self.views.replay_offered(machine, entry).await;
+        }
+        self.inbox.replay(machine, entry).await
     }
 }
 
@@ -323,12 +330,20 @@ impl Up {
                     message: Some(pb::machine_to_host::Message::Call(call)),
                 }))) if host.is_some() => {
                     if let Some(host) = host {
+                        #[cfg(feature = "svc_board")]
                         forwarded.start(&self.machine, &host.boards, call, self.to_machine.clone());
+                        #[cfg(not(feature = "svc_board"))]
+                        let _ = (host, call, &mut forwarded);
                     }
                 }
                 Next::Message(Ok(Some(pb::MachineToHost {
                     message: Some(pb::machine_to_host::Message::Cancel(cancel)),
-                }))) if host.is_some() => forwarded.cancel(cancel.call_id),
+                }))) if host.is_some() => {
+                    #[cfg(feature = "svc_board")]
+                    forwarded.cancel(cancel.call_id);
+                    #[cfg(not(feature = "svc_board"))]
+                    let _ = cancel;
+                }
                 Next::Message(Ok(Some(pb::MachineToHost {
                     message: Some(pb::machine_to_host::Message::AnswerRefused(refused)),
                 }))) if host.is_some() => {
@@ -473,6 +488,7 @@ struct Forwarded {
     running: HashMap<u64, tokio::task::AbortHandle>,
 }
 
+#[cfg(feature = "svc_board")]
 impl Forwarded {
     /// Runs `call` as its agent on a task of its own, so a long write or a
     /// wait never holds up the link, and sends its result back on the link.

@@ -5,7 +5,7 @@
 //! checks the agent's holder keeps its pid, its program keeps its pid, and
 //! the holder keeps answering.
 
-mod common;
+use humatad_test_common as common;
 
 use std::process::Command;
 

@@ -1,0 +1,63 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Desk sessions, channel desks, and document versions over DeskService.
+rust_library(
+    name = "live_desk",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {
+        "//apps/humata2/clients:api": "humata2_clients",
+    },
+    crate_name = "humata2_clients_live_desk",
+    visibility = [
+        "//apps/humata2/clients:__subpackages__",
+        "//apps/humata2/desktop:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:desk",
+        "//apps/humata2/api/grpc:review",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/clients/live_core",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "live_desk_unit_test",
+    crate = ":live_desk",
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+)
+
+# The Desk on the fake and on a real humatad2 (admin build).
+rust_test(
+    name = "desk_live_test",
+    srcs = ["tests/desk.rs"],
+    crate_root = "tests/desk.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_power_cut",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_power_cut)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_desk",
+        "//apps/humata2/clients/live:clients",
+        "//apps/humata2/clients/live:wire",
+        "//apps/humata2/clients/live_core",
+        "//apps/humata2/clients/live_daemon",
+        "//apps/humata2/clients/live_test_support",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

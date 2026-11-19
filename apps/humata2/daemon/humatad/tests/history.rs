@@ -8,7 +8,7 @@
 //! LD-21's scrubbing is the last test: a host variable the user set is
 //! replaced by its name before its text is kept.
 
-mod common;
+use humatad_test_common as common;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

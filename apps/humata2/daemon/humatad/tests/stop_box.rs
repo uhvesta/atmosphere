@@ -12,9 +12,8 @@
 //! start, so the waits ask its socket until the new run answers with what
 //! only it can say.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::path::Path;
 use std::process::Command;

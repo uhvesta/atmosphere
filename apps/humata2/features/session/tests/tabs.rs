@@ -13,7 +13,7 @@ fn store() -> (TestStore<Sessions>, Clients) {
         s.unread = 0;
         s.recovery = None;
     }
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         ..Default::default()
@@ -261,7 +261,7 @@ fn a_changed_file_opens_without_the_files_tree() {
         .expect("the fixture session has a changed file");
     let mut state = store.state().clone();
     state.workspace = Arc::new(workspace);
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(state, Sessions::new(clients));
     store.send(
         A::SelectFile {

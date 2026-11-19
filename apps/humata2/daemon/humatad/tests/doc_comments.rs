@@ -4,7 +4,7 @@
 //! comments leave the record alone, and the session is told it changed
 //! without anyone asking for the list.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

@@ -5,11 +5,9 @@
 //! the host. What the host does with such a call (its own checks, that it
 //! runs as the agent under its rules) is the daemon's unit tests'.
 
-mod common;
-#[path = "common/away.rs"]
-mod away;
-#[path = "common/away_machine.rs"]
-mod away_machine;
+use humatad_test_common as common;
+use humatad_test_common::away;
+use humatad_test_common::away_machine;
 
 use away::Host;
 use away_machine::{ASKER, AwayMachine, Link, OTHER, files_of, kind, policy, session};

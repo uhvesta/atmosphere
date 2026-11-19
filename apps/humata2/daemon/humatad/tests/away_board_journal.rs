@@ -11,11 +11,9 @@
 //! answer, marked with its age; one never made is host_unreachable.
 //! Assertions are on typed error kinds, never on wording.
 
-#[path = "common/away.rs"]
-mod away;
-#[path = "common/away_machine.rs"]
-mod away_machine;
-mod common;
+use humatad_test_common::away;
+use humatad_test_common::away_machine;
+use humatad_test_common as common;
 
 use away::{Host, OK, PASSPHRASE, Terminal, host_reachable_becomes};
 use away_machine::{

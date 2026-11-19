@@ -1,7 +1,7 @@
 //! D748: a session's shell tab on the real daemon finds Humata's own tools
 //! first on its PATH, beside its session token and socket.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

@@ -30,7 +30,7 @@ fn two_sessions(workspace: &Workspace) -> (SessionId, SessionId) {
 
 fn on_session(clock: Arc<TestClock>, id: Option<&SessionId>) -> (TestStore<App>, Workspace) {
     let workspace = fixture::design();
-    let (clients, _fakes) = Clients::fake(workspace.clone(), clock);
+    let (clients, _fakes) = humata2_clients::fake_clients(workspace.clone(), clock);
     let mut state = AppState::launch(&clients);
     let shared = Arc::new(workspace.clone());
     state.workspace = shared.clone();

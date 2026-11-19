@@ -14,7 +14,7 @@ use tca::{TestClock, TestStore};
 const BUNDLE: &str = "a1b2c3d4e5f60718293a";
 
 fn setup() -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let state = AppState::launch(&clients);
     let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
     // The app knows which machine is This Mac once the workspace is loaded.

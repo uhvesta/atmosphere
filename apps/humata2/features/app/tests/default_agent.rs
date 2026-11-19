@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
 fn rig(workspace: humata2_clients::Workspace, route: Route) -> TestStore<App> {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.pull_requests.add_pull_request(PullRequestInfo {
         pr: PullRequestRef::new("acme/api", 777),
         title: "Change 777".to_owned(),

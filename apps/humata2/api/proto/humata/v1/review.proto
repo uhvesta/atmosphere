@@ -152,86 +152,6 @@ message DiffBase {
   }
 }
 
-// RV-31: per repo, what a review shows. Every base of RV-1 is one, and
-// review_prepare and the skills write one (D55, D57). Computed on the
-// session's machine by humata2_review_diff.
-message DiffSpec {
-  repeated RepoDiffSpec repos = 1;
-}
-
-message RepoDiffSpec {
-  RepoRef repo = 1;
-  // The old side.
-  DiffSpecBase base = 2;
-  // The new side: how much of the work in progress counts.
-  DiffSpecCompare compare = 3;
-  // Git pathspecs relative to the repo root (`src/`, `*.sql`). An empty
-  // include shows every path.
-  repeated string include_paths = 4;
-  repeated string exclude_paths = 5;
-  DiffWhitespace whitespace = 6;
-  // Renames are detected (git -M) unless this is set; then a moved file
-  // is a deletion and an addition.
-  bool no_renames = 7;
-}
-
-message DiffSpecBase {
-  oneof base {
-    // The merge base of HEAD and this branch, as GitHub shows a pull
-    // request (`origin/main...HEAD`).
-    string merge_base_with = 1;
-    // A branch, tag or commit as it is.
-    string rev = 2;
-    // A reviewed snapshot of this session (RV-28): its n, or 0 for the
-    // latest.
-    uint32 reviewed_snapshot = 3;
-    // The parent's fork point (forks only).
-    ForkPointBase fork_point = 4;
-    // What is staged, for "only my unstaged changes".
-    IndexBase index = 5;
-    // This repo's pull request's base, merge-base form (PR-10). PR review
-    // sessions only; a repo that is no pull request's is refused.
-    PullRequestBaseRef pull_request_base = 6;
-  }
-}
-
-message ForkPointBase {}
-message IndexBase {}
-// PR-10: this repo's pull request's base, merge-base form, PR review
-// sessions only.
-message PullRequestBaseRef {}
-
-message DiffSpecCompare {
-  enum Upto {
-    UPTO_UNSPECIFIED = 0;  // as UNSTAGED
-    UPTO_COMMITS = 1;      // HEAD's commit only
-    UPTO_STAGED = 2;       // plus the index
-    UPTO_UNSTAGED = 3;     // plus tracked files as they are on disk
-  }
-  enum Untracked {
-    UNTRACKED_UNSPECIFIED = 0;  // as ALL
-    UNTRACKED_NONE = 1;
-    UNTRACKED_ALL = 2;          // every file git doesn't ignore
-    UNTRACKED_PATHS = 3;        // only under untracked_paths
-  }
-  Upto upto = 1;
-  Untracked untracked = 2;
-  repeated string untracked_paths = 3;
-  // The new side ends at this commit, branch or tag, not at the
-  // checkout (D800). Upto and untracked must then be left unset.
-  string head = 4;
-  // Working-tree files under these pathspecs (tracked changes and
-  // untracked files git doesn't ignore) laid over the new side, which is
-  // HEAD unless head is set. Nothing else from the working tree counts.
-  repeated string worktree_paths = 5;
-}
-
-enum DiffWhitespace {
-  DIFF_WHITESPACE_UNSPECIFIED = 0;     // whitespace counts
-  DIFF_WHITESPACE_IGNORE_CHANGES = 1;  // git -b
-  DIFF_WHITESPACE_IGNORE_ALL = 2;      // git -w
-}
-
 // The two trees a repo's diff compared. Passing them back with
 // GetFileDiff shows exactly the state the file list came from.
 message DiffTrees {
@@ -686,13 +606,6 @@ message ResolvePullRequestRequest {
   }
 }
 
-enum PullRequestState {
-  PULL_REQUEST_STATE_UNSPECIFIED = 0;
-  PULL_REQUEST_STATE_OPEN = 1;
-  PULL_REQUEST_STATE_MERGED = 2;
-  PULL_REQUEST_STATE_CLOSED = 3;
-}
-
 message PullRequestInfo {
   PullRequestRef pr = 1;
   string title = 2;
@@ -899,18 +812,6 @@ message CommitReviewEntry {
 }
 
 // ---------------------------------------------------------------------------
-
-enum ViewState {
-  VIEW_STATE_UNSPECIFIED = 0;
-  VIEW_STATE_DRAFT = 1;              // prepared, not ready
-  VIEW_STATE_WAITING = 2;            // "Waiting for you"
-  VIEW_STATE_LATER = 3;
-  VIEW_STATE_NOT_NOW = 4;
-  VIEW_STATE_OPENED = 5;
-  VIEW_STATE_REVERTED = 6;
-  VIEW_STATE_OPENED_AND_CLOSED = 7;
-  VIEW_STATE_KEPT = 8;
-}
 
 message ReviewWalkthrough {
   message Step {

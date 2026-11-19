@@ -6,14 +6,11 @@
 //!
 //! Waits are on the host's feeds (the rig's `wait_session`, `ended`).
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
-#[path = "common/upgrade.rs"]
-mod upgrade;
-#[path = "common/upgrade_rig.rs"]
-mod upgrade_rig;
+use humatad_test_common::upgrade;
+use humatad_test_common::upgrade_rig;
 
 use std::path::{Path, PathBuf};
 

@@ -1,0 +1,39 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# FileService on this machine's own files, file manager ops, Go-to-file search,
+# clone file-change tracking, and cross-machine file/trash forwarding.
+rust_library(
+    name = "svc_files",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_files",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/api/grpc:events",
+        "//apps/humata2/api/grpc:files",
+        "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/store",
+        "@crates//:prost",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "svc_files_unit_test",
+    crate = ":svc_files",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

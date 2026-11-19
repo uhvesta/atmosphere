@@ -4,7 +4,7 @@
 //! role-machine daemon and a real `serve --stdio` share one temp state
 //! folder and socket, as in `relay.rs`.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

@@ -14,7 +14,7 @@ use humata2_session::SessionView;
 use tca::{TestClock, TestStore};
 
 fn on_session(workspace: Workspace, id: &SessionId) -> (TestStore<App>, Fakes) {
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.daemon.set_github_repos(vec!["acme/web".to_owned(), "octo/notes".to_owned()]);
     let workspace = Arc::new(workspace);
     let mut state = AppState::launch(&clients);

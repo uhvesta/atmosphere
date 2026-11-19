@@ -1,0 +1,52 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "sessions_desk",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_sessions_desk",
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/daemon/durable",
+        "//apps/humata2/daemon/revive",
+        "//apps/humata2/daemon/sessions_core",
+        "//apps/humata2/daemon/store",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "sessions_desk_unit_test",
+    crate = ":sessions_desk",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+rust_library(
+    name = "sessions_desk_faults",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_sessions_desk",
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/daemon/durable:durable_faults",
+        "//apps/humata2/daemon/revive:revive_faults",
+        "//apps/humata2/daemon/sessions_core:sessions_core_faults",
+        "//apps/humata2/daemon/store:store_faults",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

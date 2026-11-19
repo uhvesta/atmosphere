@@ -5,7 +5,7 @@
 //! in a channel". Ending them is a choice (`end_live`), and an agent may
 //! make it only with the destroy switch. Through a real `humatad2`.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

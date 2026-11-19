@@ -26,7 +26,7 @@ fn held(repo: &str, last_used_at_ms: i64, place: RepoPlace) -> LibraryRepo {
 
 fn setup() -> (TestStore<App>, Fakes) {
     let workspace = fixture::design();
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     fakes.daemon.set_repo_library(vec![
         held("bazelbuild/rules_jvm_external", 20, RepoPlace::Desk),
         held("acme/api", 10, RepoPlace::Desk),

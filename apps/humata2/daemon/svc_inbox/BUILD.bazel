@@ -1,0 +1,40 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "svc_inbox",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_svc_inbox",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/proto:humata2_store_rust",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/humatad:grpc",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions_core",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_away",
+        "@crates//:prost",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "svc_inbox_unit_test",
+    crate = ":svc_inbox",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

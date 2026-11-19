@@ -3,7 +3,7 @@
 //! of the last fetch, default branch first; a repository the session doesn't
 //! have is refused.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::Path;
 use std::process::Command;

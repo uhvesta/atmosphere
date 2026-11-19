@@ -1,0 +1,43 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "overlays",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    # GPUI's macros find gpui-kit through it.
+    compile_data = ["Cargo.toml"],
+    crate_name = "humata2_ui_overlays",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/ui:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/clients:api",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/desk",
+        "//apps/humata2/features/find",
+        "//apps/humata2/features/hosts",
+        "//apps/humata2/features/palette",
+        "//apps/humata2/features/pr_review",
+        "//apps/humata2/features/session",
+        "//apps/humata2/terminal/pane:terminal_pane",
+        "//apps/humata2/terminal/view:terminal_view",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/ui/core",
+        "//apps/humata2/ui/desk",
+        "//apps/humata2/ui/machines",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "overlays_unit_test",
+    crate = ":overlays",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

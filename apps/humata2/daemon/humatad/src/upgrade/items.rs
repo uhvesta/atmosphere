@@ -272,45 +272,8 @@ struct Inner {
     migrated: std::sync::OnceLock<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
-/// What a machine is called in text a person reads (D500). Ids stay in the
-/// structured fields. The host's own machine is "This Mac", as the app
-/// labels it. Another machine's id is its name until machines get ids of
-/// their own (D61), so it reads as its name; an id with no name known reads
-/// as the id.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Names {
-    this_mac: Option<String>,
-    named: HashMap<String, String>,
-}
-
-impl Names {
-    /// The host's own machine, `machine`, is "This Mac".
-    pub(crate) fn of_host(machine: &str) -> Self {
-        Self {
-            this_mac: Some(machine.to_owned()),
-            named: HashMap::new(),
-        }
-    }
-
-    /// `machine` is called `name`.
-    #[cfg(test)]
-    fn naming(mut self, machine: &str, name: &str) -> Self {
-        self.named.insert(machine.to_owned(), name.to_owned());
-        self
-    }
-
-    /// What `machine` is called: its name, "This Mac" for the host's own
-    /// machine, and the id when neither is known.
-    pub(crate) fn of(&self, machine: &str) -> String {
-        if self.this_mac.as_deref() == Some(machine) {
-            return "This Mac".to_owned();
-        }
-        match self.named.get(machine).filter(|name| !name.is_empty()) {
-            Some(name) => name.clone(),
-            None => machine.to_owned(),
-        }
-    }
-}
+/// What a machine is called in text a person reads (D500).
+pub(crate) use humata2_daemon_ports::Names;
 
 /// The Migrate items of this host's Inbox.
 #[derive(Clone)]

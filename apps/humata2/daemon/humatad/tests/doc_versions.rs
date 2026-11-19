@@ -5,7 +5,7 @@
 //! in place when its session closes. Listing, reading and restoring versions
 //! come with the docs service (DOCV phase B).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

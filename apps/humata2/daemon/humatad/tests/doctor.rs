@@ -2,7 +2,7 @@
 //! what the last start didn't bring back is brought back again, and a
 //! store with nothing wrong isn't touched.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Attach, Daemon, create_channel, finished, kill_holders, last_start, open, start_session,

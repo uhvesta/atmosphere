@@ -2,7 +2,7 @@
 //! into a channel or the Desk and becomes a session there that keeps
 //! running the same holder: same pid, still attaches, no longer an orphan.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

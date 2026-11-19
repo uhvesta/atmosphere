@@ -56,7 +56,7 @@ fn migrate(id: &str, machine: &str, changes: Vec<String>, phase: MigratePhase) -
 fn store(requests: Vec<Request>) -> (TestStore<Inbox>, Fakes) {
     let mut workspace = fixture::design();
     workspace.requests = requests;
-    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(InboxState::default(), Inbox::new(clients)).non_exhaustive();
     store.send(A::Show(Arc::new(workspace)), |_| {});
     (store, fakes)
@@ -166,7 +166,7 @@ fn only_migrate_items_have_a_change_list() {
         .cloned()
         .expect("the design fixture has an ordinary request");
     workspace.requests = vec![ordinary.clone()];
-    let (clients, _fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(InboxState::default(), Inbox::new(clients)).non_exhaustive();
     store.send(A::Show(Arc::new(workspace)), |_| {});
     assert_eq!(store.state().changes(&ordinary.id), None);

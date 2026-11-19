@@ -31,7 +31,7 @@ fn two_turns() -> Workspace {
 }
 
 fn store_on(workspace: Workspace, open: &str) -> (TestStore<Sessions>, FakeDaemon) {
-    let (clients, fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
     let state = SessionState {
         workspace: Arc::new(fakes.daemon.workspace()),
         open: Some(SessionId::new(open)),

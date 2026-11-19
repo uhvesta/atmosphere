@@ -1,113 +1,37 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
-# A channel's folders and clones on this machine, and the steps that start
-# a session in them: names (CH-2, FC-11..FC-14), the folder layout (FC-1),
-# main and session clones (FC-2, FC-3), the agents a session can run, and
-# the start and channel setup that are finished or undone after a crash
-# at any step (SE-4, PER-11, PER-27). humatad2's ChannelService and
-# SessionService drive it; it knows nothing about gRPC.
-SESSIONS_DEPS = [
-    "@crates//:serde",
-    "@crates//:sha2",
-    "@crates//:serde_json",
-    "@crates//:thiserror",
-    "@crates//:tokio",
-    "@crates//:uuid",
-]
-
+# Thin re-export facade over sessions_core, sessions_desk, and sessions_carry
+# during Phase 4A migration so daemon/humatad builds unchanged.
 rust_library(
     name = "sessions",
-    srcs = glob(["src/*.rs"]),
+    srcs = ["src/lib.rs"],
     crate_name = "humata2_sessions",
-    rustc_flags = ["--check-cfg=cfg(faults_build)"],
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
-    deps = SESSIONS_DEPS + [
-        "//apps/humata2/daemon/conversation",
-        "//apps/humata2/daemon/durable",
-        "//apps/humata2/daemon/git_head",
-        "//apps/humata2/daemon/holder",
-        "//apps/humata2/daemon/mirror",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon:__subpackages__"],
+    deps = [
         "//apps/humata2/daemon/revive",
+        "//apps/humata2/daemon/sessions_carry",
+        "//apps/humata2/daemon/sessions_core",
+        "//apps/humata2/daemon/sessions_desk",
         "//apps/humata2/daemon/store",
     ],
 )
 
-rust_test(
-    name = "sessions_unit_test",
-    crate = ":sessions",
-    data = ["testdata/fake_cli.sh"],
-    env = {"HUMATA2_FAKE_CLI": "$(rootpath testdata/fake_cli.sh)"},
-    deps = [
-        "@crates//:rusqlite",
-        "@crates//:tempfile",
-    ],
-)
-
-# The same crate on the fault-point builds of everything it drives.
+# The same facade on the fault-point builds of sessions_core, sessions_desk,
+# and sessions_carry.
 rust_library(
     name = "sessions_faults",
     testonly = True,
-    srcs = glob(["src/*.rs"]),
+    srcs = ["src/lib.rs"],
     crate_name = "humata2_sessions",
-    rustc_flags = [
-        "--cfg=faults_build",
-        "--check-cfg=cfg(faults_build)",
-    ],
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
-    deps = SESSIONS_DEPS + [
-        "//apps/humata2/daemon/conversation",
-        "//apps/humata2/daemon/durable:durable_faults",
-        "//apps/humata2/daemon/git_head",
-        "//apps/humata2/daemon/holder:holder_faults",
-        "//apps/humata2/daemon/mirror",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon:__subpackages__"],
+    deps = [
         "//apps/humata2/daemon/revive:revive_faults",
+        "//apps/humata2/daemon/sessions_carry:sessions_carry_faults",
+        "//apps/humata2/daemon/sessions_core:sessions_core_faults",
+        "//apps/humata2/daemon/sessions_desk:sessions_desk_faults",
         "//apps/humata2/daemon/store:store_faults",
-    ],
-)
-
-# PER-28: the unit tests that cut the power (`faults_build`): a fork's
-# conversation copy and an own copy's folder are whole afterwards.
-rust_test(
-    name = "sessions_faults_unit_test",
-    crate = ":sessions_faults",
-    data = ["testdata/fake_cli.sh"],
-    env = {"HUMATA2_FAKE_CLI": "$(rootpath testdata/fake_cli.sh)"},
-    deps = [
-        "@crates//:rusqlite",
-        "@crates//:tempfile",
-    ],
-)
-
-# PER-23, PER-27: kills channel setup and session start at each point and
-# checks recovery finishes or fully undoes them.
-rust_test(
-    name = "kill_matrix_test",
-    size = "large",
-    srcs = ["tests/kill_matrix.rs"],
-    data = ["//apps/humata2/daemon/holder:humata2_holder_faults"],
-    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)"},
-    tags = ["slow"],
-    deps = [
-        ":sessions_faults",
-        "//apps/humata2/daemon/holder:holder_faults",
-        "//apps/humata2/daemon/revive:revive_faults",
-        "//apps/humata2/daemon/store:store_faults",
-        "@crates//:rustix",
-        "@crates//:tempfile",
-        "@crates//:tokio",
-    ],
-)
-
-# PER-25: a channel's folders and clones are still there after a power cut
-# right after they are made.
-rust_test(
-    name = "power_cut_test",
-    size = "medium",
-    srcs = ["tests/power_cut.rs"],
-    deps = [
-        ":sessions_faults",
-        "//apps/humata2/daemon/durable:durable_faults",
-        "@crates//:tempfile",
     ],
 )
 

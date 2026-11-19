@@ -4,7 +4,7 @@
 //! holding withdraws its card, and with the daemon gone the hook prints
 //! nothing and exits 0, so the agent's own prompt asks.
 
-mod common;
+use humatad_test_common as common;
 
 use std::io::Write;
 use std::path::PathBuf;

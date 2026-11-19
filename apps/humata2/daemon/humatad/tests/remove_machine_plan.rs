@@ -4,7 +4,7 @@
 //! nothing. Through a real `humatad2`; needs FORK's archive (T3) and seam s4,
 //! and moves up from tests/pending with them.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 

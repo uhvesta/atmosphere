@@ -3,7 +3,7 @@
 //! model for the Desk folder's own repository. The agent's versions here are
 //! plain `git commit`s.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 

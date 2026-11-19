@@ -2,7 +2,7 @@
 //! running row that can't be attached: it reads as ended, and Resume
 //! brings it back to a terminal that attaches.
 
-mod common;
+use humatad_test_common as common;
 
 use std::time::{Duration, Instant};
 

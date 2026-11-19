@@ -2,9 +2,8 @@
 //! machine, over its link, what it keeps, and the clean-ups run there. A
 //! host and one box on the multi-machine rig; nothing waits on a clock.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use common::error_of;
 use humata2_grpc::humata::v1 as pb;

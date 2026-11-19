@@ -2,7 +2,7 @@
 //! refused before anything is made, as its own error naming the agent, and
 //! never as UNAVAILABLE, which the app reads as the machine not answering.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Build, Daemon, World, error_of, folder};
 use humata2_grpc::humata::v1 as pb;

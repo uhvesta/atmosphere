@@ -8,7 +8,7 @@ use tca::{TestClock, TestStore};
 
 #[test]
 fn picking_the_default_agent_is_sent_to_the_daemon() {
-    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::SetAgent(Agent::Codex), |s| s.preferences.default_agent = Agent::Codex);
     store.receive(A::DefaultAgentSaved(Ok(())), |_| {});

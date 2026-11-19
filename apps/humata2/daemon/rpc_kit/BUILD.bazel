@@ -1,0 +1,38 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Thin gRPC middleware, logging, link proof, compression, and shared RPC
+# helpers for humatad2 service crates (SPLIT §3.1, §3.2; SPLIT_PHASE3_DAEMON
+# §2.1 Step 6a).
+rust_library(
+    name = "rpc_kit",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = {"//apps/humata2/api/grpc:core": "humata2_grpc"},
+    crate_name = "humata2_rpc_kit",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/grpc:core",
+        "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "@crates//:hmac",
+        "@crates//:prost",
+        "@crates//:rustix",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "rpc_kit_unit_test",
+    crate = ":rpc_kit",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

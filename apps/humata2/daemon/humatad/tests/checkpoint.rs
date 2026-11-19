@@ -2,7 +2,7 @@
 //! checkpoint to install, the screen's size in the state, and a screen that
 //! answers the program's queries whether or not anyone is watching.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{Attach, Daemon, error_of, invalid_field, open};
 use ghostty_vt::Terminal;

@@ -3,7 +3,7 @@
 //! that can't be cloned leaves nothing half made, the CLI does the same, and
 //! a restarted daemon still has the channel.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{World, create_channel, git, humata, repo_ref, start_world, wait_for_path};
 use humata2_grpc::humata::v1 as pb;

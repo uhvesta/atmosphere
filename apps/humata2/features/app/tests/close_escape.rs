@@ -9,7 +9,7 @@ use humata2_session::{CloseConfirm, CloseKind};
 use tca::{TestClock, TestStore};
 
 fn store(route: Route, set: impl FnOnce(&mut AppState)) -> TestStore<App> {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut state = AppState::launch(&clients);
     state.route = route;
     set(&mut state);

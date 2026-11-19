@@ -2,7 +2,7 @@
 //! under the machine-destroy switch (Never by default); with it on the same
 //! calls go through. The user is never gated.
 
-mod common;
+use humatad_test_common as common;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

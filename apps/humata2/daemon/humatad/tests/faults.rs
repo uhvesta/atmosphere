@@ -4,7 +4,7 @@
 //! environment has `HUMATA2_STOP_AT`, `HUMATA2_FAULT_TRACE` and the like
 //! gets that build by itself (tests/common).
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

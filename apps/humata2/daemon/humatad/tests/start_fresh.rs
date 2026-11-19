@@ -1,6 +1,6 @@
 //! Start fresh with a summary (PER-15, D143) through a real `humatad2`.
 
-mod common;
+use humatad_test_common as common;
 
 use common::{
     Attach, Daemon, World, agent_tab, create_channel, finished, get_session, kill_holders,

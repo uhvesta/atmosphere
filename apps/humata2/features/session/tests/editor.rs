@@ -196,7 +196,7 @@ fn a_current_file_shorter_than_the_diff_says_still_draws() {
 
 fn store() -> TestStore<Sessions> {
     let workspace = fixture::design();
-    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let (clients, _) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
     let mut state = SessionState {
         workspace: Arc::new(workspace),
         ..Default::default()

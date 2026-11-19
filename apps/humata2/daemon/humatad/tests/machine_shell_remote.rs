@@ -4,9 +4,8 @@
 //! it among its running holders, and stop, resume and end reach it through
 //! the host. An offline box refuses the open, and nothing is queued.
 
-mod common;
-#[path = "common/remote_rig.rs"]
-mod remote_rig;
+use humatad_test_common as common;
+use humatad_test_common::remote_rig;
 
 use std::time::{Duration, Instant};
 

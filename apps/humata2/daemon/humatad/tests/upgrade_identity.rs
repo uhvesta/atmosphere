@@ -4,9 +4,8 @@
 //! the daemon's state, set only when the daemon's own sha256 is its
 //! platform's `humatad2` entry there; otherwise it is "".
 
-mod common;
-#[path = "common/upgrade.rs"]
-mod upgrade;
+use humatad_test_common as common;
+use humatad_test_common::upgrade;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

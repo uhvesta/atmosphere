@@ -2,7 +2,7 @@
 //! tools, with `root: "session_folder"`. Another session's agent is refused
 //! by the policy, as it would be for any session's clone.
 
-mod common;
+use humatad_test_common as common;
 
 use std::path::PathBuf;
 use std::process::Stdio;
