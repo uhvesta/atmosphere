@@ -67,6 +67,7 @@ Complementary "Changes"
       text "src/"
       text "+39200"
       text "−0"
+      CheckBox "Not looked at"
   text "client.rs"
   Button "Previous change" description="Previous change  ⌃⌘↑"
   Button "Next change" description="Next change  ⌃⌘↓"
@@ -264,18 +265,10 @@ Complementary "Changes"
       text "+"
       #change-code-31-0
         text "let value_31 = 31;"
-    #change-line-32
-      Button "Comment on line 32"
-        text "32"
-      text "+"
-      #change-code-32-0
-        text "let value_32 = 32;"
-    #change-line-33
-      Button "Comment on line 33"
-        text "33"
-      text "+"
-      #change-code-33-0
-        text "let value_33 = 33;"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

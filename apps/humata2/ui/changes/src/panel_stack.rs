@@ -105,7 +105,14 @@ fn files_label(files: u32) -> String {
 /// The layer list. A row's click picks its layer; a moved repository's
 /// "Ask the agent to send it again" asks once (DS-65). `scroll` is the
 /// list's scroll handle, which lives between frames.
-pub fn stack_list(look: Look, rows: &StackRows, scroll: &ScrollHandle, send: &Sender) -> impl IntoElement {
+pub fn stack_list(
+    look: Look,
+    review: &ReviewState,
+    rows: &StackRows,
+    scroll: &ScrollHandle,
+    send: &Sender,
+    width: f32,
+) -> impl IntoElement {
     if REVEALED.with(Cell::get) != Some(rows.picked) {
         REVEALED.with(|held| held.set(Some(rows.picked)));
         scroll.scroll_to_item(rows.picked);
@@ -120,11 +127,20 @@ pub fn stack_list(look: Look, rows: &StackRows, scroll: &ScrollHandle, send: &Se
         .track_scroll(scroll)
         .overflow_y_scroll()
         .children(rows.rows.iter().enumerate().map(|(index, entry)| {
-            stack_row(look, index, entry, index == rows.picked, send)
+            stack_row(look, review, rows, index, entry, index == rows.picked, send, width)
         }))
 }
 
-fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender) -> impl IntoElement {
+fn stack_row(
+    look: Look,
+    review: &ReviewState,
+    rows: &StackRows,
+    index: usize,
+    entry: &StackRow,
+    on: bool,
+    send: &Sender,
+    width: f32,
+) -> impl IntoElement {
     let target = (!entry.title.is_empty() && entry.number.is_some()).then(|| entry.title.clone());
     let click = send.clone();
     let (name, label) = match entry.number {
@@ -140,7 +156,22 @@ fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender
         "Whole stack".to_owned()
     };
     let note = row_note(entry);
+    let look_note = layer_look_note(review, rows, entry);
+    // About how wide the parts draw, in points: the row's inside less the
+    // number column, the title (semibold 6.7 a character) and the status
+    // (5.7), with the gaps between them.
+    let inside = width - 34. - 18.;
+    let title_w = title.chars().count() as f32 * 6.7;
+    let status_w = look_note.map_or(0., |(words, _)| words.chars().count() as f32 * 5.7 + 6.);
+    let first_word = note.split(' ').next().map_or(0., |word| word.chars().count() as f32 * 5.9);
+    let note_fits = inside - title_w - status_w - 6. >= first_word;
     let head = row()
+        .id(if on {
+            SharedString::from("stack-row-picked")
+        } else {
+            SharedString::from(format!("stack-row-head-{index}"))
+        })
+        .test_support()
         .gap(px(6.))
         .h(px(ROW_HEIGHT - 1.))
         .whitespace_nowrap()
@@ -158,22 +189,27 @@ fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender
                 }),
         )
         // The note gives way first, ending in an ellipsis; hover names it
-        // in full.
-        .child(full_text(
-            secondary(look, note.clone())
-                .id(SharedString::from(format!("stack-row-note-{index}")))
-                .test_support()
-                .text_color(rgb(look.tertiary))
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis(),
-            note,
-        ));
+        // in full. It shows only when at least its first word fits whole
+        // beside the title and the look's status; otherwise it is left out.
+        .children(note_fits.then(|| {
+            full_text(
+                secondary(look, note.clone())
+                    .id(SharedString::from(format!("stack-row-note-{index}")))
+                    .test_support()
+                    .text_color(rgb(look.tertiary))
+                    .min_w(px(first_word))
+                    .overflow_hidden()
+                    .text_ellipsis(),
+                note.clone(),
+            )
+        }))
+        .children(look_note.map(|(words, color)| look_note_el(index, words, color)));
     let mut body = col().w_full().child(head);
-    if on {
+    // Without a purpose the picked row stays one line, like the others.
+    if on && !entry.purpose.is_empty() {
         body = body.child(
             secondary(look, entry.purpose.clone())
-                .id("stack-row-picked")
+                .id("stack-row-purpose")
                 .test_support()
                 .pl(px(18.))
                 .pb(px(4.)),
@@ -199,6 +235,50 @@ fn stack_row(look: Look, index: usize, entry: &StackRow, on: bool, send: &Sender
 }
 
 /// "web moved since it was sent", with its one action (DS-65).
+/// What a row says about the looks (D852): "✓ Looks good" or "● Changed since
+/// you looked", after the repos, with its colour. Whole stack reads Looks good
+/// once every layer does.
+fn layer_look_note(
+    review: &ReviewState,
+    rows: &StackRows,
+    entry: &StackRow,
+) -> Option<(&'static str, u32)> {
+    use humata2_review::looks::{LayerLook, layer_look};
+    let session = review.session.as_ref()?;
+    let of = |title: &str| layer_look(review, session, title);
+    let state = if entry.number.is_some() {
+        of(&entry.title)
+    } else {
+        let layers: Vec<LayerLook> = rows
+            .rows
+            .iter()
+            .filter(|row| row.number.is_some())
+            .map(|row| of(&row.title))
+            .collect();
+        if !layers.is_empty() && layers.iter().all(|each| *each == LayerLook::LooksGood) {
+            LayerLook::LooksGood
+        } else {
+            LayerLook::None
+        }
+    };
+    match state {
+        LayerLook::None => None,
+        LayerLook::LooksGood => Some(("✓ Looks good", 0x28a745)),
+        LayerLook::ChangedSinceLooked => Some(("● Changed since you looked", 0xd98200)),
+    }
+}
+
+fn look_note_el(index: usize, words: &'static str, color: u32) -> AnyElement {
+    text(words)
+        .id(SharedString::from(format!("stack-row-look-{index}")))
+        .test_support()
+        .flex_shrink_0()
+        .ml_auto()
+        .text_size(px(11.))
+        .text_color(rgb(color))
+        .into_any_element()
+}
+
 fn drifted_line(look: Look, index: usize, layer: &str, repo: &str, send: &Sender) -> impl IntoElement {
     let short = short_repo(repo).to_owned();
     let send = send.clone();
@@ -247,7 +327,7 @@ pub fn untouched_line(look: Look, repo: &str) -> impl IntoElement {
 /// a line for each repository the picked layer doesn't touch, and why the
 /// last ask to send the stack again failed. `None` when the open session
 /// shows no stack.
-pub fn stack_top(review: &ReviewState, look: Look, send: &Sender) -> Option<AnyElement> {
+pub fn stack_top(review: &ReviewState, look: Look, send: &Sender, width: f32) -> Option<AnyElement> {
     let rows = review.stack_rows()?;
     let failed = review
         .session
@@ -262,7 +342,7 @@ pub fn stack_top(review: &ReviewState, look: Look, send: &Sender) -> Option<AnyE
             .px(px(8.))
             .pt(px(8.))
             .gap(px(2.))
-            .child(stack_list(look, &rows, &list_scroll(), send))
+            .child(stack_list(look, review, &rows, &list_scroll(), send, width))
             .children(rows.untouched_repos.iter().map(|repo| untouched_line(look, repo)))
             .when_some(failed, |top, error| {
                 top.child(
@@ -460,7 +540,7 @@ mod tests {
                     .on_action(move |_: &crate::keys::PrevLayer, _, _| previous.borrow_mut().push("previous")),
                 &self.review,
             )
-            .children(stack_top(&self.review, look, &self.send))
+            .children(stack_top(&self.review, look, &self.send, 340.))
             .children(skim_row(look, "acme/api", &self.skims, skim_open(&self.review, "acme/api"), &self.send))
             .child(key_dot(look, "acme/api", "src/lib.rs"))
         }

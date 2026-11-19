@@ -274,6 +274,7 @@ pub struct Documents {
     /// The box the field was last set for: session, lines and text.
     seen: Option<(SessionId, u32, u32, String)>,
     /// The detached comment whose new line the next click picks.
+    unfolded: comment_cards::Unfolded,
     reattach: Rc<RefCell<Option<CommentId>>>,
     /// The Diff panel's code views, by `repo/path`.
     diff_views: RefCell<HashMap<String, DiffView>>,
@@ -577,6 +578,7 @@ impl Documents {
             comment_input,
             seen: None,
             reattach: Rc::new(RefCell::new(None)),
+            unfolded: Default::default(),
             diff_views: RefCell::new(HashMap::new()),
             editors: RefCell::new(HashMap::new()),
             conversation: Default::default(),
@@ -644,6 +646,11 @@ impl Documents {
     /// picks.
     pub fn reattach(&self) -> Rc<RefCell<Option<CommentId>>> {
         self.reattach.clone()
+    }
+
+    /// The files whose done comments are unfolded, as `repo/path`.
+    pub fn unfolded(&self) -> comment_cards::Unfolded {
+        self.unfolded.clone()
     }
 
     /// Brings the pages, the comment field and the link in step with the
@@ -1018,6 +1025,10 @@ impl Documents {
             reattach: self.reattach.clone(),
         });
 
+        let fold_key = format!("{repo}/{path}");
+        let fold_count = comment_cards::all_done(by_line.values().flatten().copied()).filter(|_| read.is_none());
+        let folded = fold_count.is_some() && !self.unfolded.borrow().contains(&fold_key);
+        let fold_at = by_line.keys().next().copied().map(|n| n.min(total));
         let mut children: Vec<AnyElement> = Vec::new();
         let mut child_lines: Vec<u32> = Vec::new();
         for (index, line) in lines.iter().enumerate() {
@@ -1107,8 +1118,20 @@ impl Documents {
                     under.extend(later.iter().copied());
                 }
             }
+            if fold_at == Some(n)
+                && let Some(count) = fold_count
+            {
+                children.push(
+                    comment_cards::fold_line(look, &fold_key, count, !folded, &self.unfolded)
+                        .into_any_element(),
+                );
+                child_lines.push(n);
+            }
             for comment in under {
                 if Some(&comment.id) == box_comment.as_ref() {
+                    continue;
+                }
+                if folded && comment_cards::is_done(comment) {
                     continue;
                 }
                 children.push(if read.is_some() {
@@ -1331,3 +1354,4 @@ pub fn mode_switch(
             .into_any_element(),
     )
 }
+

@@ -716,3 +716,18 @@ fn the_same_key_makes_one_pull_request_draft() {
     assert_eq!(first.map(|c| c.id), again.map(|c| c.id));
     assert_eq!(listing(&fake, Which::Open).comments.len(), 1);
 }
+
+#[test]
+fn an_addressed_comment_reopens_as_a_draft() {
+    let fake = FakeComments::new();
+    let a = draft(&fake, "a", "one");
+    sent(&fake, &[&a]);
+    let Ok(addressed) = fake.lines_changed(&a.id, &["new line"]) else {
+        panic!("lines changed works")
+    };
+    let Ok(reopened) = block_on(fake.reopen(&a.id, addressed.revision)) else {
+        panic!("an addressed comment reopens")
+    };
+    assert_eq!(reopened.status, Status::Draft);
+    assert_eq!(reopened.addressed, None);
+}

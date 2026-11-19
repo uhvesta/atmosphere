@@ -26,6 +26,12 @@ The loop from "the agent did work" to "I've reviewed it and it's shipped" takes 
 - REVIEWER verdict: simplify into "New agent tab" in the session's own tab strip, opened from the Diff header.
 - **Sign-off is gradual (owner, 2026-11-19):** frames go to the owner in small batches (2–4), the next batch only after the owner has reviewed the last. Feedback from each batch shapes the next. Nothing is built until the owner signs off.
 
+- 2026-11-19 (DIFFUI2): step 8 (a), (b) and (c) are built and Fable-approved (D850–D852):
+  - (a) the footer "Send to <agent>";
+  - (b) the three comment states, with done comments folded, and Reopen on Addressed;
+  - (c) Looks good per file and per layer, with the "Since I last looked" switch.
+  New native frames: review-done-by-agent(-full, -dark), review-done-folded, looks-good-layer, looks-good-changed and looks-good-all. Next are (d), one agent note card, and (f), fold order-humata-review. (e), the Fork dialog, is deferred.
+
 ## Already marked by the owner (2026-11-19)
 - The bare ⌃⌄ per-repo base chevron isn't understandable (revisits D739).
 - "Show the terminal" in the full-screen Diff only exits full screen.

@@ -306,6 +306,10 @@ pub(super) struct CodeRows {
     offers: comment_cards::BoxOffers,
     box_at: Option<usize>,
     cards: HashMap<usize, Vec<DaemonComment>>,
+    /// Every comment on the file is done: the line index of the fold, how
+    /// many comments, its key and whether they are shown anyway.
+    fold: Option<(usize, usize, String, bool)>,
+    unfolded: comment_cards::Unfolded,
     sent: HashMap<usize, Vec<Comment>>,
     reattaching: Option<CommentId>,
     start: StartReattach,
@@ -387,6 +391,15 @@ impl CodeRows {
                 }
             }
         }
+        let fold_key = format!("{}/{}", diff.repo, file.path);
+        let unfolded = documents.unfolded();
+        let fold = comment_cards::all_done(cards.values().flatten()).and_then(|count| {
+            let at = cards.keys().min().copied()?;
+            Some((at, count, fold_key.clone(), unfolded.borrow().contains(&fold_key)))
+        });
+        if matches!(fold, Some((_, _, _, false))) {
+            cards.clear();
+        }
         let mut sent: HashMap<usize, Vec<Comment>> = HashMap::new();
         for comment in diff
             .comments
@@ -432,6 +445,8 @@ impl CodeRows {
             offers,
             box_at,
             cards,
+            fold,
+            unfolded,
             sent,
             reattaching: documents.reattach().borrow().clone(),
             start,
@@ -703,6 +718,11 @@ impl CodeRows {
         let mut cards = Vec::new();
         for comment in self.sent.get(&index).into_iter().flatten() {
             cards.push(self.fit(sent_card(look, comment).into_any_element()));
+        }
+        if let Some((at, count, key, shown)) = self.fold.as_ref()
+            && *at == index
+        {
+            cards.push(self.fit(comment_cards::fold_line(look, key, *count, *shown, &self.unfolded).into_any_element()));
         }
         for comment in self.cards.get(&index).into_iter().flatten() {
             cards.push(self.fit(

@@ -45,6 +45,8 @@ Complementary "Changes"
   #diff-no-changes-yet
     text "No changes against origin/main"
   Button "Compare with…"
+  #diff-looks-bar
+  Button "Send to claude" disabled
   Button "Add repo…"
 Toolbar "Session panels"
   Button "Inbox"

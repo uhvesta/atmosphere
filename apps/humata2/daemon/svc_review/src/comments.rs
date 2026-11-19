@@ -385,7 +385,7 @@ impl Review {
         .await
     }
 
-    /// Puts a resolved comment back to a draft (SM-11).
+    /// Puts a resolved or addressed comment back to a draft (SM-11, D851).
     pub(super) async fn reopen_user_comment(
         &self,
         caller: &Caller,

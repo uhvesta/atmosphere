@@ -66,12 +66,17 @@ Complementary "Changes"
         text "logo.png"
       text "assets/"
       text "bin"
+      CheckBox "Not looked at"
   text "logo.png"
   text "api"
   text "·"
   text "assets/"
   #change-file-empty
     text "Binary file"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

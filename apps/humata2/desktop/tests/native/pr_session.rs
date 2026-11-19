@@ -317,6 +317,38 @@ fn submit_review_in_the_footer_opens_the_sheet() {
     assert!(app.contains("submit-review-dialog"));
 }
 
+/// UXSIMPLE: a review with only drafts for GitHub has nothing to send to the
+/// agent, so its footer has no Send button.
+#[test]
+fn a_review_footer_has_no_send_button_when_nothing_is_sendable() {
+    let mut app = review();
+    drafts(&app);
+    shown(&mut app);
+    app.draw();
+    assert!(!app.contains("send-comments"));
+    assert!(app.contains("diff-submit-review"));
+}
+
+/// UXSIMPLE: with a comment waiting for the agent, a review's Send is a
+/// secondary button left of the filled Submit review….
+#[test]
+fn a_review_footer_offers_send_as_a_secondary_left_of_submit() {
+    let mut app = review();
+    shown(&mut app);
+    app.write_comment(REVIEW, "acme/api", 140, "Check the rounding here.");
+    app.draw();
+    assert!(app.contains("send-comments"));
+    let line = app.send_button(REVIEW).expect("button names the agent");
+    assert!(!line.contains("disabled"), "{line}");
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let send = window.find("send-comments").bounds();
+            let submit = window.find("diff-submit-review").bounds();
+            assert!(send.origin.x + send.size.width <= submit.origin.x);
+        })
+        .unwrap();
+}
+
 /// With the Diff panel open, the session bar's Submit review is hidden while
 /// the footer's stays; closing the panel brings the bar's back.
 #[test]

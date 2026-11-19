@@ -67,6 +67,7 @@ Complementary "Changes"
       text "dist/"
       text "+1"
       text "−0"
+      CheckBox "Not looked at"
   text "app.min.js"
   text "web"
   text "·"
@@ -140,10 +141,10 @@ Complementary "Changes"
         text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-30
         text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
-      #change-code-1-31
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
-      #change-code-1-32
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

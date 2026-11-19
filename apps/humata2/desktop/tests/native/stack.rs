@@ -155,3 +155,70 @@ fn a_stack_without_notes_draws_no_review_chrome() {
         assert!(!app.contains(id), "{id} is review chrome");
     }
 }
+
+/// D852: a layer says "Changed since you looked" once a file it showed when
+/// Looks good was pressed changes.
+#[test]
+fn a_layer_row_says_changed_since_you_looked_after_its_file_changes() {
+    use humata2_clients::model::LineKind;
+    use humata2_review::ReviewAction as R;
+    let mut app = stack_app();
+    // Row 1 is the top layer, "Not committed yet", which shows api's files.
+    app.click("stack-row-1");
+    app.click("diff-looks-good");
+    assert!(app.contains("stack-row-look-1"), "the layer reads Looks good");
+    let mut diffs: Vec<_> = app.ui.read(|state| {
+        state.workspace.diffs.iter().filter(|diff| diff.session == ledger()).cloned().collect()
+    });
+    let file = diffs
+        .iter_mut()
+        .flat_map(|diff| diff.files.iter_mut())
+        .next()
+        .expect("a file in the layer");
+    file.lines.iter_mut().find(|line| line.kind == LineKind::Added).unwrap().text =
+        "reworded after the look".to_owned();
+    app.fakes.daemon.set_diffs(&ledger(), diffs);
+    app.send(AppAction::Review(R::Retry));
+    assert!(app.contains("stack-row-look-1"));
+    let look = app.ui.read(|state| {
+        humata2_review::looks::layer_look(&state.review, &ledger(), "Not committed yet")
+    });
+    assert_eq!(look, humata2_review::looks::LayerLook::ChangedSinceLooked);
+}
+
+fn reword_first_file(app: &mut App) {
+    use humata2_clients::model::LineKind;
+    let mut diffs: Vec<_> = app.ui.read(|state| {
+        state.workspace.diffs.iter().filter(|diff| diff.session == ledger()).cloned().collect()
+    });
+    let file = diffs
+        .iter_mut()
+        .flat_map(|diff| diff.files.iter_mut())
+        .next()
+        .expect("a file in the layer");
+    file.lines.iter_mut().find(|line| line.kind == LineKind::Added).unwrap().text =
+        "reworded after the look".to_owned();
+    app.fakes.daemon.set_diffs(&ledger(), diffs);
+    app.send(AppAction::Review(humata2_review::ReviewAction::Retry));
+}
+
+/// UXSIMPLE 3-2, 4-1 and 4-3: a layer that looks good, one that changed after
+/// it, and the end state where every layer looks good.
+#[test]
+fn looks_good_frames_for_a_layer_a_changed_layer_and_the_whole_stack() {
+    let mut app = stack_app();
+    app.click("stack-row-1");
+    // Sent, not clicked, so the pointer isn't left hovering the button.
+    app.send(AppAction::Review(humata2_review::ReviewAction::LooksGood));
+    app.snapshot("looks-good-layer");
+    reword_first_file(&mut app);
+    app.snapshot("looks-good-changed");
+    // Every layer looks good, the whole stack too.
+    for row in ["stack-row-2", "stack-row-3", "stack-row-1"] {
+        app.click(row);
+        app.send(AppAction::Review(humata2_review::ReviewAction::LooksGood));
+    }
+    app.click("stack-row-0");
+    app.send(AppAction::Review(humata2_review::ReviewAction::LooksGood));
+    app.snapshot("looks-good-all");
+}

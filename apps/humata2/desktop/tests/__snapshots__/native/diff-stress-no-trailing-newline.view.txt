@@ -67,6 +67,7 @@ Complementary "Changes"
       text "src/"
       text "+2"
       text "−0"
+      CheckBox "Not looked at"
   text "lib.rs"
   text "api"
   text "·"
@@ -88,6 +89,10 @@ Complementary "Changes"
         text "fn b() {}"
     #change-note-3
       text "\\ No newline at end of file"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

@@ -82,11 +82,15 @@ fn drafted_comments_show_in_the_panel_and_send_together() {
         2
     );
     assert!(app.contains("send-comments"));
+    let before = app.send_button("ledger").expect("button names the agent");
+    assert!(!before.contains("disabled"), "{before}");
     assert!(app.fakes.comments.typed(&id).is_empty());
     app.click("send-comments");
     assert_eq!(app.fakes.comments.typed(&id).len(), 1);
     assert!(app.ui.read(|s| s.comments.sendable(&id).is_empty()));
-    assert!(!app.contains("send-comments"));
+    assert!(app.contains("send-comments"));
+    let after = app.send_button("ledger").expect("button names the agent");
+    assert!(after.contains("disabled"), "{after}");
 }
 
 /// SM-9: Edit on a draft reopens its box with the text it has.
@@ -234,6 +238,132 @@ fn diff_comments_are_the_shared_cards_under_their_line() {
     assert_eq!((first, last, text.as_str()), (42, 42, "Keep these writes in one transaction."));
 }
 
+/// UXSIMPLE (b): once the agent changed a sent comment's lines it is done;
+/// a file whose comments are all done folds them into one line, Show
+/// unfolds them into cards that offer Reopen, and the file row says done.
+#[test]
+fn done_comments_fold_into_one_line_and_show_unfolds_them() {
+    use humata2_review::comments::CommentsAction as C;
+    let mut app = changes_app();
+    let id = SessionId::new("ledger");
+    app.click("change-gutter-4");
+    app.send(AppAction::Comments(C::Typed(id.clone(), "Name this error.".into())));
+    app.click("doc-comment-send");
+    let comment = app.fakes.comments.comments(&id)[0].id.clone();
+    assert!(app.contains(&format!("doc-comment-{comment}")));
+    assert!(!app.contains(&format!("doc-reopen-comment-{comment}")), "a sent comment is not done");
+    app.fakes.comments.lines_changed(&comment, &["fixed"]).expect("addressed");
+    app.send(AppAction::Comments(C::Open(id.clone())));
+    let fold = "doc-done-fold api/src/client.rs";
+    assert!(app.contains(fold), "done comments fold into one line");
+    assert!(!app.contains(&format!("doc-comment-{comment}")));
+    app.click("doc-done-toggle api/src/client.rs");
+    assert!(app.contains(&format!("doc-comment-{comment}")));
+    assert!(app.contains(&format!("doc-reopen-comment-{comment}")));
+}
+
+/// Two sent comments the agent answered, as the done states draw them: the
+/// first on Show, then the fold alone.
+fn answered_comments(app: &mut App) -> Vec<humata2_clients::comments::CommentId> {
+    use humata2_review::comments::CommentsAction as C;
+    let id = SessionId::new("ledger");
+    for (gutter, text) in [
+        ("change-gutter-4", "Make the legacy insert an upsert on entry.id."),
+        ("change-gutter-5", "One transaction for the whole batch, not one per entry."),
+    ] {
+        app.click(gutter);
+        app.send(AppAction::Comments(C::Typed(id.clone(), text.into())));
+        app.click("doc-comment-send");
+    }
+    let comments = app.fakes.comments.comments(&id);
+    let ids: Vec<_> = comments.iter().map(|comment| comment.id.clone()).collect();
+    let replies = [
+        "upsert_legacy keys on entry.id, so a retried commit writes the row once.",
+        "post_many opens one transaction and commits once.",
+    ];
+    for (comment, reply) in ids.iter().zip(replies) {
+        app.fakes.comments.agent_reply(comment, reply).expect("reply");
+        app.fakes.comments.lines_changed(comment, &["fixed"]).expect("addressed");
+    }
+    app.send(AppAction::Comments(C::Open(id)));
+    ids
+}
+
+/// UXSIMPLE 4-2: done cards are quiet, with the agent's reply under a
+/// divider and Reopen at the right; the file row says how many are done.
+#[test]
+fn done_by_agent_cards_show_the_reply_and_reopen() {
+    let mut app = changes_app();
+    let ids = answered_comments(&mut app);
+    app.click("doc-done-toggle api/src/client.rs");
+    for id in &ids {
+        assert!(app.contains(&format!("doc-comment-{id}")));
+        assert!(app.contains(&format!("doc-reopen-comment-{id}")));
+    }
+    app.snapshot("review-done-by-agent");
+}
+
+/// The done-by-agent state in full screen, on a file that has no sent comment
+/// of its own (client.rs keeps one, so its row shows the count, not "✓ N done").
+#[test]
+fn review_done_by_agent_full() {
+    let mut workspace = fixture::design();
+    let api = workspace.diffs.iter_mut().find(|d| d.repo == "api").unwrap();
+    // The fixture gives entry.rs no lines to comment on, so it takes client.rs's.
+    let lines = api
+        .files
+        .iter()
+        .find(|f| f.path == "src/client.rs")
+        .unwrap()
+        .lines
+        .clone();
+    api.files
+        .iter_mut()
+        .find(|f| f.path == "src/entry.rs")
+        .unwrap()
+        .lines = lines;
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile {
+        repo: "api".into(),
+        path: "src/entry.rs".into(),
+    }));
+    let ids = answered_comments(&mut app);
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.click("doc-done-toggle api/src/entry.rs");
+    for id in &ids {
+        assert!(app.contains(&format!("doc-comment-{id}")));
+        assert!(app.contains(&format!("doc-reopen-comment-{id}")));
+    }
+    assert!(app.contains("change-file-done api/src/entry.rs"));
+    app.snapshot("review-done-by-agent-full");
+}
+
+/// The done-by-agent state in the dark theme: the done card, its chip and
+/// Reopen, the reply divider and the fold line.
+#[test]
+fn review_done_by_agent_dark() {
+    let mut app = changes_app();
+    let ids = answered_comments(&mut app);
+    app.click("doc-done-toggle api/src/client.rs");
+    for id in &ids {
+        assert!(app.contains(&format!("doc-comment-{id}")));
+        assert!(app.contains(&format!("doc-reopen-comment-{id}")));
+    }
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("review-done-by-agent-dark");
+}
+
+/// UXSIMPLE 4-3: a file whose comments are all done folds them into one
+/// line with a green check and Show.
+#[test]
+fn all_done_comments_fold_into_one_line() {
+    let mut app = changes_app();
+    answered_comments(&mut app);
+    assert!(app.contains("doc-done-fold api/src/client.rs"));
+    app.snapshot("review-done-folded");
+}
+
 /// Flow 26.14 step 2: widening the panel rewraps the long lines, and the
 /// line at the top of the view stays at the top.
 #[test]
@@ -323,10 +453,10 @@ fn widening_a_wrapped_diff_keeps_its_top_line_in_place() {
 }
 
 /// RV-1, RV-6: the base chip opens a menu of bases; the fork base shows
-/// only for forks, other sessions of the channel are listed, and Mark
-/// reviewed makes "Since I last reviewed" start from here.
+/// only for forks, other sessions of the channel are listed, and Looks
+/// good makes "Since I last looked" start from here.
 #[test]
-fn the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over() {
+fn the_base_menu_picks_what_the_diff_is_against_and_looks_good_starts_it_over() {
     use humata2_clients::model::DiffBase;
     let mut app = changes_app();
     let id = SessionId::new("ledger");
@@ -335,13 +465,15 @@ fn the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over
     assert!(app.contains("diff-base-menu"));
     assert!(app.contains("diff-base-origin-main"));
     assert!(app.contains("diff-base-uncommitted"));
-    assert!(app.contains("diff-base-since-reviewed"));
+    assert!(!app.contains("diff-base-since-reviewed"));
+    assert!(!app.contains("diff-mark-reviewed"));
     assert!(app.contains("diff-base-other-brin"));
     // "ledger" is not a fork.
     assert!(!app.contains("diff-base-since-fork"));
 
-    app.click("diff-mark-reviewed");
+    app.click("diff-base");
     assert!(!app.contains("diff-base-menu"));
+    app.send(AppAction::Review(humata2_review::ReviewAction::LooksGood));
     assert!(
         app.fakes
             .daemon
@@ -350,14 +482,12 @@ fn the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over
             .any(|call| call == "mark reviewed ledger")
     );
 
-    app.click("diff-base");
-    app.click("diff-base-since-reviewed");
-    assert!(!app.contains("diff-base-menu"));
+    app.send(AppAction::Review(humata2_review::ReviewAction::SinceLooked(true)));
     assert_eq!(
         app.ui.read(|s| Some(s.review.targets_of(&id).preset)),
         Some(DiffBase::SinceLastReviewed)
     );
-    // Nothing changed since Mark reviewed: the panel says so, not "No
+    // Nothing changed since Looks good: the panel says so, not "No
     // changes yet".
     assert!(app.contains("diff-none-against-base"));
     assert!(!app.contains("diff-no-changes-yet"));

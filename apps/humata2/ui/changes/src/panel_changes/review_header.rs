@@ -591,8 +591,232 @@ fn base_row(
         .test_support()
 }
 
+/// The file count of the diff read for the open session while it shows what
+/// changed since the bookmark; `None` otherwise.
+fn since_files(state: &AppState) -> Option<usize> {
+    let id = state.session.open.as_ref()?;
+    if state.review.targets_of(id).preset != DiffBase::SinceLastReviewed {
+        return None;
+    }
+    let diffs = state.review.fetch.get(id)?.diffs.as_deref()?;
+    Some(humata2_review::looks::file_count(diffs))
+}
+
+/// Whether the person looked at something of the open session that still
+/// stands, or is already on the switch's Since side.
+pub(super) fn look_exists(state: &AppState) -> bool {
+    let Some(id) = state.session.open.as_ref() else {
+        return false;
+    };
+    humata2_review::looks::any_look(&state.review, id)
+        || state.review.targets_of(id).preset == DiffBase::SinceLastReviewed
+}
+
+/// How many files changed since the look: the Since read's files while the
+/// switch is on it, else the files shown that aren't looked at now.
+fn since_count(state: &AppState) -> Option<usize> {
+    since_files(state).or_else(|| {
+        let id = state.session.open.as_ref()?;
+        let diffs = state.review.fetch.get(id)?.diffs.as_deref()?;
+        let total = humata2_review::looks::file_count(diffs);
+        Some(total - humata2_review::looks::looked_count(&state.review, id, diffs))
+    })
+}
+
+/// The Diff header's two-way switch "All changes | Since I last looked · N
+/// files" (D852, UXSIMPLE 4-2). It replaces the base menu's bookmark
+/// entries. Not shown while a stack's layers show, whose bases are fixed.
+pub(super) fn since_switch(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
+    let since = state
+        .session
+        .open
+        .as_ref()
+        .is_some_and(|id| state.review.targets_of(id).preset == DiffBase::SinceLastReviewed);
+    // The count shows once a look exists, "· 0 files" too.
+    let right = match since_count(state).filter(|_| look_exists(state)) {
+        Some(1) => "Since I last looked · 1 file".to_owned(),
+        Some(count) => format!("Since I last looked · {count} files"),
+        None => "Since I last looked".to_owned(),
+    };
+    let segment = |id: &'static str, label: String, on: bool, event: bool| {
+        let ui = ui.clone();
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .h(px(24.))
+            .role(Role::RadioButton)
+            .aria_label(label.clone())
+            .aria_selected(on)
+            .px(px(10.))
+            .py(px(3.))
+            .rounded(px(6.))
+            .whitespace_nowrap()
+            .text_size(px(12.5))
+            .text_color(rgb(if on { look.text } else { look.secondary }))
+            .cursor_pointer()
+            .when(on, |segment| {
+                segment
+                    .bg(rgb(look.card))
+                    .border_1()
+                    .border_color(rgb(look.line))
+                    .font_weight(FontWeight::MEDIUM)
+            })
+            .on_click(move |_, _, cx| {
+                ui.send(AppAction::Review(ReviewAction::SinceLooked(event)), cx)
+            })
+            .child(label)
+            .test_support()
+    };
+    row()
+        .id("diff-switch")
+        .role(Role::RadioGroup)
+        .aria_label("Show")
+        .test_support()
+        .flex_shrink_0()
+        .h(px(28.))
+        .items_center()
+        .p(px(1.))
+        .rounded(px(7.))
+        .bg(rgb(look.fill))
+        .border_1()
+        .border_color(rgb(look.line))
+        .child(segment("diff-switch-all", "All changes".to_owned(), !since, false))
+        .child(segment("diff-switch-since", right, since, true))
+}
+
+/// The caption over the file list while the switch is on Since: "2 FILES
+/// CHANGED SINCE YOU LOOKED" (11 pt semibold caps, secondary). `None` while
+/// it is on All changes, or before the diff is read. Draw it above the file
+/// list in the panel's list column.
+pub(super) fn since_caption(state: &AppState, look: Look) -> Option<impl IntoElement> {
+    let count = since_files(state)?;
+    Some(
+        secondary(
+            look,
+            format!(
+                "{count} {} CHANGED SINCE YOU LOOKED",
+                if count == 1 { "FILE" } else { "FILES" }
+            ),
+        )
+        .id("diff-since-caption")
+        .test_support()
+        .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD),
+    )
+}
+
+/// How many of the files `diffs` shows are looked at, and how many there are.
+pub(super) fn looked_of(state: &AppState, diffs: &[&RepoDiff]) -> (usize, usize) {
+    let Some(session) = state.session.open.as_ref() else {
+        return (0, 0);
+    };
+    let total = diffs.iter().map(|diff| diff.files.len()).sum();
+    let looked = diffs
+        .iter()
+        .flat_map(|diff| diff.files.iter().map(move |file| (&diff.repo, file)))
+        .filter(|(repo, file)| {
+            humata2_review::looks::is_looked(&state.review, session, repo, &file.path, file)
+        })
+        .count();
+    (looked, total)
+}
+
+/// "1 file", "3 files": the noun agrees with the count.
+fn files_of(total: usize) -> String {
+    format!("{total} file{}", if total == 1 { "" } else { "s" })
+}
+
+/// The footer's status left of the buttons (D852, UXSIMPLE 3-1, 4-3): what
+/// was looked at in the view shown, then the drafts. When every layer looks
+/// good and no comment is open it is the green end state. The flag says
+/// whether the line is the green one. It is never cut with an ellipsis:
+/// `room` is how many characters fit, and clauses drop from the right
+/// ("N drafts", then the "Layer N · " prefix; the end state's comments
+/// clause) until the line fits.
+pub(super) fn looks_status(
+    state: &AppState,
+    diffs: &[&RepoDiff],
+    drafts: usize,
+    room: usize,
+) -> Option<(String, bool)> {
+    use humata2_review::looks::{LayerLook, layer_look};
+    let session = state.session.open.as_ref()?;
+    let stack = state.review.stack_rows();
+    let held = state.comments.sessions.get(session);
+    let open = held.map_or(0, |held| {
+        held.comments
+            .iter()
+            .filter(|comment| {
+                !comment.archived
+                    && matches!(
+                        comment.status,
+                        humata2_clients::comments::Status::Draft
+                            | humata2_clients::comments::Status::Waiting
+                            | humata2_clients::comments::Status::Sent
+                    )
+            })
+            .count()
+    });
+    let done = held.map_or(0, |held| {
+        held.comments
+            .iter()
+            .filter(|comment| crate::comment_cards::is_done(comment))
+            .count()
+    });
+    if let Some(rows) = &stack {
+        let layers: Vec<&str> = rows
+            .rows
+            .iter()
+            .filter(|row| row.number.is_some())
+            .map(|row| row.title.as_str())
+            .collect();
+        if !layers.is_empty()
+            && open == 0
+            && layers
+                .iter()
+                .all(|title| layer_look(&state.review, session, title) == LayerLook::LooksGood)
+        {
+            let head = format!("✓ All {} layers look good", layers.len());
+            let full = format!(
+                "{head} · {done} comment{} done",
+                if done == 1 { "" } else { "s" }
+            );
+            let line = if done > 0 && full.chars().count() <= room { full } else { head };
+            return Some((line, true));
+        }
+    }
+    let (looked, total) = looked_of(state, diffs);
+    let at = stack.as_ref().and_then(|rows| match rows.header {
+        humata2_review::stack::StackHeader::Layer { number, .. } => Some(number),
+        humata2_review::stack::StackHeader::Whole { .. } => None,
+    });
+    let count = format!("{looked} of {} looked at", files_of(total));
+    let draft = format!("{drafts} draft{}", if drafts == 1 { "" } else { "s" });
+    let mut candidates: Vec<String> = Vec::new();
+    let prefix = at.map(|number| format!("Layer {number} · ")).unwrap_or_default();
+    if total > 0 {
+        if drafts > 0 {
+            candidates.push(format!("{prefix}{count} · {draft}"));
+        }
+        candidates.push(format!("{prefix}{count}"));
+        if at.is_some() {
+            candidates.push(count);
+        }
+    } else if drafts > 0 {
+        candidates.push(draft);
+    }
+    let last = candidates.last().cloned()?;
+    let line = candidates
+        .into_iter()
+        .find(|line| line.chars().count() <= room)
+        .unwrap_or(last);
+    Some((line, false))
+}
+
 /// The base menu under the Diff header (RV-1, RV-6): what the changes are
-/// compared with, the current base ticked, then Mark reviewed. The fork
+/// compared with, the current base ticked. "Since I last looked" is the
+/// header's switch ([`since_switch`], D852). The fork
 /// base shows only for a fork; other sessions of the channel follow.
 pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
     let here = state
@@ -628,11 +852,6 @@ pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoE
             "diff-base-uncommitted",
             "Uncommitted only",
             DiffBase::UncommittedOnly,
-        ),
-        pick(
-            "diff-base-since-reviewed",
-            "Since I last reviewed",
-            DiffBase::SinceLastReviewed,
         ),
     ];
     if here.is_some_and(|session| session.pull_request_review) {
@@ -685,33 +904,6 @@ pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoE
             .into_any_element(),
         );
     }
-    items.push(
-        div()
-            .h(px(1.))
-            .my(px(4.))
-            .bg(rgb(look.line))
-            .into_any_element(),
-    );
-    let mark = ui.clone();
-    items.push(
-        row()
-            .id("diff-mark-reviewed")
-            .role(Role::Button)
-            .aria_label("Mark reviewed")
-            .gap(px(8.))
-            .h(px(26.))
-            .px(px(8.))
-            .rounded(px(5.))
-            .cursor_pointer()
-            .hover(move |x| x.bg(rgb(look.fill)))
-            .child(div().w(px(12.)).flex_shrink_0())
-            .child("Mark reviewed")
-            .on_click(move |_, _, cx| {
-                mark.send(AppAction::Review(ReviewAction::MarkReviewed), cx)
-            })
-            .test_support()
-            .into_any_element(),
-    );
     col()
         .id("diff-base-menu")
         .role(Role::ListBox)

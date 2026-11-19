@@ -4854,3 +4854,47 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
   - **⌘T:** no ⌘T shortcut exists, so the hint is left out rather than shown dead.
   - **Opening prompt:** 3-4's "Look at layer 2 of the stack in the Diff panel…" is not sent for the person. The tab starts empty, as the strip's `+` does.
 - **Reverse:** drop `ui/changes/src/panel_changes/agent_tab.rs`, `diff_header`'s actions, `panel_header_actions`, and `ReviewState::{agent_tab_menu, last_agent_tab}`.
+
+## D850
+Fable's step 8 order, and the footer reads "Send to claude" (DIFFUI2 manager, 2026-11-19; UXSIMPLE step 8 (a), frames 3-1 and 3-2). Provisional
+- **Order (Fable 5.2):** (a) footer, (c) Looks good and "Since I last looked", (b) three comment states, (d) one agent note card, (f) fold order-humata-review into "show with notes". (e) the Fork dialog is deferred until a design frame for it is drawn and signed off.
+- **What it is:** the Diff footer's send button is "Send to <agent>", named by the session agent's command, with no count. It always shows for a session and is disabled when there's nothing to send. A secondary "N drafts" sits to its left. A pull request review keeps "Submit review…" as its one filled primary. Fable ruled that a PR review shows "Send to <agent>" only when something is sendable, as a neutral button to the left of Submit. When nothing is sendable, the disabled button is grey and non-primary, at the same size.
+- **Destination:** the session's own agent. The comments already go there; there is no separate "last-focused agent tab" target.
+- **Reverse:** restore the hidden-when-empty "Send N comments" in `panel_changes/mod.rs`'s footer.
+
+## D851
+Comments show three states, and an addressed comment can be reopened (DIFFUI2 manager, 2026-11-19; UXSIMPLE step 8 (b), frames 3-1, 4-1, 4-2, 4-3). Provisional
+- **What it is:** the comment status maps onto three looks, without changing the stored status:
+  - Draft and Waiting read "Draft".
+  - Sent reads "Sent".
+  - Addressed reads "Done by <agent>", with the agent's last reply and Reopen.
+  - Resolved reads "Done by you" (or by the agent that resolved it), with Reopen.
+  - A file whose shown comments are all done folds them into "✓ N comments done on this file" with Show. The fold is view-local, not saved.
+  - The file row reads "✓ N done".
+- **Reopen:** the review ledger (`review_diff`) and the fake now reopen an Addressed comment as well as a Resolved one, because 4-2 offers Reopen on "Done by claude". The Addressed card's Resolve button goes; the comment is already shown as done.
+- **Not yet as drawn:**
+  - "Sent · the agent changed these lines": no state tells a sent comment whose lines changed apart from Addressed, so Sent stays plain.
+  - Archive → Hide: the cards have no Archive button to rename.
+  - "Show done": `CommentsAction::ShowResolved` exists, but no control sends it yet. That control goes into the Diff header with step (c).
+- **Reverse:** restore the old status chips in `ui/changes/src/comment_cards.rs` and drop `Addressed` from `reopen`'s accepted states in `daemon/review_diff/src/comments.rs` and `clients/src/comments/fake.rs`.
+
+## D852
+Looks good replaces Mark reviewed, per file and per layer (DIFFUI2 manager, 2026-11-19; UXSIMPLE step 8 (c), frames 2-2, 3-1, 3-2, 4-1, 4-2, 4-3). Provisional
+- **A look:** the review state keeps, per session, which files the person looked at, each with a fingerprint of the diff it showed (a hash of the file's diff lines). A file stays ticked only while its fingerprint matches, so ticks clear when the content changes. Looks are not saved yet; follow-up for main: the host keeps them, like the D183 bookmark.
+- **Looks good (footer):** marks every file of the view shown (a layer, the whole stack, or the plain diff) as looked. It also moves D183's bookmark (`MarkReviewed` with the shown trees), so "Since I last looked" counts from that press. Once every file shown is looked, the button reads "✓ Looks good" with a green tint, and pressing it again clears those looks. A file row's tick circle marks or clears that one file.
+- **What shows:**
+  - the file bar reads "✓ You looked at this";
+  - the footer status reads "Layer 1 · 0 of 3 files looked at";
+  - layer rows read "✓ Looks good" when every file of the layer was looked, or "● Changed since you looked" when a looked file's fingerprint no longer matches. A layer is re-checked only when its diff is read;
+  - the header switch is "All changes | Since I last looked · N files", with the caption "N FILES CHANGED SINCE YOU LOOKED";
+  - the end state is "✓ All 3 layers look good · 4 comments done".
+- **Base menu:** Mark reviewed and "Since I last reviewed" leave the base menu (D183 reversed); the switch replaces them.
+- **Per-file look:** `FileLook { Never, Looked, Changed }`. A file never looked has an empty grey circle. A looked file has a green circle with a white ✓. A file that changed since you looked has an amber circle (1.5 pt ring #d98200, fill #fff4e0).
+- **Looked button (Fable):** one style in every state, with fill #e9f7ed, 1 px border #b7e0c2, and label and ✓ #28a745. Hover may only darken the fill to #dcf1e2, and press to #cfebd7.
+- **Widths (Fable):**
+  - At full screen, or at panel widths of 560 pt or more, the switch sits in the Diff header, and the status and Looks good sit in the footer, left of Send.
+  - Narrower, the status and Looks good get their own 34 pt row above the footer, always shown. The switch gets a 36 pt row, shown only once a look exists.
+  - The status never ellipsizes. It drops clauses from the right: first " · N drafts", then "Layer N · ". The end state drops " · N comments done" when the count is 0 or the full string doesn't fit.
+  - A layer row's repo label shows only if its first word fits in full; otherwise it is hidden, with no lone "…". The noun agrees with the count: "1 file", "1 comment done".
+- **Not yet as drawn:** the Send summary's "layers 1 and 3 look good" (no Send summary popover exists), and 4-3's "N pull requests are up to date / Open the pull requests" (no data source).
+- **Reverse:** drop `ReviewState::looked` and the switch, and restore D183's menu entries.

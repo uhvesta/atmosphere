@@ -8,6 +8,7 @@
 
 pub mod comments;
 pub mod file_filter;
+pub mod looks;
 pub mod order;
 pub mod stack;
 mod reopen;
@@ -303,6 +304,17 @@ pub struct ReviewState {
     pub agent_tab_menu: bool,
     /// The agent last picked there, marked "last used" in the menu. Not saved.
     pub last_agent_tab: Option<Agent>,
+    /// The files each session's person looked at, as `(repo, path)`, each
+    /// with the fingerprint of the diff it showed (D852, [`looks`]). Not
+    /// saved yet.
+    pub looked: HashMap<SessionId, HashMap<(String, String), u64>>,
+    /// The files each layer covered when Looks good was pressed on it, as
+    /// `(repo, path, fingerprint)`, by session and layer title, so a layer
+    /// row reads its status without its diff. Not saved.
+    pub layer_looks: HashMap<(SessionId, String), Vec<(String, String, u64)>>,
+    /// The base each session had before "Since I last looked" was switched
+    /// on, restored when it is switched off. Not saved.
+    pub base_before_looked: HashMap<SessionId, DiffBase>,
 }
 
 /// The changes (hunks) of a file: its hunk headers, or one when it has none.
@@ -816,6 +828,22 @@ pub enum ReviewAction {
     ClosePushMenu,
     /// Mark the open session's changes reviewed (RV-6).
     MarkReviewed,
+    /// Looks good (D852): every file of the diff shown is looked at, and the
+    /// bookmark moves like [`ReviewAction::MarkReviewed`].
+    LooksGood,
+    /// Clear the looks of every file of the diff shown.
+    ClearLooks,
+    /// Mark or clear one file's look.
+    ToggleLooked {
+        /// The repository, as `owner/name`.
+        repo: String,
+        /// The file's path.
+        path: String,
+    },
+    /// Switch the Diff between all changes (`false`) and what changed since
+    /// the bookmark (`true`); off returns to the base it had. Not offered
+    /// while a stack's layers show.
+    SinceLooked(bool),
     /// Read the open session's changes again.
     Retry,
     /// Commit, push and open a pull request for one repository of the open
@@ -890,6 +918,20 @@ impl Review {
     }
 
     /// Reads `session`'s changes, or queues a read behind the one in flight.
+    /// Moves D183's bookmark for the open session, then reads again.
+    fn mark_reviewed(&self, state: &ReviewState) -> Effect<ReviewAction> {
+        let Some(session) = state.session.clone() else {
+            return Effect::none();
+        };
+        let reply = self.daemon.mark_reviewed(&session);
+        Effect::future(async move {
+            ReviewAction::Reviewed {
+                session,
+                result: reply.await.map_err(|error| error.to_string()),
+            }
+        })
+    }
+
     fn fetch(&self, state: &mut ReviewState, session: &SessionId) -> Effect<ReviewAction> {
         let fetch = state.fetch.entry(session.clone()).or_default();
         if fetch.loading {
@@ -1143,6 +1185,23 @@ fn repos_of(state: &ReviewState, session: &SessionId) -> Vec<String> {
 
 /// Copies the diff targets that differ from their session's default into
 /// what is saved.
+/// Every file of the diff last read for `session`, as `(repo, path,
+/// fingerprint)`.
+fn shown_files(state: &ReviewState, session: &SessionId) -> Vec<(String, String, u64)> {
+    state
+        .fetch
+        .get(session)
+        .and_then(|fetch| fetch.diffs.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|diff| {
+            diff.files
+                .iter()
+                .map(move |file| (diff.repo.clone(), file.path.clone(), looks::fingerprint(file)))
+        })
+        .collect()
+}
+
 fn sync_saved(state: &mut ReviewState) {
     let saved = state
         .targets
@@ -1393,14 +1452,73 @@ impl Reducer for Review {
             ReviewAction::ClosePushMenu => state.push_menu = false,
             ReviewAction::MarkReviewed => {
                 state.base_menu = false;
+                return self.mark_reviewed(state);
+            }
+            ReviewAction::LooksGood => {
+                state.base_menu = false;
                 if let Some(session) = state.session.clone() {
-                    let reply = self.daemon.mark_reviewed(&session);
-                    return Effect::future(async move {
-                        ReviewAction::Reviewed {
-                            session,
-                            result: reply.await.map_err(|error| error.to_string()),
+                    let shown = shown_files(state, &session);
+                    let layer = state.layer_of(&session).map(str::to_owned);
+                    let looked = state.looked.entry(session.clone()).or_default();
+                    for (repo, path, seen) in &shown {
+                        looked.insert((repo.clone(), path.clone()), *seen);
+                    }
+                    if let Some(title) = layer {
+                        state.layer_looks.insert((session, title), shown);
+                    }
+                }
+                return self.mark_reviewed(state);
+            }
+            ReviewAction::ClearLooks => {
+                if let Some(session) = state.session.clone() {
+                    let shown = shown_files(state, &session);
+                    if let Some(looked) = state.looked.get_mut(&session) {
+                        for (repo, path, _) in shown {
+                            looked.remove(&(repo, path));
                         }
-                    });
+                    }
+                }
+            }
+            ReviewAction::ToggleLooked { repo, path } => {
+                if let Some(session) = state.session.clone() {
+                    let seen = shown_files(state, &session)
+                        .into_iter()
+                        .find(|(r, p, _)| *r == repo && *p == path)
+                        .map(|(_, _, seen)| seen);
+                    let looked = state.looked.entry(session).or_default();
+                    let key = (repo, path);
+                    if looked.contains_key(&key) && looked.get(&key) == seen.as_ref() {
+                        looked.remove(&key);
+                    } else if let Some(seen) = seen {
+                        looked.insert(key, seen);
+                    }
+                }
+            }
+            ReviewAction::SinceLooked(on) => {
+                if let Some(session) = state.session.clone()
+                    && !state.shows_stack(&session)
+                {
+                    let current = state.targets_of(&session).preset;
+                    let base = if on {
+                        if current != DiffBase::SinceLastReviewed {
+                            state.base_before_looked.insert(session.clone(), current);
+                        }
+                        DiffBase::SinceLastReviewed
+                    } else {
+                        state
+                            .base_before_looked
+                            .remove(&session)
+                            .unwrap_or(DiffBase::OriginMain)
+                    };
+                    state.base_menu = false;
+                    state.repo_picker = None;
+                    state
+                        .targets
+                        .entry(session.clone())
+                        .or_default()
+                        .pick_all(base);
+                    sync_saved(state);
+                    return self.fetch(state, &session);
                 }
             }
             ReviewAction::Reviewed { session, result } => match result {

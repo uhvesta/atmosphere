@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::base::{TestSupportExt as _, TestTextExt as _};
+use gpui_kit::base::{ObservedElement, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::{prelude::*, *};
@@ -73,6 +73,169 @@ pub fn lines_label(anchor: &Anchor) -> String {
     }
 }
 
+/// What a comment's card says and offers, from its status. Draft and Waiting
+/// are one "Draft" state; Addressed and Resolved are both "Done", by whoever
+/// did it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardState {
+    /// The chip next to the title.
+    pub chip: Option<String>,
+    /// Reopen is offered.
+    pub reopen: bool,
+    /// The comment is done: addressed or resolved.
+    pub done: bool,
+}
+
+/// Whether a comment counts as done (addressed by the agent or resolved).
+#[must_use]
+pub fn is_done(comment: &Comment) -> bool {
+    matches!(comment.status, Status::Addressed | Status::Resolved) && !comment.anchor.detached
+}
+
+/// The state a comment's card shows. `agent` is the command it was sent to.
+#[must_use]
+pub fn card_state(comment: &Comment, agent: &str) -> CardState {
+    let done = is_done(comment);
+    let chip = if comment.anchor.detached {
+        Some("Detached".to_owned())
+    } else if comment.destination == Destination::Note {
+        Some("Note".to_owned())
+    } else {
+        match comment.status {
+            Status::Draft | Status::Waiting => Some("Draft".to_owned()),
+            Status::Sent => Some("Sent".to_owned()),
+            Status::Addressed => Some(format!("Done by {agent}")),
+            Status::Resolved => Some(match &comment.resolved_by {
+                Some(Author::Agent(name)) => format!("Done by {name}"),
+                _ => "Done by you".to_owned(),
+            }),
+            Status::Posted => Some("Posted".to_owned()),
+        }
+    };
+    CardState {
+        chip,
+        reopen: done,
+        done,
+    }
+}
+
+/// The last thing the agent said about a comment, if it replied.
+#[must_use]
+pub fn agent_reply(comment: &Comment) -> Option<(&str, &str)> {
+    comment.replies.iter().rev().find_map(|reply| match &reply.author {
+        Author::Agent(name) => Some((name.as_str(), reply.text.as_str())),
+        Author::User => None,
+    })
+}
+
+/// How many comments are done when every one of `comments` is, else `None`.
+#[must_use]
+pub fn all_done<'a>(comments: impl IntoIterator<Item = &'a Comment>) -> Option<usize> {
+    let mut count = 0;
+    for comment in comments {
+        if !is_done(comment) {
+            return None;
+        }
+        count += 1;
+    }
+    (count > 0).then_some(count)
+}
+
+/// Files whose done comments are shown instead of folded, as `repo/path`.
+pub type Unfolded = Rc<std::cell::RefCell<std::collections::BTreeSet<String>>>;
+
+/// The one line a file's done comments fold into, with Show (or Hide) to
+/// unfold them.
+pub fn fold_line(look: Look, key: &str, count: usize, open: bool, unfolded: &Unfolded) -> impl IntoElement {
+    let key = key.to_owned();
+    let cell = unfolded.clone();
+    let noun = if count == 1 { "comment" } else { "comments" };
+    let tones = done_tones(look);
+    shell(look, false)
+        .bg(rgb(tones.card))
+        .py(px(7.))
+        .px(px(12.))
+        .id(SharedString::from(format!("doc-done-fold {key}")))
+        .test_support()
+        .child(
+            row()
+                .gap(px(8.))
+                .child(text("✓").text_color(rgb(tones.badge_text)))
+                .child(text(format!("{count} {noun} done on this file")).text_color(rgb(tones.body)))
+                .child(
+                    link(
+                        look,
+                        SharedString::from(format!("doc-done-toggle {key}")),
+                        if open { "Hide" } else { "Show" },
+                    )
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        {
+                            let mut set = cell.borrow_mut();
+                            if !set.remove(&key) {
+                                set.insert(key.clone());
+                            }
+                        }
+                        cx.refresh_windows();
+                    }),
+                ),
+        )
+}
+
+/// The done states' colours (UXSIMPLE 4-2, 4-3): a quiet card, a green badge
+/// and a blue link.
+struct DoneTones {
+    card: u32,
+    body: u32,
+    badge_text: u32,
+    badge_fill: u32,
+    badge_line: u32,
+}
+
+fn done_tones(look: Look) -> DoneTones {
+    if look.panel < 0x80_80_80 {
+        DoneTones {
+            card: 0x242426,
+            body: look.secondary,
+            badge_text: 0x6f_d0_8c,
+            badge_fill: 0x17_30_1f,
+            badge_line: 0x2c_5a_3a,
+        }
+    } else {
+        DoneTones {
+            card: 0xf7_f7_f9,
+            body: 0x6e_6e_73,
+            badge_text: 0x1c_7c_36,
+            badge_fill: 0xe9_f7_ed,
+            badge_line: 0xb7_e0_c2,
+        }
+    }
+}
+
+fn done_chip(look: Look, label: impl Into<SharedString>) -> Div {
+    let tones = done_tones(look);
+    text(label)
+        .px(px(6.))
+        .py(px(1.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(rgb(tones.badge_line))
+        .bg(rgb(tones.badge_fill))
+        .text_size(px(12.))
+        .text_color(rgb(tones.badge_text))
+}
+
+/// A blue text link.
+fn link(look: Look, id: SharedString, label: &'static str) -> ObservedElement<Stateful<Div>> {
+    text(label)
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .test_support()
+        .text_color(rgb(look.accent))
+        .cursor_pointer()
+}
+
 fn shell(look: Look, open: bool) -> Div {
     col()
         .mx(px(10.))
@@ -90,7 +253,7 @@ fn shell(look: Look, open: bool) -> Div {
         .text_color(rgb(look.text))
 }
 
-fn chip(look: Look, label: &'static str) -> Div {
+fn chip(look: Look, label: impl Into<SharedString>) -> Div {
     text(label)
         .px(px(6.))
         .py(px(1.))
@@ -120,30 +283,14 @@ pub fn card(
     // A draft for GitHub is titled by what it is and who wrote it, with
     // Edit and Drop under its text (frame 68).
     let github_draft = for_github && comment.status == Status::Draft && !comment.archived;
-    let label = if comment.anchor.detached {
-        Some("Detached")
-    } else if is_note {
-        Some("Note")
-    } else if github_draft {
-        Some("Draft")
-    } else {
-        match comment.status {
-            Status::Draft => Some("Draft"),
-            Status::Waiting => Some("Waiting to send"),
-            Status::Addressed => Some("Addressed"),
-            Status::Resolved => Some("Resolved"),
-            Status::Posted => Some("Posted"),
-            Status::Sent => None,
-        }
-    };
+    let state = card_state(comment, agent);
+    let label = if github_draft { Some("Draft".to_owned()) } else { state.chip.clone() };
     let who = match &comment.author {
         Author::User => "You",
         Author::Agent(name) => name.as_str(),
     };
     let title = if github_draft {
         format!("Draft for GitHub · by {}", agent_label(&comment.author))
-    } else if comment.status == Status::Sent && !comment.anchor.detached {
-        format!("{who} · {lines} · sent to {agent}")
     } else {
         format!("{who} · {lines}")
     };
@@ -155,14 +302,19 @@ pub fn card(
     } else {
         open
     };
+    // A done card is quiet: "You [Done by claude] line 43 … Reopen".
+    let quiet = state.done && !github_draft;
+    let tones = done_tones(look);
     shell(look, outlined)
+        .when(quiet, |card| card.bg(rgb(tones.card)).text_color(rgb(tones.body)))
         .id(SharedString::from(format!("doc-comment-{id}")))
         .test_support()
         .child(
             row()
-                .gap(px(6.))
-                .child(text(title).font_weight(FontWeight::SEMIBOLD))
-                .children(label.map(|label| chip(look, label)))
+                .gap(px(if quiet { 8. } else { 6. }))
+                .child(text(if quiet { who.to_owned() } else { title }).font_weight(FontWeight::SEMIBOLD))
+                .children(label.map(|label| if quiet { done_chip(look, label) } else { chip(look, label) }))
+                .children(quiet.then(|| text(lines.clone()).text_color(rgb(look.secondary))))
                 .child(div().flex_1())
                 .children(comment.counts_as_draft().then(|| {
                     widgets::ghost_in(look,
@@ -188,25 +340,28 @@ pub fn card(
                     .text_size(px(11.))
                     .text_color(rgb(look.accent))
                 }))
-                .children((comment.status == Status::Addressed && !comment.anchor.detached).then(
-                    || {
-                        widgets::ghost_in(look,
-                            ui,
-                            SharedString::from(format!("doc-resolve-comment-{id}")),
-                            "Resolve",
-                            AppAction::Comments(CommentsAction::Resolve(
-                                session.clone(),
-                                id.clone(),
-                            )),
-                        )
-                        .h(px(20.))
-                        .px(px(6.))
-                        .text_size(px(11.))
-                        .text_color(rgb(look.accent))
-                    },
-                )),
+                .children((state.reopen && !github_draft).then(|| {
+                    let ui = ui.clone();
+                    let action = AppAction::Comments(CommentsAction::Reopen(session.clone(), id.clone()));
+                    link(look, SharedString::from(format!("doc-reopen-comment-{id}")), "Reopen")
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            ui.send(action.clone(), cx);
+                        })
+                })),
         )
         .child(text(comment.text.clone()))
+        .children(state.done.then(|| agent_reply(comment)).flatten().map(|(who, said)| {
+            row()
+                .gap(px(8.))
+                .mt(px(4.))
+                .pt(px(8.))
+                .border_t_1()
+                .border_color(rgb(look.line))
+                .items_start()
+                .child(text(who.to_owned()).font_weight(FontWeight::SEMIBOLD).flex_shrink_0())
+                .child(text(said.to_owned()).flex_1().min_w_0())
+        }))
         .children(github_draft.then(|| {
             row()
                 .gap(px(6.))
@@ -359,4 +514,91 @@ pub fn open_box(
                     look,
                 )),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use humata2_clients::comments::ThreadReply;
+
+    fn comment(status: Status) -> Comment {
+        Comment {
+            id: CommentId::new("s/c-1"),
+            session: SessionId::new("s"),
+            anchor: Anchor {
+                repo: "api".into(),
+                path: "src/a.rs".into(),
+                side: humata2_clients::comments::Side::New,
+                first: 3,
+                last: 3,
+                quoted: Vec::new(),
+                base: None,
+                detached: false,
+                outdated: false,
+            },
+            text: "Fix".into(),
+            status,
+            revision: 1,
+            unconfirmed: false,
+            archived: false,
+            replies: Vec::new(),
+            resolved_by: None,
+            addressed: None,
+            destination: Destination::Terminal,
+            author: Author::User,
+            posted_url: None,
+            post_unconfirmed: false,
+        }
+    }
+
+    #[test]
+    fn draft_and_waiting_are_one_draft_state() {
+        for status in [Status::Draft, Status::Waiting] {
+            let state = card_state(&comment(status), "claude");
+            assert_eq!(state.chip.as_deref(), Some("Draft"));
+            assert!(!state.done && !state.reopen);
+        }
+    }
+
+    #[test]
+    fn a_sent_comment_says_sent_and_offers_nothing() {
+        let state = card_state(&comment(Status::Sent), "claude");
+        assert_eq!(state.chip.as_deref(), Some("Sent"));
+        assert!(!state.done && !state.reopen);
+    }
+
+    #[test]
+    fn an_addressed_comment_is_done_by_the_agent_and_can_reopen() {
+        let state = card_state(&comment(Status::Addressed), "claude");
+        assert_eq!(state.chip.as_deref(), Some("Done by claude"));
+        assert!(state.done && state.reopen);
+    }
+
+    #[test]
+    fn a_resolved_comment_is_done_by_you_and_can_reopen() {
+        let state = card_state(&comment(Status::Resolved), "claude");
+        assert_eq!(state.chip.as_deref(), Some("Done by you"));
+        assert!(state.done && state.reopen);
+    }
+
+    #[test]
+    fn the_agents_last_reply_is_found_and_the_users_is_not() {
+        let mut c = comment(Status::Addressed);
+        c.replies = vec![
+            ThreadReply { id: "1".into(), author: Author::Agent("claude".into()), text: "done".into() },
+            ThreadReply { id: "2".into(), author: Author::User, text: "thanks".into() },
+        ];
+        assert_eq!(agent_reply(&c), Some(("claude", "done")));
+        assert_eq!(agent_reply(&comment(Status::Sent)), None);
+    }
+
+    #[test]
+    fn a_file_folds_only_when_every_comment_is_done() {
+        let done = [comment(Status::Addressed), comment(Status::Resolved)];
+        assert_eq!(all_done(&done), Some(2));
+        let mixed = [comment(Status::Addressed), comment(Status::Draft)];
+        assert_eq!(all_done(&mixed), None);
+        assert_eq!(all_done(&[]), None);
+    }
 }

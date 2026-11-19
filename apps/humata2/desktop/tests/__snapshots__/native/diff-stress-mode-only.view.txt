@@ -66,12 +66,17 @@ Complementary "Changes"
         text "run.sh"
       text "scripts/"
       text "mode"
+      CheckBox "Not looked at"
   text "run.sh"
   text "api"
   text "·"
   text "scripts/"
   #change-file-empty
     text "Mode 644 → 755"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

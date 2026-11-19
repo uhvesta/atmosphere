@@ -152,6 +152,24 @@ impl App {
             ))));
         }
     }
+    /// The footer's send button line in the view tree, if drawn.
+    fn send_button(&mut self, session: &str) -> Option<String> {
+        self.draw();
+        let agent = self.ui.read(|state| {
+            state
+                .workspace
+                .session(&SessionId::new(session))
+                .map(|found| found.agent.command())
+        })?;
+        let tree = self
+            .cx
+            .update_window(self.window, |_, window, _| view::capture(window))
+            .expect("window")
+            .expect("view");
+        tree.lines()
+            .find(|line| line.contains("Button") && line.contains("Send") && line.contains(agent))
+            .map(str::to_owned)
+    }
     fn click(&mut self, id: &str) {
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -260,5 +278,8 @@ mod diff_stress;
 mod diff_keys;
 #[path = "native/stack.rs"]
 mod stack;
+
+#[path = "native/looks_good.rs"]
+mod looks_good;
 #[path = "native/review_ui.rs"]
 mod review_ui;

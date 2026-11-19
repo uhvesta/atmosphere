@@ -747,14 +747,13 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
     });
 
     // 10. The base menu lists the bases (no fork base: this is no fork) and
-    // Mark reviewed; picking one compares against it and closes the menu.
+    // the bookmark moves with Looks good (the header switch does Since I
+    // last looked); picking a base compares against it and closes the menu.
     open_base_menu(&mut app, &session);
     let menu = app.view();
     for option in [
         "origin/main (where the branch started)",
         "Uncommitted only",
-        "Since I last reviewed",
-        "Mark reviewed",
     ] {
         assert!(menu.contains(option), "the base menu offers {option}");
     }
@@ -835,15 +834,11 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         "nothing is left to send"
     );
 
-    // 10 again. Mark reviewed from the menu closes it; Since I last reviewed
-    // then holds only what changes afterwards.
-    open_base_menu(&mut app, &session);
-    app.click(Role::Button, "Mark reviewed");
-    app.wait_until("the menu to close after Mark reviewed", |app| {
-        !app.view().contains("Compare with")
-    });
+    // 10 again. Looks good moves the bookmark; the switch's Since I last
+    // looked then holds only what changes afterwards.
+    send(&mut app, AppAction::Review(ReviewAction::LooksGood));
     write(&ledger, "src/retry.rs", &numbered(3));
-    pick_base(&mut app, &session, "Since I last reviewed", DiffBase::SinceLastReviewed);
+    send(&mut app, AppAction::Review(ReviewAction::SinceLooked(true)));
     app.wait_until("only the change after Mark reviewed", |app| {
         shown(app, &session) == vec![("owner/ledger".to_owned(), vec!["src/retry.rs".to_owned()])]
     });

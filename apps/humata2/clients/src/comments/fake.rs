@@ -917,8 +917,8 @@ impl CommentsClient for FakeComments {
         self.call("reopen", Call::Reopen(id.clone(), revision), |inner| {
             inner.change(id, |comment, _| {
                 check_revision(comment, revision)?;
-                if comment.status != Status::Resolved {
-                    return Err(refused("This reopen", "the comment isn't resolved"));
+                if !matches!(comment.status, Status::Resolved | Status::Addressed) {
+                    return Err(refused("This reopen", "the comment isn't done"));
                 }
                 comment.status = Status::Draft;
                 comment.resolved_by = None;

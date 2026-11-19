@@ -204,7 +204,7 @@ pub enum CommentError {
     ReplyNeeded { id: String },
     #[error("comment {id} is already resolved; reopen it if more work is needed")]
     AlreadyResolved { id: String },
-    #[error("comment {id} is {status}, not resolved; only a resolved comment can be reopened")]
+    #[error("comment {id} is {status}, not done; only a resolved or addressed comment can be reopened")]
     NotResolved { id: String, status: CommentStatus },
     #[error("comment {id} has lost its lines; re-attach it to a passage or drop it before sending")]
     Detached { id: String },
@@ -759,7 +759,7 @@ impl CommentLedger {
         Ok(&self.comments[i])
     }
 
-    /// Puts a resolved comment back to a draft (SM-11); replies stay.
+    /// Puts a done (resolved or addressed) comment back to a draft (SM-11, D851); replies stay.
     pub fn reopen(
         &mut self,
         id: &str,
@@ -768,7 +768,7 @@ impl CommentLedger {
         let i = self.index(id)?;
         self.check_revision(i, expected)?;
         let c = &mut self.comments[i];
-        if c.status != CommentStatus::Resolved {
+        if !matches!(c.status, CommentStatus::Resolved | CommentStatus::Addressed) {
             return Err(CommentError::NotResolved {
                 id: c.id.clone(),
                 status: c.status,

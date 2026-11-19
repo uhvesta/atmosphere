@@ -175,6 +175,13 @@ pub fn changes(
         && session_id
             .as_ref()
             .is_some_and(|id| state.review.file_list_open.contains(id));
+    let crumbs_hidden_narrow = !full && width < 560.;
+    // D852: whether the open file is looked at; a pull request review has no looks.
+    let shown_looked = shown.is_some_and(|(diff, file)| {
+        review.is_none()
+            && humata2_review::looks::is_looked(&state.review, &diff.session, &diff.repo, &file.path, file)
+    });
+    let crumbs_hidden = shown_looked && crumbs_hidden_narrow;
     // D800: the stack's rows send through this.
     let stack_send = crate::panel_stack::sender(ui);
     // DS-84: while the file list has focus, the row at the keyboard cursor wears a ring.
@@ -283,11 +290,92 @@ pub fn changes(
         // (frame 68).
         .gap(px(if inline { 4. } else { 1. }))
         .text_size(px(12.5))
+        .children(since_caption(state, look))
         .children(filter_field)
         .child(list_rows(ui, documents, if inline { 4. } else { 1. }).children(rows));
     let sendable = session_id
         .as_ref()
         .map_or(0, |session| state.comments.sendable(session).len());
+    let (looked_n, looks_total) = looked_of(state, &diffs);
+    let looked_all = looks_total > 0 && looked_n == looks_total;
+    let roomy = full || width >= 560.;
+    // How many characters of the status fit: the width less the padding and
+    // what shares its row (the buttons), at about 5.2 pt a character.
+    let button_room = if looked_all { 100. } else { 90. };
+    let room = if roomy {
+        (width - 403.).max(0.)
+    } else {
+        (width - 20. - 8. - button_room).max(0.)
+    } / 5.2;
+    let looks_line = looks_status(state, &diffs, sendable, room as usize);
+    let looks_status_el = || {
+        looks_line
+            .clone()
+            .filter(|_| review.is_none())
+            .map(|(line, green)| {
+                full_text(
+                    text(line.clone())
+                        .id("diff-looks-status")
+                        .test_support()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_size(px(11.5))
+                        .text_color(rgb(if green { LOOK_GREEN } else { look.secondary })),
+                    line,
+                )
+                .into_any_element()
+            })
+    };
+    // Looks good: bordered, not primary. Once every file shown is looked at
+    // it reads "✓ Looks good" in green and pressing it clears those looks. A
+    // pull request keeps Submit review… instead.
+    let looks_button_el = || {
+        (review.is_none() && looks_total > 0).then(|| {
+            let all = looked_all;
+            let dark = look.term != 0xffffff;
+            let (tint, edge) = if dark { (0x17301f, 0x24542f) } else { (0xe9f7ed, 0xb7e0c2) };
+            let button = action(
+                ui,
+                "diff-looks-good",
+                if all { "✓ Looks good" } else { "Looks good" },
+                AppAction::Review(if all { ReviewAction::ClearLooks } else { ReviewAction::LooksGood }),
+                look,
+                false,
+            );
+            if all {
+                // One style in every state: fill, border and label set together;
+                // hover and press only darken the fill.
+                let (hover, press) = if dark { (0x1d3a26, 0x23452d) } else { (0xdcf1e2, 0xcfebd7) };
+                let ui = ui.clone();
+                div()
+                    .id("diff-looks-good")
+                    .role(Role::Button)
+                    .aria_label("✓ Looks good")
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .h(px(24.))
+                    .px(px(11.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(rgb(edge))
+                    .bg(rgb(tint))
+                    .text_color(rgb(LOOK_GREEN))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(hover)))
+                    .active(move |style| style.bg(rgb(press)))
+                    .on_click(move |_, _, cx| ui.send(AppAction::Review(ReviewAction::ClearLooks), cx))
+                    .child("✓ Looks good")
+                    .into_any_element()
+            } else {
+                button.into_any_element()
+            }
+        })
+    };
     let current_base = session_id
         .as_ref()
         .map(|id| state.review.targets_of(id).preset)
@@ -499,7 +587,10 @@ pub fn changes(
                             .min_w_0()
                             .overflow_hidden()
                             .gap(px(4.))
-                            .child(full_text(
+                            // Squeezed beside the terminal with a look to say, only
+                            // the name stays: no stubs of the crumbs.
+                            .when(!crumbs_hidden, |line| {
+                                line.child(full_text(
                                 secondary(look, repo_label(&diff.repo).to_owned())
                                     .id("diff-file-header-repo")
                                     .flex_shrink_0()
@@ -521,6 +612,7 @@ pub fn changes(
                                     .text_ellipsis(),
                                 dir,
                             ))
+                            })
                             // The name keeps most of the row, then ends in an ellipsis.
                             .child(full_text(
                                 text(file_name.to_owned())
@@ -540,6 +632,16 @@ pub fn changes(
                         header.child(change_stepper(ui, look, change, changes))
                     })
                     // With the file bar showing, Open in editor sits there.
+                    .when(shown_looked && !bar, |header| {
+                        header.child(
+                            text("✓ You looked at this")
+                                .id("diff-file-looked")
+                                .test_support()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .text_color(rgb(LOOK_GREEN)),
+                        )
+                    })
                     .when(!bar, |header| header.child(open_in_editor(look))),
             )
             // With no code lines the note is the body, so it isn't said twice.
@@ -651,7 +753,7 @@ pub fn changes(
                             wrap.child(deferred(base_scrim(ui)))
                                 .child(deferred(base_menu(ui, state, look)))
                         }),
-                ),
+                ).when(full, |line| line.child(since_switch(ui, state, look))),
             ),
             look,
         );
@@ -681,8 +783,27 @@ pub fn changes(
                 None => head,
             },
         })
+        // D852: beside the terminal the switch has a row of its own under the
+        // header once a look exists (36 pt: a 28 pt control, 4 above and
+        // below); a stack (fixed bases) and a pull request review have none.
+        .when(
+            !full
+                && review.is_none()
+                && look_exists(state)
+                && crate::panel_stack::header_line(&state.review).is_none(),
+            |panel| {
+                panel.child(
+                    row()
+                        .h(px(36.))
+                        .px(px(10.))
+                        .items_center()
+                        .flex_shrink_0()
+                        .child(since_switch(ui, state, look)),
+                )
+            },
+        )
         // D800, DS-60 to DS-65: the layer list sits above the files.
-        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send).map(|top| {
+        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send, width).map(|top| {
             // D804: the layer keys work in the Diff panel, so a click in
             // the layer list gives it the focus.
             let handle = documents.diff_stack.clone();
@@ -702,14 +823,14 @@ pub fn changes(
                 // The inline review keeps one column, bar above list, in full screen too.
                 .when(!full || inline, |body| body.flex_col())
                 .children(shown.filter(|_| bar).map(|(diff, file)| {
-                    file_bar(ui, look, &diffs, diff, file, Some(list_open))
+                    file_bar(ui, look, &diffs, diff, file, Some(list_open), shown_looked, crumbs_hidden)
                 }))
                 // DS-53: the inline review's list doesn't fold, so its bar is no fold
                 // button; it steps files across every pull request of the review.
                 .children(
                     shown
                         .filter(|_| inline)
-                        .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, None)),
+                        .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, None, false, false)),
                 )
                 .children(match inline_handle {
                     Some(handle) => Some(
@@ -755,6 +876,25 @@ pub fn changes(
                     session_id.as_ref(),
                 )),
         )
+        .children((!roomy).then(|| {
+            let status = looks_status_el();
+            let button = looks_button_el();
+            (review.is_none() && session_id.is_some()).then(|| {
+                row()
+                    .id("diff-looks-bar")
+                    .test_support()
+                    .h(px(34.))
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(rgb(look.line))
+                    .child(status.unwrap_or_else(|| div().into_any_element()))
+                    .child(div().flex_1())
+                    .children(button)
+            })
+        }).flatten())
         .child(
             row()
                 .gap(px(8.))
@@ -842,6 +982,35 @@ pub fn changes(
                     }
                 })
                 .child(div().flex_1())
+                // D852: what was looked at in the view shown, then the drafts,
+                // and Looks good, left of Send. Beside the terminal the panel is
+                // too narrow for them and the buttons, so they take a row above.
+                .children(looks_status_el().filter(|_| roomy))
+                .children(looks_button_el().filter(|_| roomy))
+                // The plain Diff always shows Send, neutral and disabled when
+                // nothing waits. A pull request review shows it only when a
+                // draft waits, as a secondary button left of Submit review….
+                .when_some(session_id.clone().filter(|_| review.is_none() || sendable > 0), |footer, session| {
+                    let agent = state
+                        .workspace
+                        .session(&session)
+                        .map_or("agent", |found| found.agent.command());
+                    footer
+                        .child(
+                            action(
+                                ui,
+                                "send-comments",
+                                format!("Send to {agent}"),
+                                AppAction::Comments(CommentsAction::SendAll(session)),
+                                look,
+                                review.is_none() && sendable > 0,
+                            )
+                            .when(sendable == 0, |button| {
+                                button.text_color(rgb(look.secondary)).cursor_default()
+                            })
+                            .disabled(sendable == 0),
+                        )
+                })
                 // DS-16: Submit review… sits in the footer, beside the
                 // terminal and in full screen.
                 .when_some(session_id.clone().filter(|_| review.is_some()), |footer, id| {
@@ -859,23 +1028,7 @@ pub fn changes(
                         .bg(rgb(look.accent))
                         .text_color(rgb(0xffffff)),
                     )
-                })
-                .when_some(
-                    session_id.clone().filter(|_| sendable > 0),
-                    |footer, session| {
-                        footer.child(action(
-                            ui,
-                            "send-comments",
-                            format!(
-                                "Send {sendable} comment{}",
-                                if sendable == 1 { "" } else { "s" }
-                            ),
-                            AppAction::Comments(CommentsAction::SendAll(session)),
-                            look,
-                            true,
-                        ))
-                    },
-                ),
+                }),
         )
 }
 

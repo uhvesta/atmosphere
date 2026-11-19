@@ -67,18 +67,21 @@ Complementary "Changes"
       text "src/"
       text "+1"
       text "−0"
+      CheckBox "Not looked at"
     ListBoxOption "api/src/日本語/模块.rs" selected
       #change-file-name api/src/日本語/模块.rs
         text "模块.rs"
       text "src/日本語/"
       text "+1"
       text "−0"
+      CheckBox "Not looked at"
     ListBoxOption "api/docs/🦀 notes.md"
       #change-file-name api/docs/🦀 notes.md
         text "🦀 notes.md"
       text "docs/"
       text "+1"
       text "−0"
+      CheckBox "Not looked at"
   text "模块.rs"
   text "api"
   text "·"
@@ -92,6 +95,10 @@ Complementary "Changes"
       text "+"
       #change-code-1-0
         text "fn main() {}"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 3 files looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

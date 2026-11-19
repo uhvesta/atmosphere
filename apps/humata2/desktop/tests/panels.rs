@@ -110,6 +110,24 @@ impl App {
             })
             .expect("window stays open")
     }
+    /// The footer's send button line in the view tree, if drawn.
+    fn send_button(&mut self, session: &str) -> Option<String> {
+        self.draw();
+        let agent = self.ui.read(|state| {
+            state
+                .workspace
+                .session(&SessionId::new(session))
+                .map(|found| found.agent.command())
+        })?;
+        let tree = self
+            .cx
+            .update_window(self.window, |_, window, _| view::capture(window))
+            .expect("window")
+            .expect("view");
+        tree.lines()
+            .find(|line| line.contains("Button") && line.contains("Send") && line.contains(agent))
+            .map(str::to_owned)
+    }
     fn click(&mut self, id: &str) {
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -343,13 +361,19 @@ fn sending_comments_from_the_panel_delivers_the_open_sessions_drafts() {
     app.open("s-auth", Panel::Changes);
     app.write_comment("s-auth", "acme/api", 42, "Surface a second auth failure");
     assert!(app.contains("send-comments"));
+    let before = app.send_button("s-auth").expect("button names the agent");
+    assert!(!before.contains("disabled"), "{before}");
     app.click("send-comments");
     let id = SessionId::new("s-auth");
     assert!(app.ui.read(|state| state.comments.sendable(&id).is_empty()));
     let typed = app.fakes.comments.typed(&id);
     assert_eq!(typed.len(), 1);
     assert!(typed[0].contains("Surface a second auth failure"));
-    assert!(!app.contains("send-comments"));
+    assert!(app.contains("send-comments"));
+    let after = app.send_button("s-auth").expect("button names the agent");
+    assert!(after.contains("disabled"), "{after}");
+    app.click("send-comments");
+    assert_eq!(app.fakes.comments.typed(&id).len(), 1);
 }
 
 /// RV-5, SE-23: another session's drafts are not sent with this one's.

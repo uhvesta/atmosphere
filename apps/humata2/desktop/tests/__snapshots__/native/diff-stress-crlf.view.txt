@@ -67,6 +67,7 @@ Complementary "Changes"
       text "src/"
       text "+1"
       text "−1"
+      CheckBox "Not looked at"
   text "crlf.rs"
   text "api"
   text "·"
@@ -86,6 +87,10 @@ Complementary "Changes"
       text "+"
       #change-code-2-0
         text "let crlf = true;\r"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 1 file looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

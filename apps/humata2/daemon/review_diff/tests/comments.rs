@@ -452,3 +452,12 @@ fn list_hides_resolved_by_default_and_filters_by_status_and_file() {
     assert_eq!(count(&any_repo), 1);
     assert_eq!(count(&other_repo), 0);
 }
+
+#[test]
+fn an_addressed_comment_reopens_as_a_draft() {
+    let mut l = sent_one();
+    assert!(l.changed("c-1", 7, 8, vec!["new".to_owned()], 40));
+    let c = l.reopen("c-1", None).unwrap();
+    assert_eq!(c.status, CommentStatus::Draft);
+    assert!(c.addressed.is_none() && c.sent_at.is_none());
+}

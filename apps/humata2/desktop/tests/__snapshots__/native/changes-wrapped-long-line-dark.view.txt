@@ -103,6 +103,10 @@ Complementary "Changes"
       text "+"
       #change-code-6-0
         text "        tx.commit().await?;"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 3 files looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

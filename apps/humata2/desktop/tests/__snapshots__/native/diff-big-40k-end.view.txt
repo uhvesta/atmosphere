@@ -57,24 +57,6 @@ Complementary "Changes"
   text "src/"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/client.rs"
-    #change-line-39964
-      Button "Comment on line 19964"
-        text "19964"
-      text "+"
-      #change-code-39964-0
-        text "let new_19964 = 19964;"
-    #change-line-39965
-      Button "Comment on line 19965"
-        text "19965"
-      text "+"
-      #change-code-39965-0
-        text "let new_19965 = 19965;"
-    #change-line-39966
-      Button "Comment on line 19966"
-        text "19966"
-      text "+"
-      #change-code-39966-0
-        text "let new_19966 = 19966;"
     #change-line-39967
       Button "Comment on line 19967"
         text "19967"
@@ -279,6 +261,10 @@ Complementary "Changes"
       text "+"
       #change-code-40000-0
         text "let new_20000 = 20000;"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 3 files looked at"
+  Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"
 Toolbar "Session panels"

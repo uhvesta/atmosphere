@@ -48,6 +48,17 @@ pub(super) fn file_comments(state: &AppState, diff: &RepoDiff, path: &str) -> us
     sent + held
 }
 
+/// How many comments are on `path` of `repo` when every one of them is done
+/// (the "✓ 3 done" a file row shows), else `None`.
+pub(super) fn file_done(state: &AppState, diff: &RepoDiff, path: &str) -> Option<usize> {
+    if diff.comments.iter().any(|comment| on_path(comment, diff, path)) {
+        return None;
+    }
+    let session = state.session.open.as_ref()?;
+    let on_file = state.comments.on_file(session, &diff.repo, path);
+    crate::comment_cards::all_done(on_file.values().flatten().copied())
+}
+
 /// Whether `line` is code (shown with a number, and open to comments), as
 /// opposed to a hunk header or a note such as "No newline at end of file".
 pub(super) fn is_code(line: &DiffLine) -> bool {
@@ -121,6 +132,7 @@ pub(super) fn file_row(
     let repo = diff.repo.clone();
     let path = file.path.clone();
     let comments = file_comments(state, diff, &file.path);
+    let done = file_done(state, diff, &file.path);
     let group = SharedString::from(format!("change-file-group {repo}/{path}"));
     // "bin" or "mode" stands where +a −r would be (DS-8).
     let stat_word = if file.binary {
@@ -156,6 +168,33 @@ pub(super) fn file_row(
                 anchor,
             )
         });
+    let tick = (!short && !reviewing(state, &diff.session)).then(|| {
+        let seen = humata2_review::looks::file_look(&state.review, &diff.session, &repo, &path, file);
+        look_tick(&ui, look, &repo, &path, seen)
+    });
+    // DS-8, DS-82: a letter, never colour alone; a modified file's column
+    // stays empty. It stands after the name so the circle sits 8 pt from it.
+    let mark = {
+            let letter = match file.change {
+                humata2_clients::model::FileChange::Added => Some(("A", GREEN)),
+                humata2_clients::model::FileChange::Deleted => Some(("D", RED)),
+                humata2_clients::model::FileChange::Renamed => Some(("R", look.secondary)),
+                humata2_clients::model::FileChange::Modified => None,
+            };
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .children(letter.map(|(letter, color)| {
+                    text(letter)
+                        .id(SharedString::from(format!("change-file-mark {repo}/{path}")))
+                        .test_support()
+                        .text_size(px(11.))
+                        .text_color(rgb(color))
+                }))
+        }.into_any_element();
+    let (mark_before, mark_after) = if short { (Some(mark), None) } else { (None, Some(mark)) };
     row()
         .id(SharedString::from(format!("change-file {repo}/{path}")))
         .group(group.clone())
@@ -176,28 +215,8 @@ pub(super) fn file_row(
         .rounded(px(5.))
         .cursor_pointer()
         .when(on, |row| row.bg(rgb(look.fill)))
-        // DS-8, DS-82: a letter, never colour alone; a modified file's
-        // column stays empty so the names line up.
-        .child({
-            let letter = match file.change {
-                humata2_clients::model::FileChange::Added => Some(("A", GREEN)),
-                humata2_clients::model::FileChange::Deleted => Some(("D", RED)),
-                humata2_clients::model::FileChange::Renamed => Some(("R", look.secondary)),
-                humata2_clients::model::FileChange::Modified => None,
-            };
-            div()
-                .w(px(14.))
-                .flex_shrink_0()
-                .flex()
-                .justify_center()
-                .children(letter.map(|(letter, color)| {
-                    text(letter)
-                        .id(SharedString::from(format!("change-file-mark {repo}/{path}")))
-                        .test_support()
-                        .text_size(px(11.))
-                        .text_color(rgb(color))
-                }))
-        })
+        .children(tick)
+        .children(mark_before)
         .child(if short {
             text(path.rsplit('/').next().unwrap_or(path.as_str()).to_owned())
                 .flex_1()
@@ -241,7 +260,18 @@ pub(super) fn file_row(
                 )
                 .into_any_element()
         })
-        .when(comments > 0 && !short, |row| {
+        .children(mark_after)
+        .when_some(done.filter(|_| !short), |row, done| {
+            row.child(
+                text(format!("✓ {done} done"))
+                    .id(SharedString::from(format!("change-file-done {repo}/{path}")))
+                    .test_support()
+                    .flex_shrink_0()
+                    .text_size(px(11.))
+                    .text_color(rgb(GREEN)),
+            )
+        })
+        .when(comments > 0 && !short && done.is_none(), |row| {
             row.child(
                 widgets::row()
                     .gap(px(3.))
@@ -279,6 +309,66 @@ pub(super) fn file_row(
                 AppAction::Review(ReviewAction::SelectFile {
                     repo: repo.clone(),
                     path: path.clone(),
+                }),
+                cx,
+            )
+        })
+}
+
+/// The green of a look (D852, UXSIMPLE frames 3-2 to 4-3).
+pub(super) const LOOK_GREEN: u32 = 0x28a745;
+
+/// The orange of a file or layer that changed since it was looked at.
+pub(super) const LOOK_ORANGE: u32 = 0xd98200;
+
+/// The 14 pt circle before a file's name (D852): empty, or green with a
+/// white tick once the file was looked at. A click marks or clears that one
+/// file and leaves the row's own click (opening the file) alone.
+fn look_tick(
+    ui: &Rc<Ui>,
+    look: Look,
+    repo: &str,
+    path: &str,
+    seen: humata2_review::looks::FileLook,
+) -> impl IntoElement {
+    use humata2_review::looks::FileLook;
+    let ui = ui.clone();
+    let (repo_of, path_of) = (repo.to_owned(), path.to_owned());
+    div()
+        .id(SharedString::from(format!("change-file-look {repo}/{path}")))
+        .role(Role::CheckBox)
+        .aria_label(match seen {
+            FileLook::Never => "Not looked at",
+            FileLook::Looked => "Looked at",
+            FileLook::Changed => "Changed since you looked",
+        })
+        .test_support()
+        .size(px(14.))
+        .flex_shrink_0()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        // A file read gives way to the name 8 pt after the circle.
+        .mr(px(2.))
+        .map(|tick| match seen {
+            FileLook::Looked => tick
+                .bg(rgb(LOOK_GREEN))
+                .child(icon(IconName::Check, 0xffffff, 9.)),
+            FileLook::Never => tick.border_1().border_color(rgb(look.tertiary)),
+            // A 1.5 pt amber ring on the pale amber fill.
+            FileLook::Changed => tick
+                .border(px(1.5))
+                .border_color(rgb(LOOK_ORANGE))
+                .bg(rgb(look.attention_bg)),
+        })
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            ui.send(
+                AppAction::Review(ReviewAction::ToggleLooked {
+                    repo: repo_of.clone(),
+                    path: path_of.clone(),
                 }),
                 cx,
             )
@@ -490,6 +580,8 @@ pub(super) fn file_bar(
     diff: &RepoDiff,
     file: &humata2_clients::model::FileDiff,
     fold: Option<bool>,
+    looked: bool,
+    compact: bool,
 ) -> AnyElement {
     let order: Vec<(&str, &str)> = diffs
         .iter()
@@ -536,17 +628,19 @@ pub(super) fn file_bar(
                 .flex_wrap()
                 .overflow_hidden()
                 .gap(px(4.))
-                .child(full_text(
-                    secondary(look, repo_label(&diff.repo))
-                        .id("diff-file-bar-repo")
-                        .flex_shrink_0()
-                        .max_w(relative(0.25))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis(),
-                    repo_label(&diff.repo),
-                ))
-                .child(secondary(look, "·").flex_shrink_0())
+                .when(!compact, |line| {
+                    line.child(full_text(
+                        secondary(look, repo_label(&diff.repo))
+                            .id("diff-file-bar-repo")
+                            .flex_shrink_0()
+                            .max_w(relative(0.25))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                        repo_label(&diff.repo),
+                    ))
+                    .child(secondary(look, "·").flex_shrink_0())
+                })
                 .child(full_text(
                     text(file_name.to_owned())
                         .id("diff-file-bar-name")
@@ -561,17 +655,29 @@ pub(super) fn file_bar(
                         .font_weight(FontWeight::MEDIUM),
                     file_name.to_owned(),
                 ))
-                .child(full_text(
-                    secondary(look, dir.to_owned())
-                        .id("diff-file-bar-dir")
-                        .min_w(px(40.))
-                        .flex_shrink(1.)
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis(),
-                    dir,
-                )),
+                .when(!compact, |line| {
+                    line.child(full_text(
+                        secondary(look, dir.to_owned())
+                            .id("diff-file-bar-dir")
+                            .min_w(px(40.))
+                            .flex_shrink(1.)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                        dir,
+                    ))
+                }),
         )
+        .when(looked, |bar| {
+            bar.child(
+                text("✓ You looked at this")
+                    .id("diff-file-looked")
+                    .test_support()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(rgb(LOOK_GREEN)),
+            )
+        })
         .child(
             secondary(look, format!("{at} of {}", order.len()))
                 .id("diff-file-count")

@@ -309,7 +309,7 @@ pub trait CommentsClient: Send + Sync + 'static {
         file: Option<(&str, &str)>,
     ) -> Reply<Vec<Comment>>;
 
-    /// Sets a resolved comment back to draft, whoever resolved it (SM-11).
+    /// Sets a done comment (resolved, whoever resolved it, or addressed) back to draft (SM-11, D851).
     fn reopen(&self, id: &CommentId, revision: u64) -> Reply<Comment>;
 
     /// Hides a comment everywhere, its status kept (SM-20).
