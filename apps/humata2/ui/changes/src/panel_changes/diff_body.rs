@@ -393,7 +393,10 @@ impl CodeRows {
         }
         let fold_key = format!("{}/{}", diff.repo, file.path);
         let unfolded = documents.unfolded();
-        let fold = comment_cards::all_done(cards.values().flatten()).and_then(|count| {
+        // Done comments fold only on a file the person ticked (4-3); an
+        // unticked file keeps its done cards open (4-2).
+        let ticked = humata2_review::looks::is_looked(&state.review, &diff.session, &diff.repo, &file.path, file);
+        let fold = comment_cards::all_done(cards.values().flatten()).filter(|_| ticked).and_then(|count| {
             let at = cards.keys().min().copied()?;
             Some((at, count, fold_key.clone(), unfolded.borrow().contains(&fold_key)))
         });

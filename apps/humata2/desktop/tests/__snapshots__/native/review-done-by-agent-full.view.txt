@@ -94,10 +94,6 @@ Complementary "Changes"
       text "+"
       #change-code-4-0
         text "        tx.insert_entry(&entry).await?;"
-    #doc-done-fold api/src/entry.rs
-      text "✓"
-      text "2 comments done on this file"
-      Button "Hide"
     #doc-comment-ledger/c-1
       text "You"
       text "Done by claude"

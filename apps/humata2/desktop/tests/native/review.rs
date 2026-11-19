@@ -254,6 +254,8 @@ fn done_comments_fold_into_one_line_and_show_unfolds_them() {
     assert!(!app.contains(&format!("doc-reopen-comment-{comment}")), "a sent comment is not done");
     app.fakes.comments.lines_changed(&comment, &["fixed"]).expect("addressed");
     app.send(AppAction::Comments(C::Open(id.clone())));
+    assert!(app.contains(&format!("doc-reopen-comment-{comment}")), "an unticked file shows its done cards");
+    tick_client(&mut app);
     let fold = "doc-done-fold api/src/client.rs";
     assert!(app.contains(fold), "done comments fold into one line");
     assert!(!app.contains(&format!("doc-comment-{comment}")));
@@ -262,8 +264,16 @@ fn done_comments_fold_into_one_line_and_show_unfolds_them() {
     assert!(app.contains(&format!("doc-reopen-comment-{comment}")));
 }
 
-/// Two sent comments the agent answered, as the done states draw them: the
-/// first on Show, then the fold alone.
+/// Ticks client.rs as looked at, as its row's circle does.
+fn tick_client(app: &mut App) {
+    app.send(AppAction::Review(humata2_review::ReviewAction::ToggleLooked {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+}
+
+/// Two sent comments the agent answered, as the done states draw them: open
+/// cards on an unticked file (4-2), folded once it is ticked (4-3).
 fn answered_comments(app: &mut App) -> Vec<humata2_clients::comments::CommentId> {
     use humata2_review::comments::CommentsAction as C;
     let id = SessionId::new("ledger");
@@ -295,7 +305,7 @@ fn answered_comments(app: &mut App) -> Vec<humata2_clients::comments::CommentId>
 fn done_by_agent_cards_show_the_reply_and_reopen() {
     let mut app = changes_app();
     let ids = answered_comments(&mut app);
-    app.click("doc-done-toggle api/src/client.rs");
+    assert!(!app.contains("doc-done-fold api/src/client.rs"), "4-2: an unticked file doesn't fold");
     for id in &ids {
         assert!(app.contains(&format!("doc-comment-{id}")));
         assert!(app.contains(&format!("doc-reopen-comment-{id}")));
@@ -330,7 +340,6 @@ fn review_done_by_agent_full() {
     }));
     let ids = answered_comments(&mut app);
     app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("doc-done-toggle api/src/entry.rs");
     for id in &ids {
         assert!(app.contains(&format!("doc-comment-{id}")));
         assert!(app.contains(&format!("doc-reopen-comment-{id}")));
@@ -345,7 +354,6 @@ fn review_done_by_agent_full() {
 fn review_done_by_agent_dark() {
     let mut app = changes_app();
     let ids = answered_comments(&mut app);
-    app.click("doc-done-toggle api/src/client.rs");
     for id in &ids {
         assert!(app.contains(&format!("doc-comment-{id}")));
         assert!(app.contains(&format!("doc-reopen-comment-{id}")));
@@ -395,12 +403,15 @@ fn review_agent_note_dark() {
     app.snapshot("review-agent-note-dark");
 }
 
-/// UXSIMPLE 4-3: a file whose comments are all done folds them into one
-/// line with a green check and Show.
+/// UXSIMPLE 4-3: a file the person ticked whose comments are all done folds
+/// them into one line with a green check and Show; 4-2 leaves an unticked
+/// file's done cards open.
 #[test]
 fn all_done_comments_fold_into_one_line() {
     let mut app = changes_app();
     answered_comments(&mut app);
+    assert!(!app.contains("doc-done-fold api/src/client.rs"));
+    tick_client(&mut app);
     assert!(app.contains("doc-done-fold api/src/client.rs"));
     app.snapshot("review-done-folded");
 }
