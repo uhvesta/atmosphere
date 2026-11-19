@@ -159,11 +159,11 @@ rust_test(
     crate_root = "tests/marks.rs",
     data = [
         "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_catalog_remote",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
     ],
     env = {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_catalog_remote)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
     },
     visibility = ["//apps/humata2/clients:__subpackages__"],
     deps = [
@@ -182,11 +182,11 @@ rust_test(
     crate_root = "tests/history.rs",
     data = [
         "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_catalog_remote",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
     ],
     env = {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_catalog_remote)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
     },
     visibility = ["//apps/humata2/clients:__subpackages__"],
     deps = [
@@ -205,11 +205,11 @@ rust_test(
     crate_root = "tests/term_restart.rs",
     data = [
         "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_power_cut",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
     ],
     env = {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_power_cut)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
     },
     visibility = ["//apps/humata2/clients:__subpackages__"],
     deps = [
