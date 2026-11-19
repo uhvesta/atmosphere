@@ -16,7 +16,7 @@ use humata2_app::{AppAction, AppState, NeedsRow, Route};
 use humata2_clients::model::{
     Answer, MachineKind, Request, RequestKind, Session, SessionId, Status,
 };
-use humata2_inbox::{Bulk, Group, History, InboxAction, MigrateStatus};
+use humata2_inbox::{Bulk, Group, InboxAction, MigrateStatus};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
 
@@ -53,7 +53,7 @@ pub(crate) fn toolbar(
                 div()
                     .text_size(px(11.5))
                     .text_color(rgb(look.secondary))
-                    .child(format!("{} waiting", state.workspace.waiting().count())),
+                    .child(format!("{} waiting on you", state.workspace.waiting().count())),
             )
         })
         .child(div().flex_1())
@@ -83,37 +83,19 @@ pub(crate) fn toolbar(
             },
         )
         .when(state.route == Route::Inbox, |bar| {
+            let history = state.inbox.show_answered;
+            let ui = ui.clone();
             bar.child(
-                row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).flex_shrink_0().children(
-                    [
-                        ("Waiting", History::Waiting, !state.inbox.show_answered),
-                        ("Answered", History::Answered, state.inbox.answered_only),
-                        (
-                            "All",
-                            History::All,
-                            state.inbox.show_answered && !state.inbox.answered_only,
-                        ),
-                    ]
-                    .into_iter()
-                    .map(|(label, history, on)| {
-                        let ui = ui.clone();
-                        div()
-                            .id(SharedString::from(format!("inbox-history-{label}")))
-                            .role(Role::Tab)
-                            .aria_label(label)
-                            .aria_selected(on)
-                            .px(px(12.))
-                            .py(px(2.))
-                            .text_size(px(11.5))
-                            .rounded(px(5.))
-                            .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
-                            .on_click(move |_, _, cx| {
-                                ui.send(AppAction::Inbox(InboxAction::SetHistory(history)), cx)
-                            })
-                            .child(label)
-                            .test_support()
-                    }),
-                ),
+                div()
+                    .id("inbox-history")
+                    .role(Role::Button)
+                    .aria_label(if history { "Back to waiting" } else { "History" })
+                    .text_size(px(12.5))
+                    .text_color(rgb(look.accent))
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| ui.send(AppAction::Inbox(InboxAction::ToggleHistory), cx))
+                    .child(if history { "Back to waiting" } else { "History" })
+                    .test_support(),
             )
         })
 }

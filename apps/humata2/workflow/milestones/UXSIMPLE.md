@@ -37,6 +37,16 @@ The loop from "the agent did work" to "I've reviewed it and it's shipped" takes 
 - The bare ⌃⌄ per-repo base chevron isn't understandable (revisits D739).
 - "Show the terminal" in the full-screen Diff only exits full screen.
 
+### Owner marks (minion DIFFUI, release-plan step 5, target 0.3.11)
+| Mark | State |
+|---|---|
+| (a) Per-repo base chevron says what it does | Built before this lane: every repo row reads "against X" and opens its own menu (`review_header.rs` `repo_base`). Built in this lane: the PR review's folded repo row opens its first file; the open row has no chevron (D869). Left for the next batch: the header's duplicate base with 2+ repos (D868). |
+| (b) Full screen: "Exit full screen" + Close | Built before this lane (`ui/core/src/chrome.rs` `header_with`; `diff_full_screen::full_screen_draws_one_header`). |
+| (c1) Each layer row names its repos | Built by STACKVIEW (`panel_stack.rs` `row_note`, 0d2d50d0). |
+| (c2) Whole stack marks layer boundaries | Built (D867): caption rows per layer inside each repo group, "also N", "Other changes"; click picks the layer. Gap: Whole stack file stepping (NextFile/ListDown) still follows raw diff order, not the drawn order. |
+
+Lane log: 2026-11-19 minion DIFFUI: Fable ruled D867–D869. Workers: T1 Sonnet (D867: features/review stack.rs+lib.rs `whole_groups`, ui panel_stack.rs `layer_caption`, plan.rs, file_list.rs `file_row_also`, tests), T2 Haiku (D869: review_header.rs `review_repo_head`, one call in mod.rs, pr_session test). Gate-ready; goldens to record: native stack-whole, 68-pr-review-session, 68b, 68c.
+
 ## Out of scope
 Building anything before the owner picks.
 - 2026-11-19 (DIFFUI3): (f) is done (D854): `order-humata-review` is folded into `render-humata-review` as "show with notes" (`with-notes.md`). Two review skills: show, review. The installer drops the old skill from agents' folders.

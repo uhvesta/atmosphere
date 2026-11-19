@@ -1068,6 +1068,51 @@ pub struct Request {
     /// Set when the only answer is Dismiss: an agent waits in its own
     /// terminal, and nothing an answer does would type into it (D798).
     pub dismiss_only: bool,
+    /// The grey box's rows, worked out by Humata; empty from an older daemon.
+    pub facts: Vec<CardFact>,
+    /// WHAT ELSE IT AFFECTS, warnings first; empty from an older daemon.
+    pub affects: Vec<CardEffect>,
+    /// CAN IT BE UNDONE?, in words; empty from an older daemon.
+    pub undo_text: String,
+    /// The to-do item the asking session works on.
+    pub working_on: String,
+    /// Set once the owner asked why.
+    pub asked_why: Option<AskedWhy>,
+    /// The Agent access row whose Ask me sent this card.
+    pub rule_label: String,
+}
+
+/// One row of a card's grey box: `lead` is bold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardFact {
+    /// "From", "To", "Size".
+    pub label: String,
+    /// The bold start.
+    pub lead: String,
+    /// The rest of the line.
+    pub rest: String,
+}
+
+/// One side effect of an ask; `lead` is bold and may be empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardEffect {
+    /// A warning (!); otherwise fine as it is.
+    pub warn: bool,
+    /// The bold start.
+    pub lead: String,
+    /// The rest of the line.
+    pub rest: String,
+}
+
+/// The owner asked why, and the agent's answer once it came.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AskedWhy {
+    /// When it was asked, as people read it.
+    pub asked: String,
+    /// The agent's reply, once it came.
+    pub reply: Option<String>,
+    /// When the reply came, as people read it.
+    pub replied: Option<String>,
 }
 
 /// The access rule that turned an agent's call into an Inbox request.

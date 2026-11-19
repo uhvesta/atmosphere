@@ -12,7 +12,7 @@ use crate::daemon::{
 use crate::fixture;
 use crate::model::{
     Agent, Answer, Archive, Capability, ChannelId, DiffBase, GrantId, ItemId, ItemStatus, Line,
-    MachineId, PushChoice, Recovery, RepoBases, RepoDiff, RequestId, RuleSetting, Scope, Session,
+    MachineId, PushChoice, Recovery, RepoBases, RepoDiff, Request, RequestId, RuleSetting, Scope, Session,
     SessionId, SetupId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
@@ -69,6 +69,8 @@ struct Inner {
     calls: Vec<String>,
     /// Every answer sent, in order, whether or not it worked.
     answers: Vec<(RequestId, Answer)>,
+    /// Every request Ask why was sent for.
+    asked_why: Vec<RequestId>,
     next: u32,
     archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
     archive_frees: HashMap<SessionId, String>,
@@ -138,6 +140,7 @@ impl FakeDaemon {
                 recoveries: fixture::recoveries(),
                 calls: Vec::new(),
                 answers: Vec::new(),
+                asked_why: Vec::new(),
                 next: 1,
                 archived: HashMap::new(),
                 archive_frees: HashMap::new(),
@@ -649,6 +652,10 @@ impl Daemon for FakeDaemon {
 
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {
         inbox::answer(self, request, answer)
+    }
+
+    fn ask_why(&self, request: &RequestId) -> Reply<Request> {
+        inbox::ask_why(self, request)
     }
 
     fn set_rule(

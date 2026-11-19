@@ -52,7 +52,7 @@ pub fn ask_in_inbox(look: Look) -> Div {
             .child(switch(look, on))
     };
     let agent = |agent: &Agent| {
-        let mut asks = div().flex().flex_col().child("Ask in the Inbox");
+        let mut asks = div().flex().flex_col().child("Ask in the Agent inbox");
         if !agent.asks {
             asks = asks.child(secondary(look, "Off: it asks in its own terminal"));
         }

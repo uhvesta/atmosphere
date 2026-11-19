@@ -565,6 +565,39 @@ impl ReviewState {
         Some(PlanLayout { rows, skims: folded })
     }
 
+    /// Whole stack's files grouped by layer, one list per entry of `diffs`
+    /// (D867), in `layout`'s order within each group; `None` when a layer is
+    /// picked, the plan has no stack, or no layer lists any file.
+    #[must_use]
+    pub fn whole_groups(
+        &self,
+        session: &SessionId,
+        layout: &PlanLayout,
+        diffs: &[&RepoDiff],
+    ) -> Option<Vec<Vec<stack::WholeEntry>>> {
+        if self.layer_of(session).is_some() {
+            return None;
+        }
+        let repos: Vec<(&str, Vec<(&str, Tier)>)> = diffs
+            .iter()
+            .map(|diff| {
+                let files = layout
+                    .rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        PlanRow::File { repo, path, .. } if *repo == diff.repo => {
+                            let file = diff.files.iter().find(|file| &file.path == path)?;
+                            Some((path.as_str(), self.tier_of(session, &diff.repo, file)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (diff.repo.as_str(), files)
+            })
+            .collect();
+        stack::whole_groups(self.stack_of(session)?, &repos)
+    }
+
     /// How much `file` of `repo` matters in `session`'s review (D802): the
     /// agent's tier from the plan, else the one its diff was served with.
     /// A plan can arrive before the diffs are read again, so the plan's

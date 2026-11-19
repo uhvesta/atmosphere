@@ -293,7 +293,7 @@ fn menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Home", keys::GoHome),
             MenuItem::action("Inbox", keys::GoInbox),
-            MenuItem::action("Board", keys::GoBoard),
+            MenuItem::action("To-do", keys::GoBoard),
             MenuItem::separator(),
             MenuItem::action("Enter Full Screen", ToggleFullScreen),
         ]),

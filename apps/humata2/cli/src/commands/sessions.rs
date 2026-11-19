@@ -397,6 +397,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&session).await?),
                 to: Some(ctx.machine(&to).await?),
+                ..Default::default()
             };
             ctx.change(rpc::session::MOVE_SESSION, &request).await
         }

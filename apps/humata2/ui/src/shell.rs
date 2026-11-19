@@ -11,7 +11,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::{FullScreen, PaneId, Reveal};
 use humata2_app::{AppAction, Load, PaneAction, Route};
-use humata2_clients::model::{ChannelId, Scope, SessionId};
+use humata2_clients::model::{ChannelId, SessionId};
 use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
 
@@ -637,7 +637,7 @@ impl Render for Shell {
                 this.send(AppAction::Switch(Route::Inbox), cx)
             }))
             .on_action(cx.listener(|this, _: &keys::GoBoard, _, cx| {
-                this.send(AppAction::Switch(Route::Board(Scope::Global)), cx);
+                this.send(AppAction::Switch(Route::Todo), cx);
             }))
             .on_action(cx.listener(|this, _: &keys::OpenSettings, _, cx| {
                 this.send(AppAction::Switch(Route::Settings), cx);
@@ -813,6 +813,7 @@ impl Render for Shell {
                                     self.file_filter.clone(),
                                     window,
                                     &self.documents,
+                                    &self.todo_inputs,
                                     cx,
                                 )
                             }))
@@ -862,6 +863,7 @@ impl Render for Shell {
                             self.file_filter.clone(),
                             window,
                             &self.documents,
+                            &self.todo_inputs,
                             cx,
                         )
                     })

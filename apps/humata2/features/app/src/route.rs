@@ -1,5 +1,6 @@
 use humata2_board::BoardAction;
-use humata2_clients::model::{ChannelId, Scope, SessionId};
+use humata2_clients::model::{ChannelId, ItemId, Scope, SessionId};
+use humata2_palette::PullRef;
 use humata2_files::FilesAction;
 use humata2_hosts::HostsAction;
 use humata2_inbox::InboxAction;
@@ -154,6 +155,12 @@ impl App {
                 // The page's Files tree and the files it opens come from the
                 // session's file list, fetched the first time it is shown.
                 effects.push(self.ask_files(state, id));
+                // The session's To-do panel reads the list; it is fetched the
+                // first time a session shows it.
+                if !state.todo.loaded {
+                    effects.push(self.child(state, AppAction::Todo(TodoAction::Load)));
+                    effects.push(self.child(state, AppAction::Todo(TodoAction::Watch)));
+                }
             }
             Route::Channel(id) => {
                 state.session.open = None;
@@ -218,6 +225,76 @@ impl App {
         Effect::merge(effects)
     }
 
+    /// Do next: the New session sheet, filled from the item `do_next` names
+    /// (frame b4-3). An old sheet from a skipped item is replaced.
+    pub(super) fn fill_do_next(&self, state: &mut AppState) -> Effect<AppAction> {
+        state
+            .overlays
+            .retain(|overlay| !matches!(overlay, crate::Overlay::NewSession(_)));
+        let Some(entry) = state
+            .todo
+            .do_next
+            .as_ref()
+            .and_then(|key| state.todo.items.iter().find(|e| &e.todo.key == key))
+            .cloned()
+        else {
+            return Effect::none();
+        };
+        let effect = self.start_new_session(state);
+        let item = entry.todo;
+        let channel = item
+            .channel
+            .as_ref()
+            .and_then(|name| state.workspace.channels.iter().find(|c| &c.name == name))
+            .map(|c| c.id.clone());
+        let machine = channel.as_ref().and_then(|id| {
+            state.workspace.channel_machines(id).find(|m| m.online).map(|m| m.id.clone())
+        });
+        let first_message = if item.description.trim().is_empty() {
+            item.title.clone()
+        } else {
+            format!("{}\n\n{}", item.title, item.description.trim())
+        };
+        if let Some(crate::Overlay::NewSession(sheet)) = state.overlays.last_mut() {
+            sheet.title = item.title.clone();
+            sheet.first_message = first_message;
+            sheet.item = Some(ItemId::new(item.key.as_str()));
+            if let Some(channel) = channel {
+                sheet.channel = Some(channel);
+                if machine.is_some() {
+                    sheet.machine = machine;
+                }
+            }
+        }
+        effect
+    }
+
+    /// Start the review of a pull request review item: the Review a pull
+    /// request dialog opens on its first pull request, the rest under "Also
+    /// review" (frame b7-1).
+    pub(super) fn start_todo_review(&self, state: &mut AppState, key: &str) -> Effect<AppAction> {
+        let prs = state
+            .todo
+            .items
+            .iter()
+            .find(|e| e.todo.key == key)
+            .and_then(|e| e.todo.review.as_ref())
+            .map(|r| r.repo_prs.clone())
+            .unwrap_or_default();
+        let mut prs = prs.into_iter();
+        let Some(first) = prs.next() else {
+            return Effect::none();
+        };
+        let open = match parse_pull(&first) {
+            Some(pull) => self.review_pull(state, &pull),
+            None => Effect::none(),
+        };
+        let also: Vec<_> = prs
+            .map(|pr| self.child(state, AppAction::PrDialog(humata2_pr_review::dialog::DialogAction::AddAlso(pr))))
+            .collect();
+        open.and(Effect::merge(also))
+    }
+
     pub(super) fn go_back(&self, state: &mut AppState) -> Effect<AppAction> {
         match state.trail.pop() {
             Some(route) => {
@@ -240,4 +317,15 @@ impl App {
         let arrived = self.arrive(state);
         self.desk_fresh(state, arrived)
     }
+}
+
+/// "acme/api#483" as a pull request reference.
+fn parse_pull(text: &str) -> Option<PullRef> {
+    let (repo, number) = text.split_once('#')?;
+    let (owner, name) = repo.split_once('/')?;
+    Some(PullRef {
+        owner: owner.to_owned(),
+        repo: name.to_owned(),
+        number: number.parse().ok()?,
+    })
 }

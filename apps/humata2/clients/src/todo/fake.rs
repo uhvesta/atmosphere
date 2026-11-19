@@ -104,6 +104,62 @@ impl FakeTodo {
         fake
     }
 
+    /// The list of frame b1-1 with items tied to the sessions `workspace`
+    /// has, so a session's To-do panel shows its slice: Ledger schema
+    /// migration (`ledger`) works on PAY-3, whose close it is asking about,
+    /// PAY-7 and PAY-9; Token refresh retry (`s-auth`) on A-1 to A-3; the
+    /// Desk's Plan Q4 (`desk-plan-q4`) on TD-3 and TD-4.
+    #[must_use]
+    pub fn for_workspace(workspace: &crate::Workspace) -> Self {
+        let fake = Self::frame_b1_1();
+        let has = |id: &str| {
+            let id = crate::model::SessionId::new(id);
+            workspace.session(&id).is_some() || workspace.desk.sessions.contains_key(&id)
+        };
+        let today = fake.today();
+        let mut inner = fake.inner();
+        let mut link = |keys: &[&str], session: &str| {
+            for e in inner.entries.iter_mut().filter(|e| keys.contains(&e.todo.key.as_str())) {
+                e.todo.sessions = vec![session.to_owned()];
+            }
+        };
+        if has("ledger") {
+            link(&["PAY-3", "PAY-7", "PAY-9"], "ledger");
+        }
+        if has("desk-plan-q4") {
+            link(&["TD-3"], "desk-plan-q4");
+        }
+        if has("ledger")
+            && let Some(pay3) = inner.entries.iter_mut().find(|e| e.todo.key == "PAY-3")
+        {
+            // Frame 191: the panel beside the asking terminal.
+            if let Some(ask) = pay3.todo.ask.as_mut() {
+                ask.by = "claude in this session".to_owned();
+            }
+            pay3.todo.ask_detail.asked_minutes_ago = 1;
+        }
+        let add = |key: &str, title: &str, channel: Option<&str>, session: &str| {
+            let mut todo = Todo::new(key, title, today.add_days(-3));
+            todo.channel = channel.map(str::to_owned);
+            todo.sessions = vec![session.to_owned()];
+            todo
+        };
+        let mut added = Vec::new();
+        if has("s-auth") {
+            let mut a1 = add("A-1", "Token refresh retry", Some("api"), "s-auth");
+            a1.state = State::InProgress;
+            added.push(a1);
+            added.push(add("A-2", "Rate limit headers", Some("api"), "s-auth"));
+            added.push(add("A-3", "v1 tables cleanup", Some("api"), "s-auth"));
+        }
+        if has("desk-plan-q4") {
+            added.push(add("TD-4", "Share the Q4 plan with the team", None, "desk-plan-q4"));
+        }
+        inner.entries.extend(added.into_iter().map(|todo| Entry { todo, revision: 0, ask_id: None }));
+        drop(inner);
+        fake
+    }
+
     fn inner(&self) -> MutexGuard<'_, Inner> {
         self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -114,13 +170,16 @@ impl FakeTodo {
         self.inner().today
     }
 
-    /// Adds `todo` as it is, under `ask_id` if it has an ask.
+    /// Adds `todo` as it is, under `ask_id` if it has an ask, as another
+    /// client would: watchers are told.
     pub fn insert(&self, todo: Todo, ask_id: Option<&str>) {
-        self.inner().entries.push(Entry {
+        let mut inner = self.inner();
+        inner.entries.push(Entry {
             todo,
             revision: 0,
             ask_id: ask_id.map(str::to_owned),
         });
+        inner.changed();
     }
 
     /// Makes another client's change to `key` that changes nothing the app
@@ -307,14 +366,24 @@ fn b1_1_entries(today: Day) -> Vec<Entry> {
     pay3.state = State::InProgress;
     pay3.due = day(11, 20);
     pay3.tags = tags(&["migration", "db"]);
-    pay3.steps = steps(4, 5);
+    pay3.steps = [
+        "Add ledger_entries and ledger_balances",
+        "Dual-write from the posting path",
+        "Backfill the old table in batches",
+        "Verify the balances match on staging",
+        "Cut production reads over",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, text)| Step { text: text.to_owned(), done: i < 4 })
+    .collect();
     pay3.effort = Some(humata2_todo::Effort::M);
     pay3.impact = Some(humata2_todo::Impact::High);
     pay3.sessions = vec!["Ledger entries".to_owned()];
     pay3.ask = Some(Ask {
         kind: AskKind::Close,
         by: "claude in Ledger entries".to_owned(),
-        reason: "Migration and backfill pass on staging.".to_owned(),
+        reason: "Migration and backfill pass on staging: 3.1M rows in 4m12s. Steps 1 to 4 are done; step 5, the production cut-over, is yours.".to_owned(),
     });
     pay3.ask_detail = AskDetail {
         evidence: vec![

@@ -93,12 +93,12 @@ fn channel_clone_cells_and_activity_are_actionable() {
     app.click("channel-clear-clones");
     assert!(app.contains("channel-session-refund"));
     app.click("channel-tab-Inbox");
-    assert!(app.contains("global-request move-pay-3"));
-    assert!(!app.contains("global-request benchmark-command"));
+    assert!(app.contains("request move-ledger"));
+    assert!(!app.contains("request benchmark-command"));
     app.click("rail-home");
     app.click("sidebar-channel-payments-rewrite");
-    assert!(app.contains("global-request move-pay-3"));
-    assert!(!app.contains("global-request benchmark-command"));
+    assert!(app.contains("request move-ledger"));
+    assert!(!app.contains("request benchmark-command"));
     app.click("channel-tab-Activity");
     app.click("channel-event-0");
     assert_eq!(
@@ -106,4 +106,26 @@ fn channel_clone_cells_and_activity_are_actionable() {
         Some(SessionId::new("ledger"))
     );
     assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Inbox));
+}
+
+/// A channel's Agent access tab: grouped Allow/Ask/Never rows, with "End a
+/// session or a terminal" reading Mixed (its rules default to Ask and Never).
+/// The window is tall enough that the frame ends on a whole row.
+#[test]
+fn channel_agent_access_rows_frame() {
+    use humata2_app::channel::{Action, Tab};
+    let mut app = App::new(fixture::design());
+    app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    app.send(AppAction::Switch(Route::Channel(
+        humata2_clients::model::ChannelId::new("payments-rewrite"),
+    )));
+    app.send(AppAction::Channel(Action::Tab(Tab::Access)));
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(1280.), px(1900.)));
+            window.bounds_changed(cx);
+        })
+        .expect("resize");
+    app.settle();
+    app.snapshot("channel-agent-access-rows");
 }

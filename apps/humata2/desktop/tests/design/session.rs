@@ -428,7 +428,7 @@ pub fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>, diff: Op
             .rounded(px(7.))
             .when(lit, |item| item.bg(c(look.fill)))
             .child(icon(glyph, if lit { look.accent } else { look.secondary }))
-            .child(div().text_size(px(10.)).text_color(c(if lit { look.text } else { look.secondary })).child(text))
+            .child(div().flex().flex_col().items_center().text_size(px(10.)).text_color(c(if lit { look.text } else { look.secondary })).children(text.split(' ').map(|word| div().child(word))))
             .children(count.map(|count| div().absolute().top(px(2.)).right(px(6.)).child(badge(look, count, panel == Panel::Inbox))))
     };
     div()
@@ -443,10 +443,10 @@ pub fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>, diff: Op
         .bg(c(look.sidebar))
         .border_l_1()
         .border_color(c(look.line))
-        .child(item(IconName::Inbox, Panel::Inbox, "Inbox", inbox))
+        .child(item(IconName::Inbox, Panel::Inbox, "Agent inbox", inbox))
         .child(item(IconName::FileDiff, Panel::Diff, "Diff", diff))
         .child(item(IconName::FolderTree, Panel::Files, "Files", None))
-        .child(item(IconName::SquareKanban, Panel::Board, "Board", None))
+        .child(item(IconName::SquareKanban, Panel::Board, "To-do", None))
         .child(item(IconName::BookOpenText, Panel::Journal, "Journal", None))
         .child(item(IconName::Info, Panel::Info, "Info", None))
 }
@@ -694,7 +694,7 @@ fn inbox_panel(look: Look, full: bool) -> Div {
         .flex_1()
         .flex()
         .flex_col()
-        .child(panel_header(look, "Inbox", full, Some(secondary(look, "this session and its forks"))))
+        .child(panel_header(look, "Agent inbox", full, Some(secondary(look, "this session and its forks"))))
         .child(
             div()
                 .flex()
@@ -845,51 +845,41 @@ pub fn info_with(look: Look, full: bool, extra: Option<Div>) -> Div {
         )
 }
 
+/// The To-do panel as the session screen draws it (frame 191 of the To-do
+/// milestone): PAY-3 has the session's only pending ask, so its drawer opens
+/// by itself. Full screen, the shell's one title bar carries the title and
+/// the drawer's lead row opens the body.
 fn board_panel(look: Look, full: bool) -> Div {
-    let item = |id: &'static str, title: &'static str, state: Option<St>| {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .px(px(10.))
-            .py(px(7.))
-            .rounded(px(7.))
-            .bg(c(look.card))
-            .border_1()
-            .border_color(c(look.line))
-            .child(div().text_size(px(11.)).text_color(c(look.secondary)).child(id))
-            .child(div().flex_1().child(title))
-            .children(state.map(status))
-    };
+    // Full screen the panel draws what the app's panel draws (frame 12,
+    // D872): the way back leads the body and the foot is pinned.
+    if full {
+        return div().flex_1().min_h_0().flex().flex_col().child(crate::todo_more::panel_drawer_full(look));
+    }
+    let lead = div().flex().gap(px(6.)).text_size(px(13.)).text_color(c(look.accent)).child("\u{2039} To-do");
+    let body = crate::todo_more::drawer_body(look, true);
     div()
         .flex_1()
         .flex()
         .flex_col()
-        // Full screen has one title bar (the shell's), carrying the channel.
-        .when(!full, |panel| panel.child(panel_header(look, "Board", false, Some(secondary(look, "payments-rewrite")))))
-        // Expanded, the panel shows the channel's lanes side by side.
-        .when(full, |panel| panel.child(crate::board::lanes(look, Some("payments-rewrite"), None)))
-        .when(!full, |panel| panel.child(
+        // Beside the terminal the way back is the panel's 36 pt header,
+        // with the expand and close buttons the other panels keep.
+        .child(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(6.))
-                .p(px(10.))
-                .text_size(px(12.5))
-                // The same items as the expanded board (frame 12), active
-                // lanes first and Done last; empty lanes are left out (L14).
-                .child(label(look, "In progress · 1"))
-                .child(item("PAY-3", "Ledger schema v2", Some(St::Working)))
-                .child(div().pt(px(6.)).child(label(look, "In review · 1")))
-                .child(item("PAY-5", "API rate limiter", Some(St::Idle)))
-                .child(div().pt(px(6.)).child(label(look, "To do · 2")))
-                .child(item("PAY-9", "Backfill progress bar", Some(St::Working)))
-                .child(item("PAY-7", "Refund retry with backoff", None))
-                .child(div().pt(px(6.)).child(label(look, "Backlog · 1")))
-                .child(item("PAY-12", "Multi-currency ledgers", None))
-                .child(div().pt(px(6.)).child(label(look, "Done · 1")))
-                .child(item("PAY-2", "Currency codes table", None).opacity(0.6)),
-        ))
+                .items_center()
+                .gap(px(8.))
+                .h(px(36.))
+                .px(px(14.))
+                .flex_shrink_0()
+                .border_b_1()
+                .border_color(c(look.line))
+                .child(lead)
+                .child(secondary(look, "PAY-3 \u{b7} payments-rewrite").text_size(px(12.)))
+                .child(div().flex_1())
+                .child(small_icon(IconName::Maximize2, look.secondary))
+                .child(small_icon(IconName::X, look.secondary)),
+        )
+        .child(body)
 }
 
 /// VW-10: every view prepared in the session and its forks, newest first:
@@ -940,10 +930,10 @@ fn journal_panel(look: Look, full: bool) -> Div {
 fn title(which: Panel) -> &'static str {
     match which {
         Panel::Diff => "Diff",
-        Panel::Inbox => "Inbox",
+        Panel::Inbox => "Agent inbox",
         Panel::Files => "Files",
         Panel::Info => "Info",
-        Panel::Board => "Board",
+        Panel::Board => "To-do",
         Panel::Journal => "Journal",
     }
 }
@@ -962,7 +952,6 @@ pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
     // The Board's channel sits there the same way (DS-14, DV-18).
     let extra = match which {
         Panel::Diff if full => Some(base_chip(look)),
-        Panel::Board if full => Some(secondary(look, "payments-rewrite")),
         _ => None,
     };
     panel_shell(look, full, title(which), extra, body)

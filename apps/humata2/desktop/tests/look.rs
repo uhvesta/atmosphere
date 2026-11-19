@@ -63,12 +63,6 @@ const fn frame(name: &'static str) -> Frame {
     }
 }
 
-/// The Inbox card below its header row, down to the golden's bottom edge.
-/// Its frame, top edge and corners are still compared.
-const CARD_INSIDE: Rect = Rect(590, 80, 554, 430);
-const CARD_INSIDE_WHY: &str =
-    "D147 L2: the card's inside follows the request kind's preview, not the frame";
-
 /// Frame 69 checks Submit review; the session around it is frame 68's, which
 /// the review-session milestone (D2) draws and its own flow checks.
 const BEHIND_SUBMIT_WHY: &str = "the session behind Submit review is frame 68's";
@@ -79,6 +73,10 @@ const REVIEW_TERMINAL: Rect = Rect(237, 84, 638, 620);
 /// Frame 30 checks the palette; the dimmed session behind it is frame 01's,
 /// which `native_test` checks, and its review draft comes from another flow.
 const BEHIND_PALETTE_WHY: &str = "the session behind the palette is frame 01's";
+/// Frame 31 checks the dialog; the page under it is the To-do list (D872),
+/// whose mock draws other items than the fixture.
+const BEHIND_NEW_SESSION_WHY: &str =
+    "D872: the To-do page, not the board, lies behind the New session dialog";
 /// The dashboard's figures are computed from the items (D147.9).
 const FIGURES_WHY: &str = "D147.9: the dashboard's figures come from the items";
 /// Controls with no action yet are drawn disabled; the frames draw them live.
@@ -122,25 +120,8 @@ const FRAMES: &[Frame] = &[
         budget: BUDGET,
     },
     frame("25-home"),
-    Frame {
-        name: "26-inbox",
-        masks: &[
-            (Rect(237, 466, 331, 146), "D147.8: the pr-reviews group the frame leaves out"),
-            (CARD_INSIDE, CARD_INSIDE_WHY),
-        ],
-        budget: BUDGET,
-    },
-    Frame {
-        name: "27-inbox-dark",
-        masks: &[
-            (
-                Rect(237, 584, 331, 136),
-                "D147.8: the pr-reviews group, and \"Allowed without asking\" is ASK's log",
-            ),
-            (CARD_INSIDE, CARD_INSIDE_WHY),
-        ],
-        budget: BUDGET,
-    },
+    // 26/27 (the Agent inbox) have no design golden of their own: D871
+    // retired them for the card frames 200–204, which draw other requests.
     frame("28-hosts"),
     frame("29-settings"),
     Frame {
@@ -163,6 +144,10 @@ const FRAMES: &[Frame] = &[
         name: "31-new-session",
         masks: &[
             (Rect(477, 326, 424, 78), "D147 L13: the First message box takes its own width"),
+            (Rect(237, 0, 123, 760), BEHIND_NEW_SESSION_WHY),
+            (Rect(920, 0, 360, 760), BEHIND_NEW_SESSION_WHY),
+            (Rect(360, 0, 560, 70), BEHIND_NEW_SESSION_WHY),
+            (Rect(360, 464, 560, 296), BEHIND_NEW_SESSION_WHY),
         ],
         budget: BUDGET,
     },

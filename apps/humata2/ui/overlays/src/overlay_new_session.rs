@@ -306,6 +306,14 @@ impl Overlays {
                     .aria_label("First message")
                     .into_any_element(),
             ));
+        // Do next (frame b4-3): "Skip to" the next ranked item.
+        let skip = self.ui.read(|s| {
+            let ranked = s.todo.ranked();
+            let at = ranked.next.iter().position(|r| Some(&r.key) == s.todo.do_next.as_ref())?;
+            let row = ranked.next.get(at + 1)?;
+            let title = s.todo.items.iter().find(|e| e.todo.key == row.key)?.todo.title.clone();
+            Some((row.key.clone(), title))
+        });
         if let Some(error) = &sheet_state.error {
             content = content.child(
                 div()
@@ -332,6 +340,15 @@ impl Overlays {
                             .text_color(rgb(look.secondary))
                             .child(format!("Branch: {}", sheet_state.branch())),
                     )
+                    .children(skip.map(|(key, title)| {
+                        widgets::push_quiet(
+                            ui,
+                            "new-session-skip",
+                            &format!("Skip to {key} {title}"),
+                            AppAction::Todo(humata2_app::TodoAction::SkipDoNext),
+                            look,
+                        )
+                    }))
                     .child(
                         widgets::push_quiet(
                             ui,

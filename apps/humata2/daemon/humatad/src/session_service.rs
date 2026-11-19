@@ -2817,17 +2817,32 @@ impl pb::session_service_server::SessionService for SessionSvc {
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
+        // INBOXHOOKS: an agent says why it moves a session, for the card.
+        if matches!(caller, Caller::Agent(_)) && request.reason.trim().is_empty() {
+            return Err(status::invalid_field(
+                "reason",
+                Problem::Missing,
+                "the move has no reason, so the person who decides it cannot tell why it is wanted",
+                "say why in reason and send the move again",
+            ));
+        }
         let first = self
             .guard
             .held(bound, || self.move_session_of(&caller, request.clone(), false))
             .await;
+        // The card is worked out only when the rule says Ask.
+        let card = match &first {
+            Ok(Gated::Ask(_)) => self.move_card(&request).await,
+            _ => None,
+        };
         let (me, who) = (self.clone(), caller.clone());
-        answer_gated(
+        answer_gated_showing(
             &self.inbox,
             &caller,
             key,
             "humata.v1.Operation",
             first,
+            card,
             move || async move { me.move_session_of(&who, request, true).await },
         )
         .await
@@ -3141,6 +3156,79 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::HookRequest>,
     ) -> Result<Response<Self::HookStream>, Status> {
         self.hook_of(request).await
+    }
+}
+
+impl SessionSvc {
+    /// INBOXHOOKS: what the Agent inbox card of a move shows, in names: the
+    /// session's title and channel, its repositories, the terminals that
+    /// move along, and the forks that stay. What can't be read cheaply is
+    /// left empty (the size, the uncommitted files, the clones needed).
+    async fn move_card(&self, request: &pb::MoveSessionRequest) -> Option<crate::inbox::BoardAsk> {
+        let id = request.id.as_ref()?.value.clone();
+        let to = request.to.as_ref()?.clone();
+        let loaded = self.load(&id).await.ok()?;
+        let from = if loaded.record.machine.is_empty() {
+            self.machine.clone()
+        } else {
+            loaded.record.machine.clone()
+        };
+        let channel_name = if loaded.record.channel == humata2_sessions::DESK_CHANNEL {
+            "Desk".to_owned()
+        } else {
+            self.find_channel(&loaded.record.channel)
+                .await
+                .map(|channel| channel.name)
+                .unwrap_or_default()
+        };
+        let agents = self.starter.agents.clone();
+        let (store, session, here) = (self.starter.store.clone(), id.clone(), from.clone());
+        let (terminals, forks_staying) = blocking(move || -> Result<_, StoreError> {
+            let mut terminals = Vec::new();
+            for tab in store.tabs()?.into_iter().filter(|tab| tab.session.as_deref() == Some(session.as_str())) {
+                let words = match tab.kind {
+                    humata2_store::TabKind::Agent => store
+                        .session(&session)?
+                        .map(|record| agents.person_name(&record.agent))
+                        .unwrap_or_default(),
+                    humata2_store::TabKind::Shell => tab.title.clone(),
+                };
+                terminals.push(if words.is_empty() { tab.title } else { words });
+            }
+            let mut forks = Vec::new();
+            for origin in store.fork_origins()?.into_iter().filter(|origin| origin.parent == session) {
+                if let Some(fork) = store.session(&origin.session_id)?
+                    && (fork.machine == here || fork.machine.is_empty())
+                {
+                    forks.push(fork.title);
+                }
+            }
+            Ok((terminals, forks))
+        })
+        .await
+        .ok()?
+        .ok()?;
+        let repos = loaded
+            .detail
+            .as_ref()
+            .map(|detail| detail.repos.iter().map(|repo| repo.name.clone()).collect())
+            .unwrap_or_default();
+        Some(crate::inbox::BoardAsk {
+            preview: pb::request_preview::Preview::Move(pb::MovePreview {
+                session: Some(pb::SessionId { value: id }),
+                from: Some(pb::MachineId { value: from }),
+                to: Some(to),
+                bytes: 0,
+                session_title: loaded.record.title.clone(),
+                channel_name,
+                repos,
+                uncommitted_files: 0,
+                terminals,
+                forks_staying,
+                clones_needed: Vec::new(),
+            }),
+            reason: request.reason.clone(),
+        })
     }
 }
 

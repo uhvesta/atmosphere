@@ -3,11 +3,12 @@
 use humata2_ui_core::bridge::Ui;
 use humata2_ui_core::theme::Look;
 use humata2_ui_core::widgets::{col, row};
+use gpui_kit::base::Disableable as _;
 use gpui_kit::base::{ObservedElement, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, AppState, Route, channel};
+use humata2_app::{AppAction, AppState, Route};
 use humata2_clients::progress::OpProgress;
 use humata2_clients::model::{
     Agent, Answer, CopyCard, HolderNote, HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateStep,
@@ -175,7 +176,7 @@ fn preview(request: &Request, look: Look) -> Div {
 fn tick(ui: &Rc<Ui>, request: &Request, on: bool, look: Look) -> impl IntoElement {
     let ui = ui.clone();
     let id = request.id.clone();
-    let label = "Allow this for the rest of the session";
+    let label = "Always allow for this session";
     row()
         .id(SharedString::from(format!("always {}", request.id)))
         .role(Role::CheckBox)
@@ -237,14 +238,17 @@ struct ReplyBox {
     ui: Rc<Ui>,
     id: humata2_clients::model::RequestId,
     draft: String,
+    placeholder: &'static str,
 }
 
 impl RenderOnce for ReplyBox {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let key = SharedString::from(format!("reply input {}", self.id));
         let ui = self.ui.clone();
+        let id = self.id.clone();
+        let placeholder = self.placeholder;
         let held = window.use_keyed_state(key.clone(), cx, move |window, cx| {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Write a reply…"));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
             input.update(cx, |input, cx| input.focus(window, cx));
             let app: &mut App = &mut *cx;
             let _subscription = app.subscribe(
@@ -252,7 +256,7 @@ impl RenderOnce for ReplyBox {
                 move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| match event {
                     InputEvent::Change => {
                         let text = input.read(cx).value().to_string();
-                        ui.send(AppAction::Inbox(InboxAction::ReplyText(text)), cx);
+                        ui.send(AppAction::Inbox(InboxAction::ReplyDraft(id.clone(), text)), cx);
                     }
                     InputEvent::PressEnter { .. } => {
                         ui.send(AppAction::Inbox(InboxAction::SendReply), cx);
@@ -268,12 +272,19 @@ impl RenderOnce for ReplyBox {
             let draft = self.draft.clone();
             input.update(cx, |input, cx| input.set_value(draft, window, cx));
         }
-        div().id(key).w_full().child(
+        div().id(key).w_full().relative().child(
             Input::new(&input)
                 .small()
                 .min_h(px(26.))
                 .text_size(px(12.5))
                 .aria_label("Reply"),
+        ).child(
+            div()
+                .absolute()
+                .right(px(10.))
+                .top(px(5.))
+                .text_size(px(13.))
+                .child("↵"),
         )
     }
 }
@@ -936,6 +947,135 @@ fn path_action(
         })
 }
 
+fn is_dark(look: Look) -> bool {
+    look.text > look.content
+}
+
+fn tone(look: Look, light: u32, dark: u32) -> u32 {
+    if is_dark(look) { dark } else { light }
+}
+
+/// Text with `bold` set in bold at its start; it wraps like any text.
+fn rich(lead: &str, rest: &str) -> StyledText {
+    let whole = format!("{lead}{rest}");
+    let spans = if lead.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            0..lead.len(),
+            HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() },
+        )]
+    };
+    StyledText::new(whole).with_highlights(spans)
+}
+
+/// A small caps section label with an optional small remark.
+fn section(look: Look, title: &'static str, small: Option<&'static str>, first: bool) -> Div {
+    row()
+        .items_baseline()
+        .gap(px(4.))
+        .mt(px(if first { 0. } else { 10. }))
+        .mb(px(4.))
+        .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(look.secondary))
+        .child(title)
+        .children(small.map(|small| {
+            div().text_size(px(11.5)).font_weight(FontWeight::NORMAL).child(small)
+        }))
+}
+
+/// The grey box: label, bold lead, rest.
+fn facts_box(look: Look, request: &Request) -> ObservedElement<Stateful<Div>> {
+    col()
+        .id(SharedString::from(format!("facts {}", request.id)))
+        .test_support()
+        .gap(px(3.))
+        .px(px(12.))
+        .py(px(9.))
+        .rounded(px(8.))
+        .bg(rgb(look.fill))
+        .children(request.facts.iter().map(|fact| {
+            row()
+                .child(
+                    div()
+                        .w(px(66.))
+                        .flex_shrink_0()
+                        .text_color(rgb(look.secondary))
+                        .child(fact.label.clone()),
+                )
+                .child(div().flex_1().min_w_0().child(rich(&fact.lead, &fact.rest)))
+        }))
+}
+
+fn effect_row(look: Look, effect: &humata2_clients::model::CardEffect) -> Div {
+    let hue = if effect.warn {
+        tone(look, 0xb25000, 0xffb340)
+    } else {
+        tone(look, 0x0f766e, 0x35c4b5)
+    };
+    row()
+        .gap(px(8.))
+        .py(px(1.5))
+        .items_start()
+        .child(
+            row()
+                .w(px(14.))
+                .flex_shrink_0()
+                .justify_center()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(hue))
+                .child(if effect.warn { "!" } else { "✓" }),
+        )
+        .child(div().flex_1().min_w_0().child(rich(&effect.lead, &effect.rest)))
+}
+
+fn quiet(look: Look, value: impl Into<SharedString>) -> Div {
+    text(value).text_color(rgb(look.secondary))
+}
+
+/// A text link that sends `action`.
+fn link(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: &'static str,
+    action: InboxAction,
+    look: Look,
+) -> ObservedElement<Stateful<Div>> {
+    let ui = ui.clone();
+    row()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .test_support()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .text_color(rgb(look.accent))
+        .child(text(label))
+        .on_click(move |_, _, cx| ui.send(AppAction::Inbox(action.clone()), cx))
+}
+
+/// The footer button: the frame's own size, a little larger than the
+/// compact `button`.
+fn answer_button(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: &'static str,
+    action: InboxAction,
+    look: Look,
+    primary: bool,
+    muted: bool,
+) -> Button {
+    button(ui, id, label, vec![AppAction::Inbox(action)], look, primary)
+        .h(px(32.))
+        .px(px(14.))
+        .min_w(px(64.))
+        .rounded(px(7.))
+        .text_size(px(13.))
+        .when(muted, |button| button.text_color(rgb(look.secondary)))
+}
+
 fn decision_card(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -947,273 +1087,446 @@ fn decision_card(
     let pending = state.inbox.pending.contains(&request.id);
     let waiting = request.answer.is_none();
     let ticked = state.inbox.always.contains(&request.id);
+    let on_screen = request.on_screen.is_some();
+    let is_question = request.kind == RequestKind::Question || on_screen;
+    let copy = request.copy();
+    let rich_card = !request.facts.is_empty() || !request.affects.is_empty();
+    let id = request.id.clone();
+    let agent = session.map_or_else(String::new, |s| {
+        if humata2_clients::desk::is_desk(s) {
+            humata2_ui_core::chrome::runs(s.agent).to_owned()
+        } else {
+            agent_name(s.agent).to_owned()
+        }
+    });
     let channel_name = state
         .workspace
         .channel(&request.channel)
         .map(|c| c.name.clone())
         .or_else(|| (request.channel == humata2_clients::desk::channel()).then(|| "Desk".to_owned()));
-    let machine_name = session
-        .and_then(|s| state.workspace.machine(&s.machine))
-        .map(|m| m.name.clone());
 
-    // 1. Title, the requester's status, the age.
+    // Title row: dot, title; in the page the requester, channel, age and the
+    // link to the session.
+    let who = {
+        let mut parts = Vec::new();
+        if let Some(s) = session {
+            parts.push(format!("{agent} in {}", s.title));
+        }
+        parts.extend(channel_name);
+        parts.push(format!("{} ago", request.asked.trim_end_matches(" ago")));
+        parts.join(" · ")
+    };
     let top = row()
-        .gap(px(6.))
-        .child(dot(session.map_or(Status::NeedsYou, |s| s.status)))
+        .gap(px(10.))
+        .items_center()
+        .child(dot(if waiting {
+            Status::NeedsYou
+        } else {
+            session.map_or(Status::NeedsYou, |s| s.status)
+        }))
         .child(
             text(request.title.clone())
-                .font_weight(FontWeight::SEMIBOLD)
-                .flex_1(),
+                .text_size(px(if wide { 15.5 } else { 14. }))
+                .font_weight(FontWeight::BOLD)
+                .flex_1()
+                .min_w(px(if wide { 240. } else { 0. }))
+                .line_clamp(2)
+                .text_ellipsis(),
         )
-        .child(secondary(look, request.asked.clone()));
-
-    // 2. Who asks; in the detail pane, where it runs and a link to its session.
-    let by = requester(state, request, true);
-    let place = [machine_name, channel_name.map(|name| format!("# {name}"))]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let who = row()
-        .gap(px(8.))
-        .child(secondary(look, by).flex_1().min_w_0());
-    let open_ui = ui.clone();
-    let open_id = request.id.clone();
-    let meta = wide.then(|| {
-        row()
-            .gap(px(8.))
-            .child(secondary(look, place).flex_1().min_w_0())
+        .when(wide, |top| {
+            top.child(
+                quiet(look, who)
+                    .text_size(px(12.5))
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis(),
+            )
             .child(
-                row()
-                    .id(SharedString::from(format!("open session {}", request.id)))
-                    .role(Role::Button)
-                    .aria_label("Open session ↗")
-                    .test_support()
-                    .flex_shrink_0()
-                    .cursor_pointer()
-                    .text_size(px(11.5))
-                    .text_color(rgb(look.accent))
-                    .child(text("Open session ↗"))
-                    .on_click(move |_, _, cx| {
-                        open_ui.send(
-                            AppAction::Inbox(InboxAction::OpenRequest(open_id.clone())),
-                            cx,
-                        );
+                link(
+                    ui,
+                    SharedString::from(format!("open session {}", request.id)),
+                    "Open session ↗",
+                    InboxAction::OpenRequest(id.clone()),
+                    look,
+                )
+                .text_size(px(12.5))
+                .flex_shrink_0()
+                .whitespace_nowrap(),
+            )
+        });
+
+    let working = (!request.working_on.is_empty())
+        .then(|| quiet(look, format!("Working on {}", request.working_on)).mt(px(2.)));
+
+    // The columns.
+    let left;
+    let right;
+    if is_question {
+        let asks = if request.reason.is_empty() {
+            match &request.preview {
+                Preview::Text(value) if request.choices.is_empty() => value.clone(),
+                _ => String::new(),
+            }
+        } else {
+            format!("“{}”", request.reason)
+        };
+        left = col()
+            .children((!asks.is_empty()).then(|| {
+                col()
+                    .child(section(look, "WHAT IT NEEDS TO KNOW", None, true))
+                    .child(text(asks).line_height(relative(1.5)))
+            }))
+            .children(working);
+        let busy = pending || !waiting;
+        let reply = state
+            .inbox
+            .reply
+            .as_ref()
+            .filter(|(reply_id, _)| *reply_id == request.id)
+            .map(|(_, draft)| draft.clone())
+            .unwrap_or_default();
+        right = col()
+            .child(section(look, "YOUR ANSWER", None, true))
+            .child(
+                col()
+                    .gap(px(6.))
+                    .items_start()
+                    .children(request.choices.iter().enumerate().map(|(index, choice)| {
+                        button(
+                            ui,
+                            SharedString::from(format!("choose {} {index}", request.id)),
+                            choice.clone(),
+                            vec![AppAction::Inbox(InboxAction::Choose(id.clone(), choice.clone()))],
+                            look,
+                            false,
+                        )
+                        .h(px(32.))
+                        .px(px(14.))
+                        .text_size(px(13.))
+                        .disabled(busy)
+                    }))
+                    .when(!on_screen && waiting, |c| {
+                        c.child(
+                            div().w_full().mt(px(4.)).child(ReplyBox {
+                                ui: ui.clone(),
+                                id: request.id.clone(),
+                                draft: reply,
+                                placeholder: "Or type an answer…",
+                            }),
+                        )
                     }),
+            );
+    } else {
+        let mut l = col();
+        let mut r = col();
+        if rich_card {
+            l = l.child(facts_box(look, request));
+            if !request.reason.is_empty() {
+                l = l
+                    .child(section(look, "WHY", Some("the agent's reason"), false))
+                    .child(text(format!("“{}”", request.reason)).line_height(relative(1.5)));
+            }
+            l = l.children(working);
+            r = r.child(section(look, "WHAT ELSE IT AFFECTS", Some("worked out by Humata"), true))
+                .children(request.affects.iter().map(|effect| effect_row(look, effect)));
+            if !request.undo_text.is_empty() {
+                r = r
+                    .child(section(look, "CAN IT BE UNDONE?", None, false))
+                    .child(text(request.undo_text.clone()));
+            }
+        } else {
+            // From an older daemon: the reason and the preview alone.
+            if !request.reason.is_empty() {
+                l = l.child(text(request.reason.clone()).line_height(relative(1.5)));
+            }
+            if copy.is_some() || !no_arguments(request) {
+                l = l.child(
+                    match copy {
+                        Some(copy) => copy_lines(ui, state, request, copy, look),
+                        None => preview(request, look),
+                    }
+                    .mt(px(6.)),
+                );
+            }
+            l = l.children(working);
+            if wide && !request.steps.is_empty() {
+                let count = request.steps.len();
+                r = r.child(section(look, "WHAT IT WAS DOING", None, true)).children(
+                    request.steps.iter().enumerate().map(|(index, step)| {
+                        let color = if waiting && index + 1 == count { ORANGE } else { GREEN };
+                        row()
+                            .gap(px(6.))
+                            .child(div().size(px(6.)).rounded_full().flex_shrink_0().bg(rgb(color)))
+                            .child(text(step.clone()).text_size(px(11.5)).font_family("Menlo"))
+                    }),
+                );
+            }
+            if let Some(note) = request.undo_note.clone() {
+                r = r.child(text(note).text_size(px(11.5)).text_color(rgb(RED)));
+            }
+            if !request.why_you.is_empty() {
+                r = r
+                    .child(section(look, "WHY YOU", None, false))
+                    .child(text(request.why_you.clone()));
+            }
+        }
+        left = l;
+        right = r;
+    }
+    let columns = if wide {
+        row().gap(px(28.)).items_start().mt(px(10.))
+            .child(left.flex_1().min_w_0())
+            .child(right.flex_1().min_w_0())
+    } else {
+        col().gap(px(4.)).mt(px(6.)).child(left).child(right)
+    };
+
+    // You asked why: the agent's reply, or a waiting line before it comes.
+    let asked = request.asked_why.as_ref().map(|why| {
+        let body = match &why.reply {
+            Some(reply) => format!("{agent}, {} ago: “{reply}”", why.replied.clone().unwrap_or_else(|| why.asked.clone())),
+            None => format!("Waiting for {agent} to answer. Asked {} ago.", why.asked),
+        };
+        let dim = why.reply.as_ref().map(|_| {
+            let name = body.find(':').map_or(0, |end| end + 1);
+            (0..name, HighlightStyle { color: Some(rgb(look.secondary).into()), ..Default::default() })
+        });
+        col()
+            .id(SharedString::from(format!("asked why {}", request.id)))
+            .test_support()
+            .mt(px(12.))
+            .px(px(13.))
+            .py(px(10.))
+            .rounded(px(9.))
+            .bg(rgb(tone(look, 0xeef4ff, 0x20304d)))
+            .child(
+                text("You asked why · the request is on hold")
+                    .mb(px(3.))
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(
+                div()
+                    .line_height(relative(1.5))
+                    .child(StyledText::new(body).with_highlights(dim)),
             )
     });
 
-    // 5. What the agent was doing: its last steps, the pending call last.
-    let steps = (wide && !request.steps.is_empty()).then(|| {
-        let count = request.steps.len();
-        col()
-            .id(SharedString::from(format!("steps {}", request.id)))
-            .test_support()
-            .gap(px(4.))
-            .child(secondary(look, "What it was doing").font_weight(FontWeight::SEMIBOLD))
-            .children(request.steps.iter().enumerate().map(|(index, step)| {
-                let color = if waiting && index + 1 == count {
-                    ORANGE
-                } else {
-                    GREEN
-                };
-                row()
-                    .gap(px(6.))
-                    .child(div().size(px(6.)).rounded_full().flex_shrink_0().bg(rgb(color)))
-                    .child(
-                        text(step.clone())
-                            .text_size(px(11.5))
-                            .font_family("Menlo"),
-                    )
-            }))
-    });
-
-    // 6. Why it asks you, with the rule's change link when a rule sent it.
-    let why = if request.why_you.is_empty() {
-        request
-            .asked_by
-            .as_ref()
-            .map_or_else(String::new, |asked| asked.label.clone())
-    } else {
-        request.why_you.clone()
-    };
-    let change_rule = request.asked_by.as_ref().map(|_| {
-        button(
-            ui,
-            SharedString::from(format!("change rule {}", request.id)),
-            "Change this rule",
-            vec![
-                AppAction::Navigate(Route::Channel(request.channel.clone())),
-                AppAction::Channel(channel::Action::Tab(channel::Tab::Access)),
-            ],
-            look,
-            false,
-        )
-    });
-    let why_line = (!why.is_empty()).then(|| {
-        row()
-            .gap(px(8.))
-            .items_start()
-            .child(secondary(look, "Asks you because:").flex_shrink_0())
-            .child(text(why).text_size(px(11.5)).flex_1().min_w_0())
-            .children(change_rule)
-    });
-
-    // 8. The answers. A question on its agent's screen offers its choices
-    // and Dismiss, never Deny or Reply…: the wide Inbox puts Dismiss under
-    // the terminal, the session's panel here (D781).
-    let on_screen = request.on_screen.is_some();
-    let is_question = request.kind == RequestKind::Question || on_screen;
-    let copy = request.copy();
-    let id = request.id.clone();
+    // The footer.
     let reply = state
         .inbox
         .reply
         .as_ref()
         .filter(|(reply_id, _)| *reply_id == request.id)
         .map(|(_, draft)| draft.clone());
-    let answers = if !waiting {
-        col().child(secondary(look, "Answered"))
+    let rule_label = if request.rule_label.is_empty() {
+        request.asked_by.as_ref().map(|asked| asked.label.clone()).unwrap_or_default()
+    } else {
+        request.rule_label.clone()
+    };
+    let rule_note = (!rule_label.is_empty()).then(|| {
+        let change = link(
+            ui,
+            SharedString::from(format!("change rule {}", request.id)),
+            "Change this rule",
+            InboxAction::ChangeRule,
+            look,
+        );
+        if wide {
+            row()
+                .flex_wrap()
+                .gap(px(4.))
+                .text_size(px(12.5))
+                .text_color(rgb(look.secondary))
+                .child(text("Asked because"))
+                .child(text(rule_label).font_weight(FontWeight::MEDIUM))
+                .child(text("is set to Ask me ·"))
+                .child(change)
+        } else {
+            // Panel width: the rule wraps on its own line, then the switch.
+            col()
+                .w_full()
+                .min_w_0()
+                .gap(px(2.))
+                .text_size(px(12.5))
+                .text_color(rgb(look.secondary))
+                .child(
+                    row()
+                        .w_full()
+                        .flex_wrap()
+                        .items_start()
+                        .gap(px(4.))
+                        .child(text("Asked because"))
+                        .child(text(rule_label).font_weight(FontWeight::MEDIUM).min_w_0()),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child(text("is set to Ask me ·"))
+                        .child(change),
+                )
+        }
+    });
+    let plain_decision = waiting
+        && !pending
+        && reply.is_none()
+        && !is_question
+        && !request.dismiss_only
+        && !(copy.is_some() && !rich_card);
+    let footer = if !waiting {
+        row().child(quiet(look, answered_text(request.answer.as_ref())))
     } else if pending {
-        col().child(secondary(look, "Answering…"))
-    } else if let Some(draft) = reply {
-        col()
-            .gap(px(6.))
-            .child(ReplyBox {
+        row().child(quiet(look, "Answering…"))
+    } else if let (Some(draft), false) = (reply, is_question) {
+        // No, with a note: the note box, then Send and Cancel.
+        row()
+            .gap(px(8.))
+            .items_center()
+            .child(div().flex_1().child(ReplyBox {
                 ui: ui.clone(),
                 id: request.id.clone(),
                 draft,
-            })
-            .child(
-                row()
-                    .gap(px(8.))
-                    .child(button(
-                        ui,
-                        SharedString::from(format!("send reply {}", request.id)),
-                        "Send reply",
-                        vec![AppAction::Inbox(InboxAction::SendReply)],
-                        look,
-                        true,
-                    ))
-                    .child(button(
-                        ui,
-                        SharedString::from(format!("cancel reply {}", request.id)),
-                        "Cancel",
-                        vec![AppAction::Inbox(InboxAction::CancelReply)],
-                        look,
-                        false,
-                    )),
-            )
+                placeholder: "Add a note for the agent…",
+            }))
+            .child(button(
+                ui,
+                SharedString::from(format!("send reply {}", request.id)),
+                "No, send note",
+                vec![AppAction::Inbox(InboxAction::SendReply)],
+                look,
+                true,
+            ))
+            .child(button(
+                ui,
+                SharedString::from(format!("cancel reply {}", request.id)),
+                "Cancel",
+                vec![AppAction::Inbox(InboxAction::CancelReply)],
+                look,
+                false,
+            ))
     } else if request.dismiss_only {
-        // D798: the agent waits in its own terminal; nothing an answer does
-        // would type there, so Dismiss is the only thing offered.
-        col().child(row().gap(px(8.)).child(button(
+        // D798: nothing an answer does would type into the agent's terminal.
+        row().child(button(
             ui,
             SharedString::from(format!("dismiss {}", request.id)),
             "Dismiss",
             vec![AppAction::Inbox(InboxAction::Dismiss(id.clone()))],
             look,
             true,
-        )))
-    } else if copy.is_some() {
-        col().child(
-            row()
-                .gap(px(8.))
-                .flex_wrap()
-                .child(button(
+        ))
+    } else if is_question {
+        let stopped = if agent.is_empty() {
+            "The agent is stopped until you answer".to_owned()
+        } else {
+            format!("{agent} is stopped until you answer")
+        };
+        row()
+            .flex_wrap()
+            .gap(px(8.))
+            .items_center()
+            .child(
+                quiet(look, "A question changes nothing by itself; the answer goes to the agent as you give it.")
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(quiet(look, stopped).text_size(px(12.5)).flex_shrink_0().ml_auto())
+            .when(on_screen && !wide, |r| {
+                r.child(button(
                     ui,
-                    SharedString::from(format!("approve {}", request.id)),
-                    "Approve",
-                    vec![AppAction::Inbox(InboxAction::Answer(id.clone(), Answer::Approved))],
-                    look,
-                    true,
-                ))
-                .child(button(
-                    ui,
-                    SharedString::from(format!("somewhere else {}", request.id)),
-                    "Somewhere else…",
-                    vec![AppAction::Inbox(InboxAction::SomewhereElse(id.clone()))],
-                    look,
-                    false,
-                ))
-                .child(button(
-                    ui,
-                    SharedString::from(format!("deny {}", request.id)),
-                    "Deny",
-                    vec![AppAction::Inbox(InboxAction::Answer(
-                        id.clone(),
-                        Answer::Denied { reply: None },
-                    ))],
+                    SharedString::from(format!("dismiss {}", request.id)),
+                    "Dismiss",
+                    vec![AppAction::Inbox(InboxAction::Dismiss(id.clone()))],
                     look,
                     false,
-                )),
-        )
+                ))
+            })
+    } else if copy.is_some() && !rich_card {
+        row()
+            .gap(px(8.))
+            .flex_wrap()
+            .child(answer_button(ui, SharedString::from(format!("approve {}", request.id)), "Approve",
+                InboxAction::Answer(id.clone(), Answer::Approved), look, true, false))
+            .child(answer_button(ui, SharedString::from(format!("somewhere else {}", request.id)), "Somewhere else…",
+                InboxAction::SomewhereElse(id.clone()), look, false, false))
+            .child(answer_button(ui, SharedString::from(format!("deny {}", request.id)), "Deny",
+                InboxAction::Answer(id.clone(), Answer::Denied { reply: None }), look, false, false))
     } else {
-        col().child(
-            row()
-                .gap(px(8.))
-                .flex_wrap()
-                .when(!is_question, |r| {
-                    r.child(button(
-                        ui,
-                        SharedString::from(format!("allow {}", request.id)),
-                        "Allow",
-                        vec![AppAction::Inbox(InboxAction::Answer(
-                            id.clone(),
-                            Answer::Approved,
-                        ))],
-                        look,
-                        true,
-                    ))
-                    .child(button(
-                        ui,
-                        SharedString::from(format!("deny {}", request.id)),
-                        "Deny",
-                        vec![AppAction::Inbox(InboxAction::Answer(
-                            id.clone(),
-                            Answer::Denied { reply: None },
-                        ))],
-                        look,
-                        false,
-                    ))
-                })
-                .when(is_question, |r| {
-                    r.children(request.choices.iter().enumerate().map(|(index, choice)| {
-                        button(
-                            ui,
-                            SharedString::from(format!("choose {} {index}", request.id)),
-                            choice.clone(),
-                            vec![AppAction::Inbox(InboxAction::Choose(
-                                id.clone(),
-                                choice.clone(),
-                            ))],
-                            look,
-                            index == 0,
-                        )
-                    }))
-                })
-                .child(div().flex_1())
-                .when(!on_screen, |r| {
-                    r.child(button(
-                        ui,
-                        SharedString::from(format!("reply {}", request.id)),
-                        "Reply…",
-                        vec![AppAction::Inbox(InboxAction::StartReply(id.clone()))],
-                        look,
-                        false,
-                    ))
-                })
-                .when(on_screen && !wide, |r| {
-                    r.child(button(
-                        ui,
-                        SharedString::from(format!("dismiss {}", request.id)),
-                        "Dismiss",
-                        vec![AppAction::Inbox(InboxAction::Dismiss(id.clone()))],
-                        look,
-                        false,
-                    ))
-                }),
+        let asking = state.inbox.asking.contains(&request.id);
+        let (why_label, why_muted) = if request.asked_why.is_some() {
+            ("Asked why ✓", true)
+        } else if asking {
+            ("Asking…", true)
+        } else {
+            ("Ask why", false)
+        };
+        row()
+            .flex_wrap()
+            .gap(px(8.))
+            .items_center()
+            .child(answer_button(ui, SharedString::from(format!("allow {}", request.id)), "Yes",
+                InboxAction::Answer(id.clone(), Answer::Approved), look, true, false))
+            .child(answer_button(ui, SharedString::from(format!("deny {}", request.id)), "No",
+                InboxAction::Answer(id.clone(), Answer::Denied { reply: None }), look, false, false))
+            .child(
+                answer_button(ui, SharedString::from(format!("ask why {}", request.id)), why_label,
+                    InboxAction::AskWhy(id.clone()), look, false, why_muted)
+                    .ml(px(8.))
+                    .disabled(why_muted),
+            )
+            .when(!request.rule.is_empty(), |r| r.child(tick(ui, request, ticked, look)))
+    };
+    let note = rule_note.filter(|_| waiting && !is_question);
+    let reply_link = plain_decision.then(|| {
+        link(
+            ui,
+            SharedString::from(format!("reply {}", request.id)),
+            "No, with a note…",
+            InboxAction::StartReply(id.clone()),
+            look,
         )
+        .text_size(px(12.))
+        .text_color(rgb(look.secondary))
+    });
+    let footer = if wide {
+        row()
+            .flex_wrap()
+            .gap(px(8.))
+            .items_center()
+            .mt(px(14.))
+            .pt(px(12.))
+            .border_t_1()
+            .border_color(rgb(look.line))
+            .child(footer.flex_1().min_w_0())
+            .child(
+                col()
+                    .ml_auto()
+                    .flex_shrink_0()
+                    .items_end()
+                    .children(note)
+                    .children(reply_link),
+            )
+    } else {
+        // Panel width: everything stacks and wraps inside the card.
+        col()
+            .gap(px(8.))
+            .items_start()
+            .mt(px(14.))
+            .pt(px(12.))
+            .border_t_1()
+            .border_color(rgb(look.line))
+            .child(footer.w_full().min_w_0())
+            .child(
+                col()
+                    .w_full()
+                    .min_w_0()
+                    .items_start()
+                    .gap(px(4.))
+                    .children(reply_link)
+                    .children(note),
+            )
     };
 
     col()
@@ -1221,32 +1534,28 @@ fn decision_card(
         .role(Role::Group)
         .aria_label(request.title.clone())
         .test_support()
-        .rounded(px(9.))
+        .rounded(px(12.))
         .bg(rgb(look.card))
         .border_1()
-        .border_color(rgb(ORANGE))
-        .p(px(12.))
-        .gap(px(8.))
-        .text_size(px(12.5))
+        .border_color(rgb(if waiting { tone(look, 0xf0b35a, 0xb9812f) } else { look.line }))
+        .px(px(if wide { 18. } else { 14. }))
+        .pt(px(16.))
+        .pb(px(14.))
+        .text_size(px(if wide { 13. } else { 12.5 }))
         .child(top)
-        .child(who)
-        .children(meta)
-        .child(text(request.reason.clone()))
-        // A tool called with no arguments (an MCP call such as `whoami`) has
-        // nothing to preview past its title.
-        .when(copy.is_some() || !no_arguments(request), |c| {
-            c.child(match copy {
-                Some(copy) => copy_lines(ui, state, request, copy, look),
-                None => preview(request, look),
-            })
-        })
-        .children(steps)
-        .children(why_line)
-        .when_some(request.undo_note.clone(), |c, note| {
-            c.child(text(note).text_size(px(11.5)).text_color(rgb(RED)))
-        })
-        .when(waiting && !request.rule.is_empty() && !is_question, |c| {
-            c.child(tick(ui, request, ticked, look))
-        })
-        .child(answers)
+        .child(columns)
+        .children(asked)
+        .child(footer)
+}
+
+/// How an answered request was answered, in a line.
+fn answered_text(answer: Option<&Answer>) -> String {
+    match answer {
+        None => String::new(),
+        Some(Answer::Approved) => "Answered: yes".to_owned(),
+        Some(Answer::Always { .. }) => "Answered: yes, always for this session".to_owned(),
+        Some(Answer::Denied { reply: None }) => "Answered: no".to_owned(),
+        Some(Answer::Denied { reply: Some(note) }) => format!("Answered: no · {note}"),
+        Some(Answer::Replied { text }) => format!("Answered: {text}"),
+    }
 }

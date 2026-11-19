@@ -55,6 +55,8 @@ use relay::Relayed;
 pub use replay::Replayed;
 
 /// How often a wait says it is still waiting (MCP.md §5).
+/// The longest explanation an agent gives for a request (INBOXHOOKS).
+const MAX_EXPLANATION: usize = 1000;
 const KEEPALIVE: Duration = Duration::from_secs(15);
 /// D158.7: how long a session stays Needs you after a pending return or a
 /// wait that ended with no answer, for the agent's next wait to come.
@@ -190,6 +192,17 @@ impl Held {
     /// Whether a wait on this request has more to wait for.
     fn waiting(&self) -> bool {
         self.pending() || self.running
+    }
+
+    /// The user pressed Ask why and the agent hasn't answered yet: a wait
+    /// ends with this so the agent can explain (INBOXHOOKS).
+    fn asking_why(&self) -> bool {
+        self.pending()
+            && self
+                .request
+                .asked_why
+                .as_ref()
+                .is_some_and(|asked| asked.asked_at.is_some() && asked.reply.is_empty())
     }
 
     /// Whether the request still waits for the user's answer.
@@ -1278,6 +1291,10 @@ impl pb::inbox_service_server::InboxService for Inbox {
             let mut keepalive = tokio::time::interval(KEEPALIVE);
             loop {
                 let current = answers.borrow_and_update().clone();
+                if current.asking_why() {
+                    let _ = sender.send(Ok(settled(&current))).await;
+                    return;
+                }
                 if !current.waiting() {
                     if sender.send(Ok(settled(&current))).await.is_ok() {
                         deferred::delivered(&held);
@@ -1312,6 +1329,70 @@ impl pb::inbox_service_server::InboxService for Inbox {
             }
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
+    }
+
+    /// INBOXHOOKS: the user asks the agent why. The card stays pending; the
+    /// agent's wait ends with `asked_why` so it can explain.
+    async fn ask_why(
+        &self,
+        request: Request<pb::AskWhyRequest>,
+    ) -> Result<Response<pb::InboxRequest>, Status> {
+        let caller = request_caller(&request)?;
+        self.guard.require(&caller, &answer())?;
+        let request = request.into_inner();
+        let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
+        self.set_why(&id, |request, at| {
+            let asked = request.asked_why.get_or_insert_with(Default::default);
+            // Asking again before the agent answered changes nothing.
+            if asked.asked_at.is_some() && asked.reply.is_empty() {
+                return false;
+            }
+            *asked = pb::AskedWhy {
+                asked_at: Some(timestamp(at)),
+                reply: String::new(),
+                replied_at: None,
+            };
+            true
+        }, &caller)
+        .await
+        .map(Response::new)
+    }
+
+    /// INBOXHOOKS: the agent's answer to Ask why, on a request its own
+    /// session made. The card stays pending.
+    async fn explain_ask(
+        &self,
+        request: Request<pb::ExplainAskRequest>,
+    ) -> Result<Response<pb::InboxRequest>, Status> {
+        let caller = request_caller(&request)?;
+        let Caller::Agent(_) = &caller else {
+            return Err(status::invalid_field(
+                "id",
+                Problem::NotAllowedHere,
+                "only the agent that made a request explains it",
+                "ask the agent why from the card's Ask why button instead",
+            ));
+        };
+        let request = request.into_inner();
+        let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
+        let reply = request.reply.trim().to_owned();
+        let length = reply.chars().count();
+        if length == 0 || length > MAX_EXPLANATION {
+            return Err(status::invalid_field(
+                "reply",
+                if length == 0 { Problem::Missing } else { Problem::TooLong },
+                format!("the explanation is {length} characters; it must be 1 to {MAX_EXPLANATION}"),
+                "send a shorter explanation that says why the request is needed",
+            ));
+        }
+        self.set_why(&id, |request, at| {
+            let asked = request.asked_why.get_or_insert_with(Default::default);
+            asked.reply.clone_from(&reply);
+            asked.replied_at = Some(timestamp(at));
+            true
+        }, &caller)
+        .await
+        .map(Response::new)
     }
 
     /// The asking agent stopped waiting (TP-15). Withdrawing a request
@@ -1362,6 +1443,46 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .await?;
         self.tell(pb::Change::Updated, &entry.session, &current);
         Ok(Response::new(current))
+    }
+}
+
+impl Inbox {
+    /// Runs `change` on the pending request `id` as `caller` sees it; when
+    /// it says it changed the request, bumps the revision, saves and
+    /// publishes it. Returns the request as it is.
+    async fn set_why(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut pb::InboxRequest, SystemTime) -> bool,
+        caller: &Caller,
+    ) -> Result<pb::InboxRequest, Status> {
+        let state = self.state.lock().await;
+        let entry = state
+            .requests
+            .iter()
+            .find(|entry| entry.id == id && sees(caller, entry))
+            .ok_or_else(|| no_request(id))?;
+        let mut next = entry.request.borrow().clone();
+        if !next.pending()
+            || entry.session.is_empty()
+            || self.is_migrate(&next.request)
+            || host_asks::is_host_ask(entry)
+        {
+            return Err(status::invalid_field(
+                "id",
+                Problem::NotAllowedHere,
+                format!("request {id} is not an agent's call that still waits for an answer"),
+                "ask why only on an agent's pending request",
+            ));
+        }
+        if !change(&mut next.request, SystemTime::now()) {
+            return Ok(next.request);
+        }
+        next.request.revision = Some(next_revision(&next.request));
+        let current = next.request.clone();
+        self.commit(entry, next, None, "save the question").await?;
+        self.tell(pb::Change::Updated, &entry.session, &current);
+        Ok(current)
     }
 }
 
@@ -1942,6 +2063,7 @@ fn settled(held: &Held) -> pb::WaitResponse {
         result_type,
         error,
         result_kept_until,
+        asked_why: held.asking_why(),
         ..Default::default()
     }
 }
@@ -1968,6 +2090,7 @@ mod tests {
     use humata2_grpc::humata::v1::inbox_service_server::InboxService;
     use humata2_store::{SessionRecord, StoreError};
     use humata2_svc_away::HostLink;
+    use tokio_stream::StreamExt;
 
     use super::*;
 
@@ -2088,6 +2211,134 @@ mod tests {
             "local".to_owned(),
             Arc::new(NoopFeed),
         ))
+    }
+
+    fn agent_req<T>(msg: T, session: &str) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.extensions_mut().insert(Caller::Agent(AgentCaller {
+            session: humata2_access::SessionRef {
+                id: humata2_access::SessionId::new(session),
+                channel: humata2_access::ChannelId::new("ch_1"),
+                machine: humata2_access::MachineId::new("local"),
+            },
+            agent: "claude".to_owned(),
+            title: "Claude".to_owned(),
+            method: "mcp".to_owned(),
+            context_only_parent: None,
+            desk: None,
+            review_push: None,
+            channel_desk: None,
+        }));
+        req
+    }
+
+    /// A pending question from `session`, held in `inbox`.
+    async fn hold_question(inbox: &Inbox, session: &str, state: pb::RequestState) -> String {
+        let request = pb::InboxRequest {
+            id: Some(pb::RequestId { value: "rq_1".to_owned() }),
+            kind: pb::RequestKind::Question as i32,
+            state: state as i32,
+            revision: Some(pb::Revision { value: 1 }),
+            ..Default::default()
+        };
+        inbox
+            .store
+            .put_session(&SessionRecord {
+                id: session.to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: String::new(),
+                title: "t".to_owned(),
+                agent: "claude".to_owned(),
+                folder: std::path::PathBuf::from("/tmp/x"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let entry = Entry::new("rq_1".to_owned(), session.to_owned(), None, None, None, Held::new(request));
+        inbox.state.lock().await.add(entry);
+        "rq_1".to_owned()
+    }
+
+    fn id(value: &str) -> Option<pb::RequestId> {
+        Some(pb::RequestId { value: value.to_owned() })
+    }
+
+    #[tokio::test]
+    async fn asking_why_marks_a_pending_agent_card_and_ends_the_agents_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        let rq = hold_question(&inbox, "se_1", pb::RequestState::Pending).await;
+        let asked = inbox
+            .ask_why(user_req(pb::AskWhyRequest { id: id(&rq), ..Default::default() }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(asked.asked_why.as_ref().is_some_and(|why| why.asked_at.is_some()));
+        assert_eq!(asked.state, pb::RequestState::Pending as i32);
+        assert_eq!(asked.revision.as_ref().map(|r| r.value), Some(2));
+        // A wait that starts now is told at once, and again until a reply.
+        for _ in 0..2 {
+            let mut waits = inbox
+                .wait_for_answer(agent_req(
+                    pb::WaitForAnswerRequest { id: id(&rq), wait_seconds: 30, ..Default::default() },
+                    "se_1",
+                ))
+                .await
+                .unwrap()
+                .into_inner();
+            let told = waits.next().await.unwrap().unwrap();
+            assert!(told.asked_why && !told.keepalive);
+            assert_eq!(told.state, pb::RequestState::Pending as i32);
+        }
+    }
+
+    #[tokio::test]
+    async fn asking_why_of_an_answered_card_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        let rq = hold_question(&inbox, "se_1", pb::RequestState::Approved).await;
+        let refused = inbox
+            .ask_why(user_req(pb::AskWhyRequest { id: id(&rq), ..Default::default() }))
+            .await;
+        assert!(refused.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_the_asking_session_explains_and_the_reply_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        let rq = hold_question(&inbox, "se_1", pb::RequestState::Pending).await;
+        inbox
+            .ask_why(user_req(pb::AskWhyRequest { id: id(&rq), ..Default::default() }))
+            .await
+            .unwrap();
+        let other = inbox
+            .explain_ask(agent_req(
+                pb::ExplainAskRequest { id: id(&rq), reply: "because".to_owned() },
+                "se_2",
+            ))
+            .await;
+        assert!(other.is_err());
+        let too_long = inbox
+            .explain_ask(agent_req(
+                pb::ExplainAskRequest { id: id(&rq), reply: "x".repeat(1001) },
+                "se_1",
+            ))
+            .await;
+        assert!(too_long.is_err());
+        let explained = inbox
+            .explain_ask(agent_req(
+                pb::ExplainAskRequest { id: id(&rq), reply: "The build needs the data there.".to_owned() },
+                "se_1",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let why = explained.asked_why.unwrap();
+        assert!(!why.reply.is_empty() && why.replied_at.is_some());
+        assert_eq!(explained.state, pb::RequestState::Pending as i32);
+        // The reply ends the asking: the agent's wait goes on waiting.
+        let held = inbox.state.lock().await.requests[0].request.borrow().clone();
+        assert!(!held.asking_why());
     }
 
     #[test]

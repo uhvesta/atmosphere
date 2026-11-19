@@ -25,7 +25,7 @@ Layer: verify (Board, the person). Platforms: macOS.
 2. **I do:** click **+** on Backlog, type "Cut over", create it.
    **I see:** "PAY-2 Cut over" in Backlog.
    **State and events:** the app sends `CreateItem` (To do), then `MoveItem` (Backlog). Two history entries, not one.
-   **Status:** Fakes only. `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request`. Unproven live: the second call landing. Likely bug, see Gaps.
+   **Status:** Fakes only. `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope`. Unproven live: the second call landing. Likely bug, see Gaps.
 
 3. **I do:** on the sidebar's **Board**, click **New item**, type "Q4 plan", create it.
    **I see:** "GLB-1 Q4 plan" with a "Global" label.

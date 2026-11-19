@@ -126,6 +126,7 @@ async fn begin_move(
             }),
             id: Some(id.clone()),
             to: Some(to.clone()),
+            ..Default::default()
         })
         .await
         .expect("the move starts")

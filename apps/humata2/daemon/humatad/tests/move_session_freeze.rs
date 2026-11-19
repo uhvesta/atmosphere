@@ -29,6 +29,7 @@ fn request(id: &pb::SessionId, to: &pb::MachineId, key: &str) -> pb::MoveSession
         idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
         id: Some(id.clone()),
         to: Some(to.clone()),
+        ..Default::default()
     }
 }
 

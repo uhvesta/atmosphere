@@ -1,0 +1,79 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Agent inbox"
+  Link "To-do"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" selected expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482"
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Button "New session"
+Button "Pin this channel"
+Button "More channel actions" disabled
+Tab "Sessions"
+Tab "Desk"
+Tab "Agent inbox"
+Tab "To-do"
+Tab "Repos and machines"
+Tab "Agent access" selected
+Tab "Activity"
+RadioButton "Tick steps and edit items it made: Allow" selected
+RadioButton "Tick steps and edit items it made: Ask"
+RadioButton "Tick steps and edit items it made: Never"
+RadioButton "Add an item: Allow" selected
+RadioButton "Add an item: Ask"
+RadioButton "Add an item: Never"
+RadioButton "Close or edit an item it didn’t make: Allow"
+RadioButton "Close or edit an item it didn’t make: Ask" selected
+RadioButton "Close or edit an item it didn’t make: Never"
+RadioButton "Delete an item: Allow"
+RadioButton "Delete an item: Ask" selected
+RadioButton "Delete an item: Never"
+RadioButton "Move or copy files inside its own session: Allow" selected
+RadioButton "Move or copy files inside its own session: Ask"
+RadioButton "Move or copy files inside its own session: Never"
+RadioButton "Copy files from another session: Allow"
+RadioButton "Copy files from another session: Ask" selected
+RadioButton "Copy files from another session: Never"
+Link "Remove"
+RadioButton "Move files or its session to another machine: Allow"
+RadioButton "Move files or its session to another machine: Ask" selected
+RadioButton "Move files or its session to another machine: Never"
+RadioButton "Start or fork a session: Allow"
+RadioButton "Start or fork a session: Ask" selected
+RadioButton "Start or fork a session: Never"
+RadioButton "End a session or a terminal: Allow"
+RadioButton "End a session or a terminal: Ask"
+RadioButton "End a session or a terminal: Never"
+RadioButton "Read other channels’ to-dos and files: Allow" selected
+RadioButton "Read other channels’ to-dos and files: Ask"
+RadioButton "Read other channels’ to-dos and files: Never"
+RadioButton "Ask for access it doesn’t have: Ask"
+RadioButton "Ask for access it doesn’t have: Never"
+RadioButton "Ask you a question: Ask" selected
+Button "Other rules"

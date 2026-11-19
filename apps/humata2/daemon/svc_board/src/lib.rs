@@ -13,6 +13,8 @@ mod hidden;
 mod history;
 mod journaled;
 mod keys;
+mod pr_reviews;
+mod pr_reviews_gh;
 pub mod ports;
 mod rank;
 mod replay;
@@ -54,6 +56,8 @@ pub use self::ports::{
     HostMachines, HostRepos, HostTransfers, Method, OwnedItem, Placement, Replayed, Row, Scope,
     SessionTell,
 };
+pub use self::ports::{FoundPr, ReviewFetchError, ReviewRequestsPort};
+pub use self::pr_reviews_gh::GhReviewRequests;
 use self::asks::{change_ask, field_change, new_item_ask, pending_for};
 use self::ports::{agent_caller_of, answer_key, caller_of, gate, refused, store_error};
 use self::scope::{
@@ -94,6 +98,9 @@ pub struct BoardSvc {
     /// On the host: the machine, file and transfer services a machine's
     /// agents reach through it (D768), given once they are made.
     host_calls: Arc<std::sync::OnceLock<HostCalls>>,
+    /// On the host: where pull requests that ask for the user's review are
+    /// read from, and when they last were.
+    review_requests: Option<Arc<pr_reviews::ReviewFeed>>,
 }
 
 /// A write, as asked.
@@ -274,7 +281,15 @@ impl BoardSvc {
             told: None,
             repos: None,
             host_calls: Arc::new(std::sync::OnceLock::new()),
+            review_requests: None,
         }
+    }
+
+    /// Turns pull requests that ask for the user's review into To-do items,
+    /// read from `port` at most every ten minutes.
+    pub fn with_review_requests(mut self, port: Arc<dyn ReviewRequestsPort>) -> Self {
+        self.review_requests = Some(Arc::new(pr_reviews::ReviewFeed::new(port)));
+        self
     }
 
     /// Tells the feed of a session whose summary of what the host left out

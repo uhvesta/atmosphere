@@ -213,9 +213,9 @@ fn steps_of(steps: &[pb::TodoStep]) -> Vec<StepRow> {
 
 /// An item as the list sees it: the board item and what the list keeps.
 #[derive(Clone)]
-struct Entry {
-    record: BoardItemRecord,
-    fields: Fields,
+pub(super) struct Entry {
+    pub(super) record: BoardItemRecord,
+    pub(super) fields: Fields,
 }
 
 impl Entry {
@@ -239,11 +239,11 @@ impl Entry {
         sessions
     }
 
-    fn state(&self) -> State {
+    pub(super) fn state(&self) -> State {
         self.fields.state(self.record.column)
     }
 
-    fn revision(&self) -> u64 {
+    pub(super) fn revision(&self) -> u64 {
         self.record.revision + self.fields.extra_revisions
     }
 
@@ -508,7 +508,7 @@ impl BoardSvc {
     // ------------------------------------------------------------ reading
 
     /// Every live item the caller may read, with its to-do fields.
-    fn entries(&self, caller: &Caller) -> Result<Vec<Entry>, Status> {
+    pub(super) fn entries(&self, caller: &Caller) -> Result<Vec<Entry>, Status> {
         let fields = saved::load(&self.store)?;
         let mut records = self
             .store
@@ -788,7 +788,7 @@ impl BoardSvc {
     /// the owner marked VIP, which become Pin in that order; the daemon
     /// doesn't keep those marks, so the app passes them the first time.
     /// Running it again changes nothing.
-    pub fn migrate_boards(&self, vip: &HashSet<String>, now: i64) -> Result<MigrationRow, Status> {
+    pub(crate) fn migrate_boards(&self, vip: &HashSet<String>, now: i64) -> Result<MigrationRow, Status> {
         let _write = lock(&self.writes);
         if let Some(done) = saved::load_migration(&self.store)? {
             return Ok(done);
@@ -864,7 +864,7 @@ impl BoardSvc {
         )
     }
 
-    fn create_todo_in(
+    pub(super) fn create_todo_in(
         &self,
         caller: &Caller,
         request: &pb::CreateTodoRequest,
@@ -956,7 +956,7 @@ impl BoardSvc {
         })))
     }
 
-    fn update_todo_in(
+    pub(super) fn update_todo_in(
         &self,
         caller: &Caller,
         request: &pb::UpdateTodoRequest,
@@ -1462,6 +1462,7 @@ impl pb::todo_service_server::TodoService for BoardSvc {
     ) -> Result<Response<pb::ListTodoResponse>, Status> {
         let caller = self.todo_caller(&request)?;
         let request = request.into_inner();
+        self.refresh_review_requests_if_stale(now_ms());
         let asks = self.asks_for(&caller).await;
         let me = self.clone();
         blocking(move || me.list_todo_in(&caller, &request, &asks, now_ms()))
@@ -1493,6 +1494,7 @@ impl pb::todo_service_server::TodoService for BoardSvc {
     ) -> Result<Response<pb::NextTodoResponse>, Status> {
         let caller = self.todo_caller(&request)?;
         let request = request.into_inner();
+        self.refresh_review_requests_if_stale(now_ms());
         // Ranking needs every item's ask, whoever is calling.
         let asks = self.inbox.pending_board_asks().await;
         let me = self.clone();

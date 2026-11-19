@@ -457,6 +457,9 @@ message MoveSessionRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId id = 2;
   MachineId to = 3;
+  // INBOXHOOKS: why, in the agent's words; shown on the Agent inbox card.
+  // An agent's move without one is refused.
+  string reason = 4;
 }
 
 message PlanArchiveRequest { SessionId id = 1; }

@@ -6,8 +6,8 @@ Navigation "Sidebar"
   Button "Zoom window"
   Button "Search"
   Link "Home"
-  Link "Inbox"
-  Link "Board"
+  Link "Agent inbox"
+  Link "To-do"
   Link "Desk"
   Button "New channel"
   TreeItem "payments-rewrite" expanded
@@ -33,7 +33,7 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
-Complementary "Changes"
+Complementary "Diff"
   #panel-header
     text "Diff"
     #stack-header
@@ -74,6 +74,8 @@ Complementary "Changes"
       #repo-totals-0
         text "+486"
         text "−61"
+    #stack-layer-caption acme/api 1
+      text "codec"
     ListBoxOption "acme/api/src/codec/zstd.rs" selected
       #change-file-name acme/api/src/codec/zstd.rs
         text "zstd.rs"
@@ -83,6 +85,8 @@ Complementary "Changes"
       "Key file"
         text "key"
       CheckBox "Not looked at"
+    #stack-layer-caption acme/api 2
+      text "journal"
     ListBoxOption "acme/api/src/journal/pages.rs"
       #change-file-name acme/api/src/journal/pages.rs
         text "pages.rs"
@@ -109,6 +113,8 @@ Complementary "Changes"
       #repo-totals-1
         text "+39"
         text "−6"
+    #stack-layer-caption acme/web 1
+      text "codec"
     ListBoxOption "acme/web/src/lib/codec.ts"
       #change-file-name acme/web/src/lib/codec.ts
         text "codec.ts"
@@ -118,7 +124,6 @@ Complementary "Changes"
       "Key file"
         text "key"
       CheckBox "Not looked at"
-    Button "1 file to skim · package-lock.json" collapsed
   text "zstd.rs"
   text "api"
   text "·"
@@ -158,11 +163,13 @@ Complementary "Changes"
   Button "Send to claude" disabled
   Button "3 pull requests open"
 Toolbar "Session panels"
-  Button "Inbox"
-    Status "Inbox: 1"
+  Button "Agent inbox"
+    Status "Agent inbox: 1"
+    text "Agent"
+    text "inbox"
   Button "Diff"
   Button "Files"
-  Button "Board"
+  Button "To-do"
   Button "Journal"
   Button "Info"
 Link "Open channel"

@@ -106,6 +106,29 @@ rust_test(
 )
 
 rust_test(
+    name = "todo_test",
+    srcs = ["tests/todo.rs"],
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_root = "tests/todo.rs",
+    data = [
+        "//apps/humata2/clients/live:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
+    },
+    visibility = ["//apps/humata2/clients:__subpackages__"],
+    deps = [
+        ":live_daemon",
+        "//apps/humata2/clients:api",
+        "//apps/humata2/todo",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
     name = "inbox_test",
     srcs = ["tests/inbox.rs"],
     aliases = {"//apps/humata2/clients:api": "humata2_clients"},

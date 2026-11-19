@@ -166,6 +166,8 @@ pub struct InboxState {
     pub unfolded: BTreeSet<RequestId>,
     /// The copy cards whose Details, the real paths, are open.
     pub details: BTreeSet<RequestId>,
+    /// The requests Ask why was sent for and whose request is not back yet.
+    pub asking: BTreeSet<RequestId>,
 }
 
 /// How many requests wait for an answer. The sidebar's Inbox badge and Home's
@@ -399,6 +401,36 @@ impl InboxState {
             .collect()
     }
 
+    /// The channel chips over the cards: every channel that has a request,
+    /// in workspace order, with how many of its requests wait.
+    #[must_use]
+    pub fn chips(&self) -> Vec<(ChannelId, usize)> {
+        let mut channels: Vec<ChannelId> = self
+            .workspace
+            .channels
+            .iter()
+            .map(|channel| channel.id.clone())
+            .filter(|id| self.workspace.requests.iter().any(|request| &request.channel == id))
+            .collect();
+        for request in &self.workspace.requests {
+            if request.kind != RequestKind::Migrate && !channels.contains(&request.channel) {
+                channels.push(request.channel.clone());
+            }
+        }
+        channels
+            .into_iter()
+            .map(|id| {
+                let waiting = self
+                    .workspace
+                    .requests
+                    .iter()
+                    .filter(|request| request.channel == id && request.answer.is_none())
+                    .count();
+                (id, waiting)
+            })
+            .collect()
+    }
+
     /// The requests that show, newest first.
     #[must_use]
     pub fn shown(&self) -> Vec<&Request> {
@@ -459,6 +491,8 @@ pub enum Delegate {
     /// Open the Files page on this machine, where a copy that asks to land
     /// would land: the user picks another place before answering (D467).
     OpenDestination(MachineId),
+    /// Open Settings, Agent access, where the rule that asked is set.
+    OpenAgentAccess,
     /// Say this in a toast.
     Toast(String),
     /// This Mac's daemon was replaced: connect to the new one.
@@ -474,6 +508,16 @@ pub enum InboxAction {
     SetFilter(Filter),
     /// Show or hide answered requests.
     ToggleAnswered,
+    /// The History link: the answered requests instead of the waiting ones,
+    /// and back.
+    ToggleHistory,
+    /// Ask why on a waiting request: the agent says why it asks, and the
+    /// request stays held.
+    AskWhy(RequestId),
+    /// The daemon took Ask why (the request as it is now), or didn't.
+    AskedWhy(RequestId, Result<Request, DaemonError>),
+    /// "Change this rule": open Settings, Agent access.
+    ChangeRule,
     /// Pick Waiting, Answered, or All.
     SetHistory(History),
     /// Show a request's details.
@@ -486,6 +530,8 @@ pub enum InboxAction {
     StartReply(RequestId),
     /// The reply's text changed.
     ReplyText(String),
+    /// The text of the reply field on this request changed.
+    ReplyDraft(RequestId, String),
     /// Deny with the reply.
     SendReply,
     /// Drop the reply.
@@ -701,6 +747,12 @@ fn own_request(old: &OldLocalDaemon) -> Request {
         choices: Vec::new(),
         on_screen: None,
         dismiss_only: false,
+        facts: Vec::new(),
+        affects: Vec::new(),
+        undo_text: String::new(),
+        working_on: String::new(),
+        asked_why: None,
+        rule_label: String::new(),
     }
 }
 
@@ -731,6 +783,44 @@ impl Reducer for Inbox {
                 state.show_answered = !state.show_answered;
                 state.answered_only = false;
                 state.select_visible();
+            }
+            InboxAction::ToggleHistory => {
+                state.show_answered = !state.show_answered;
+                state.answered_only = state.show_answered;
+                state.select_visible();
+            }
+            InboxAction::ChangeRule => {
+                return Effect::send(InboxAction::Delegate(Delegate::OpenAgentAccess));
+            }
+            InboxAction::AskWhy(id) => {
+                let askable = state
+                    .workspace
+                    .requests
+                    .iter()
+                    .any(|request| request.id == id && request.answer.is_none() && request.kind != RequestKind::Migrate);
+                if !askable || !state.asking.insert(id.clone()) {
+                    return Effect::none();
+                }
+                let daemon = self.clients.daemon.clone();
+                return Effect::future(async move {
+                    let result = daemon.ask_why(&id).await;
+                    InboxAction::AskedWhy(id, result)
+                });
+            }
+            InboxAction::AskedWhy(id, result) => {
+                state.asking.remove(&id);
+                match result {
+                    Ok(request) => {
+                        let found = Arc::make_mut(&mut state.workspace)
+                            .requests
+                            .iter_mut()
+                            .find(|found| found.id == id);
+                        if let Some(found) = found {
+                            *found = request;
+                        }
+                    }
+                    Err(error) => state.error = Some(error.to_string()),
+                }
             }
             InboxAction::SetHistory(history) => {
                 state.show_answered = history != History::Waiting;
@@ -866,6 +956,7 @@ impl Reducer for Inbox {
                 return self.answer(state, id, Answer::Always { rule });
             }
             InboxAction::StartReply(id) => state.reply = Some((id, String::new())),
+            InboxAction::ReplyDraft(id, text) => state.reply = Some((id, text)),
             InboxAction::ReplyText(text) => {
                 if let Some(reply) = &mut state.reply {
                     reply.1 = text;

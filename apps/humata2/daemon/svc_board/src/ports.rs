@@ -542,3 +542,69 @@ pub struct HostCalls {
     pub files: Arc<dyn HostFiles>,
     pub transfers: Arc<dyn HostTransfers>,
 }
+
+// ---------------------------------------------------------------------------
+// Pull requests that ask for the user's review
+// ---------------------------------------------------------------------------
+
+/// A pull request someone asked the user to review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundPr {
+    pub owner: String,
+    pub name: String,
+    pub number: u32,
+    pub title: String,
+    pub author: String,
+    pub url: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    /// When the review was asked, in Unix milliseconds.
+    pub requested_unix_ms: i64,
+}
+
+/// Why the pull requests that ask for the user's review couldn't be read.
+#[derive(Debug, thiserror::Error)]
+pub enum ReviewFetchError {
+    #[error(
+        "Humata couldn't run {program} to look for pull requests that ask for your review ({source}). Install the GitHub CLI on this host (brew install gh); if it already runs in your terminal, put its folder on PATH in your login profile (~/.zprofile), because the daemon reads your login shell's PATH when it starts. Review requests in your To-do stay as they are until then"
+    )]
+    GhMissing {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "the GitHub CLI on this host is signed out, so review requests can't be read. In a terminal on this host, run `gh auth login`. Review requests in your To-do stay as they are until then"
+    )]
+    SignedOut { stderr: String },
+    #[error(
+        "GitHub is limiting requests, so review requests weren't read. Wait {wait}, then they are read again on their own; signing in again doesn't lift the limit",
+        wait = wait_text(*wait_seconds)
+    )]
+    RateLimited { wait_seconds: Option<u64> },
+    #[error(
+        "GitHub couldn't be reached to read review requests ({first_line}). Nothing on this machine fixes it: they are read again when the host is online"
+    )]
+    Unreachable { first_line: String },
+    #[error(
+        "GitHub's answer about review requests isn't one this Humata can read. Update the GitHub CLI on the host (brew upgrade gh); if it keeps failing, report it"
+    )]
+    Unreadable {
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+fn wait_text(seconds: Option<u64>) -> String {
+    match seconds {
+        Some(seconds) => format!("{seconds} seconds"),
+        None => "a few minutes".to_owned(),
+    }
+}
+
+/// Where the pull requests that ask for the user's review come from.
+#[tonic::async_trait]
+pub trait ReviewRequestsPort: Send + Sync {
+    /// Every open pull request whose review the user was asked for.
+    async fn fetch(&self) -> Result<Vec<FoundPr>, ReviewFetchError>;
+}

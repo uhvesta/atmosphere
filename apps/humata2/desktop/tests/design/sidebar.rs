@@ -359,8 +359,8 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         })
         .child(div().h(px(4.)))
         .child(nav(look, side, IconName::House, "Home", None))
-        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else if side.desk || side.gpu_box == Link::LinkedWaiting { Some("8") } else if side.stopped { Some("3") } else { Some("7") }))
-        .child(nav(look, side, IconName::SquareKanban, "Board", None))
+        .child(nav(look, side, IconName::Inbox, "Agent inbox", if side.empty { None } else if side.desk || side.gpu_box == Link::LinkedWaiting { Some("8") } else if side.stopped { Some("3") } else { Some("7") }))
+        .child(nav(look, side, IconName::SquareKanban, "To-do", None))
         .child(desk(look, side))
         .child(section(look, "Channels").child(small_icon(IconName::Plus, look.secondary)))
         .when(side.empty, |bar| match side.fresh {

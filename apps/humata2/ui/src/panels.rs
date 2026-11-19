@@ -31,7 +31,6 @@ use crate::chrome::{
 };
 pub(crate) use crate::chrome::panel_header;
 
-use crate::panel_board::*;
 use crate::panel_changes::*;
 use crate::panel_files::*;
 use crate::panel_inbox::*;
@@ -47,6 +46,7 @@ pub(crate) fn panel(
     file_filter: Entity<InputState>,
     window: &Window,
     documents: &crate::document_tab::Documents,
+    todo_inputs: &crate::todo::Inputs,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let look = Look::of(cx);
@@ -58,7 +58,9 @@ pub(crate) fn panel(
     let body = match (panel, session) {
         (Panel::Changes, _) => changes(ui, state, full, look, width, window, documents),
         (Panel::Inbox, _) => inbox(ui, state, full, look),
-        (Panel::Board, Some(session)) => board(ui, state, session, full, look),
+        // Every session, a Desk session too, shows its slice of the To-do
+        // list (frame b9-3).
+        (Panel::Board, Some(session)) => todo_panel(ui, state, session, full, todo_inputs, look),
         (Panel::Journal, _) => journal(ui, state, full, look),
         (Panel::Files, Some(session)) => files(ui, state, session, full, file_filter, look),
         (Panel::Info, Some(session)) => info(ui, state, session, full, look),
@@ -71,7 +73,7 @@ pub(crate) fn panel(
             "side-panel"
         })
         .role(Role::Complementary)
-        .aria_label(panel.name())
+        .aria_label(title(panel))
         .test_support()
         .h_full()
         .overflow_hidden()
@@ -182,7 +184,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                     .ghost()
                     .selected(on == Some(panel))
                     .w(px(52.))
-                    .h(px(47.))
+                    .h(px(if panel == Panel::Inbox { 63. } else { 47. }))
                     .p_0()
                     .rounded(px(7.))
                     .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))
@@ -243,13 +245,22 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                                         .test_support()
                                 }),
                             )
-                            .child(text(title(panel)).text_size(px(10.)).line_height(phi()).text_color(rgb(
-                                if on == Some(panel) {
-                                    look.text
-                                } else {
-                                    look.secondary
-                                },
-                            ))),
+                            .child(
+                                // One centred line per word, so a two-word
+                                // title wraps in the cell instead of clipping.
+                                col().items_center().children(title(panel).split(' ').map(|word| {
+                                    text(word.to_owned())
+                                        .text_center()
+                                        .whitespace_nowrap()
+                                        .text_size(px(10.))
+                                        .line_height(phi())
+                                        .text_color(rgb(if on == Some(panel) {
+                                            look.text
+                                        } else {
+                                            look.secondary
+                                        }))
+                                })),
+                            ),
                     )
                     .on_click(move |_, _, cx| {
                         ui.send(
@@ -423,4 +434,38 @@ mod tests {
         );
         assert_eq!(badge, 0);
     }
+}
+
+/// The session's To-do panel under the panel header.
+fn todo_panel(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    session: &Session,
+    full: bool,
+    inputs: &crate::todo::Inputs,
+    look: Look,
+) -> Div {
+    let send: crate::todo::Send = {
+        let ui = ui.clone();
+        Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx))
+    };
+    let chips = |id: &str| crate::pages::session_chip(state, id);
+    let id = session.id.as_str();
+    // Frame 191: beside the terminal an open item's way back is the header.
+    let lead = (!full)
+        .then(|| humata2_ui_workspace::todo_panel::back(&send, &state.todo, id, look))
+        .flatten();
+    let header = match lead {
+        Some(lead) => crate::chrome::panel_header_lead(ui, Panel::Board, lead, None, look),
+        None => panel_header(ui, state, Panel::Board, full, None, look),
+    };
+    col().size_full().child(header).child(humata2_ui_workspace::todo_panel::panel(
+        &send,
+        &state.todo,
+        id,
+        inputs,
+        &chips,
+        full,
+        look,
+    ))
 }

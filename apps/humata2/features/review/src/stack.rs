@@ -252,6 +252,95 @@ pub fn fold_skims<'a, F>(files: &'a [F], tier: impl Fn(&F) -> Tier) -> Folded<'a
     Folded { shown, skims }
 }
 
+/// One entry of a repository's group in Whole stack (D867).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WholeEntry {
+    /// Where a layer's files start.
+    Caption {
+        /// The layer's number, 1 at the bottom.
+        number: usize,
+        /// The layer's title.
+        title: String,
+    },
+    /// Where the files no layer lists start.
+    Other,
+    /// A file, with the higher layers that list it too (their numbers).
+    File {
+        /// The file's path.
+        path: String,
+        /// The other layers that list it, lowest first.
+        also: Vec<usize>,
+    },
+}
+
+/// Whether `layer` lists `path` of `repo`, in its order or its tiers.
+fn lists(layer: &LayerView, repo: &str, path: &str) -> bool {
+    layer
+        .order
+        .iter()
+        .any(|(held, listed)| listed == path && super::same_repo(held, repo))
+        || layer
+            .importance
+            .iter()
+            .any(|entry| entry.path == path && super::same_repo(&entry.repo, repo))
+}
+
+/// Whole stack's files grouped by layer (D867), one list per entry of
+/// `repos` (each a repository with its non-skim files and tiers, in their
+/// current order). Layers run lowest first; a file several layers list sits
+/// under the lowest, naming the others; files no layer lists come last under
+/// [`WholeEntry::Other`]. Within each, key files come first. `None` when no
+/// layer lists any file: nothing is grouped then.
+#[must_use]
+pub fn whole_groups(stack: &StackView, repos: &[(&str, Vec<(&str, Tier)>)]) -> Option<Vec<Vec<WholeEntry>>> {
+    if stack.layers.iter().all(|layer| layer.order.is_empty() && layer.importance.is_empty()) {
+        return None;
+    }
+    let grouped = repos
+        .iter()
+        .map(|(repo, files)| {
+            let mut layers: Vec<Vec<(&str, Tier, Vec<usize>)>> = vec![Vec::new(); stack.layers.len()];
+            let mut other: Vec<(&str, Tier, Vec<usize>)> = Vec::new();
+            for (path, tier) in files {
+                let mut listing = stack
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, layer)| lists(layer, repo, path))
+                    .map(|(index, _)| index + 1);
+                match listing.next() {
+                    Some(lowest) => layers[lowest - 1].push((path, *tier, listing.collect())),
+                    None => other.push((path, *tier, Vec::new())),
+                }
+            }
+            let mut entries = Vec::new();
+            let mut put = |entries: &mut Vec<WholeEntry>, files: Vec<(&str, Tier, Vec<usize>)>| {
+                let (key, normal): (Vec<_>, Vec<_>) = files.into_iter().partition(|(_, tier, _)| *tier == Tier::Key);
+                entries.extend(key.into_iter().chain(normal).map(|(path, _, also)| WholeEntry::File {
+                    path: path.to_owned(),
+                    also,
+                }));
+            };
+            for (index, files) in layers.into_iter().enumerate() {
+                if files.is_empty() {
+                    continue;
+                }
+                entries.push(WholeEntry::Caption {
+                    number: index + 1,
+                    title: stack.layers[index].title.clone(),
+                });
+                put(&mut entries, files);
+            }
+            if !other.is_empty() {
+                entries.push(WholeEntry::Other);
+                put(&mut entries, other);
+            }
+            entries
+        })
+        .collect();
+    Some(grouped)
+}
+
 /// The most file names the skim row lists before it says "…".
 const SKIM_NAMES: usize = 3;
 

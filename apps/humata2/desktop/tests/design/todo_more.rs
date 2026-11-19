@@ -586,6 +586,16 @@ pub fn session_todo_ask(look: Look) -> Div {
         tl(0xb86a00, "✱ Writing docs/cutover.md… (40s · esc to interrupt)"),
     ];
     let middle = div().child(header).child(tab_bar(look, true)).child(term(look, lines));
+    let body = drawer_body(look, false);
+    let bar = panel_bar(look, div().flex().gap(px(6.)).text_size(px(13.)).text_color(c(look.accent)).child("‹ To-do"), "PAY-3 · payments-rewrite");
+    screen(look, Side("Ledger entries", None, false), middle, Panel::Board, bar, body)
+}
+
+/// The open drawer of PAY-3 in the session's To-do panel (frame 191): the
+/// agent's ask, the fields, the steps and the foot.
+/// `narrow`: at side-panel width Effort and Impact take a row each, as
+/// the pair does not fit on one.
+pub(crate) fn drawer_body(look: Look, narrow: bool) -> Div {
     let fact = |key: &'static str, value: Div| {
         div().flex().child(div().w(px(74.)).flex_shrink_0().text_color(c(look.secondary)).child(key)).child(value.flex_1().min_w_0())
     };
@@ -599,7 +609,7 @@ pub fn session_todo_ask(look: Look) -> Div {
         .rounded(px(10.))
         .bg(c(look.attention_bg))
         .child(div().mb(px(-2.)).text_size(px(14.5)).font_weight(FontWeight::SEMIBOLD).child("Close Ledger schema v2?"))
-        .child(div().text_color(c(0x3a2c12)).text_size(px(13.)).child("Migration and backfill pass on staging: 3.1M rows in 4m12s. Steps 1 to 4 are done; step 5, the production cut-over, is yours."))
+        .child(div().text_color(c(if look.dark { 0xe8d6b0 } else { 0x3a2c12 })).text_size(px(13.)).child("Migration and backfill pass on staging: 3.1M rows in 4m12s. Steps 1 to 4 are done; step 5, the production cut-over, is yours."))
         .child(
             div()
                 .flex()
@@ -645,7 +655,7 @@ pub fn session_todo_ask(look: Look) -> Div {
             )
             .child(div().text_color(c(if done { look.secondary } else { look.text })).child(text))
     };
-    let body = div()
+    div()
         .flex_1()
         .min_h_0()
         .flex()
@@ -661,16 +671,22 @@ pub fn session_todo_ask(look: Look) -> Div {
                 .flex_col()
                 .child(prop("State", div().flex().child(crate::todo::segs(look, &["Open", "In progress", "Closed"], "In progress"))).mb(px(3.)))
                 .child(prop("Due", div().flex().items_center().gap(px(10.)).child(field(look, "Fri 20 Nov", false).w(px(150.)).h(px(28.))).child(secondary(look, "tomorrow"))).mb(px(4.)))
-                .child(prop(
-                    "Effort",
-                    div()
-                        .flex()
-                        .items_center()
-                        
-                        .child(crate::todo::segs(look, &["S", "M", "L"], "M"))
-                        .child(secondary(look, "Impact").text_size(px(13.)).ml(px(24.)).mr(px(14.)))
-                        .child(crate::todo::segs(look, &["Low", "Medium", "High"], "High")),
-                ).mb(px(8.)))
+                .when(!narrow, |props| {
+                    props.child(prop(
+                        "Effort",
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(crate::todo::segs(look, &["S", "M", "L"], "M"))
+                            .child(secondary(look, "Impact").text_size(px(13.)).ml(px(24.)).mr(px(14.)))
+                            .child(crate::todo::segs(look, &["Low", "Medium", "High"], "High")),
+                    ).mb(px(8.)))
+                })
+                .when(narrow, |props| {
+                    props
+                        .child(prop("Effort", div().flex().child(crate::todo::segs(look, &["S", "M", "L"], "M"))).mb(px(4.)))
+                        .child(prop("Impact", div().flex().child(crate::todo::segs(look, &["Low", "Medium", "High"], "High"))).mb(px(8.)))
+                })
                 .child(prop("Tags", div().flex().items_center().gap(px(4.)).child(tag(look, "migration")).child(tag(look, "db")).child(link(look, "+ Add").ml(px(5.))))),
         )
         .child(
@@ -708,7 +724,179 @@ pub fn session_todo_ask(look: Look) -> Div {
                 .child("History")
                 .child(div().flex().items_center().gap(px(4.)).child(small_icon(IconName::Pin, look.secondary)).child("Pin"))
                 .child("Hide until…"),
+        )
+}
+
+/// Frame 12: PAY-3 open in the session's To-do panel at full screen, drawn
+/// as the app's panel draws it (`ui/workspace/src/todo_panel.rs` and the
+/// narrow drawer in `todo.rs`, approved by Fable in round 4, D872): the way
+/// back leads the scrolling body, the fields sit a row each, and the
+/// History · Pin · Hide until… row is pinned under a divider.
+pub(crate) fn panel_drawer_full(look: Look) -> Div {
+    let row = || div().flex().flex_row().items_center();
+    let col = || div().flex().flex_col();
+    let small = |text: &'static str| div().text_color(c(look.secondary)).text_size(px(12.)).child(text);
+    let link = |text: &'static str| div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child(text);
+    let field = |label: &'static str, body: Div| row().gap(px(12.)).py(px(4.)).child(small(label).w(px(96.)).flex_shrink_0()).child(body.min_w_0());
+    let seg = |options: &[&'static str], on: &str| {
+        row().p(px(2.)).rounded(px(7.)).bg(c(look.fill)).children(options.iter().map(|name| {
+            div()
+                .px(px(10.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .when(*name == on, |d| d.bg(c(look.card)).font_weight(FontWeight::SEMIBOLD))
+                .child(*name)
+        }))
+    };
+    let pill = |text: &'static str| {
+        div()
+            .flex_shrink_0()
+            .whitespace_nowrap()
+            .px(px(7.))
+            .py(px(1.))
+            .rounded(px(5.))
+            .text_size(px(12.))
+            .bg(c(look.fill))
+            .text_color(tone_c(look, 0x55555b, 0xc4c4ca))
+            .child(text)
+    };
+    let teal = tone_c(look, 0x0f766e, 0x35c4b5);
+    let step = |done: bool, text: &'static str| {
+        let boxed = div()
+            .size(px(15.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(if done { teal } else { tone_c(look, 0xb9b9c0, 0x55555a) })
+            .when(done, |b| b.bg(teal).text_color(c(0xffffff)).text_size(px(10.)).child("✓"));
+        row().gap(px(9.)).py(px(3.)).child(boxed).child(div().when(done, |d| d.text_color(c(look.secondary))).child(text))
+    };
+    let fact = |label: &'static str, body: Div| row().items_start().child(small(label).w(px(74.)).flex_shrink_0()).child(div().flex_1().min_w_0().child(body));
+    let dot = || div().text_color(c(look.secondary)).child("·");
+    let ask = col()
+        .mt(px(6.))
+        .p(px(12.))
+        .gap(px(8.))
+        .rounded(px(10.))
+        .bg(tone_c(look, 0xfff4e0, 0x3b2b10))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child("Close Ledger schema v2?"))
+        .child(
+            div()
+                .text_color(tone_c(look, 0x5c4a2a, 0xe0cfa8))
+                .child("Migration and backfill pass on staging: 3.1M rows in 4m12s. Steps 1 to 4 are done; step 5, the production cut-over, is yours."),
+        )
+        .child(
+            col()
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(c(look.card))
+                .child(fact(
+                    "Evidence",
+                    row()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child(link("3 commits"))
+                        .child(dot())
+                        .child(link("acme/ledger#92"))
+                        .child(dot())
+                        .child(link("212 tests passed")),
+                ))
+                .child(fact("Change", div().child("State: In progress → Closed")))
+                .child(fact("Also", div().child("WEB-13 stops waiting · this session keeps running")))
+                .child(fact("Asked by", div().child("claude in this session · 1m ago"))),
+        )
+        .child(
+            row()
+                .gap(px(8.))
+                .child(button(look, Kind::Primary, "Yes"))
+                .child(button(look, Kind::Secondary, "No"))
+                .child(div().flex_1())
+                .child(button(look, Kind::Secondary, "Ask why"))
+                .child(button(look, Kind::Secondary, "Open session")),
         );
-    let bar = panel_bar(look, div().flex().gap(px(6.)).text_size(px(13.)).text_color(c(look.accent)).child("‹ To-do"), "PAY-3 · payments-rewrite");
-    screen(look, Side("Ledger entries", None, false), middle, Panel::Board, bar, body)
+    let due = col()
+        .gap(px(4.))
+        .child(
+            col()
+                .gap(px(4.))
+                .child(
+                    row()
+                        .gap(px(10.))
+                        .child(
+                            row()
+                                .w(px(150.))
+                                .flex_shrink(1.)
+                                .min_w_0()
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(c(look.line))
+                                .bg(c(look.card))
+                                .child(div().flex_1().min_w_0().child("Fri 20 Nov"))
+                                .child(div().text_color(c(look.secondary)).child("×")),
+                        )
+                        .child(small("tomorrow")),
+                )
+                .child(row().gap(px(8.)).child(link("Today")).child(link("Tomorrow")).child(link("Next week"))),
+        );
+    let drawer = col()
+        .gap(px(6.))
+        .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("Ledger schema v2"))
+        .child(ask)
+        .child(field("State", seg(&["Open", "In progress", "Closed"], "In progress")))
+        .child(field("Due", due))
+        .child(field("Effort", row().gap(px(14.)).flex_wrap().child(seg(&["S", "M", "L"], "M"))))
+        .child(field("Impact", seg(&["Low", "Medium", "High"], "High")))
+        .child(field("Tags", row().flex_wrap().gap(px(6.)).child(pill("migration")).child(pill("db")).child(link("+ Add"))))
+        .child(
+            row()
+                .mt(px(10.))
+                .child(small("STEPS · 4 OF 5").font_weight(FontWeight::SEMIBOLD))
+                .child(div().flex_1())
+                .child(small("ticked by claude")),
+        )
+        .child(step(true, "Add ledger_entries and ledger_balances"))
+        .child(step(true, "Dual-write from the posting path"))
+        .child(step(true, "Backfill the old table in batches"))
+        .child(step(true, "Verify the balances match on staging"))
+        .child(step(false, "Cut production reads over"))
+        .child(
+            row()
+                .gap(px(9.))
+                .py(px(3.))
+                .text_color(c(look.secondary))
+                .child(div().size(px(15.)).flex_shrink_0().rounded(px(4.)).border_1().border_dashed().border_color(tone_c(look, 0xb9b9c0, 0x55555a)))
+                .child("Add a step…"),
+        );
+    let back = row()
+        .gap(px(8.))
+        .min_w_0()
+        .child(div().flex_shrink_0().text_color(c(look.accent)).child("‹ To-do"))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .text_size(px(12.))
+                .text_color(c(look.secondary))
+                .child("PAY-3 · payments-rewrite"),
+        );
+    col()
+        .size_full()
+        .child(col().flex_1().min_h_0().overflow_hidden().p(px(12.)).child(col().gap(px(8.)).child(back).child(drawer)))
+        .child(
+            row()
+                .gap(px(8.))
+                .border_t_1()
+                .border_color(c(look.line))
+                .flex_shrink_0()
+                .px(px(12.))
+                .py(px(10.))
+                .child(link("History"))
+                .child(div().flex_1())
+                .child(link("Pin"))
+                .child(link("Hide until…")),
+        )
 }

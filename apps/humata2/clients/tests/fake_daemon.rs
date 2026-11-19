@@ -191,11 +191,17 @@ fn approving_an_item_transition_moves_only_its_item_and_denying_keeps_it() {
         (Answer::Approved, ItemStatus::Done),
         (Answer::Denied { reply: None }, ItemStatus::InProgress),
     ] {
-        let workspace = fixture::design();
-        let request = workspace.item_details[&ItemId::new("PAY-3")]
-            .request
-            .clone()
-            .expect("board approval");
+        // The design fixture no longer asks to move PAY-3, so give one of
+        // Ledger's waiting requests that job.
+        let mut workspace = fixture::design();
+        let request = workspace
+            .waiting()
+            .find(|r| r.session.as_str() == "ledger")
+            .map(|r| r.id.clone())
+            .expect("Ledger waits on a request");
+        let details = workspace.item_details.entry(ItemId::new("PAY-3")).or_default();
+        details.request = Some(request.clone());
+        details.requested_status = Some(ItemStatus::Done);
         let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
         block_on(daemon.answer(&request, answer)).expect("answer accepted");
         let workspace = daemon.workspace();

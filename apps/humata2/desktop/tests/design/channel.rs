@@ -62,7 +62,7 @@ fn header(look: Look, on: Tab) -> Div {
                 .px(px(20.))
                 .text_size(px(12.5))
                 .child(tab("Sessions", Some("6"), on == Tab::Sessions))
-                .child(tab("Inbox", Some("3"), on == Tab::Inbox))
+                .child(tab("Agent inbox", Some("3"), on == Tab::Inbox))
                 .child(tab("Board", None, false))
                 .child(tab("Repos and machines", None, on == Tab::Repos))
                 .child(tab("Agent access", None, on == Tab::Access))

@@ -356,6 +356,11 @@ fn pages() -> humata2_clients::model::FileDiff {
 /// Frames 119 to 121's stack: api and web; 1 "codec" in both (web moved
 /// since it was sent), 2 "journal" in api, 3 "Not committed yet" in api.
 fn frame_app() -> App {
+    frame_app_listing(true)
+}
+
+/// [`frame_app`], with the layers listing their files (`listed`) or not.
+fn frame_app_listing(listed: bool) -> App {
     use humata2_clients::model::{FileTier, RepoDiff};
     use humata2_clients::views::LayerDrift;
     let (key, normal, skim) = (FileTier::Key, FileTier::Normal, FileTier::Skim);
@@ -405,7 +410,7 @@ fn frame_app() -> App {
     let main = |repo: &str| RepoDiffSpec { repo: repo.to_owned(), base: RepoBase::Branch("main".to_owned()) };
     let mut web_part = part("acme/web", range("w0", "w1"), "acme/web#88", 2);
     web_part.drift = Some(LayerDrift::Moved);
-    let stack = StackView {
+    let mut stack = StackView {
         layers: vec![
             layer(
                 "codec",
@@ -430,6 +435,12 @@ fn frame_app() -> App {
         ],
         whole: vec![main("acme/api"), main("acme/web")],
     };
+    if listed {
+        let pair = |repo: &str, path: &str| (repo.to_owned(), path.to_owned());
+        stack.layers[0].order = vec![pair("acme/api", "src/codec/zstd.rs"), pair("acme/web", "src/lib/codec.ts")];
+        stack.layers[1].order =
+            vec![pair("acme/api", "src/journal/pages.rs"), pair("acme/api", "src/journal/writer.rs")];
+    }
     app.open("ledger", Panel::Journal);
     app.fakes.views.offer_view(
         &ledger(),
@@ -468,4 +479,25 @@ fn the_stack_frames_as_the_app_draws_them() {
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.snapshot("stack-skim-drift");
     app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+}
+
+#[test]
+fn whole_stack_marks_where_each_layer_starts_and_a_click_picks_it() {
+    let mut app = frame_app();
+    assert!(app.contains("stack-layer-caption acme/api 1"));
+    assert!(app.contains("stack-layer-caption acme/api 2"));
+    assert!(app.contains("stack-layer-caption acme/web 1"));
+    assert!(!app.contains("stack-layer-caption acme/api 3"), "layer 3 lists no files");
+    app.click("stack-layer-caption acme/api 2");
+    assert!(inside(&mut app, "stack-row-picked", "stack-row-2"));
+    assert!(!app.contains("stack-layer-caption acme/api 2"), "a picked layer draws no captions");
+}
+
+#[test]
+fn a_stack_whose_layers_list_no_files_draws_no_captions() {
+    let mut app = frame_app_listing(false);
+    assert!(app.contains("stack-list"));
+    for id in ["stack-layer-caption acme/api 1", "stack-layer-caption acme/api other"] {
+        assert!(!app.contains(id), "{id}");
+    }
 }

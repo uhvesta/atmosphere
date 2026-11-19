@@ -9,7 +9,7 @@
 //! with no trail, ⌘/ and Escape, ⌘, and ⇧⌘N. ⌥⌘M is in `keys.rs`. Keys
 //! that reach a terminal belong to the terminal cases.
 use humata2_app::{AppState, Overlay, Route};
-use humata2_clients::model::{Agent, ChannelId, Scope, SessionId, SessionOptions};
+use humata2_clients::model::{Agent, ChannelId, SessionId, SessionOptions};
 use humata2_flow::Action;
 
 use super::world::World;
@@ -220,12 +220,12 @@ fn the_keyboard_walks_the_sidebar_opens_sessions_and_reaches_every_page_and_shee
     press(&mut app, &app_key("["));
     assert_eq!(app.ui.read(|state| state.route.clone()), Route::Session(second.clone()));
 
-    // 7. ⌘1, ⌘2 and ⌘3: Home, the Inbox, the whole workspace's Board,
+    // 7. ⌘1, ⌘2 and ⌘3: Home, the Agent inbox, the To-do list,
     // each with no trail.
     for (key, route) in [
         ("1", Route::Home),
         ("2", Route::Inbox),
-        ("3", Route::Board(Scope::Global)),
+        ("3", Route::Todo),
         ("1", Route::Home),
     ] {
         press_until(&mut app, &app_key(key), "the key's page", |s| s.route == route);

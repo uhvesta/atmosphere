@@ -249,6 +249,17 @@ pub(crate) fn due_chip(todo: &Todo, today: Day) -> Option<DueChip> {
     todo.due.map(|d| humata2_todo::chip(d, today))
 }
 
+/// The due day in words beside the date field (frame 191): "tomorrow".
+pub(crate) fn due_word(due: Day, today: Day) -> String {
+    match today.days_until(due) {
+        0 => "today".to_owned(),
+        1 => "tomorrow".to_owned(),
+        -1 => "yesterday".to_owned(),
+        n if n > 1 => format!("in {n} days"),
+        n => format!("{} days ago", -n),
+    }
+}
+
 /// The day Hide until picks: next Monday.
 pub(crate) fn hide_day(today: Day) -> Day {
     today.next_weekday(Weekday::Mon)
@@ -283,6 +294,25 @@ pub(crate) fn evidence_links(todo: &Todo) -> Vec<(&str, Option<A>)> {
             )
         })
         .collect()
+}
+
+/// Whether an evidence link is a web page the system browser should open.
+pub(crate) fn opens_in_browser(target: &str) -> bool {
+    target.starts_with("https://") || target.starts_with("http://")
+}
+
+/// `send`, but a web evidence link also opens in the browser; the app still
+/// hears the action.
+fn opens_evidence(send: &Send) -> Send {
+    let send = send.clone();
+    Rc::new(move |action, cx| {
+        if let A::OpenEvidence(target) = &action
+            && opens_in_browser(target)
+        {
+            cx.open_url(target);
+        }
+        send(action, cx);
+    })
 }
 
 /// The ask card's rows in the frames' order: Evidence, Change, Also, Asked by.
@@ -1380,6 +1410,10 @@ pub(crate) fn drawer(
 ) -> Div {
     let t = &e.todo;
     let key = t.key.clone();
+    // The session panel (no close control) draws frame 191: no key line,
+    // channel, sessions, waits-on or description, Effort and Impact a row
+    // each, and the footer pinned to the panel's bottom.
+    let narrow = !close;
     let editing = |field: EditField| {
         state.editing.as_ref().is_some_and(|ed| ed.key == key && ed.field == field)
     };
@@ -1397,7 +1431,11 @@ pub(crate) fn drawer(
             .child(link(send, "todo-edit-cancel", "Cancel", A::CancelEdit, look))
     };
     let field = |label: &'static str, body: Div| {
-        row().gap(px(12.)).py(px(4.)).child(small(label, look).w(px(96.)).flex_shrink_0()).child(body)
+        row()
+            .gap(px(12.))
+            .py(px(4.))
+            .child(small(label, look).w(px(96.)).flex_shrink_0())
+            .child(body.min_w_0())
     };
     let seg = |id: &'static str, options: Vec<(String, bool, A)>| {
         row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(options.into_iter().map(
@@ -1413,21 +1451,30 @@ pub(crate) fn drawer(
             },
         ))
     };
+    let impact = || {
+        seg(
+            "todo-impact",
+            [Impact::Low, Impact::Medium, Impact::High]
+                .into_iter()
+                .map(|v| {
+                    let on = t.impact == Some(v);
+                    let name = impact_word(v);
+                    let name = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+                    (name, on, A::SetImpact(key.clone(), (!on).then_some(v)))
+                })
+                .collect(),
+        )
+    };
     let due_label = t.due.map_or("No date".to_owned(), Day::short);
+    let made = small(format!("{} · made by you, {}", t.key, t.created.short()), look).flex_1();
     col()
         .gap(px(6.))
-        .child(
+        .children((!narrow).then(|| {
             row()
                 .gap(px(8.))
-                .child(
-                    small(
-                        format!("{} · made by you, {}", t.key, t.created.short()),
-                        look,
-                    )
-                    .flex_1(),
-                )
-                .children(close.then(|| link(send, "todo-close", "×", A::Close, look))),
-        )
+                .child(made)
+                .child(link(send, "todo-close", "×", A::Close, look))
+        }))
         .child(if editing(EditField::Title) {
             edit_input("Title").into_any_element()
         } else {
@@ -1447,6 +1494,9 @@ pub(crate) fn drawer(
                 .filter(|_| !t.suggested)
                 .map(|(id, ask)| ask_card(send, t, id, ask, look)),
         )
+        .children(t.review.as_ref().filter(|_| t.state != State::Closed).map(|_| {
+            row().child(primary(send, "todo-start-review", "Start the review", A::StartReview(key.clone()), look))
+        }))
         .child(field(
             "State",
             seg(
@@ -1457,8 +1507,10 @@ pub(crate) fn drawer(
                     .collect(),
             ),
         ))
-        .child(field("Channel", div().child(t.channel.as_ref().map_or("No channel".to_owned(), |c| format!("# {c}")))))
-        .child(field(
+        .children((!narrow).then(|| {
+            field("Channel", div().child(t.channel.as_ref().map_or("No channel".to_owned(), |c| format!("# {c}"))))
+        }))
+        .children((!narrow).then(|| field(
             "Sessions",
             row().gap(px(6.)).children(t.sessions.iter().map(|s| match sessions(s) {
                 Some(chip) => row()
@@ -1472,13 +1524,69 @@ pub(crate) fn drawer(
                     .child(chip.name),
                 None => tag(s.clone(), look),
             })),
-        ))
+        )))
         .child(field(
             "Due",
             col()
                 .gap(px(4.))
                 .child(if editing(EditField::Due) {
                     edit_input("fri, nov 28, or 2026-12-01").into_any_element()
+                } else if narrow {
+                    col()
+                        .gap(px(4.))
+                        .child(
+                            row()
+                                .gap(px(10.))
+                                .child(clickable(
+                                    send,
+                                    "todo-due-edit",
+                                    "Type a due date",
+                                    A::StartEdit(key.clone(), EditField::Due),
+                                    // Clear is an × inside the field, so the
+                                    // shortcuts keep one line at panel width.
+                                    row()
+                                        .w(px(150.))
+                                        .flex_shrink(1.)
+                                        .min_w_0()
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(rgb(look.line))
+                                        .bg(rgb(look.card))
+                                        .child(div().flex_1().min_w_0().child(due_label.clone()))
+                                        .children(t.due.map(|_| {
+                                            clickable(
+                                                send,
+                                                "todo-due-clear",
+                                                "Clear",
+                                                A::ClearDue(key.clone()),
+                                                div().text_color(rgb(look.secondary)).child("×"),
+                                            )
+                                        })),
+                                ))
+                                .children(t.due.map(|d| small(due_word(d, state.today), look))),
+                        )
+                        .child(
+                            row()
+                                .gap(px(8.))
+                                .child(link(send, "todo-due-today", "Today", A::SetDue(key.clone(), state.today), look))
+                                .child(link(
+                                    send,
+                                    "todo-due-tomorrow",
+                                    "Tomorrow",
+                                    A::SetDue(key.clone(), state.today.add_days(1)),
+                                    look,
+                                ))
+                                .child(link(
+                                    send,
+                                    "todo-due-week",
+                                    "Next week",
+                                    A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
+                                    look,
+                                )),
+                        )
+                        .into_any_element()
                 } else {
                     row()
                         .gap(px(8.))
@@ -1526,6 +1634,7 @@ pub(crate) fn drawer(
             "Effort",
             row()
                 .gap(px(14.))
+                .flex_wrap()
                 .child(seg(
                     "todo-effort",
                     [Effort::S, Effort::M, Effort::L]
@@ -1536,20 +1645,10 @@ pub(crate) fn drawer(
                         })
                         .collect(),
                 ))
-                .child(small("Impact", look))
-                .child(seg(
-                    "todo-impact",
-                    [Impact::Low, Impact::Medium, Impact::High]
-                        .into_iter()
-                        .map(|v| {
-                            let on = t.impact == Some(v);
-                            let name = impact_word(v);
-                            let name = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
-                            (name, on, A::SetImpact(key.clone(), (!on).then_some(v)))
-                        })
-                        .collect(),
-                )),
+                .children((!narrow).then(|| small("Impact", look)))
+                .children((!narrow).then(&impact)),
         ))
+        .children(narrow.then(|| field("Impact", impact())))
         .child(field(
             "Tags",
             row()
@@ -1571,7 +1670,7 @@ pub(crate) fn drawer(
                         .into_any_element()
                 }),
         ))
-        .children((!t.depends_on.is_empty()).then(|| {
+        .children((!narrow && !t.depends_on.is_empty()).then(|| {
             field(
                 "Waits on",
                 row().gap(px(6.)).children(
@@ -1587,7 +1686,9 @@ pub(crate) fn drawer(
                 .child(small(
                     format!("STEPS · {} OF {}", t.steps.iter().filter(|s| s.done).count(), t.steps.len()),
                     look,
-                ).font_weight(FontWeight::SEMIBOLD)),
+                ).font_weight(FontWeight::SEMIBOLD))
+                .child(div().flex_1())
+                .children(ticked_by(t, narrow).map(|by| small(format!("ticked by {by}"), look))),
         )
         .children(t.steps.iter().enumerate().map(|(i, s)| {
             let boxed = div()
@@ -1606,58 +1707,94 @@ pub(crate) fn drawer(
                 ),
             )
         }))
-        .child(
-            row().mt(px(10.)).child(
-                small("DESCRIPTION", look).font_weight(FontWeight::SEMIBOLD),
-            ),
-        )
-        .child(if editing(EditField::Description) {
-            edit_input("Description").into_any_element()
-        } else {
-            clickable(
-                send,
-                "todo-description",
-                "Edit the description",
-                A::StartEdit(key.clone(), EditField::Description),
-                div().text_color(soft(look)).child(if t.description.is_empty() {
-                    "Add a description…".to_owned()
-                } else {
-                    t.description.clone()
-                }),
-            )
-        })
         .child(if editing(EditField::Step) {
             edit_input("Step").into_any_element()
         } else {
-            link(send, "todo-add-step", "Add a step…", A::StartEdit(key.clone(), EditField::Step), look)
-                .into_any_element()
-        })
-        .child(
-            row()
-                .gap(px(8.))
-                .mt(px(12.))
-                .pt(px(10.))
-                .border_t_1()
-                .border_color(rgb(look.line))
-                .child(link(send, "todo-history", "History", A::ShowHistory(key.clone()), look))
-                .child(div().flex_1())
-                .child(if t.pin.is_some() {
-                    link(send, "todo-pin", "Unpin", A::Unpin(key.clone()), look)
-                } else {
-                    link(send, "todo-pin", "Pin", A::Pin(key.clone()), look)
-                })
-                .child(if t.hide_until.is_some() {
-                    link(send, "todo-hide", "Stop hiding", A::HideUntil(key.clone(), None), look)
-                } else {
-                    link(
-                        send,
-                        "todo-hide",
-                        "Hide until…",
-                        A::HideUntil(key.clone(), Some(hide_day(state.today))),
-                        look,
+            clickable(
+                send,
+                "todo-add-step",
+                "Add a step…",
+                A::StartEdit(key.clone(), EditField::Step),
+                row()
+                    .gap(px(9.))
+                    .py(px(3.))
+                    .text_color(rgb(look.secondary))
+                    .child(
+                        div()
+                            .size(px(15.))
+                            .flex_shrink_0()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_dashed()
+                            .border_color(tone(look, 0xb9b9c0, 0x55555a)),
                     )
-                }),
-        )
+                    .child("Add a step…"),
+            )
+            .into_any_element()
+        })
+        .children((!narrow).then(|| {
+            row().mt(px(10.)).child(
+                small("DESCRIPTION", look).font_weight(FontWeight::SEMIBOLD),
+            )
+        }))
+        .children((!narrow).then(|| {
+            if editing(EditField::Description) {
+                edit_input("Description").into_any_element()
+            } else {
+                clickable(
+                    send,
+                    "todo-description",
+                    "Edit the description",
+                    A::StartEdit(key.clone(), EditField::Description),
+                    div().text_color(soft(look)).child(if t.description.is_empty() {
+                        "Add a description…".to_owned()
+                    } else {
+                        t.description.clone()
+                    }),
+                )
+                .into_any_element()
+            }
+        }))
+        .children((!narrow).then(|| footer(send, state, t, look).mt(px(12.)).pt(px(10.))))
+}
+
+/// The drawer's History · Pin · Hide until… row. On the page it ends the
+/// drawer; the session panel pins it under the scrolling drawer.
+pub(crate) fn footer(send: &Send, state: &TodoState, t: &Todo, look: Look) -> Div {
+    let key = &t.key;
+    row()
+        .gap(px(8.))
+        .border_t_1()
+        .border_color(rgb(look.line))
+        .child(link(send, "todo-history", "History", A::ShowHistory(key.clone()), look))
+        .child(div().flex_1())
+        .child(if t.pin.is_some() {
+            link(send, "todo-pin", "Unpin", A::Unpin(key.clone()), look)
+        } else {
+            link(send, "todo-pin", "Pin", A::Pin(key.clone()), look)
+        })
+        .child(if t.hide_until.is_some() {
+            link(send, "todo-hide", "Stop hiding", A::HideUntil(key.clone(), None), look)
+        } else {
+            link(
+                send,
+                "todo-hide",
+                "Hide until…",
+                A::HideUntil(key.clone(), Some(hide_day(state.today))),
+                look,
+            )
+        })
+}
+
+/// Who ticked the steps done: the agent that asks about the item, "claude"
+/// rather than "claude in this session" in the session's own panel.
+fn ticked_by(t: &Todo, narrow: bool) -> Option<String> {
+    let ask = t.ask.as_ref()?;
+    if !t.steps.iter().any(|s| s.done) {
+        return None;
+    }
+    let by = ask.by.as_str();
+    Some(if narrow { by.split(" in ").next().unwrap_or(by) } else { by }.to_owned())
 }
 
 fn ask_card(send: &Send, t: &Todo, ask_id: &str, ask: &Ask, look: Look) -> Div {
@@ -1680,7 +1817,7 @@ fn ask_card(send: &Send, t: &Todo, ask_id: &str, ask: &Ask, look: Look) -> Div {
                         }
                         line = match action {
                             Some(act) => line.child(link(
-                                send,
+                                &opens_evidence(send),
                                 SharedString::from(format!("todo-evidence-{i}")),
                                 text,
                                 act,
@@ -1697,9 +1834,9 @@ fn ask_card(send: &Send, t: &Todo, ask_id: &str, ask: &Ask, look: Look) -> Div {
                         .into_any_element()
                 };
                 row()
-                    .gap(px(12.))
-                    .child(small(r.label, look).w(px(70.)))
-                    .child(body)
+                    .items_start()
+                    .child(small(r.label, look).w(px(74.)).flex_shrink_0())
+                    .child(div().flex_1().min_w_0().child(body))
             }),
         ))
         .child(
@@ -1896,6 +2033,14 @@ mod tests {
         assert!(text.ends_with("in payments-rewrite"));
         let shown = s.shown().iter().filter(|t| t.state != State::Closed).count();
         assert!(text.starts_with(&shown.to_string()));
+    }
+
+    #[test]
+    fn only_web_evidence_opens_in_the_browser() {
+        assert!(opens_in_browser("https://github.com/o/r/pull/7"));
+        assert!(opens_in_browser("http://localhost:8080/report"));
+        assert!(!opens_in_browser("commits"));
+        assert!(!opens_in_browser("file:///etc/passwd"));
     }
 
     #[test]

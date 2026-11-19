@@ -904,15 +904,14 @@ fn a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call
     assert_eq!(asked_by.capability, Capability::new(RULE));
     assert_eq!(asked_by.setting, RuleSetting::Ask);
 
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     assert!(app.ui.read(|state| state.route == Route::Inbox));
     app.wait_until("the global Inbox to list the request", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_some()
+        app.inside(Role::Group, &request.title).is_some()
     });
 
-    // 2. Selected, its card says who asks, for what, why and by which rule
+    // 2. Its card says who asks, for what, why and by which rule
     // (IN-9, the parts the daemon sends).
-    app.click(Role::ListBoxOption, &request.title);
     app.wait_until("the request's card", |app| {
         app.inside(Role::Group, &request.title).is_some()
     });
@@ -955,9 +954,9 @@ fn a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call
     });
     assert_eq!(agent.exit_code(), None, "opening the session answers nothing");
 
-    // 4. Allow: the waiting call returns the channels, and the request is
+    // 4. Yes: the waiting call returns the channels, and the request is
     // gone from the panel, the count and the global Inbox.
-    app.click(Role::Button, "Allow");
+    app.click(Role::Button, "Yes");
     app.wait_until("the agent's waiting call to return", |app| {
         app.agent.exit_code().is_some()
     });
@@ -983,9 +982,9 @@ fn a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call
         inside(&view, Role::Group, &request.title).is_none()
             && inside(&view, Role::Button, &request.title).is_none()
     });
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     app.wait_until("the request to leave the global Inbox", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_none()
+        app.inside(Role::Group, &request.title).is_none()
     });
 
     // IN-12: the answer reached the waiting call, so nothing was typed into
@@ -1047,7 +1046,8 @@ fn the_agent_access_tab_sets_the_channels_rule_on_the_daemon() {
 
     app.click(Role::TreeItem, CHANNEL);
     app.click(Role::Tab, "Agent access");
-    app.click(Role::RadioButton, &format!("{}: Ask me", shown.label));
+    // The tab names the rule by its row, which may group several rules.
+    app.click(Role::RadioButton, "Read other channels\u{2019} to-dos and files: Ask");
 
     app.wait_until("the daemon to keep the rule as Ask me", |app| {
         let loaded = app.runtime.block_on(daemon.load()).expect("load from the daemon");
@@ -1127,11 +1127,10 @@ fn an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook() {
         app.waiting().len() == 1
     });
     let request = app.waiting().remove(0);
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     app.wait_until("the global Inbox to list the ask", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_some()
+        app.inside(Role::Group, &request.title).is_some()
     });
-    app.click(Role::ListBoxOption, &request.title);
     app.wait_until("the ask's card", |app| {
         app.inside(Role::Group, &request.title).is_some()
     });
@@ -1142,7 +1141,7 @@ fn an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook() {
         card.contains(&written(ASKED_COMMAND)),
         "the card shows the command:\n{card}"
     );
-    app.click(Role::Button, "Allow");
+    app.click(Role::Button, "Yes");
     app.wait_until("the waiting hook to return", |app| {
         app.agent.hook_code().is_some()
     });
@@ -1158,7 +1157,7 @@ fn an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook() {
         app.waiting().is_empty()
     });
     app.wait_until("the ask to leave the global Inbox", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_none()
+        app.inside(Role::Group, &request.title).is_none()
     });
 
     drop(app);
@@ -1201,16 +1200,15 @@ fn a_reply_typed_on_a_permission_card_denies_it_and_the_hook_gets_the_note() {
         app.waiting().len() == 1
     });
     let request = app.waiting().remove(0);
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     app.wait_until("the global Inbox to list the ask", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_some()
+        app.inside(Role::Group, &request.title).is_some()
     });
-    app.click(Role::ListBoxOption, &request.title);
     app.wait_until("the ask's card", |app| {
         app.inside(Role::Group, &request.title).is_some()
     });
 
-    app.click(Role::Button, "Reply\u{2026}");
+    app.click(Role::Button, "No, with a note\u{2026}");
     app.wait_until("the reply field", |app| {
         app.view().contains(&format!("{:?} {:?}", Role::TextInput, "Reply"))
     });
@@ -1243,7 +1241,7 @@ fn a_reply_typed_on_a_permission_card_denies_it_and_the_hook_gets_the_note() {
     });
     assert_eq!(agent.hook_code(), None, "typing answers nothing");
 
-    app.click(Role::Button, "Send reply");
+    app.click(Role::Button, "No, send note");
     app.wait_until("the waiting hook to return", |app| {
         app.agent.hook_code().is_some()
     });
@@ -1317,21 +1315,20 @@ fn allowing_with_always_ticked_makes_a_grant_and_the_next_ask_for_that_target_do
     assert_eq!(request.session, session, "the requester is the agent's session");
     assert!(!request.rule.is_empty(), "the card offers Always allow");
 
-    // Open the card, tick Always allow, click Allow.
-    app.click(Role::Link, "Inbox");
+    // Open the Agent inbox, tick Always allow, click Yes.
+    app.click(Role::Link, "Agent inbox");
     app.wait_until("the global Inbox to list the ask", |app| {
-        app.inside(Role::ListBoxOption, &request.title).is_some()
+        app.inside(Role::Group, &request.title).is_some()
     });
-    app.click(Role::ListBoxOption, &request.title);
     app.wait_until("the ask's card", |app| {
         app.inside(Role::Group, &request.title).is_some()
     });
-    app.click(Role::CheckBox, "Allow this for the rest of the session");
+    app.click(Role::CheckBox, "Always allow for this session");
     assert!(
         app.ui.read(|state| state.inbox.always.contains(&request.id)),
         "the box is ticked"
     );
-    app.click(Role::Button, "Allow");
+    app.click(Role::Button, "Yes");
 
     // The waiting call ends approved, and the grant is listed in the app and
     // on the host.

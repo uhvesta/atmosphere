@@ -1,5 +1,6 @@
-//! The channel's Agent access tab (frame 49): one row per rule with an
-//! Allow / Ask me / Never switch, and the grants kept under a rule.
+//! The channel's Agent access tab (INBOXHOOKS I8): grouped rows, each an
+//! Allow / Ask / Never switch over the rules behind it, with where an Ask
+//! lands. The rules no row covers sit behind "Other rules".
 
 use crate::{
     bridge::Ui,
@@ -9,10 +10,12 @@ use crate::{
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::{AccessRule, Channel, Grant, RuleSetting};
-use humata2_settings::{AccessAction, SettingsAction};
+use humata2_settings::{
+    ACCESS_GROUPS, AccessAction, AccessRow, RowSetting, SettingsAction,
+};
 use std::rc::Rc;
 
-const INTRO: &str = "What agents in this channel may do through Humata. Anything set to Ask me lands in your Inbox, batched with every other agent's requests. Never tells the agent no at once, naming the rule, and adds nothing to the Inbox.";
+const FOOTER: &str = "Shell commands, edits and pushes are asked by each agent in its own terminal, as that agent is set up. Humata doesn\u{2019}t repeat those asks here. Rules you made with \u{201c}Always allow\u{201d} are listed under their row.";
 
 /// The Agent access tab of `channel`.
 pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl IntoElement {
@@ -22,26 +25,87 @@ pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl
         .get(&channel.id)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let mut rows = Vec::new();
-    for (index, rule) in rules.iter().enumerate() {
-        rows.push(rule_row(ui, state, channel, index, rule, look).into_any_element());
-        for (n, grant) in rule.grants.iter().enumerate() {
-            rows.push(grant_row(ui, state, index, n, grant, look).into_any_element());
+    let mut body = Vec::new();
+    let mut n = 0;
+    for group in ACCESS_GROUPS {
+        body.push(group_heading(group.title, group.caption, look).into_any_element());
+        for row in group.rows {
+            body.push(grouped_row(ui, state, channel, rules, row, n, look).into_any_element());
+            for (g, grant) in rules
+                .iter()
+                .filter(|rule| row.capabilities.contains(&rule.capability.as_str()))
+                .flat_map(|rule| rule.grants.iter())
+                .enumerate()
+            {
+                body.push(grant_row(ui, state, n, g, grant, look).into_any_element());
+            }
+            n += 1;
         }
+    }
+    body.push(
+        div()
+            .mt(px(14.))
+            .p(px(12.))
+            .rounded(px(9.))
+            .bg(rgb(look.fill))
+            .text_color(rgb(look.secondary))
+            .child(FOOTER)
+            .into_any_element(),
+    );
+    let covered = |rule: &AccessRule| {
+        ACCESS_GROUPS
+            .iter()
+            .flat_map(|g| g.rows)
+            .any(|row| row.capabilities.contains(&rule.capability.as_str()))
+    };
+    let show_all = state.settings.access.show_all;
+    let others: Vec<_> = rules.iter().enumerate().filter(|(_, r)| !covered(r)).collect();
+    let toggle = {
+        let ui = ui.clone();
+        let action = AppAction::Settings(SettingsAction::Access(AccessAction::ToggleAll));
+        div()
+            .id("access-other-toggle")
+            .role(Role::Button)
+            .aria_label("Other rules")
+            .mt(px(10.))
+            .cursor_pointer()
+            .text_color(rgb(look.accent))
+            .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+            .child(format!(
+                "{} Other rules ({})",
+                if show_all { "Hide" } else { "Show" },
+                others.len()
+            ))
+            .test_support()
+    };
+    body.push(toggle.into_any_element());
+    if show_all {
+        let mut list = Vec::new();
+        for (index, rule) in others {
+            list.push(rule_row(ui, state, channel, index, rule, look).into_any_element());
+            for (g, grant) in rule.grants.iter().enumerate() {
+                list.push(grant_row(ui, state, 100 + index, g, grant, look).into_any_element());
+            }
+        }
+        body.push(
+            col()
+                .id("access-rules")
+                .role(Role::List)
+                .aria_label("Other agent access rules")
+                .mt(px(6.))
+                .rounded(px(9.))
+                .bg(rgb(look.card))
+                .border_1()
+                .border_color(rgb(look.line))
+                .children(list)
+                .test_support()
+                .into_any_element(),
+        );
     }
     col()
         .size_full()
         .p(px(20.))
         .text_size(px(12.5))
-        .gap(px(12.))
-        .child(
-            div()
-                .max_w(px(820.))
-                .flex_shrink_0()
-                .text_size(px(11.5))
-                .text_color(rgb(look.secondary))
-                .child(INTRO),
-        )
         .children(state.settings.access.error.as_ref().map(|error| {
             crate::widgets::error_banner_in(
                 look,
@@ -53,18 +117,145 @@ pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl
         }))
         .child(
             col()
-                .id("access-rules")
+                .id("access-groups")
                 .role(Role::List)
-                .aria_label("Agent access rules")
+                .aria_label("Agent access")
                 .flex_1()
                 .min_h_0()
+                .max_w(px(1120.))
                 .overflow_y_scroll()
-                .rounded(px(9.))
-                .bg(rgb(look.card))
-                .border_1()
-                .border_color(rgb(look.line))
-                .children(rows)
-                .test_support(),
+                .children(body),
+        )
+}
+
+fn group_heading(title: &'static str, caption: &'static str, look: Look) -> impl IntoElement {
+    row()
+        .gap(px(10.))
+        .mt(px(16.))
+        .mb(px(6.))
+        .flex_shrink_0()
+        .items_baseline()
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(look.secondary))
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(11.5))
+                .text_color(rgb(look.tertiary))
+                .child(caption),
+        )
+}
+
+fn grouped_row(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    channel: &Channel,
+    rules: &[AccessRule],
+    def: &'static AccessRow,
+    index: usize,
+    look: Look,
+) -> impl IntoElement {
+    let current = def.setting(rules);
+    let pending = def
+        .capability_ids()
+        .into_iter()
+        .any(|c| state.settings.access.pending.contains(&(channel.id.clone(), c)));
+    // A row with no rule to write (always Ask) is shown, not clickable.
+    let editable = !def.capabilities.is_empty() && def.options.len() > 1;
+    let control = row()
+        .id(("access-setting", index))
+        .role(Role::RadioGroup)
+        .aria_label(def.label)
+        .p(px(2.))
+        .rounded(px(7.))
+        .bg(rgb(look.fill))
+        .when(pending, |x| x.opacity(0.5))
+        .children(def.options.iter().copied().enumerate().map(|(n, setting)| {
+            let name = match setting {
+                RuleSetting::Allow => "Allow",
+                RuleSetting::Ask => "Ask",
+                RuleSetting::Never => "Never",
+            };
+            let ui = ui.clone();
+            let action = AppAction::Settings(SettingsAction::Access(AccessAction::SetRow {
+                channel: channel.id.clone(),
+                row: def.key.to_owned(),
+                setting,
+            }));
+            let selected = current == RowSetting::Is(setting);
+            div()
+                .id(("access-option", index * 3 + n))
+                .role(Role::RadioButton)
+                .aria_label(format!("{}: {name}", def.label))
+                .aria_selected(selected)
+                .px(px(12.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(11.5))
+                .when(selected, |x| {
+                    x.bg(rgb(look.card)).shadow_sm().font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!selected, |x| x.text_color(rgb(look.secondary)))
+                .when(editable && !pending && !selected, |x| {
+                    x.cursor_pointer().on_click(move |_, _, cx| {
+                        ui.send(action.clone(), cx);
+                    })
+                })
+                .child(name)
+                .test_support()
+        }));
+    row()
+        .id(("access-rule", index))
+        .role(Role::ListItem)
+        .aria_label(def.label)
+        .gap(px(14.))
+        .py(px(7.))
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(rgb(look.line))
+        .child(
+            col()
+                .flex_1()
+                .min_w_0()
+                .child(div().child(def.label))
+                .when(!def.detail.is_empty(), |x| {
+                    x.child(
+                        div()
+                            .mt(px(1.))
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(def.detail),
+                    )
+                }),
+        )
+        .child(
+            row()
+                .w(px(240.))
+                .flex_shrink_0()
+                .gap(px(8.))
+                .items_center()
+                .justify_end()
+                .when(current == RowSetting::Mixed, |x| {
+                    x.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child("Mixed"),
+                    )
+                })
+                .child(control),
+        )
+        .child(
+            div()
+                .w(px(400.))
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(rgb(look.secondary))
+                .child(def.note(current)),
         )
 }
 

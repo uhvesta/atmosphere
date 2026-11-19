@@ -91,6 +91,12 @@ fn migrate(request: &str, thing: MigrateThing, machine: &str, phase: MigratePhas
         choices: vec![],
         on_screen: None,
         dismiss_only: false,
+        facts: Vec::new(),
+        affects: Vec::new(),
+        undo_text: String::new(),
+        working_on: String::new(),
+        asked_why: None,
+        rule_label: String::new(),
     }
 }
 

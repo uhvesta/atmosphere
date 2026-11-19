@@ -289,6 +289,24 @@ fn the_diff_names_the_pull_request_and_each_repository() {
     assert!(app.contains("review-repo-acme/ledger"));
 }
 
+/// D869: a folded repository's row picks its first file, which opens it; the
+/// file's row is drawn only once it is open.
+#[test]
+fn clicking_a_folded_repo_row_opens_its_first_file() {
+    let mut app = review();
+    shown(&mut app);
+    assert!(!app.contains("change-file acme/ledger/src/ledger.rs"));
+    app.click("review-repo-acme/ledger");
+    assert!(app.contains("change-file acme/ledger/src/ledger.rs"));
+    let picked = app.ui.read(|state| {
+        state.review.saved.selected.get(&SessionId::new(REVIEW)).cloned()
+    });
+    assert_eq!(
+        picked,
+        Some(("acme/ledger".to_owned(), "src/ledger.rs".to_owned()))
+    );
+}
+
 /// A session that reviews no pull request has none of it.
 #[test]
 fn a_plain_session_has_no_review_lines() {

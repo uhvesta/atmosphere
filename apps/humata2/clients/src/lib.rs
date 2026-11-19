@@ -131,6 +131,7 @@ pub struct Fakes {
 pub fn fake_clients(workspace: Workspace, clock: Arc<dyn Clock>) -> (Clients, Fakes) {
     let marks = marks::FakeMarks::seeded_from(&workspace);
     let views = views::FakeViews::seeded(&workspace);
+    let todo = todo::FakeTodo::for_workspace(&workspace);
     let daemon = FakeDaemon::new(workspace, clock.clone());
     // An add in the dialog makes the machine in the fake workspace.
     let fake_machines = machines::FakeMachines::new().through(daemon.clone());
@@ -139,7 +140,7 @@ pub fn fake_clients(workspace: Workspace, clock: Arc<dyn Clock>) -> (Clients, Fa
         comments: FakeComments::new(),
         history: history::FakeHistory::new(),
         marks,
-        todo: todo::FakeTodo::frame_b1_1(),
+        todo,
         clipboard: FakeClipboard::default(),
         reveal: FakeReveal::default(),
         files: FakeFileSystem::default(),

@@ -6,8 +6,8 @@ use gpui_kit::{
 };
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, PaneAction, Route};
-use humata2_clients::model::{Answer, ItemStatus, SessionId};
-use humata2_clients::{Clients, Fakes, Workspace, fixture};
+use humata2_clients::model::{Answer, SessionId};
+use humata2_clients::{Fakes, Workspace, fixture};
 use humata2_engine::Resources;
 use humata2_session::{Panel, SessionAction};
 use humata2_snapshot::{Tolerance, snapshots, view};
@@ -128,6 +128,35 @@ impl App {
             .find(|line| line.contains("Button") && line.contains("Send") && line.contains(agent))
             .map(str::to_owned)
     }
+    /// Scrolls `container` down until `id` is on screen, for controls in a
+    /// list of cards taller than the window.
+    fn scroll_to(&mut self, container: &str, id: &str) {
+        for _ in 0..40 {
+            self.draw();
+            let shown = self
+                .cx
+                .update_window(self.window, |_, window, _| {
+                    window
+                        .try_find(gpui_kit::SharedString::from(id.to_owned()))
+                        .is_some_and(|found| found.visible())
+                })
+                .expect("window stays open");
+            if shown {
+                return;
+            }
+            self.cx
+                .update_window(self.window, |_, window, cx| {
+                    window.scroll(
+                        gpui_kit::SharedString::from(container.to_owned()),
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-120.))),
+                        cx,
+                    );
+                })
+                .expect("window stays open");
+            self.settle();
+        }
+        panic!("{id} never came into view in {container}");
+    }
     fn click(&mut self, id: &str) {
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -182,33 +211,36 @@ fn inbox_answers_the_selected_sessions_request_through_the_client() {
     assert!(!app.contains(&format!("request {request}")));
 }
 
-/// BD-1: compact Board groups the open session's channel, then expands into lanes.
+/// Links a copy of the fake list's `from` item to `session` under `key`.
+fn link_todo(app: &App, from: &str, key: &str, session: &str) {
+    let mut todo = app
+        .fakes
+        .todo
+        .entries()
+        .into_iter()
+        .find(|entry| entry.todo.key == from)
+        .expect("the fixture item")
+        .todo;
+    todo.key = key.to_owned();
+    todo.sessions = vec![session.to_owned()];
+    app.fakes.todo.insert(todo, None);
+}
+
+/// BOARDSIMPLE (frame b9-3): the session's To-do panel lists the items
+/// linked to the open session, and expanding it keeps them and the session.
 #[test]
 fn board_lists_the_channels_items_and_expands_without_losing_the_session() {
-    let workspace = fixture::standard();
-    let session = workspace
-        .session(&SessionId::new("s-auth"))
-        .expect("auth session");
-    let channel = session.channel.clone();
-    let item = workspace
-        .items
-        .iter()
-        .find(|item| {
-            item.scope == humata2_clients::model::Scope::Channel(channel.clone())
-                && item.status == ItemStatus::InProgress
-        })
-        .expect("a channel item")
-        .id
-        .clone();
-    let mut app = App::new(workspace);
+    let mut app = App::new(fixture::standard());
+    link_todo(&app, "WEB-8", "AUTH-1", "s-auth");
     app.open("s-auth", Panel::Board);
-    assert!(app.contains(&format!("board-item {item}")));
+    assert!(app.contains("todo-panel-row AUTH-1"));
+    assert!(!app.contains("todo-panel-row WEB-8"));
     app.click("expand-panel");
     assert!(app.contains("panel-full-screen"));
     assert!(!app.contains("terminal"));
     app.click("show-terminal");
     assert!(app.contains("terminal"));
-    assert!(app.contains(&format!("board-item {item}")));
+    assert!(app.contains("todo-panel-row AUTH-1"));
 }
 
 /// D76: keep reviewable pixels of the implemented panel sections, in both appearances.
@@ -311,7 +343,7 @@ fn the_session_inbox_includes_forks_and_denies_only_the_request_picked() {
     app.open("s-auth", Panel::Inbox);
     assert!(app.contains("request r-child"));
     assert!(!app.contains("request r-edit"));
-    app.click("request r-child");
+    app.scroll_to("session-inbox", "deny r-child");
     app.click("deny r-child");
     let workspace = app.fakes.daemon.workspace();
     assert_eq!(
@@ -420,35 +452,22 @@ fn questions_do_not_offer_a_permission_approval() {
     );
 }
 
-/// D76, BD-1: Backlog and In review are real client values and neither
-/// disappears when the compact board becomes the expanded kanban.
+/// BOARDSIMPLE: open and in-progress items (the old Backlog and In review
+/// columns fold into them) both stay when the session's panel expands, and
+/// another session's items never join them.
 #[test]
 fn expanded_board_keeps_backlog_and_in_review_items() {
-    use humata2_clients::model::ItemId;
-    let mut workspace = fixture::standard();
-    let source = workspace
-        .items
-        .iter()
-        .find(|item| item.id == ItemId::new("A-1"))
-        .expect("api item")
-        .clone();
-    for (id, status) in [
-        ("A-backlog", ItemStatus::Backlog),
-        ("A-review", ItemStatus::InReview),
-    ] {
-        let mut item = source.clone();
-        item.id = ItemId::new(id);
-        item.status = status;
-        workspace.items.push(item);
-    }
-    let mut app = App::new(workspace);
+    let mut app = App::new(fixture::standard());
+    link_todo(&app, "PAY-5", "A-open", "s-auth");
+    link_todo(&app, "WEB-8", "A-progress", "s-auth");
+    link_todo(&app, "PAY-7", "W-2", "s-login");
     app.open("s-auth", Panel::Board);
-    assert!(app.contains("board-item A-backlog"));
-    assert!(app.contains("board-item A-review"));
+    assert!(app.contains("todo-panel-row A-open"));
+    assert!(app.contains("todo-panel-row A-progress"));
     app.click("expand-panel");
-    assert!(app.contains("board-item A-backlog"));
-    assert!(app.contains("board-item A-review"));
-    assert!(!app.contains("board-item W-2"));
+    assert!(app.contains("todo-panel-row A-open"));
+    assert!(app.contains("todo-panel-row A-progress"));
+    assert!(!app.contains("todo-panel-row W-2"));
 }
 
 /// Files and Info are reachable from the native strip, rather than empty panels.

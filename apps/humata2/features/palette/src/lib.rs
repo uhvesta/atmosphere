@@ -796,7 +796,7 @@ impl PaletteState {
         let mut entries: Vec<Entry> = [
             (Command::Home, "Go to Home", "⌘1"),
             (Command::Inbox, "Go to Inbox", "⌘2"),
-            (Command::Board, "Go to Board", "⌘3"),
+            (Command::Board, "Go to Board", ""),
             (Command::Hosts, "Go to Hosts", "⌘4"),
             (Command::Files, "Go to Files", "⌘5"),
             (Command::Desk, "Go to Desk", ""),
@@ -811,7 +811,7 @@ impl PaletteState {
             (Command::Back, "Go back", "⌘["),
             (Command::ShowShortcuts, "Keyboard shortcuts", "⌘/"),
             (Command::Views, "Go to Views", ""),
-            (Command::Todo, "Go to To-do", ""),
+            (Command::Todo, "Go to To-do", "⌘3"),
         ]
         .into_iter()
         .map(|(command, title, hint)| Entry {

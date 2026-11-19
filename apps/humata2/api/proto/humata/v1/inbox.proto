@@ -45,6 +45,25 @@ service InboxService {
   rpc WaitForAnswer(WaitForAnswerRequest) returns (stream WaitResponse);
   // The agent no longer needs it; the card greys out (WITHDRAWN, TP-15).
   rpc WithdrawRequest(WithdrawRequestRequest) returns (InboxRequest);
+
+  // INBOXHOOKS Ask why. User-only: holds a pending card from an agent's
+  // call and tells the waiting agent the user asked why (WaitResponse
+  // .asked_why). The card stays pending; AskedWhy.asked_at is set.
+  rpc AskWhy(AskWhyRequest) returns (InboxRequest);
+  // INBOXHOOKS: the agent's answer to Ask why on a request its own session
+  // made (MCP inbox_explain). Sets AskedWhy.reply; the card stays pending.
+  rpc ExplainAsk(ExplainAskRequest) returns (InboxRequest);
+}
+
+message AskWhyRequest {
+  IdempotencyKey idempotency_key = 1;
+  RequestId id = 2;
+}
+
+message ExplainAskRequest {
+  RequestId id = 1;
+  // At most 1000 characters.
+  string reply = 2;
 }
 
 message AskUserRequest {
@@ -87,6 +106,9 @@ message WaitResponse {
   // The result is kept until then (24 hours after it ran), then dropped;
   // waiting after that returns the state without a result.
   google.protobuf.Timestamp result_kept_until = 9;
+  // INBOXHOOKS: still pending, and the user pressed Ask why with no reply
+  // yet. The agent answers with ExplainAsk (MCP inbox_explain), then waits.
+  bool asked_why = 10;
 }
 
 message WithdrawRequestRequest {
@@ -365,6 +387,20 @@ message CrossMachineCopyPreview {
   // D467: where the copy lands in words after the machine's name, e.g.
   // "shared" or "api clone"; empty when it has no short name.
   string destination_place = 7;
+  // INBOXHOOKS: a move (TRANSFER_MODE_MOVE): the source goes once every
+  // file is verified. False for a copy.
+  bool moves = 8;
+  // INBOXHOOKS: files at the destination this would replace, by path
+  // relative to the destination, with what tells them apart ("3 days
+  // newer", "same content"). Empty when nothing is replaced.
+  repeated ReplacedFile replaced = 9;
+}
+
+// INBOXHOOKS: a file a copy or move would replace.
+message ReplacedFile {
+  string path = 1;
+  // "the one there is 3 days newer", "same content"; may be empty.
+  string note = 2;
 }
 
 message MessagePreview {
@@ -384,6 +420,21 @@ message MovePreview {
   MachineId from = 2;
   MachineId to = 3;
   uint64 bytes = 4;
+  // INBOXHOOKS: what the card names, worked out by Humata.
+  string session_title = 5;
+  string channel_name = 6;
+  // The session's repositories by short name.
+  repeated string repos = 7;
+  // Uncommitted files carried as they are.
+  uint32 uncommitted_files = 8;
+  // Each running terminal that moves along and keeps running, in words:
+  // "codex", "zsh running pgbench".
+  repeated string terminals = 9;
+  // Forks of the session that stay where they are, by title.
+  repeated string forks_staying = 10;
+  // Repositories the destination has no clone of yet; Humata clones them
+  // there first.
+  repeated string clones_needed = 11;
 }
 
 enum MigratePhase {

@@ -1,4 +1,4 @@
-Complementary "Changes"
+Complementary "Diff"
   Label "# pr-reviews › acme/api #482"
   Button "New agent tab"
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
@@ -6,7 +6,6 @@ Complementary "Changes"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"
-  text "Diff"
   #review-pr-line
     text "PR #482 against main · 2 repos"
   #diff-file-bar

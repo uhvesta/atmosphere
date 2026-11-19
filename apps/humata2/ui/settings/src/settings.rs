@@ -73,7 +73,7 @@ fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 col()
                     .flex_1()
                     .min_w_0()
-                    .child("Ask in the Inbox")
+                    .child("Ask in the Agent inbox")
                     .when(!switch.asks_in_inbox, |x| {
                         x.child(dim(look, "Off: it asks in its own terminal"))
                     })

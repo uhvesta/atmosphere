@@ -154,7 +154,7 @@ pub(super) fn review_repo(
     let open = picked.is_some_and(|(held, _)| held.repo == diff.repo);
     // Frame 68: the repo row, its file and the file's code, 4 apart.
     let mut group = col().gap(px(4.)).child(ringed(
-        review_repo_head(state, look, session, diff, open),
+        review_repo_head(ui, state, look, session, diff, open),
         at_repo(cursor, &diff.repo),
         look,
     ));
@@ -380,7 +380,12 @@ fn review_code(
 
 /// A repository's group row in a review (frame 68): its name, its pull
 /// request's number in the accent and the pull request's branch, dimmed.
+///
+/// A folded row is a click target: a click picks the repository's first file,
+/// which opens it. The open row has no chevron, no hover and no click; its
+/// repo icon sits where the chevron was (D869).
 pub(super) fn review_repo_head(
+    ui: &Rc<Ui>,
     state: &AppState,
     look: Look,
     session: &Session,
@@ -395,17 +400,41 @@ pub(super) fn review_repo_head(
         .find(|clone| clone.repo == diff.repo || clone.repo.rsplit('/').next() == Some(diff.repo.as_str()))
         .map_or("", |clone| clone.branch.as_str());
     let name = diff.repo.rsplit('/').next().unwrap_or(diff.repo.as_str());
+    // The folded row opens the repository's first file; a repository with
+    // no files has nothing to open, so its row is not a click target.
+    let first = if open {
+        None
+    } else {
+        diff.files.first().map(|file| file.path.clone())
+    };
+    let ui = ui.clone();
+    let repo = diff.repo.clone();
     row()
         .id(SharedString::from(format!("review-repo-{}", diff.repo)))
         .test_support()
         .gap(px(6.))
         .h(px(26.))
         .px(px(4.))
-        .child(icon(
-            if open { IconName::ChevronDown } else { IconName::ChevronRight },
-            look.tertiary,
-            12.,
-        ))
+        .when_some(first, |head, path| {
+            head.cursor_pointer()
+                .hover(move |style| style.bg(rgb(look.fill)))
+                .on_click(move |_, _, cx| {
+                    ui.send(
+                        AppAction::Review(ReviewAction::SelectFile {
+                            repo: repo.clone(),
+                            path: path.clone(),
+                        }),
+                        cx,
+                    )
+                })
+        })
+        // The open row keeps the chevron's slot empty, so every repo name
+        // starts at the same x.
+        .child(if open {
+            div().w(px(12.)).flex_shrink_0().into_any_element()
+        } else {
+            icon(IconName::ChevronRight, look.tertiary, 12.).into_any_element()
+        })
         .child(icon(IconName::FolderGit2, look.secondary, 12.))
         .child(
             // Gives way after the branch (DS-46), with the whole name on

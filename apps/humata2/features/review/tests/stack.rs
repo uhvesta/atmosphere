@@ -7,7 +7,7 @@ use humata2_clients::fixture;
 use humata2_clients::model::{DiffBase, RepoBase, RepoDiffSpec, SessionId, Status};
 use humata2_clients::views::{LayerDrift, LayerRepoView, LayerView, PlanView, StackView};
 use humata2_clients::{FakeDaemon, Workspace};
-use humata2_review::stack::{StackHeader, pull_request_label};
+use humata2_review::stack::{StackHeader, Tier, WholeEntry, pull_request_label, whole_groups};
 use humata2_review::{Review, ReviewAction as A, ReviewState};
 use tca::{TestClock, TestStore};
 
@@ -381,4 +381,67 @@ fn a_picked_layer_shows_the_whole_stack_count_last_read_not_the_layers_sum() {
         panic!("a stack has rows");
     };
     assert_eq!(rows.rows[0].files, 7, "the layers add up to 10");
+}
+
+fn listing(layers: &[&[(&str, &str)]]) -> StackView {
+    let mut stack = StackView::default();
+    for (index, files) in layers.iter().enumerate() {
+        let mut one = layer(&format!("layer {}", index + 1), "", Vec::new());
+        one.order = files.iter().map(|(repo, path)| ((*repo).to_owned(), (*path).to_owned())).collect();
+        stack.layers.push(one);
+    }
+    stack
+}
+
+fn caption(number: usize) -> WholeEntry {
+    WholeEntry::Caption { number, title: format!("layer {number}") }
+}
+
+fn file(path: &str, also: &[usize]) -> WholeEntry {
+    WholeEntry::File { path: path.to_owned(), also: also.to_vec() }
+}
+
+#[test]
+fn whole_groups_run_lowest_layer_first_key_files_first_and_others_last() {
+    let stack = listing(&[&[("acme/api", "a.rs"), ("acme/api", "b.rs")], &[("api", "c.rs")]]);
+    let repos = vec![(
+        "acme/api",
+        vec![("z.rs", Tier::Normal), ("c.rs", Tier::Normal), ("b.rs", Tier::Key), ("a.rs", Tier::Normal)],
+    )];
+    assert_eq!(
+        whole_groups(&stack, &repos),
+        Some(vec![vec![
+            caption(1),
+            file("b.rs", &[]),
+            file("a.rs", &[]),
+            caption(2),
+            file("c.rs", &[]),
+            WholeEntry::Other,
+            file("z.rs", &[]),
+        ]]),
+    );
+}
+
+#[test]
+fn a_file_several_layers_list_sits_under_the_lowest_naming_the_others() {
+    let stack = listing(&[&[], &[("acme/api", "a.rs")], &[("acme/api", "a.rs")], &[("acme/api", "a.rs")]]);
+    let repos = vec![("acme/api", vec![("a.rs", Tier::Normal)])];
+    assert_eq!(whole_groups(&stack, &repos), Some(vec![vec![caption(2), file("a.rs", &[3, 4])]]));
+}
+
+#[test]
+fn a_layer_with_no_files_in_a_repository_has_no_caption_there() {
+    let stack = listing(&[&[("acme/api", "a.rs")], &[("acme/web", "w.ts")]]);
+    let repos = vec![("acme/api", vec![("a.rs", Tier::Normal)]), ("acme/web", vec![("w.ts", Tier::Normal)])];
+    assert_eq!(
+        whole_groups(&stack, &repos),
+        Some(vec![vec![caption(1), file("a.rs", &[])], vec![caption(2), file("w.ts", &[])]]),
+    );
+}
+
+#[test]
+fn layers_listing_no_files_group_nothing() {
+    let stack = listing(&[&[], &[]]);
+    let repos = vec![("acme/api", vec![("a.rs", Tier::Key)])];
+    assert_eq!(whole_groups(&stack, &repos), None);
 }

@@ -105,11 +105,11 @@ fn the_drawer_moves_links_and_assigns_an_item_on_the_daemon() {
     app.cx
         .update(|cx| app.ui.send(AppAction::Navigate(Route::Channel(page)), cx));
     app.settle();
-    app.wait_until("the channel's tabs", |app| shows(app, Role::Tab, "Board"));
+    app.wait_until("the channel's tabs", |app| shows(app, Role::Tab, "To-do"));
     // A channel's page opens on the tab it showed last. Already on Board,
     // the board's own view switch shows a Tab "Board" too.
     if !shows(&mut app, Role::Button, "New item") {
-        app.click(Role::Tab, "Board");
+        app.click(Role::Tab, "To-do");
     }
     let schema_label = label_of(&item_in_app(&app, &schema));
     let read_label = label_of(&item_in_app(&app, &read));

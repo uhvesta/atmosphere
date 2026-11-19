@@ -16,6 +16,7 @@ pub enum View {
     Dashboard,
 }
 
+#[derive(Clone, Copy)]
 struct Item {
     key: &'static str,
     title: &'static str,
@@ -105,8 +106,10 @@ fn item_card(look: Look, item: &Item, on: bool) -> Div {
         })
 }
 
-/// The lanes side by side, for every channel or for one.
-pub fn lanes(look: Look, channel: Option<&str>, selected: Option<&str>) -> Div {
+/// The lanes side by side, for every channel or for one. Without `asks` no
+/// card carries an agent's ask (D872: the open item's ask lives in the
+/// Agent inbox, not on the board).
+pub fn lanes(look: Look, channel: Option<&str>, selected: Option<&str>, asks: bool) -> Div {
     div()
         .flex()
         .gap(px(10.))
@@ -134,13 +137,13 @@ pub fn lanes(look: Look, channel: Option<&str>, selected: Option<&str>) -> Div {
                         .child(div().flex_1())
                         .child(small_icon(IconName::Plus, look.tertiary)),
                 )
-                .children(items.into_iter().map(|item| item_card(look, item, selected == Some(item.key))))
+                .children(items.into_iter().map(|item| item_card(look, &Item { asks: asks && item.asks, ..*item }, selected == Some(item.key))))
         }))
 }
 
 /// The kanban across every channel, with the sessions working each item.
 pub fn kanban(look: Look) -> Div {
-    page(look, Side::at("Board"), bar(look, View::Kanban), lanes(look, None, None))
+    page(look, Side::at("Board"), bar(look, View::Kanban), lanes(look, None, None, true))
 }
 
 /// An item open in its drawer over the board (BD-3).
@@ -164,19 +167,8 @@ pub fn drawer(look: Look) -> Div {
         .child(line("Channel", div().child("# payments-rewrite")))
         .child(line("Sessions", div().flex().flex_col().gap(px(4.)).child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child("Ledger schema migration")).child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child("Try BRIN index"))))
         .child(line("Depends on", chip(look, "PAY-2 Currency codes ✓", look.secondary)))
+        // D872: frame 22 stays without an ask, so the drawer has no ask card.
         .child(hline(look))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .p(px(10.))
-                .rounded(px(8.))
-                .bg(c(look.attention_bg))
-                .child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child(div().font_weight(FontWeight::SEMIBOLD).child("Claude Code asks to move this to Done")))
-                .child(secondary(look, "“Migration and backfill pass on staging; 3.1M rows in 4m12s.”"))
-                .child(div().flex().gap(px(6.)).child(button(look, Kind::Primary, "Move to Done")).child(button(look, Kind::Secondary, "Keep in progress")).child(button(look, Kind::Secondary, "Open session"))),
-        )
         .child(label(look, "Description"))
         .child(div().text_color(c(look.secondary)).child("Split postings into ledger_entries and ledger_balances, backfill from the old table in batches, and keep both in step until cut-over."))
         .child(label(look, "History"))
@@ -187,7 +179,7 @@ pub fn drawer(look: Look) -> Div {
         look,
         Side::at("Board"),
         bar(look, View::Kanban),
-        div().flex().size_full().child(div().flex_1().min_w_0().overflow_hidden().child(lanes(look, None, Some("PAY-3")))).child(drawer),
+        div().flex().size_full().child(div().flex_1().min_w_0().overflow_hidden().child(lanes(look, None, Some("PAY-3"), false))).child(drawer),
     )
 }
 

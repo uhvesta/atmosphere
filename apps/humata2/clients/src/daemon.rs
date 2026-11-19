@@ -172,6 +172,8 @@ pub enum Operation {
     Send,
     /// [`Daemon::answer`].
     Answer,
+    /// [`Daemon::ask_why`].
+    AskWhy,
     /// [`Daemon::reconnect`].
     Reconnect,
     /// [`Daemon::fork`].
@@ -489,6 +491,12 @@ pub trait Daemon: Send + Sync + 'static {
     }
     /// Answers an Inbox request.
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()>;
+    /// Asks the agent why it asks (Ask why). The request stays pending; the
+    /// reply is the request as it is now, with `asked_why` set.
+    fn ask_why(&self, request: &RequestId) -> Reply<crate::model::Request> {
+        let what = format!("Asking why for {request}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Connects to a host again, and says what happened to each of its
     /// sessions (PER-26).
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>>;

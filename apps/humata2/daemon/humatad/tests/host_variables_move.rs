@@ -66,6 +66,7 @@ async fn a_moved_session_carries_no_host_variable_value_to_the_machine_it_moves_
             }),
             id: Some(id.clone()),
             to: Some(to.clone()),
+            ..Default::default()
         })
         .await
         .expect("the move starts")

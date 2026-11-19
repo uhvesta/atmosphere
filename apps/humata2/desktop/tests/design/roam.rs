@@ -129,7 +129,7 @@ fn ask_card(
 fn inbox_page(look: Look, groups: Vec<Div>, open: Div) -> Div {
     page(
         look,
-        Side::at("Inbox"),
+        Side::at("Agent inbox"),
         toolbar(look, "Inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
         div()
             .flex()
@@ -396,7 +396,7 @@ fn channel_header(look: Look, lit: &'static str) -> Div {
                 .text_size(px(12.5))
                 .child(tab("Sessions", Some("11")))
                 .child(tab("Desk", Some("2")))
-                .child(tab("Inbox", Some("7")))
+                .child(tab("Agent inbox", Some("7")))
                 .child(tab("Board", None))
                 .child(tab("Repos and machines", None))
                 .child(tab("Agent access", None))

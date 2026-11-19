@@ -316,7 +316,7 @@ fn waiting_list(look: Look, row: Div) -> Vec<Div> {
 }
 
 fn waiting_side() -> Side {
-    Side { gpu_box: Link::LinkedWaiting, ..Side::at("Inbox") }
+    Side { gpu_box: Link::LinkedWaiting, ..Side::at("Agent inbox") }
 }
 
 fn migrate_row(look: Look, from: &'static str) -> Div {
@@ -349,7 +349,7 @@ pub fn failed(look: Look) -> Div {
 
 /// Frame 81, Inbox: answered, with what it did.
 pub fn migrated(look: Look) -> Div {
-    let side = Side { gpu_box: Link::Linked, ..Side::at("Inbox") };
+    let side = Side { gpu_box: Link::Linked, ..Side::at("Agent inbox") };
     let answered = |title: &'static str, from: &'static str, when: &'static str| inbox_row(look, title, from, when, false, false).opacity(0.55);
     let rows = vec![
         heading(look, "Humata"),

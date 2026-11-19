@@ -1879,6 +1879,7 @@ impl SessionSvc {
                         idempotency_key: None,
                         id,
                         to: Some(pb::MachineId { value: to }),
+                        ..Default::default()
                     };
                     self.move_session_of(caller, request, true).await
                 }

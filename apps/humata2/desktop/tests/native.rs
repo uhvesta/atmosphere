@@ -7,7 +7,7 @@ use gpui_kit::{
 use humata2_app::layout::{FullScreen, PaneId};
 use humata2_app::{AppAction, PaneAction, Route};
 use humata2_clients::model::{SessionId, Status};
-use humata2_clients::{Clients, Workspace, fixture};
+use humata2_clients::{Workspace, fixture};
 use humata2_engine::Resources;
 use humata2_session::{Panel, SessionAction};
 use humata2_sidebar::{RowKey, SidebarAction};
@@ -169,6 +169,41 @@ impl App {
         tree.lines()
             .find(|line| line.contains("Button") && line.contains("Send") && line.contains(agent))
             .map(str::to_owned)
+    }
+    /// Scrolls `container` down until `id` is on screen, for controls in a
+    /// list of cards taller than the window.
+    fn scroll_to(&mut self, container: &str, id: &str) {
+        for _ in 0..40 {
+            self.draw();
+            let shown = self
+                .cx
+                .update_window(self.window, |_, window, _| {
+                    window
+                        .try_find(gpui_kit::SharedString::from(id.to_owned()))
+                        .is_some_and(|found| found.visible())
+                })
+                .expect("window stays open");
+            if shown {
+                // `visible` holds once any part shows; one more step brings
+                // the whole control in, so a click at its centre lands on it.
+                self.scroll_by(container, -120.);
+                return;
+            }
+            self.scroll_by(container, -120.);
+        }
+        panic!("{id} never came into view in {container}");
+    }
+    fn scroll_by(&mut self, container: &str, dy: f32) {
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                window.scroll(
+                    gpui_kit::SharedString::from(container.to_owned()),
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(dy))),
+                    cx,
+                );
+            })
+            .expect("window stays open");
+        self.settle();
     }
     fn click(&mut self, id: &str) {
         self.cx

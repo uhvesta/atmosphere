@@ -1,4 +1,4 @@
-Complementary "Changes"
+Complementary "Diff"
   Label "# payments-rewrite › Ledger schema migration"
   Button "New agent tab"
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
@@ -6,7 +6,6 @@ Complementary "Changes"
   Button "Close window"
   Button "Minimize window"
   Button "Zoom window"
-  text "Diff"
   #stack-header
     text "Whole stack · 3 layers"
   #stack-top

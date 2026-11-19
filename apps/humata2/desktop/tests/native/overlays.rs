@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn palette_new_session_and_toast_reference_images() {
     use humata2_app::NewSessionAction as N;
-    use humata2_clients::model::{ItemId, Scope};
+    use humata2_clients::model::ItemId;
     use humata2_palette::PaletteAction as P;
     let mut workspace = fixture::design_session(Status::Working);
     workspace.views.clear();
@@ -23,7 +23,7 @@ fn palette_new_session_and_toast_reference_images() {
     app.send(AppAction::Palette(P::Query("ledg".into())));
     app.snapshot("30-palette");
     app.send(AppAction::Escape);
-    app.send(AppAction::Switch(Route::Board(Scope::Global)));
+    app.send(AppAction::Switch(Route::Todo));
     app.cx
         .update(|cx| Theme::change(ThemeMode::Light, None, cx));
     app.send(AppAction::StartNewForItem(ItemId::new("PAY-9")));

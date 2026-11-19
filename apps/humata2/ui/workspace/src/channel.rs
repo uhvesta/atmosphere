@@ -206,8 +206,8 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
                     [
                         (Tab::Sessions, "Sessions", (sessions > 0).then_some(sessions)),
                         (Tab::Desk, "Desk", (desk > 0).then_some(desk)),
-                        (Tab::Inbox, "Inbox", (waiting > 0).then_some(waiting)),
-                        (Tab::Board, "Board", None),
+                        (Tab::Inbox, "Agent inbox", (waiting > 0).then_some(waiting)),
+                        (Tab::Board, "To-do", None),
                         (Tab::Repos, "Repos and machines", None),
                         (Tab::Access, "Agent access", None),
                         (Tab::Activity, "Activity", None),
@@ -216,7 +216,15 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
                     .map(|(tab, name, count)| {
                         let ui = ui.clone();
                         row()
-                            .id(SharedString::from(format!("channel-tab-{name}")))
+                            .id(SharedString::from(format!(
+                                "channel-tab-{}",
+                                // Ids keep the tabs' first names, which tests click.
+                                match tab {
+                                    Tab::Inbox => "Inbox",
+                                    Tab::Board => "Board",
+                                    _ => name,
+                                }
+                            )))
                             .role(Role::Tab)
                             .aria_label(name)
                             .aria_selected(tab == on)

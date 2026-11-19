@@ -1,8 +1,8 @@
 use super::{diffs::lines, machines, requests::request, sessions::session};
 use crate::model::{
-    Agent, Answer, Channel, ChannelId, Comment, FileDiff, ForkKind, Item, ItemId, ItemKind,
+    Agent, Answer, AskedWhy, CardEffect, CardFact, Channel, ChannelId, Comment, FileDiff, ForkKind, Item, ItemId, ItemKind,
     ItemStatus, Line, LineKind, Machine, MachineId, MachineKind, PreparedView, Preview, PullRequest,
-    RepoDiff, RequestId, RequestKind, Scope, SessionFile, SessionId, Speaker, Status,
+    RepoDiff, Request, RequestId, RequestKind, Scope, SessionFile, SessionId, Speaker, Status,
 };
 use crate::workspace::Workspace;
 
@@ -336,11 +336,11 @@ pub fn design_session(ledger_status: Status) -> Workspace {
     }
     workspace.requests = vec![
         request(
-            "move-pay-3",
+            "move-ledger",
             "ledger",
             "payments-rewrite",
             RequestKind::Command,
-            "Move PAY-3 to Done",
+            "Move the folder ledger-2026 from This Mac to devbox-1?",
         ),
         request(
             "review-question",
@@ -422,29 +422,35 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 request.preview =
                     Preview::Text("Remove the Postgres 16 snapshots on devbox-1.".into());
             }
-            "review-question" => request.asked = "2h".into(),
+            "review-question" => {
+                request.asked = "2h".into();
+                request.reason = "Three commits landed on the branch after the review began. They touch the code the review already covers, so the notes may be out of date.".into();
+                request.choices = vec![
+                    "Review the new commits first".into(),
+                    "Finish the review as it is".into(),
+                    "Leave it as it is and add a to-do".into(),
+                ];
+            }
             "review-command" => request.asked = "3h".into(),
             _ => {}
         }
     }
+    seed_cards(&mut workspace.requests);
     if let Some(request) = workspace
         .requests
         .iter_mut()
-        .find(|r| r.id.as_str() == "move-pay-3")
+        .find(|r| r.id.as_str() == "move-ledger")
     {
-        request.reason="The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you.".into();
-        request.preview = Preview::Text(
-            "Item  PAY-3 Ledger schema\nMove  In progress → Done\nCreated by  You, 3 days ago"
-                .into(),
-        );
+        request.reason = "The backfill runs on devbox-1 and reads these fixture rows. Nothing on This Mac uses them after today's run.".into();
+        request.preview = Preview::Text("Folder  ledger-2026\nFrom  This Mac\nTo  devbox-1".into());
         request.asked = "2m".into();
-        request.rule = "board_item_move".into();
+        request.rule = "move_files_between_machines".into();
     }
     // While Ledger works it has not asked to move PAY-3 yet (D128.5): its
     // family's only request is its fork's push.
     // Refund retries asks instead, so the Inbox still holds 7 (frames 01, 07).
     if ledger_status == Status::Working {
-        workspace.requests.retain(|r| r.id.as_str() != "move-pay-3");
+        workspace.requests.retain(|r| r.id.as_str() != "move-ledger");
         let mut tests = request(
             "refund-tests",
             "refund",
@@ -806,4 +812,77 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         files.retain(|f| f.repo != "api");
     }
     workspace
+}
+
+fn fact(label: &str, lead: &str, rest: &str) -> CardFact {
+    CardFact { label: label.into(), lead: lead.into(), rest: rest.into() }
+}
+
+fn effect(warn: bool, lead: &str, rest: &str) -> CardEffect {
+    CardEffect { warn, lead: lead.into(), rest: rest.into() }
+}
+
+/// What Humata works out for a few of the waiting cards, as the Agent
+/// inbox frames draw them.
+fn seed_cards(requests: &mut [Request]) {
+    for request in requests {
+        match request.id.as_str() {
+            "push-brin" => {
+                request.facts = vec![
+                    fact("From", "try-brin", " · devbox-1 · infra"),
+                    fact("To", "origin", " · acme/infra"),
+                    fact("Size", "", "3 commits · 14 files"),
+                ];
+                request.affects = vec![
+                    effect(true, "Others can see it:", " the branch is pushed to the shared remote"),
+                    effect(false, "", "No existing branch is overwritten"),
+                ];
+                request.undo_text = "Yes. Undo deletes the pushed branch; nothing else changes.".into();
+                request.working_on = "INF-9 Benchmark BRIN on real data".into();
+                request.rule_label = "Push to a remote".into();
+                request.asked_why = Some(AskedWhy {
+                    asked: "40s".into(),
+                    reply: Some("The index migration and its tests are ready to review, and the branch has to be on origin for that.".into()),
+                    replied: Some("10s".into()),
+                });
+            }
+            "move-ledger" => {
+                request.facts = vec![
+                    fact("From", "This Mac", " · Ledger entries · api/fixtures/ledger-2026/"),
+                    fact("To", "devbox-1", " · Ledger entries · api/fixtures/ledger-2026/"),
+                    fact("Size", "", "412 files · 1.8 GB"),
+                ];
+                request.affects = vec![
+                    effect(true, "2 files on devbox-1 are replaced:", " seed.sql (the one there is 3 days newer) and accounts.csv (same content)"),
+                    effect(true, "", "The folder leaves This Mac: this is a move, not a copy"),
+                    effect(false, "", "410 files are new on devbox-1"),
+                    effect(false, "", "No running terminal is inside this folder"),
+                ];
+                request.undo_text = "Yes, for 7 days. Undo moves the folder back and restores the 2 replaced files.".into();
+                request.working_on = "PAY-3 Ledger schema v2".into();
+                request.rule_label = "Move files to another machine".into();
+                request.asked_why = None;
+            }
+            "benchmark-command" => request.rule_label = "Run machine scripts".into(),
+            "review-command" => request.rule_label = "Push its branch or open a pull request".into(),
+            "refund-tests" => request.rule_label = "Run machine scripts".into(),
+            "refund-command" => {
+                request.choices = vec![
+                    "Charge currency".into(),
+                    "Account currency".into(),
+                    "Leave it as it is and add a to-do".into(),
+                ];
+                request.working_on = "PAY-7 Refund retry with backoff".into();
+            }
+            "postgres-command" => {
+                request.affects = vec![
+                    effect(true, "2 snapshots are removed", " from devbox-1 (14 GB)"),
+                    effect(false, "", "The running database is not touched"),
+                ];
+                request.undo_text = "No. The snapshots are gone once removed.".into();
+                request.rule_label = "Delete files or data".into();
+            }
+            _ => {}
+        }
+    }
 }

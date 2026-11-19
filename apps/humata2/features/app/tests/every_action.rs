@@ -529,7 +529,7 @@ fn key(name: &str) -> Option<Key> {
         "ToggleSidebar" => Key::Runs(Command::ToggleSidebar),
         "GoHome" => Key::Runs(Command::Home),
         "GoInbox" => Key::Runs(Command::Inbox),
-        "GoBoard" => Key::Runs(Command::Board),
+        "GoBoard" => Key::Runs(Command::Todo),
         "OpenSettings" => Key::Runs(Command::Settings),
         "TogglePanel" => Key::Runs(Command::TogglePanel),
         "ToggleRecording" => Key::Runs(Command::Record),

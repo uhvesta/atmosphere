@@ -88,6 +88,12 @@ fn item(thing: MigrateThing, phase: MigratePhase, answer: Option<Answer>) -> Req
         choices: Vec::new(),
         on_screen: None,
         dismiss_only: false,
+        facts: Vec::new(),
+        affects: Vec::new(),
+        undo_text: String::new(),
+        working_on: String::new(),
+        asked_why: None,
+        rule_label: String::new(),
     }
 }
 

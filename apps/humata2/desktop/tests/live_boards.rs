@@ -823,8 +823,9 @@ fn ask_open_in_the_drawer<'r>(
         "a move that waits for the person doesn't move the item yet"
     );
 
-    // The board, as the sidebar opens it; the item's card offers Review.
-    app.click(Role::Link, "Board");
+    // The whole workspace's board (the sidebar now opens the To-do list);
+    // the item's card offers Review.
+    app.open_board();
     assert!(app.ui.read(|state| matches!(state.route, Route::Board(_))));
     app.wait_until("the item's card to offer Review", |app| {
         let view = app.view();
@@ -999,6 +1000,15 @@ impl App<'_> {
     /// Opens the channel's page (a click can't reach it without a
     /// sidebar row per channel, so this sends the navigation the row
     /// sends) and its Board tab.
+    /// Shows the whole workspace's board, as "Go to Board" in the palette does.
+    fn open_board(&mut self) {
+        self.cx.update(|cx| {
+            self.ui
+                .send(AppAction::Switch(Route::Board(Scope::Global)), cx)
+        });
+        self.settle();
+    }
+
     fn open_channel_board(&mut self, channel: &ChannelId) {
         let channel = channel.clone();
         self.cx.update(|cx| {
@@ -1006,11 +1016,11 @@ impl App<'_> {
                 .send(AppAction::Navigate(Route::Channel(channel)), cx)
         });
         self.settle();
-        self.wait_until("the channel's tabs", |app| app.shows(Role::Tab, "Board"));
+        self.wait_until("the channel's tabs", |app| app.shows(Role::Tab, "To-do"));
         // A channel's page opens on the tab it showed last. Already on
         // Board, the board's own view switch shows a Tab "Board" too.
         if !self.shows(Role::Button, "New item") {
-            self.click(Role::Tab, "Board");
+            self.click(Role::Tab, "To-do");
         }
         self.wait_until("the channel's board", |app| {
             app.shows(Role::Button, "New item")
@@ -1308,7 +1318,7 @@ fn the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_coun
     });
     let labels: Vec<String> = ids.iter().map(|id| app.label_of_listed(id)).collect();
 
-    app.click(Role::Link, "Board");
+    app.open_board();
     app.wait_until("the board", |app| app.shows(Role::Button, "New item"));
     app.wait_until("the cards on the board", |app| all_shown(app, &labels));
 
@@ -1374,87 +1384,6 @@ fn the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_coun
     app.wait_until("the cards again", |app| {
         app.shows(Role::Button, "Add item to To do") && all_shown(app, &labels)
     });
-
-    drop(app);
-    drop(world);
-}
-
-/// Macro case step 10. The session's Board panel shows its channel's board
-/// with the session's own items first.
-#[test]
-fn the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first() {
-    let runtime = runtime();
-    let (world, clients, session, channel_item, own_item) = runtime.block_on(async {
-        let world = World::start().await.expect("start the daemon");
-        let clients = world.clients().await.expect("connect");
-        let (channel, repo, mac) = channel_setup(&world, &clients).await;
-        // The channel's item first, so the order isn't the order of making.
-        let channel_item = clients
-            .daemon
-            .create_item(Scope::Channel(channel.clone()), "Channel milestone")
-            .await
-            .expect("make the channel item");
-        let session = clients
-            .daemon
-            .create_session(
-                &channel,
-                Agent::Claude,
-                &mac,
-                SESSION,
-                SessionOptions {
-                    repos: vec![repo],
-                    first_message: FIRST_MESSAGE.to_owned(),
-                    ..SessionOptions::default()
-                },
-            )
-            .await
-            .expect("create the session");
-        let own_item = clients
-            .daemon
-            .create_item(
-                Scope::Session {
-                    channel: channel.clone(),
-                    session: session.clone(),
-                },
-                "Check the ledger totals",
-            )
-            .await
-            .expect("make the session's own item");
-        (world, clients, session, channel_item, own_item)
-    });
-    let mut app = App::open(&runtime, clients, world.agent());
-    app.wait_until("both items to load", |app| {
-        status_in_app(app, &channel_item).is_some() && status_in_app(app, &own_item).is_some()
-    });
-    let channel_label = app.label_of_listed(&channel_item);
-    let own_label = app.label_of_listed(&own_item);
-
-    app.cx.update(|cx| {
-        app.ui
-            .send(AppAction::Navigate(Route::Session(session.clone())), cx)
-    });
-    app.settle();
-    app.wait_until("the session page", |app| {
-        app.shows(Role::Button, "Board")
-    });
-    // The panel may already be open; open it only if it isn't.
-    if !app.shows(Role::ListItem, &own_label) {
-        app.click(Role::Button, "Board");
-    }
-    app.wait_until("the panel to list both items", |app| {
-        app.shows(Role::ListItem, &own_label) && app.shows(Role::ListItem, &channel_label)
-    });
-    let view = app.view();
-    let own_at = view
-        .find(&heading(Role::ListItem, &own_label))
-        .expect("the session's own item shows");
-    let channel_at = view
-        .find(&heading(Role::ListItem, &channel_label))
-        .expect("the channel's item shows");
-    assert!(
-        own_at < channel_at,
-        "the session's own item comes first\n{view}"
-    );
 
     drop(app);
     drop(world);

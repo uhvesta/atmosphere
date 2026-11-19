@@ -80,8 +80,9 @@ fn session_lifecycle_and_full_screen_reference_images() {
         (
             "12-panel-full-screen-board",
             ThemeMode::Dark,
-            // The golden's PAY-3 card asks to move to Done: Ledger needs you.
-            Status::NeedsYou,
+            // As in frame 07 and design 12: Ledger works while its PAY-3
+            // ask waits in the To-do panel, so the two frames show one state.
+            Status::Working,
             Some(Panel::Board),
             Some(FullScreen::Panel),
             false,

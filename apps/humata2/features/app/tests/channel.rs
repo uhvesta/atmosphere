@@ -112,6 +112,6 @@ fn archived_and_clone_filters_stay_in_their_channel_with_tree_context() {
         .iter()
         .find(|r| r.session.id.as_str() == "ledger")
         .unwrap();
-    // Its own Move PAY-3 plus its fork's Push try-brin (frames 01–06).
+    // Its own folder move plus its fork's Push try-brin (frames 01–06).
     assert_eq!(ledger.pending, 2);
 }

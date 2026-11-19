@@ -11,7 +11,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, AppState, PaneAction, Route};
-use humata2_clients::model::{MachineKind, Scope, Status};
+use humata2_clients::model::{MachineKind, Status};
 use humata2_sidebar::{Move, Row, RowKey, RowKind, SidebarAction};
 
 use humata2_ui_core::bridge::{Part, Ui};
@@ -688,7 +688,7 @@ impl Render for Sidebar {
             .child(nav(
                 ui,
                 "rail-inbox",
-                "Inbox",
+                "Agent inbox",
                 IconName::Inbox,
                 Route::Inbox,
                 route == Route::Inbox,
@@ -698,10 +698,10 @@ impl Render for Sidebar {
             .child(nav(
                 ui,
                 "rail-board",
-                "Board",
+                "To-do",
                 IconName::SquareKanban,
-                Route::Board(Scope::Global),
-                matches!(route, Route::Board(_)),
+                Route::Todo,
+                route == Route::Todo,
                 None,
                 look,
             ))

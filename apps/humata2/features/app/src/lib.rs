@@ -59,7 +59,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_board::{Board, BoardAction, BoardState};
-use humata2_todo_feature::{Todo, TodoAction, TodoState};
+pub use humata2_todo_feature::TodoAction;
+use humata2_todo_feature::{Todo, TodoState};
 use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, Scope, SessionId, ViewId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_desk::{Desk, DeskAction, DeskState};
@@ -788,6 +789,14 @@ impl App {
                     let show = self.child(state, AppAction::Files(FilesAction::Navigate(side, folder)));
                     Effect::merge([go, show])
                 }
+                I::OpenAgentAccess => {
+                    let go = self.navigate(state, Route::Settings);
+                    let section = self.child(
+                        state,
+                        AppAction::Settings(SettingsAction::Section(humata2_settings::Section::Access)),
+                    );
+                    Effect::merge([go, section])
+                }
                 I::Toast(text) => state.toast(text.clone(), &clock),
                 // This Mac's daemon was replaced: load from the new one and
                 // follow its events, as after any daemon restart.
@@ -891,6 +900,12 @@ impl Reducer for App {
 
     fn reduce(&self, state: &mut AppState, action: AppAction) -> Effect<AppAction> {
         let effect = self.handle(state, action);
+        // Do next ends with its sheet, however the sheet went.
+        if state.todo.do_next.is_some()
+            && !state.overlays.iter().any(|o| matches!(o, Overlay::NewSession(_)))
+        {
+            state.todo.do_next = None;
+        }
         // Show pinned may have changed: the Pinned section follows it.
         state.pinned.shown = state.settings.preferences.show_pinned;
         let (count, more) = (state.find.hits.len(), !state.find.next_page.is_empty());
@@ -1155,6 +1170,16 @@ impl App {
             }
             // The drawer already shows the item's history; nothing more to route.
             AppAction::Todo(TodoAction::ShowHistory(_)) => Effect::none(),
+            // The view opens web links itself (cx.open_url).
+            AppAction::Todo(TodoAction::OpenEvidence(_)) => Effect::none(),
+            AppAction::Todo(TodoAction::StartReview(key)) => self.start_todo_review(state, &key),
+            // Do next opens New session filled from the top item; Skip moves
+            // on to the next one and fills it again.
+            AppAction::Todo(action @ (TodoAction::DoNext | TodoAction::SkipDoNext)) => {
+                let moved = self.child(state, AppAction::Todo(action));
+                let fill = self.fill_do_next(state);
+                moved.and(fill)
+            }
             AppAction::Board(BoardAction::SetScope(scope)) => {
                 if matches!(state.route, Route::Board(_)) {
                     state.route = Route::Board(scope.clone());

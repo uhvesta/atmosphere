@@ -143,6 +143,22 @@ pub(super) fn file_row(
     on: bool,
     short: bool,
 ) -> impl IntoElement {
+    file_row_also(ui, state, look, diff, file, on, short, "")
+}
+
+/// [`file_row`] with `also` in grey after the directory (D867): "also 2" for
+/// a file a higher layer lists too; empty for none.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn file_row_also(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    diff: &RepoDiff,
+    file: &humata2_clients::model::FileDiff,
+    on: bool,
+    short: bool,
+    also: &str,
+) -> impl IntoElement {
     let ui = ui.clone();
     let repo = diff.repo.clone();
     let path = file.path.clone();
@@ -283,6 +299,15 @@ pub(super) fn file_row(
                         .whitespace_nowrap()
                         .text_ellipsis(),
                 )
+                .when(!also.is_empty(), |line| {
+                    line.child(
+                        text(also.to_owned())
+                            .id(SharedString::from(format!("change-file-also {repo}/{path}")))
+                            .test_support()
+                            .flex_shrink_0()
+                            .text_color(rgb(look.tertiary)),
+                    )
+                })
                 .into_any_element()
         })
         .child(mark)

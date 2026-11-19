@@ -22,6 +22,7 @@ pub(super) struct Details {
 pub(super) fn details(preview: &pb::request_preview::Preview, names: &Names) -> Details {
     match preview {
         pb::request_preview::Preview::CrossMachineCopy(copy) => copy_details(copy, names),
+        pb::request_preview::Preview::Move(preview) => move_details(preview, names),
         _ => Details::default(),
     }
 }
@@ -41,6 +42,10 @@ fn machine_name(machine: &Option<pb::MachineId>, names: &Names) -> String {
         .unwrap_or_default()
 }
 
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
 fn copy_details(copy: &pb::CrossMachineCopyPreview, names: &Names) -> Details {
     let source = machine_name(&copy.source_machine, names);
     let destination = machine_name(&copy.destination_machine, names);
@@ -55,19 +60,162 @@ fn copy_details(copy: &pb::CrossMachineCopyPreview, names: &Names) -> Details {
         if copy.files == 1 { "" } else { "s" },
         size_text(copy.bytes)
     );
+    let mut affects = Vec::new();
+    if !copy.replaced.is_empty() {
+        let listed = copy
+            .replaced
+            .iter()
+            .map(|file| {
+                if file.note.is_empty() {
+                    file.path.clone()
+                } else {
+                    format!("{} ({})", file.path, file.note)
+                }
+            })
+            .collect::<Vec<_>>();
+        affects.push(pb::CardEffect {
+            warn: true,
+            lead: format!(
+                "{} on {destination} {} replaced:",
+                plural(listed.len(), "file", "files"),
+                if listed.len() == 1 { "is" } else { "are" }
+            ),
+            rest: format!(" {}", join_and(&listed)),
+        });
+    }
+    if copy.moves {
+        affects.push(pb::CardEffect {
+            warn: true,
+            lead: format!("The folder leaves {source}"),
+            rest: ": this is a move, not a copy".to_owned(),
+        });
+    } else {
+        affects.push(pb::CardEffect {
+            warn: false,
+            lead: format!("Nothing changes on {source}"),
+            rest: "; the files are copied, not moved".to_owned(),
+        });
+    }
+    if copy.files as usize > copy.replaced.len() && !copy.replaced.is_empty() {
+        let new = copy.files as usize - copy.replaced.len();
+        affects.push(pb::CardEffect {
+            warn: false,
+            lead: format!(
+                "{} on {destination} {} new",
+                plural(new, "file", "files"),
+                if new == 1 { "is" } else { "are" }
+            ),
+            rest: String::new(),
+        });
+    }
+    // What the transfers service does with replaced files: they go to the
+    // trash on the destination machine, kept for 30 days.
+    let replaced_note = if copy.replaced.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " The {} replaced {} in the trash on {destination} for 30 days.",
+            plural(copy.replaced.len(), "file", "files"),
+            if copy.replaced.len() == 1 { "waits" } else { "wait" }
+        )
+    };
+    let undo_text = if copy.moves {
+        format!("By hand: move the folder back from {destination}.{replaced_note}")
+    } else {
+        format!("By hand: delete the copied files. The originals are untouched.{replaced_note}")
+    };
     Details {
         facts: vec![
             fact("From", source.clone(), format!("· {}", copy.source_path.replace('\n', ", "))),
             fact("To", destination, format!("· {landing}")),
             fact("Carries", size, String::new()),
         ],
-        affects: vec![pb::CardEffect {
+        affects,
+        undo_text,
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Where a session is, in words: the machine, then its channel and title.
+fn session_place(machine: String, preview: &pb::MovePreview) -> pb::CardFact {
+    let mut rest = String::new();
+    for part in [&preview.channel_name, &preview.session_title] {
+        if !part.is_empty() {
+            rest.push_str(&format!("· {part} "));
+        }
+    }
+    fact("", machine, rest.trim_end().to_owned())
+}
+
+fn move_details(preview: &pb::MovePreview, names: &Names) -> Details {
+    let from = machine_name(&preview.from, names);
+    let to = machine_name(&preview.to, names);
+    let mut facts = Vec::new();
+    for (label, machine) in [("From", from.clone()), ("To", to.clone())] {
+        let mut row = session_place(machine, preview);
+        row.label = label.to_owned();
+        facts.push(row);
+    }
+    let mut carries = Vec::new();
+    if !preview.repos.is_empty() {
+        carries.push(format!(
+            "{} ({})",
+            plural(preview.repos.len(), "repo", "repos"),
+            preview.repos.join(", ")
+        ));
+    }
+    if preview.bytes > 0 {
+        carries.push(size_text(preview.bytes));
+    }
+    if preview.uncommitted_files > 0 {
+        carries.push(format!(
+            "{} uncommitted {}, as they are",
+            preview.uncommitted_files,
+            if preview.uncommitted_files == 1 { "file" } else { "files" }
+        ));
+    }
+    if !carries.is_empty() {
+        facts.push(fact("Carries", carries.join(" · "), String::new()));
+    }
+    let mut affects = Vec::new();
+    if !preview.terminals.is_empty() {
+        affects.push(pb::CardEffect {
             warn: false,
-            lead: format!("Nothing changes on {source}"),
-            rest: "; the files are copied, not moved".to_owned(),
-        }],
-        undo_text: "By hand: delete the copied files. The originals are untouched."
-            .to_owned(),
+            lead: format!(
+                "{} move along and keep running:",
+                plural(preview.terminals.len(), "terminal", "terminals")
+            ),
+            rest: format!(" {}", join_and(&preview.terminals)),
+        });
+    }
+    for repo in &preview.clones_needed {
+        affects.push(pb::CardEffect {
+            warn: true,
+            lead: format!("{to} has no clone of {repo} yet"),
+            rest: "; Humata clones it there first".to_owned(),
+        });
+    }
+    for fork in &preview.forks_staying {
+        affects.push(pb::CardEffect {
+            warn: true,
+            lead: format!("Its fork, {fork}, stays on {from}"),
+            rest: String::new(),
+        });
+    }
+    Details {
+        facts,
+        affects,
+        undo_text: format!(
+            "Yes. Move it back at any time; nothing is removed from {from} until the move has finished."
+        ),
     }
 }
 
@@ -124,6 +272,7 @@ mod tests {
             bytes: 4096,
             files: 1,
             destination_place: "shared".to_owned(),
+            ..Default::default()
         }
     }
 
@@ -158,6 +307,69 @@ mod tests {
         assert!(from.rest.contains("backoff.rs"));
         assert!(!got.undo_text.is_empty());
         assert!(!got.affects.is_empty());
+    }
+
+    #[test]
+    fn a_session_move_names_machines_and_what_it_affects() {
+        let names = Names::of_host("host").naming("devbox-1", "devbox-1");
+        let preview = pb::MovePreview {
+            from: Some(pb::MachineId { value: "host".to_owned() }),
+            to: Some(pb::MachineId { value: "devbox-1".to_owned() }),
+            session_title: "Retry backoff".to_owned(),
+            channel_name: "payments".to_owned(),
+            repos: vec!["infra".to_owned(), "ledger".to_owned()],
+            uncommitted_files: 3,
+            terminals: vec!["codex".to_owned(), "zsh running pgbench".to_owned()],
+            forks_staying: vec!["Try a queue".to_owned()],
+            clones_needed: vec!["ledger".to_owned()],
+            ..Default::default()
+        };
+        let got = details(&pb::request_preview::Preview::Move(preview), &names);
+        let from = got.facts.iter().find(|f| f.label == "From").unwrap();
+        let to = got.facts.iter().find(|f| f.label == "To").unwrap();
+        let carries = got.facts.iter().find(|f| f.label == "Carries").unwrap();
+        assert_eq!(from.lead, "This Mac");
+        assert_eq!(to.lead, "devbox-1");
+        assert!(from.rest.contains("payments") && from.rest.contains("Retry backoff"));
+        assert!(carries.lead.contains("ledger") && carries.lead.contains('3'));
+        // Terminals are the one effect that is no warning; the clone and the fork are.
+        assert_eq!(got.affects.iter().filter(|e| !e.warn).count(), 1);
+        assert_eq!(got.affects.iter().filter(|e| e.warn).count(), 2);
+        assert!(got.affects.iter().any(|e| e.rest.contains("pgbench") || e.lead.contains("pgbench")));
+        assert!(!got.undo_text.is_empty());
+    }
+
+    #[test]
+    fn a_session_move_with_nothing_known_omits_the_carries_row() {
+        let got = details(
+            &pb::request_preview::Preview::Move(pb::MovePreview::default()),
+            &Names::default(),
+        );
+        assert!(got.facts.iter().all(|f| f.label != "Carries"));
+        assert!(got.affects.is_empty());
+    }
+
+    #[test]
+    fn a_move_of_files_warns_about_what_it_replaces_and_where_the_folder_goes() {
+        let mut preview = copy();
+        preview.moves = true;
+        preview.files = 3;
+        preview.replaced = vec![
+            pb::ReplacedFile { path: "a.rs".to_owned(), note: "same content".to_owned() },
+            pb::ReplacedFile { path: "b.rs".to_owned(), note: String::new() },
+        ];
+        let got = details(&pb::request_preview::Preview::CrossMachineCopy(preview), &Names::of_host("host"));
+        assert_eq!(got.affects.iter().filter(|e| e.warn).count(), 2);
+        let replaced = got.affects.iter().find(|e| e.rest.contains("a.rs")).unwrap();
+        assert!(replaced.rest.contains("b.rs"));
+        // One file is new.
+        assert_eq!(got.affects.iter().filter(|e| !e.warn).count(), 1);
+    }
+
+    #[test]
+    fn a_plain_copy_replaces_nothing_and_stays_a_single_calm_row() {
+        let got = details(&pb::request_preview::Preview::CrossMachineCopy(copy()), &Names::of_host("host"));
+        assert!(got.affects.iter().all(|e| !e.warn));
     }
 
     #[test]

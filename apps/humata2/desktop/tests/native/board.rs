@@ -42,9 +42,9 @@ fn board_reference_images() {
 }
 
 #[test]
-fn board_creates_in_selected_column_and_answers_the_item_request() {
+fn board_creates_in_selected_column_and_keeps_channel_scope() {
     use humata2_board::BoardAction as B;
-    use humata2_clients::model::{ItemId, ItemStatus as S, Scope};
+    use humata2_clients::model::{ItemStatus as S, Scope};
     let mut app = App::new(fixture::design());
     app.send(AppAction::Switch(Route::Board(Scope::Global)));
     app.click("board-add-Backlog");
@@ -55,19 +55,9 @@ fn board_creates_in_selected_column_and_answers_the_item_request() {
             i.title == "A new milestone" && i.status == S::Backlog && i.scope == Scope::Global
         })
     }));
-    app.click("board-card PAY-3");
-    app.click("board-approve");
-    assert_eq!(
-        app.ui.read(|s| s
-            .workspace
-            .items
-            .iter()
-            .find(|i| i.id == ItemId::new("PAY-3"))
-            .unwrap()
-            .status),
-        S::Done
-    );
-    assert!(!app.contains("board-approve"));
+    // The design fixture no longer asks to move PAY-3 (its ledger request
+    // is now a folder move), and item asks live on the To-do list (D834),
+    // so the board's approve button is not exercised here.
     app.send(AppAction::Switch(Route::Channel(
         humata2_clients::model::ChannelId::new("infra"),
     )));

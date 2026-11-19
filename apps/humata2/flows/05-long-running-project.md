@@ -29,7 +29,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - Each item gets the channel's key (for example LV-1).
    - A dependency that would make a loop is refused.
    - Events: BoardItem created ×5; BoardItem updated per dependency.
-   **Status: Works** in the client: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`. The clicks **Work** against a real daemon: `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker` (New item makes items with the channel's key, and the drawer's picker sets a dependency and leaves out the item itself and one that would make a loop). Fake-client versions: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request` and `features/board/tests/drawer.rs`.
+   **Status: Works** in the client: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`. The clicks **Work** against a real daemon: `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker` (New item makes items with the channel's key, and the drawer's picker sets a dependency and leaves out the item itself and one that would make a loop). Fake-client versions: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope` and `features/board/tests/drawer.rs`.
 
 3. **Do (instead of 2):** in a session, ask the agent: "Read `shared/spec.md` and put the milestones on the board."
    **Expect:**

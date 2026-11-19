@@ -128,3 +128,42 @@ Hooks are the only path we invest in. Existing screen reads may stay while they 
     - `screen_questions`, `ready_gate`, `hooks` and `svc_inbox_unit` are green.
   - I1, first pass: Fable approved 205, 208 and 210. 200–204 pass once they use the mockups' own sidebar (ruling A, a shared `mock_sidebar.rs`). 206, 207 and 209 were rejected over bold titles, a clipped line, and 209's own To-do list. A worker is fixing them.
   - The codex wrapper follows the app-server socket's symlink, which real Codex makes.
+  - I1 second pass: Fable approved 200–204, which are now in WIDE and recorded. Only those five goldens were written; the others were restored. 205–210 were rejected for vertical rhythm, the session chrome's icon colours, tab borders and spacing, and 209's chip colours. A worker is fixing them.
+  - I2 done:
+    - Copy asks get From/To/Carries rows, affects and undo lines (`inbox/facts.rs`).
+    - Every deferred card gets its rule name and "Working on".
+    - The copy undo line says it is undone by hand, because transfers has no undo (D847).
+    - Session-move and file-read previews are still not built.
+  - `inbox_copy` moved from the transfers profile to the power_cut profile, because transfers lacks inbox and channel relay.
+  - Rig root cause: after the split nobody set `peer_dial`, the relay guard was dropped, and ConnId/PeerFacts were missing, so BeginRelay was refused. All three are fixed in humatad wire_machines, serve, wire_peer and identity, and svc_peer ports. The stop stubs, the fork_remote mcp routing, the move_cheap hold and fork restart recovery are in progress.
+
+### Batch 2 (minion INBOXHOOKS, 2026-11-19 13:20, after LIVEHOLDER's 64aa343a)
+- Checked: D864 (AGENTS2, 8aebb01a) already catches Claude Code's auto-mode offer in the ASKED table and the input gate; nothing to add. D767/D781/D785/D786 are already marked Superseded by D845.
+- Found: the MCP `session_move` tool has a schema but no handler (`not_built`), and agents have no file-move MCP tool; a file move reaches the Inbox through `TransferService` (CLI) with a CrossMachineCopy preview that always said "copied, not moved".
+- Proto seam (manager, additive): inbox.proto `AskWhy` + `ExplainAsk` RPCs, `WaitResponse.asked_why`, `MovePreview` fields 5–11, `CrossMachineCopyPreview.moves`/`replaced` + `ReplacedFile`; sessions.proto `MoveSessionRequest.reason`.
+- Workers:
+  - W-A (Sonnet): frames 205–210 second-pass fixes, `desktop/tests/design/agent_inbox_more.rs` (+ `mock_sidebar.rs`). Fable judges.
+  - W-B (Sonnet): daemon. Session-move card (MovePreview filled, reason), MCP `session_move`, transfer move/replaced facts, reason required on every asking MCP tool, Ask why (svc_inbox + MCP `inbox_explain`).
+  - W-D (Sonnet): app. Client model card detail + AskWhy, features/inbox one column + chips + Ask why + History, ui inbox page/request card/panel per frames 200–205.
+  - W-E (Sonnet): Settings › Agent access grouped Allow/Ask/Never rows (frame 208).
+
+#### Batch 2 result (13:45)
+- Done:
+  - D871
+  - Session-move card and reason refusal
+  - Move/replace facts on file cards
+  - `reason` required in `asks()` (reverted: it broke every asking tool, reads included)
+  - AskWhy/ExplainAsk in svc_inbox, with live client `ask_why` wired
+  - Agent inbox one-column page, cards per 200–204, chips, History, Ask why, Change this rule
+  - Agent access rows
+  - Frame fixes for 205–210
+- Left:
+  - MCP `session_move` handler and `inbox_explain` tool, plus the asked_why hint in the wait reply
+  - Refusing an empty-string reason in svc_mcp
+  - Forwarding AskWhy/ExplainAsk to the host (svc_away Method registry)
+  - File-read preview
+  - Home stopped group (207) and notification (209) in the real UI
+  - Global Agent access page (settings.rs stub)
+  - Recording native goldens 26/27/117
+  - Fable judging 205–210
+  - Removing dead Bulk reducer code

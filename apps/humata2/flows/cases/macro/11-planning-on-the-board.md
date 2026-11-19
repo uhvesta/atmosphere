@@ -55,7 +55,7 @@ claim; the Evidence column names any part that is only faked or not built.
    - **Status:** Works (real daemon) for the write and key: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`,
      `daemon/humatad/tests/boards.rs::keys_count_up_per_channel_and_a_taken_prefix_lengthens`,
      `daemon/humatad/tests/boards.rs::a_repeated_create_with_the_same_key_makes_one_item`.
-     The UI create is Fakes only: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request`
+     The UI create is Fakes only: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope`
      (a headless test on fakes).
 
 4. **Open an item's drawer.**
@@ -295,7 +295,7 @@ claim; the Evidence column names any part that is only faked or not built.
 |---|---|---|
 | 1. ⌘3 opens the board | Fakes only (key table and view); data Works (real daemon) | `ui/src/keys.rs:105`; `clients/live/tests/boards.rs::a_global_item_gets_the_global_key_and_scope` |
 | 2. Global, channel and session boards | Fakes only (scope); Works (real daemon) for lists | `features/board/tests/scope.rs::each_channel_board_scope_shows_its_own_set`; `clients/live/tests/boards.rs::a_session_board_item_is_listed_on_that_sessions_board` |
-| 3. Add items | Works (real daemon); UI Fakes only | `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`; `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request` |
+| 3. Add items | Works (real daemon); UI Fakes only | `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`; `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope` |
 | 4. Open the drawer | Fakes only | `features/board/tests/drawer.rs::opening_an_item_reads_its_history_and_late_reads_are_dropped` |
 | 5. Edit title or description | Not built (D177, deferred to owner) | DECISIONS.md D177; OVERVIEW.md:411 |
 | 6. Drag between columns | Code, no test (UI); Works (real daemon) for the move | `ui/src/board.rs:433-438`, `:494-499`; `clients/live/tests/boards.rs::a_moved_item_is_in_its_new_column_on_the_next_load` |

@@ -22,29 +22,29 @@ fn home_and_global_inbox_reference_images() {
                 humata2_clients::model::ChannelId::new(id),
             ))));
         }
-        // Frame 27 is the All view: answered requests beside the waiting ones.
-        if name == "27-inbox-dark" {
-            app.click("inbox-history-All");
-        }
         app.snapshot(name);
     }
 }
 
-/// IN-3/7/15: selected details answer the chosen request, then history can reveal it.
+/// IN-3/7/15: a card's answer answers only that request, a channel chip
+/// narrows the cards, and History shows the answered ones.
 #[test]
 fn the_global_inbox_answers_only_the_selected_request() {
     use humata2_clients::model::{Answer, RequestId};
     let mut app = App::new(fixture::design());
     app.click("rail-inbox");
-    assert_eq!(
-        app.ui.read(|s| s.inbox.selected.clone()),
-        Some(RequestId::new("move-pay-3"))
-    );
-    app.click("global-request push-brin");
-    assert_eq!(
-        app.ui.read(|s| s.inbox.selected.clone()),
-        Some(RequestId::new("push-brin"))
-    );
+    assert!(app.contains("request move-ledger"));
+    assert!(app.contains("request push-brin"));
+
+    // A channel chip shows only that channel's cards; All shows them again.
+    assert!(app.contains("request benchmark-command"));
+    app.click("chip payments-rewrite");
+    assert!(app.contains("request push-brin"));
+    assert!(!app.contains("request benchmark-command"));
+    app.click("chip all");
+    assert!(app.contains("request benchmark-command"));
+
+    app.scroll_to("global-inbox-detail", "deny push-brin");
     app.click("deny push-brin");
     assert!(app.ui.read(|s| {
         s.workspace
@@ -59,19 +59,21 @@ fn the_global_inbox_answers_only_the_selected_request() {
         s.workspace
             .requests
             .iter()
-            .find(|r| r.id.as_str() == "move-pay-3")
+            .find(|r| r.id == RequestId::new("move-ledger"))
             .unwrap()
             .answer
             .is_none()
     }));
-    assert!(!app.contains("global-request push-brin"));
-    app.click("inbox-history-Answered");
-    assert!(app.contains("global-request push-brin"));
-    assert!(!app.contains("global-request move-pay-3"));
-    app.click("inbox-history-All");
-    assert!(app.contains("global-request move-pay-3"));
-    app.click("inbox-history-Waiting");
-    assert!(!app.contains("global-request push-brin"));
+    assert!(!app.contains("request push-brin"));
+    assert!(app.contains("request move-ledger"));
+
+    // History shows what was answered; leaving it shows what waits.
+    app.click("inbox-history");
+    assert!(app.contains("request push-brin"));
+    assert!(!app.contains("request move-ledger"));
+    app.click("inbox-history");
+    assert!(!app.contains("request push-brin"));
+    assert!(app.contains("request move-ledger"));
 }
 
 /// Home actions open the right session and Resume the exited process.

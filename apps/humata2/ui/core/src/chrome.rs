@@ -217,10 +217,11 @@ pub fn icon_action(
 }
 
 pub fn title(panel: Panel) -> &'static str {
-    if panel == Panel::Changes {
-        "Diff"
-    } else {
-        panel.name()
+    match panel {
+        Panel::Changes => "Diff",
+        Panel::Inbox => "Agent inbox",
+        Panel::Board => "To-do",
+        _ => panel.name(),
     }
 }
 
@@ -238,7 +239,13 @@ pub fn panel_header(
     extra: Option<Div>,
     look: Look,
 ) -> Div {
-    header_with(ui, panel, full, extra, None, look, session_line(state))
+    header_with(ui, panel, full, extra, None, look, session_line(state), None)
+}
+
+/// [`panel_header`] beside the terminal with `lead` in place of the title:
+/// the To-do panel's "‹ To-do" way back while an item is open (frame 191).
+pub fn panel_header_lead(ui: &Rc<Ui>, panel: Panel, lead: Div, extra: Option<Div>, look: Look) -> Div {
+    header_with(ui, panel, false, extra, None, look, None, Some(lead))
 }
 
 /// [`panel_header`] with `actions` drawn before Exit full screen in the
@@ -253,7 +260,7 @@ pub fn panel_header_actions(
     actions: Option<Div>,
     look: Look,
 ) -> Div {
-    header_with(ui, panel, full, extra, actions, look, session_line(state))
+    header_with(ui, panel, full, extra, actions, look, session_line(state), None)
 }
 
 /// "# place › session" of the open session, for the full-screen title bar.
@@ -270,7 +277,9 @@ pub fn session_line(state: &AppState) -> Option<SharedString> {
     )))
 }
 
-/// The header's drawing; `line` is the "# place › session" of full screen.
+/// The header's drawing; `line` is the "# place › session" of full screen
+/// and `lead`, beside the terminal, stands in for the title.
+#[allow(clippy::too_many_arguments)]
 pub fn header_with(
     ui: &Rc<Ui>,
     panel: Panel,
@@ -279,6 +288,7 @@ pub fn header_with(
     actions: Option<Div>,
     look: Look,
     line: Option<SharedString>,
+    lead: Option<Div>,
 ) -> Div {
     if full {
         return row()
@@ -368,11 +378,11 @@ pub fn header_with(
                 }
             })
             .test_support()
-            .child(
+            .child(lead.unwrap_or_else(|| {
                 text(title(panel))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .flex_shrink_0(),
-            )
+                    .flex_shrink_0()
+            }))
             // The extra shrinks before the buttons do; it is not clipped, because
             // the base menu is a deferred child that must draw past it.
             .children(extra.map(|e| e.min_w_0().flex_shrink(1.)))

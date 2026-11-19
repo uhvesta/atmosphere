@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    AccessRule, Answer, AskedBy, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
+    AccessRule, Answer, AskedBy, AskedWhy, CardEffect, CardFact, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
     HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
     MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting,
 };
@@ -556,6 +556,32 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
         },
         on_screen: request.on_screen.as_ref().map(|on_screen| on_screen.tab as usize),
         dismiss_only: request.dismiss_only,
+        facts: request
+            .facts
+            .iter()
+            .map(|fact| CardFact {
+                label: fact.label.clone(),
+                lead: fact.lead.clone(),
+                rest: fact.rest.clone(),
+            })
+            .collect(),
+        affects: request
+            .affects
+            .iter()
+            .map(|effect| CardEffect {
+                warn: effect.warn,
+                lead: effect.lead.clone(),
+                rest: effect.rest.clone(),
+            })
+            .collect(),
+        undo_text: request.undo_text.clone(),
+        working_on: request.working_on.clone(),
+        asked_why: request.asked_why.as_ref().map(|why| AskedWhy {
+            asked: why.asked_at.as_ref().map(|at| ago(now, at.seconds)).unwrap_or_default(),
+            reply: (!why.reply.is_empty()).then(|| why.reply.clone()),
+            replied: why.replied_at.as_ref().map(|at| ago(now, at.seconds)),
+        }),
+        rule_label: request.rule_label.clone(),
     }
 }
 
@@ -628,8 +654,9 @@ impl Shared {
                         scope: Some(pb::inbox_scope::Scope::Global(pb::GlobalInbox {})),
                     }),
                     include_answered: false,
-                    // D846: flips to true with the To-do Needs attention UI.
-                    agent_inbox: false,
+                    // To-do reads its own asks (Needs attention) through its own
+                    // listing, so the Agent inbox leaves them out.
+                    agent_inbox: true,
                     page: Some(pb::PageRequest {
                         page_size: PAGE_SIZE,
                         page_token: token,
@@ -723,6 +750,22 @@ impl Shared {
             .map_err(|status| self.error(&status, WHAT))?;
         self.state().inbox.requests.remove(id.as_str());
         Ok(())
+    }
+
+    /// Asks the agent why it asks; the request stays pending.
+    pub(crate) async fn ask_why(&self, id: RequestId) -> Result<Request, DaemonError> {
+        let wire = self
+            .inbox()
+            .ask_why(pb::AskWhyRequest {
+                idempotency_key: fresh_key(),
+                id: Some(pb::RequestId {
+                    value: id.as_str().to_owned(),
+                }),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Asking why"))?
+            .into_inner();
+        Ok(self.map_request(&wire))
     }
 
     pub(crate) async fn change_rule(
@@ -994,6 +1037,7 @@ mod tests {
                 bytes: 2_100_000_000,
                 files: 42,
                 destination_place: "ml shared".into(),
+                ..Default::default()
             })),
         };
         let Preview::CrossMachineCopy(card) = preview(Some(&wire)) else {

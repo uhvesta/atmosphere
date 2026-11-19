@@ -162,6 +162,7 @@ async fn moving_a_session_to_a_machine_at_another_release_is_refused_with_its_it
             idempotency_key: Some(pb::IdempotencyKey { value: "move-across".to_owned() }),
             id: Some(split.session.clone()),
             to: Some(box_id()),
+            ..Default::default()
         })
         .await;
 

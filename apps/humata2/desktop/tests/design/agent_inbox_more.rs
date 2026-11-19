@@ -235,39 +235,35 @@ fn header(look: Look, crumb: &'static str, state: u32, name: &'static str, agent
                 .child(div().flex().items_center().gap(px(8.)).text_size(px(15.)).font_weight(FontWeight::BOLD).child(dot(state)).child(name)),
         )
         .child(spacer())
-        .child(div().text_size(px(13.)).text_color(muted(look)).child(agent))
-        .child(Icon::new(IconName::GitFork).size(px(11.)).text_color(c(0xb0b0b4)))
-        .child(Icon::new(IconName::Maximize2).size(px(11.)).text_color(c(0xb0b0b4)))
-        .child(Icon::new(IconName::Ellipsis).size(px(12.)).text_color(c(0xb0b0b4)))
+        .child(div().text_size(px(13.)).text_color(muted(look)).child(format!("{agent}\u{a0} \u{2442}\u{a0} \u{a0}\u{2922}\u{a0} \u{a0}\u{22ef}")))
 }
 
 fn tabs(look: Look, other: &'static str, first: &'static str) -> Div {
-    let tab = |lead: AnyElement, text: &'static str, on: bool| {
+    let tab = |lead: Option<AnyElement>, text: String, on: bool| {
         div()
             .relative()
             .flex()
             .items_center()
             .gap(px(8.))
-            .h_full()
             .px(px(14.))
+            .py(px(9.))
             .border_r_1()
             .border_color(hair(look))
             .text_size(px(13.))
             .when(on, |t| t.bg(c(look.content)))
-            .child(lead)
-            .child(div().flex().items_center().gap(px(3.)).child(text).child(Icon::new(IconName::X).size(px(11.)).text_color(c(look.text))))
+            .children(lead)
+            .child(text)
             .when(on, |t| t.child(div().absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(2.)).bg(blue(look))))
     };
     div()
         .flex()
-        .h(px(37.))
         .flex_shrink_0()
         .bg(tone(look, 0xfafafb, 0x252527))
         .border_b_1()
         .border_color(hair(look))
-        .child(tab(dot(GREEN).into_any_element(), first, true))
-        .child(tab(div().text_size(px(13.)).child(">_").into_any_element(), other, false))
-        .child(div().flex().items_center().px(px(14.)).text_size(px(13.)).child("+"))
+        .child(tab(Some(dot(GREEN_HEX).into_any_element()), format!("{first} \u{2715}"), true))
+        .child(tab(None, format!(">_ {other} \u{2715}"), false))
+        .child(tab(None, "+".to_string(), false))
 }
 
 fn terminal(look: Look, lines: Vec<Div>) -> Div {
@@ -279,7 +275,11 @@ fn terminal(look: Look, lines: Vec<Div>) -> Div {
         .bg(c(look.term))
         .font_family(MONO)
         .text_size(px(12.5))
-        .child(div().flex_1().min_h_0().overflow_hidden().px(px(18.)).pt(px(16.)).flex().flex_col().children(lines))
+        .child(div().flex_1().min_h_0().overflow_hidden().px(px(18.)).pt(px(16.)).flex().flex_col().children(lines.into_iter().enumerate().map(|(i, l)| {
+            // 12.5px x 1.65 = 20.625px a line; whole device pixels would round each line down.
+            let edge = |n: f32| (n * 20.625 * 2.).round() / 2.;
+            l.h(px(edge(i as f32 + 1.) - edge(i as f32)))
+        })))
         .child(
             div()
                 .mx(px(18.))
@@ -309,8 +309,7 @@ fn panel_head(look: Look, title: Div, note: &'static str) -> Div {
         .child(title)
         .child(div().text_size(px(13.)).text_color(muted(look)).child(note))
         .child(spacer())
-        .child(Icon::new(IconName::Maximize2).size(px(10.)).text_color(c(0xb0b0b4)))
-        .child(Icon::new(IconName::X).size(px(14.)).text_color(c(0x808086)))
+        .child(div().text_color(muted(look)).child("\u{2922}\u{a0} \u{2715}"))
 }
 
 fn bold_title(text: &'static str) -> Div {
@@ -470,7 +469,8 @@ fn todo_row(look: Look, lead: Div, line1: Vec<Div>, line2: Vec<Div>, id: &'stati
         .px(px(8.))
         .py(px(7.))
         .min_h(px(50.))
-        .when(!first, |r| r.border_t_1().border_color(tone(look, 0xf0f0f3, 0x2a2a2d)))
+        .relative()
+        .when(!first, |r| r.child(div().absolute().top(px(-1.)).left(px(0.)).right(px(0.)).h(px(1.)).bg(tone(look, 0xf0f0f3, 0x2a2a2d))))
         .child(lead)
         .child(
             div()
@@ -529,7 +529,7 @@ pub fn after_yes(look: Look) -> Div {
         .justify_between()
         .text_color(muted(look))
         .child("Add an item to payments-rewrite…")
-        .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).text_size(px(11.5)).child("N"));
+        .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).bg(tone(look, 0xffffff, 0x2d2d30)).text_size(px(11.5)).child("N"));
     let closed = div()
         .flex()
         .items_center()
@@ -920,14 +920,14 @@ fn list_sec(look: Look, text: &'static str, note: &'static str, columns: bool) -
 }
 
 fn bright_check(look: Look) -> Div {
-    let ring = tone(look, 0xc9c9cf, 0xf0f0f3);
+    let ring = c(0xc9c9cf);
     div().size(px(22.)).flex_shrink_0().rounded_full().border_1().border_color(ring).flex().items_center().justify_center().child(Icon::new(IconName::Check).size(px(12.)).text_color(ring))
 }
 
 fn due(look: Look, text: &'static str, kind: u8) -> Div {
     match kind {
         2 => chip(text, tone(look, 0xfde4e4, 0x4b1f1f), red(look), FontWeight::SEMIBOLD),
-        1 => chip(text, tone(look, 0xffe9c2, 0x3b2b10), tone(look, 0x8a4b00, 0xffcf85), FontWeight::MEDIUM),
+        1 => chip(text, tone(look, 0xfff4e0, 0x3b2b10), tone(look, 0x8a4b00, 0xffcf85), FontWeight::MEDIUM),
         _ => chip(text, sunken(look), soft(look), FontWeight::NORMAL),
     }
 }
@@ -976,7 +976,8 @@ fn list_row(look: Look, item: Item, first: bool) -> Div {
         .px(px(8.))
         .py(px(7.))
         .min_h(px(50.))
-        .when(!first, |r| r.border_t_1().border_color(tone(look, 0xf0f0f3, 0x2a2a2d)))
+        .relative()
+        .when(!first, |r| r.child(div().absolute().top(px(-1.)).left(px(0.)).right(px(0.)).h(px(1.)).bg(tone(look, 0xf0f0f3, 0x2a2a2d))))
         .child(if check { bright_check(look) } else { div().size(px(22.)).flex_shrink_0() })
         .child(div().w(px(18.)).flex_shrink_0().flex().justify_end().text_size(px(12.)).text_color(tone(look, 0xa0a0a6, 0x77777e)).child(rank))
         .child(
@@ -1027,9 +1028,9 @@ fn todo_page(look: Look) -> Div {
         .py(px(2.))
         .rounded(px(6.))
         .border_1()
-        .border_color(tone(look, 0xd4d4da, 0x78787e))
+        .border_color(tone(look, 0xd4d4da, 0x48484c))
         .bg(tone(look, 0xffffff, 0x2d2d30))
-        .text_color(tone(look, 0x1c1c1e, 0xffffff))
+        .text_color(tone(look, 0x1c1c1e, 0xe9e9ec))
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
         .child("Resume");
@@ -1042,7 +1043,7 @@ fn todo_page(look: Look) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .child(div().w(px(240.)).flex().justify_between().px(px(10.)).py(px(6.)).rounded(px(7.)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).text_color(muted(look)).child("Search").child("/"))
+                .child(div().w(px(240.)).flex().justify_between().px(px(10.)).py(px(6.)).rounded(px(7.)).bg(tone(look, 0xffffff, 0x2d2d30)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).text_color(muted(look)).child("Search").child("/"))
                 .child(mbtn(look, "Sort: Ranked ⌄", false))
                 .child(mbtn(look, "Filters", false))
                 .child(mbtn(look, "Do next · INF-6", true)),
@@ -1074,7 +1075,7 @@ fn todo_page(look: Look) -> Div {
         .justify_between()
         .text_color(muted(look))
         .child("Add an item… try “fix login redirect fri #bug”")
-        .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).text_size(px(11.5)).child("N"));
+        .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(tone(look, 0xd9d9de, 0x48484c)).bg(tone(look, 0xffffff, 0x2d2d30)).text_size(px(11.5)).child("N"));
     let pinned = div().flex_shrink_0().px(px(6.)).h(px(17.)).flex().items_center().rounded(px(5.)).text_size(px(11.5)).border_1().border_color(tone(look, 0xb9d0fb, 0x2f5ea8)).text_color(tone(look, BLUE, 0x7fb2ff)).child("Pinned");
     let pr = chip("Pull request review", tone(look, 0xece9fd, 0x322c5c), tone(look, 0x4a2fa8, 0xcdc4ff), FontWeight::MEDIUM);
     let item = |check, rank, line1, line2, size, channel, key| Item { check, rank, line1, line2, size, channel, key };
@@ -1107,6 +1108,7 @@ pub fn notification(look: Look) -> Div {
         .right(px(14.))
         .top(px(12.))
         .w(px(372.))
+        .line_height(relative(1.35))
         .flex()
         .gap(px(11.))
         .px(px(14.))

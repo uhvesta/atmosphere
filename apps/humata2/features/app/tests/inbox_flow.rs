@@ -111,7 +111,7 @@ fn allowing_with_always_ticked_records_a_grant_for_the_requesting_session() {
         let request = workspace
             .requests
             .iter_mut()
-            .find(|r| r.id.as_str() == "move-pay-3")
+            .find(|r| r.id.as_str() == "move-ledger")
             .expect("the design fixture has the board move request");
         request.asked_by = Some(humata2_clients::model::AskedBy {
             capability: Capability::new("channel_board_edit_others"),
@@ -119,7 +119,7 @@ fn allowing_with_always_ticked_records_a_grant_for_the_requesting_session() {
             setting: humata2_clients::model::RuleSetting::Ask,
         });
     });
-    let id = RequestId::new("move-pay-3");
+    let id = RequestId::new("move-ledger");
     let grants = |rules: &std::collections::BTreeMap<ChannelId, Vec<humata2_clients::model::AccessRule>>| {
         rules[&channel]
             .iter()

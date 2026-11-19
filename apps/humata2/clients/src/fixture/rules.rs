@@ -60,7 +60,7 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("session_delete_other", "Delete any session but itself", Some(Never)),
     ("channel_change", "Change channel settings or repos", Some(Never)),
     ("machine_destroy", "Remove, forget or delete machines", Some(Never)),
-    ("machine_script_run", "Run machine scripts", Some(Never)),
+    ("machine_script_run", "Run machine scripts", Some(Ask)),
 ];
 
 fn defaults() -> Vec<AccessRule> {

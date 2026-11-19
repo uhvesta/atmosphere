@@ -543,6 +543,7 @@ impl Shared {
                 to: Some(pb::MachineId {
                     value: to.as_str().to_owned(),
                 }),
+                ..Default::default()
             })
             .await
             .map_err(|status| self.error(&status, "Moving the session"))?
@@ -943,6 +944,12 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         let request = request.clone();
         Box::pin(async move { shared.answer_request(request, answer).await })
+    }
+
+    fn ask_why(&self, request: &RequestId) -> Reply<humata2_clients::model::Request> {
+        let shared = self.shared.clone();
+        let request = request.clone();
+        Box::pin(async move { shared.ask_why(request).await })
     }
 
     fn reconnect(&self, _machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {

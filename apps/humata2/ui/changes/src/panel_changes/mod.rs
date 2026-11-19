@@ -226,7 +226,7 @@ pub fn changes(
                 col()
                     .child(ringed(
                         match review {
-                            Some(session) => review_repo_head(state, look, session, diff, true),
+                            Some(session) => review_repo_head(ui, state, look, session, diff, true),
                             None => repo_head(ui, state, look, documents, index, diff, branch, folded),
                         },
                         at_repo(cursor, &diff.repo),

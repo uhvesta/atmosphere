@@ -108,7 +108,7 @@ pub fn empty_channel(look: Look) -> Div {
                 .px(px(20.))
                 .text_size(px(12.5))
                 .child(tab("Sessions", true))
-                .child(tab("Inbox", false))
+                .child(tab("Agent inbox", false))
                 .child(tab("Board", false))
                 .child(tab("Repos and machines", false))
                 .child(tab("Agent access", false))
@@ -434,7 +434,9 @@ pub fn board_session(look: Look) -> Div {
         .h_full()
         .flex()
         .flex_col()
-        .child(desk_header(look, St::Working, "Plan Q4 board", "Claude Code · This Mac", true))
+        // The app reaches this session from another page, so its Back ghost
+        // leads the header (D848).
+        .child(desk_header_back(look, true, St::Working, "Plan Q4 board", "Claude Code · This Mac", true))
         .child(folder_bar(look, "Goes 7 days after close", "This Mac", &[]))
         .child(desk_tabs(look, St::Working, 0, Some(("q4-plan.md", IconName::FileText))))
         .child(term(look, lines).child(div().flex_1()).child(session::input_box(look, true)));
@@ -448,24 +450,9 @@ pub fn board_session(look: Look) -> Div {
     )
 }
 
-/// The Board panel in a desk: every channel's items, active lanes first
-/// (L14), the session's additions first in their lane.
+/// The To-do panel in a desk: the session's own items, listed as the To-do
+/// page lists them, no drawer open.
 fn board_panel(look: Look) -> Div {
-    let item = |key: &'static str, title: &'static str, channel: &'static str, new: bool| {
-        div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(3.))
-            .p(px(9.))
-            .rounded(px(7.))
-            .bg(c(look.card))
-            .border_1()
-            .border_color(c(if new { look.accent } else { look.line }))
-            .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child(key)).child(div().flex_1().font_weight(FontWeight::MEDIUM).child(title)))
-            .child(div().flex().gap(px(6.)).child(secondary(look, channel)).when(new, |row| row.child(div().text_size(px(11.)).text_color(c(look.accent)).child("added by this session"))))
-    };
-    let lane = |title: &'static str| div().flex_shrink_0().pt(px(8.)).child(label(look, title));
     div()
         .w(px(session::PANEL_WIDTH))
         .flex_shrink_0()
@@ -474,34 +461,41 @@ fn board_panel(look: Look) -> Div {
         .flex_col()
         .bg(c(look.panel))
         .text_size(px(12.5))
-        .child(session::panel_header(look, "Board", false, Some(popup(look, "All channels"))))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .p(px(12.))
-                // The list is cut at the panel's bottom; cards keep their size.
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .child(lane("In progress · 2"))
-                .child(item("PAY-3", "Ledger schema v2", "# payments-rewrite", false))
-                .child(item("INF-2", "Postgres 17 upgrade", "# infra", false))
-                .child(lane("In review · 1"))
-                .child(item("PAY-5", "API rate limiter", "# payments-rewrite", false))
-                .child(lane("To do · 4"))
-                .child(item("PAY-13", "Drop the ledger_entries index", "# payments-rewrite", true))
-                .child(item("PAY-14", "Backfill metrics dashboard", "# payments-rewrite", true))
-                .child(item("PAY-9", "Backfill progress bar", "# payments-rewrite", false))
-                .child(item("PAY-7", "Refund retry with backoff", "# payments-rewrite", false))
-                .child(lane("Backlog · 2"))
-                .child(item("PAY-12", "Multi-currency ledgers", "# payments-rewrite", false))
-                .child(item("INF-4", "Move CI to devbox runners", "# infra", false))
-                .child(lane("Done · 2"))
-                .child(item("PAY-2", "Currency codes table", "# payments-rewrite", false).opacity(0.6))
-                .child(item("INF-1", "BRIN benchmark harness", "# infra", false).opacity(0.6)),
-        )
+        .child(session::panel_header(look, "To-do", false, None))
+        .child(div().flex().flex_col().p(px(12.)).child(panel_rows(look)))
+}
+
+/// The session's To-do rows as the app's panel draws them
+/// (`ui/workspace/src/todo_panel.rs`, D872): a bordered card each, the key,
+/// the title and its due date on one line.
+fn panel_rows(look: Look) -> Div {
+    let card = |key: &'static str, title: &'static str, due: Option<&'static str>| {
+        div()
+            .flex()
+            .flex_col()
+            .p(px(9.))
+            .gap(px(6.))
+            .rounded(px(9.))
+            .border_1()
+            .border_color(c(look.line))
+            .bg(c(look.card))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(7.))
+                    .child(div().text_size(px(12.)).text_color(c(look.secondary)).child(key))
+                    .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(title))
+                    .children(due.map(|due| div().text_size(px(12.)).child(due))),
+            )
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(card("TD-3", "Renew the Apple developer certificate", Some("Mon 14 Dec")))
+        .child(card("TD-4", "Share the Q4 plan with the team", None))
 }
 
 fn desk_files(look: Look, machine: &'static str) -> Div {

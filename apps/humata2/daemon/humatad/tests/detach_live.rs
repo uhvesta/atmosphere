@@ -170,6 +170,7 @@ async fn a_move_leaves_the_old_machines_shell_running_with_no_session() {
             idempotency_key: Some(pb::IdempotencyKey { value: "detach-live-move".to_owned() }),
             id: Some(id.clone()),
             to: Some(two.clone()),
+            ..Default::default()
         })
         .await
         .expect("the move starts")

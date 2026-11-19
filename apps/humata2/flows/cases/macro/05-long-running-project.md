@@ -16,7 +16,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 1. **I do:** Open the `payments` board. Press `New item`, type "Add retry to the uploader", choose the To do column and press Return.
    **I see:** A card at the top of To do with the key `PAY-2`. The card shows the channel's name.
    **State and events:** The item is stored on the channel's board, not on a session. Its key uses the channel prefix and the next free number. New items go to the top of their column.
-   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` creates the item through the live client. The `New item` button and its form Work (real daemon): `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker`. Fake-client version: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request`.
+   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` creates the item through the live client. The `New item` button and its form Work (real daemon): `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker`. Fake-client version: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope`.
 
 2. **I do:** Start a session for `PAY-1` on This Mac with the button "Start a session for this item". Nothing else.
    **I see:** A session tab opens. `PAY-1` moves from To do to In progress, and the drawer lists the session under Sessions.

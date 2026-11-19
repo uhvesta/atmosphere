@@ -55,7 +55,7 @@ Phase 1 (map from code and snapshots, no run). Steps marked PENDING RUN need the
 - **Action:** Click "Add item to Backlog", type "A new milestone", click "board-create-item".
 - **Result:** Calls `create_item(scope, title)`, then `move_item` when the column is not To do. Two calls, not one: if the move fails, the item exists in To do and the error line shows.
 - **Evidence:** none yet. PENDING RUN.
-- **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=board_creates_in_selected_column_and_answers_the_item_request` exits 0 (asserts a Backlog item with Global scope).
+- **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=board_creates_in_selected_column_and_keeps_channel_scope` exits 0 (asserts a Backlog item with Global scope).
 
 ### 6. Approve an agent's move from the drawer
 

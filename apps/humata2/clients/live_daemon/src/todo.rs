@@ -388,8 +388,10 @@ fn summary(wire: &pb::TodoMigration) -> Summary {
 }
 
 /// The notice the wire holds: none before the move ran or once dismissed.
+/// The banner to show, if any: a move that found nothing to move (a fresh
+/// install) has nothing to announce.
 fn notice(wire: &pb::TodoMigration) -> Option<MigrationNotice> {
-    (wire.migrated_at.is_some() && !wire.banner_dismissed).then(|| MigrationNotice {
+    (wire.migrated_at.is_some() && !wire.banner_dismissed && wire.items > 0).then(|| MigrationNotice {
         summary: summary(wire),
     })
 }

@@ -197,6 +197,7 @@ impl Operation {
                         idempotency_key: Some(pb::IdempotencyKey { value: "power-cut-move".to_owned() }),
                         id: Some(base.h.clone()),
                         to: Some(base.boxm.clone()),
+                        ..Default::default()
                     })
                     .await;
             }

@@ -5074,3 +5074,47 @@ Migrate the holders shows how many terminals moved (PROGRESS T6, frame 125; mini
 - Machine page: the same count sits in a row under the upgrade banner, titled "Moving terminals".
 - Fable noted that frame 83 (the waiting card) still speaks of restarts. That is right for holders too old to move, but a card whose holders all move in place should not say so. This is a follow-up for frame 83's copy and is not changed here.
 - **Reverse:** drop `moved` from the protos and `MigrateCard`, remove `moving_note`/`waiting_header`/`moved_progress` in request_card.rs and `holders_moving_row` in machine_page.rs, and delete frame 125.
+
+## D867
+Whole stack marks where each layer starts (owner's mark 2026-11-19; minion DIFFUI; pick by Fable 5.2, 2026-11-19).
+- Inside each repository group of Whole stack, a quiet caption row comes before each layer's files: the layer list's small outlined number circle at the file tick's indent, then the layer title in secondary grey at the directory text's size, regular weight, no counts, about three quarters of a file row high. A click on a caption picks that layer, like its row in the layer list.
+- Layers run lowest first; within a layer, files are key-first. A file several layers list sits once, under the lowest, with a grey "also N" after its directory. Files no layer lists come last under the caption "Other changes" (no circle). A layer with no files in a repository has no caption there. The skim row stays one folded row per repository at the group's end.
+- When no layer carries a file list, Whole stack shows no captions and keeps today's order.
+- **Reverse:** remove the captions and restore repository-wide key-first order.
+
+## D868
+The Diff header names the base once (owner's mark on the per-repo chevron, revisits D739/D510; pick by Fable 5.2, 2026-11-19).
+- With two or more repositories the header reads "Diff", then "N repos" in secondary grey where "against" sat, then the All changes / Since I last looked switch; there is no header base chip. Each repository row's menu holds the header menu's entries (branches, Uncommitted only, another session's branch) and ends with "Use for every repo"; the row states its choice in words ("against main", "uncommitted only", "against <session>'s branch").
+- With one repository the header keeps "against [base]" as today and the repository head shows name and counts only, so "against X" never shows twice. A stack is unchanged.
+- **Reverse:** restore the header chip as a set-all control (and, for one repo, move the base to the row with "1 repo" in the header).
+
+## D869
+RV-9: the inline PR review's repository chevron does something (pick by Fable 5.2, 2026-11-19).
+- A folded repository row keeps "›" and the whole row is the click target: a click picks that repository's first file, which opens it and folds the other. The open repository row has no chevron, no hover fill and no click; it keeps an empty slot where the chevron was, so its repo icon and name line up with the folded rows (Fable, 2026-11-19 frame review).
+- **Reverse:** drop the chevrons entirely, or add a real per-repo fold state.
+
+## D870: PR review requests reach the To-do list gently, through the host's gh (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- The host fetches `is:open is:pr review-requested:@me` through `gh api graphql` at most once per 10 minutes, started in the background by a To-do list or Do next read; a failed fetch closes nothing and waits the same 10 minutes. Test daemons (admin builds) never run the real gh unless the rig sets `HUMATA2_GH`.
+- One item per stack: PRs in one repository whose base is another's head. The item title is "Review: <bottom PR's title>" as in frame b7-1. An item whose PRs leave the result closes itself; a re-request reopens it. Pin and Hide until survive every sync.
+- **Reverse:** drop `with_review_requests` from `wire_board.rs`.
+
+## D871: Agent inbox asks carry their case, and an agent can be asked why (INBOXHOOKS manager, 2026-11-19). Provisional
+
+- An agent's MoveSession with an empty reason is refused with a fix telling it to say why.
+- A session move asks through the same gate as other asks. Its card shows From/To (channel · title), what it carries, the terminals that move along and keep running, and warns about forks staying and clones needed (frame 202).
+- A file move or copy that replaces files lists those files with a note ("same content" or "the one there is newer"). The note comes from size and mtime only, with no hash. A move says it is a move. The Undo text tells the truth: there is no Undo action, and replaced files wait 30 days in the destination's trash.
+- **Ask why:** `InboxService.AskWhy` (user only) marks a pending agent card. The agent's open or next `WaitResponse` returns PENDING with `asked_why=true` until the agent replies through `ExplainAsk` (1–1000 chars). The card stays pending throughout, and the reply shows in a "You asked why" panel.
+- **Agent access:** Agent access settings are grouped Allow/Ask/Never rows, each row writing several capabilities. A row whose rules disagree reads Mixed. Rules no row covers sit behind "Show Other rules".
+- **Reverse:** drop `asked_why` from `WaitResponse`, drop the AskWhy/ExplainAsk RPCs, and allow an empty reason on MoveSession. Requiring `reason` on every asking MCP tool was tried and reverted: it refused reads such as `board_items_list` and `file_read`, so it needs a narrower list of tools that ask.
+- Design frames 26/27, the old two-pane Inbox, are retired: 200–204 replace them.
+
+## D872: Session panels show the To-do list, Desk sessions too (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- The sidebar row, the panel title, the rail label, the full-screen title, the View menu and ⌘3 all say "To-do" and open the To-do list. Beside the terminal, while an item is open in the drawer, the panel header is the way back ("‹ To-do", then the key · channel), as frame 191 draws it. In full screen that row leads the body.
+- A Desk session's Board panel no longer keeps its own lane board with a scope: it shows the Desk session's slice of the To-do list like any other session (frame 37).
+- The fake list ties items to the fixture sessions (PAY-3, PAY-7 and PAY-9 to Ledger; A-1 to A-3 to Token refresh retry; TD-3 and TD-4 to the Desk's Plan Q4), so the panel goldens show items and frame 191's drawer.
+- The old board page stays reachable only through the palette's "Go to Board" until its code is removed in one change with its tests.
+- After Fable's re-judge, the session panel's drawer follows frame 191: no key line, channel, sessions, waits-on or description rows; one 74 pt label column on the ask card with wrapping values; Due is the date field plus a word ("tomorrow") with the shortcuts on a second line; Impact a row under Effort; "ticked by claude" right of STEPS and "Add a step…" under the steps (page and panel); the History · Pin · Hide until… footer pinned to the panel's bottom. Frame 12 is laid out while Ledger works, like 07 and design 12. The panel's accessible name and the channel tab say "To-do" (tab id stays `channel-tab-Board`).
+- The live test that the session panel shows the channel's board with the session's items first is removed: the panel shows the To-do list now (panels_test covers it).
+- **Reverse:** restore the `desk_board` branch in `ui/src/panels.rs` and the `Route::Board` targets.

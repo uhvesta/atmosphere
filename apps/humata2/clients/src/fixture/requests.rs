@@ -30,6 +30,12 @@ pub(super) fn request(
         choices: Vec::new(),
         on_screen: None,
         dismiss_only: false,
+        facts: Vec::new(),
+        affects: Vec::new(),
+        undo_text: String::new(),
+        working_on: String::new(),
+        asked_why: None,
+        rule_label: String::new(),
     }
 }
 
@@ -65,8 +71,8 @@ pub(super) fn requests() -> Vec<Request> {
     ]);
     command.why_you = "It runs a command outside its own clone's allowed list.".to_owned();
     command.asked_by = asked_by(
-        "network_reach",
-        "Open a network connection through the host",
+        "machine_script_run",
+        "Run machine scripts",
         RuleSetting::Ask,
     );
     let mut edit = request(

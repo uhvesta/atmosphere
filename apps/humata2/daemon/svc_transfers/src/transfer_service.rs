@@ -448,7 +448,7 @@ impl Core {
             sources.push(source);
         }
         if let Some(asked) = asked {
-            let preview = self.copy_preview(&sources, &destination)?;
+            let preview = self.copy_preview(&sources, &destination, begin.mode, begin.on_existing, &begin.name)?;
             return Ok(Started::Ask(Box::new(asked), Box::new(preview)));
         }
         let folder = self.destination_folder(&destination)?;
@@ -510,12 +510,26 @@ impl Core {
     /// the places, how many files and how many bytes (IN-10, D467). Blocking:
     /// it reads the sources' trees, over a machine's link when they are on
     /// another machine.
-    fn copy_preview(&self, sources: &[Placed], destination: &Placed) -> Result<pb::CrossMachineCopyPreview, Status> {
+    fn copy_preview(
+        &self,
+        sources: &[Placed],
+        destination: &Placed,
+        mode: tr::Mode,
+        on_existing: tr::OnExisting,
+        name: &str,
+    ) -> Result<pb::CrossMachineCopyPreview, Status> {
         let router = RouterEnd::new(
             Arc::new(tr::Disk::new(self.machine.clone(), self.bin.get()?)),
             self.remote.clone(),
         );
         let (mut bytes, mut files) = (0u64, 0u32);
+        let mut replaced = Vec::new();
+        // The destination folder is read only when files there would be
+        // replaced; one that can't be read shows none rather than failing
+        // the ask.
+        let folder = (on_existing == tr::OnExisting::Replace)
+            .then(|| self.destination_folder(destination).ok())
+            .flatten();
         for source in sources {
             let path = remote_end::source_path(source, &self.machine)?;
             let tree = router.plan(&path).map_err(|err| {
@@ -531,6 +545,16 @@ impl Core {
             for entry in tree.iter().filter(|entry| entry.kind == tr::Kind::File) {
                 bytes = bytes.saturating_add(entry.size);
                 files = files.saturating_add(1);
+            }
+            if let Some(folder) = &folder {
+                let landing = match (name.is_empty(), path.file_name()) {
+                    (false, _) => Some(name.to_owned()),
+                    (true, Some(file)) => Some(file.to_string_lossy().into_owned()),
+                    (true, None) => None,
+                };
+                if let Some(landing) = landing {
+                    replaced_files(&router, &folder.join(&landing), &landing, &tree, &mut replaced);
+                }
             }
         }
         let machine = |placed: &Placed| pb::MachineId {
@@ -548,6 +572,8 @@ impl Core {
             bytes,
             files,
             destination_place: place_label(&destination.location),
+            moves: mode == tr::Mode::Move,
+            replaced,
         })
     }
 
@@ -799,6 +825,46 @@ fn place_label(location: &pb::FileLocation) -> String {
 /// The new name a copy's one source lands under (D769): none when it keeps
 /// its own, refused when it isn't one plain path part or more than one
 /// source would take it.
+/// The files of `tree` (a source's tree) that already exist under `target`,
+/// the folder or file they land at, named from `landing` down. Reads each
+/// file's size and time from the destination's own tree; what can't be read
+/// is left out.
+fn replaced_files(
+    router: &RouterEnd,
+    target: &std::path::Path,
+    landing: &str,
+    tree: &[tr::Entry],
+    replaced: &mut Vec<pb::ReplacedFile>,
+) {
+    let there = match router.exists(target) {
+        Ok(true) => router.plan(target).unwrap_or_default(),
+        _ => return,
+    };
+    for entry in tree.iter().filter(|entry| entry.kind == tr::Kind::File) {
+        let Some(old) = there
+            .iter()
+            .find(|old| old.kind == tr::Kind::File && old.rel == entry.rel)
+        else {
+            continue;
+        };
+        let note = if old.size == entry.size && old.modified_unix_ms == entry.modified_unix_ms {
+            "same content"
+        } else if old.modified_unix_ms > entry.modified_unix_ms {
+            "the one there is newer"
+        } else {
+            ""
+        };
+        replaced.push(pb::ReplacedFile {
+            path: if entry.rel.is_empty() {
+                landing.to_owned()
+            } else {
+                format!("{landing}/{}", entry.rel)
+            },
+            note: note.to_owned(),
+        });
+    }
+}
+
 fn landing_name(name: &str, sources: usize) -> Result<Option<String>, Status> {
     if name.is_empty() {
         return Ok(None);

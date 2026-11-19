@@ -280,6 +280,7 @@ fn request(id: &pb::SessionId, to: &pb::MachineId, key_text: &str) -> pb::MoveSe
         idempotency_key: key(key_text),
         id: Some(id.clone()),
         to: Some(to.clone()),
+        ..Default::default()
     }
 }
 

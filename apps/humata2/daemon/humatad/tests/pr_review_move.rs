@@ -87,6 +87,7 @@ impl World {
                 }),
                 id: Some(session.clone()),
                 to: Some(to.clone()),
+                ..Default::default()
             })
             .await
             .expect("the move starts")
@@ -293,6 +294,7 @@ async fn a_review_that_cannot_move_is_refused_and_stays_whole_where_it_was() {
             idempotency_key: Some(pb::IdempotencyKey { value: "move-offline".to_owned() }),
             id: Some(id.clone()),
             to: Some(the_box.clone()),
+            ..Default::default()
         })
         .await
         .expect_err("a box that is offline can't take the review");

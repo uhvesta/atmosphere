@@ -358,6 +358,9 @@ pub(crate) fn build(
     }
     if let Some(forwarder) = forwarder {
         svc = svc.forwarding(Arc::new(ForwarderAdapter { forwarder, link, store }));
+    } else if let Some(gh) = humata2_svc_board::GhReviewRequests::for_host() {
+        // The host reads the pull requests that ask for the user's review.
+        svc = svc.with_review_requests(Arc::new(gh));
     }
     svc
 }
@@ -419,6 +422,8 @@ impl BoardInstance for LiveBoard {
     }
 
     fn register(self: Box<Self>, routes: &mut RoutesBuilder) {
+        // The To-do list is the board store seen as one ranked list (BOARDSIMPLE).
+        routes.add_service(pb::todo_service_server::TodoServiceServer::new(self.0.clone()));
         routes.add_service(pb::board_service_server::BoardServiceServer::new(self.0));
     }
 }

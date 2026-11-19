@@ -270,6 +270,52 @@ fn badge(look: Look, index: usize, number: &str, on: bool) -> impl IntoElement {
     }
 }
 
+/// Where a layer's files start inside a repository of Whole stack (D867):
+/// its small outlined number at the file tick's indent, then its title in
+/// secondary grey. `layer` is `(number, title)`; `None` is "Other changes",
+/// which has no circle and no click. A click picks the layer.
+pub fn layer_caption(look: Look, repo: &str, layer: Option<(usize, &str)>, send: &Sender) -> AnyElement {
+    let key = layer.map_or_else(|| "other".to_owned(), |(number, _)| number.to_string());
+    let line = row()
+        .id(SharedString::from(format!("stack-layer-caption {repo} {key}")))
+        .test_support()
+        .gap(px(6.))
+        .h(px(18.))
+        .pl(px(22.))
+        .pr(px(8.))
+        .whitespace_nowrap()
+        .min_w_0();
+    match layer {
+        Some((number, title)) => {
+            let target = Some(title.to_owned());
+            let click = send.clone();
+            line.cursor_pointer()
+                .child(
+                    div()
+                        .size(px(13.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(9.))
+                        .text_color(rgb(look.tertiary))
+                        .mr(px(2.))
+                        .child(number.to_string()),
+                )
+                .child(secondary(look, title.to_owned()).min_w_0().overflow_hidden().text_ellipsis())
+                .on_click(move |_, _, cx| click(AppAction::Review(ReviewAction::PickLayer(target.clone())), cx))
+                .into_any_element()
+        }
+        None => line
+            .child(div().w(px(15.)).flex_shrink_0())
+            .child(secondary(look, "Other changes"))
+            .into_any_element(),
+    }
+}
+
 /// "web moved since it was sent", with its one action (DS-65).
 /// What a row says about the looks (D852): "✓ Looks good" or "● Changed since
 /// you looked", after the repos, with its colour. Whole stack reads Looks good

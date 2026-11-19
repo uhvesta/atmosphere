@@ -2,10 +2,12 @@
 //! start with, and keys kept in the keychain. Saved between launches.
 
 mod access;
+mod access_rows;
 // AGENTSET (D725): Settings › Agents › Agents.
 mod agents;
 
 pub use access::{AccessAction, AccessState};
+pub use access_rows::{AccessGroup, AccessRow, AskLands, GROUPS as ACCESS_GROUPS, RowSetting};
 pub use agents::{AgentsAction, AgentsState};
 // REPOS (ST-21): Settings › General › Repositories.
 mod repositories;

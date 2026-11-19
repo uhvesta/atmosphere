@@ -3,6 +3,7 @@
 //! fake or live daemon reports each change as an event the app folds in, so
 //! this reducer only tracks what is in flight and what went wrong.
 
+use crate::access_rows;
 use humata2_clients::model::{Capability, ChannelId, GrantId, RuleSetting};
 use humata2_clients::{Clients, DaemonError};
 use std::collections::BTreeSet;
@@ -15,6 +16,8 @@ pub struct AccessState {
     pub pending: BTreeSet<(ChannelId, Capability)>,
     /// Grants being removed.
     pub removing: BTreeSet<GrantId>,
+    /// Whether the rules the grouped rows don't cover are listed too.
+    pub show_all: bool,
     /// What went wrong last, until dismissed.
     pub error: Option<String>,
 }
@@ -28,6 +31,16 @@ pub enum AccessAction {
         channel: ChannelId,
         /// What the rule covers.
         capability: Capability,
+        /// The new setting.
+        setting: RuleSetting,
+    },
+    /// Set every rule behind a row of the grouped page. Rules whose last
+    /// change is still pending are skipped; an unknown row does nothing.
+    SetRow {
+        /// The channel the rules belong to.
+        channel: ChannelId,
+        /// The row's key (see `ACCESS_GROUPS`).
+        row: String,
         /// The new setting.
         setting: RuleSetting,
     },
@@ -49,6 +62,8 @@ pub enum AccessAction {
         /// How it went.
         result: Result<(), DaemonError>,
     },
+    /// Show or hide the rules the grouped rows don't cover.
+    ToggleAll,
     /// Hide the error.
     DismissError,
 }
@@ -78,6 +93,32 @@ pub(crate) fn reduce(
                 }
             })
         }
+        AccessAction::SetRow {
+            channel,
+            row,
+            setting,
+        } => {
+            let Some(row) = access_rows::find(&row) else {
+                return Effect::none();
+            };
+            let mut effects = Vec::new();
+            for capability in row.capability_ids() {
+                if !state.pending.insert((channel.clone(), capability.clone())) {
+                    continue;
+                }
+                let daemon = clients.daemon.clone();
+                let channel = channel.clone();
+                effects.push(Effect::future(async move {
+                    let result = daemon.set_rule(&channel, &capability, setting).await;
+                    AccessAction::Done {
+                        channel,
+                        capability,
+                        result,
+                    }
+                }));
+            }
+            Effect::merge(effects)
+        }
         AccessAction::Done {
             channel,
             capability,
@@ -104,6 +145,10 @@ pub(crate) fn reduce(
             if let Err(error) = result {
                 state.error = Some(error.to_string());
             }
+            Effect::none()
+        }
+        AccessAction::ToggleAll => {
+            state.show_all = !state.show_all;
             Effect::none()
         }
         AccessAction::DismissError => {

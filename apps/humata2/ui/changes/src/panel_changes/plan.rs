@@ -1,4 +1,5 @@
 use super::*;
+use humata2_review::stack::WholeEntry;
 use humata2_review::{PlanRow, PlanRowNote};
 
 /// A plan note as it reads: "L12–14 · text", or "L12 · text" on one line, or
@@ -26,6 +27,12 @@ pub(super) fn plan_list(
 ) -> Vec<AnyElement> {
     let mut groups = 0_usize;
     let mut outdated = 0_usize;
+    // D867: Whole stack marks where each layer starts in each repository.
+    let whole = state
+        .session
+        .open
+        .as_ref()
+        .and_then(|session| state.review.whole_groups(session, &plan, diffs));
     let humata2_review::PlanLayout { rows: plan, skims } = plan;
     let send = &crate::panel_stack::sender(ui);
     // DS-67: one folded row per repository's skim files, which open in
@@ -70,20 +77,50 @@ pub(super) fn plan_list(
             if folded {
                 continue;
             }
-            for entry in &plan {
-                let PlanRow::File { repo, path, .. } = entry else { continue };
-                if *repo != diff.repo {
-                    continue;
+            if let Some(entries) = whole.as_ref().and_then(|groups| groups.get(index)) {
+                for entry in entries {
+                    match entry {
+                        WholeEntry::Caption { number, title } => out.push(
+                            crate::panel_stack::layer_caption(look, &diff.repo, Some((*number, title)), send),
+                        ),
+                        WholeEntry::Other => {
+                            out.push(crate::panel_stack::layer_caption(look, &diff.repo, None, send));
+                        }
+                        WholeEntry::File { path, also } => {
+                            let Some(file) = diff.files.iter().find(|file| &file.path == path) else {
+                                continue;
+                            };
+                            let on = picked.is_some_and(|(d, f)| d.repo == diff.repo && f.path == *path);
+                            let note = if also.is_empty() {
+                                String::new()
+                            } else {
+                                let numbers: Vec<String> = also.iter().map(ToString::to_string).collect();
+                                format!("also {}", numbers.join(", "))
+                            };
+                            out.push(ringed(
+                                file_row_also(ui, state, look, diff, file, on, false, &note).into_any_element(),
+                                at_file(cursor, &diff.repo, path),
+                                look,
+                            ));
+                        }
+                    }
                 }
-                let Some(file) = diff.files.iter().find(|file| &file.path == path) else {
-                    continue;
-                };
-                let on = picked.is_some_and(|(d, f)| d.repo == *repo && f.path == *path);
-                out.push(ringed(
-                    file_row(ui, state, look, diff, file, on, false),
-                    at_file(cursor, repo, path),
-                    look,
-                ));
+            } else {
+                for entry in &plan {
+                    let PlanRow::File { repo, path, .. } = entry else { continue };
+                    if *repo != diff.repo {
+                        continue;
+                    }
+                    let Some(file) = diff.files.iter().find(|file| &file.path == path) else {
+                        continue;
+                    };
+                    let on = picked.is_some_and(|(d, f)| d.repo == *repo && f.path == *path);
+                    out.push(ringed(
+                        file_row(ui, state, look, diff, file, on, false),
+                        at_file(cursor, repo, path),
+                        look,
+                    ));
+                }
             }
             for skim in skims.iter().filter(|skim| skim.repo == diff.repo) {
                 out.extend(draw_skim(skim));

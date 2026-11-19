@@ -26,7 +26,7 @@ use crate::widgets::{self, col, row};
 pub fn title(state: &AppState) -> String {
     match &state.route {
         Route::Home => "Home".to_owned(),
-        Route::Inbox => "Inbox".to_owned(),
+        Route::Inbox => "Agent inbox".to_owned(),
         Route::Board(_) => "Board".to_owned(),
         Route::Todo => "To-do".to_owned(),
         Route::Channel(id) => state
@@ -788,21 +788,24 @@ mod tests {
 fn todo_page(ui: &Rc<Ui>, state: &AppState, inputs: &crate::todo::Inputs, look: Look) -> Div {
     let ui = ui.clone();
     let send: crate::todo::Send = Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx));
-    let sessions = |id: &str| {
-        state
-            .workspace
-            .sessions
-            .iter()
-            .find(|s| s.id.as_str() == id)
-            .map(|s| crate::todo::SessionChip {
-                name: s.title.clone(),
-                dot: match s.status {
-                    Status::Working => crate::theme::GREEN,
-                    Status::NeedsYou => crate::theme::ORANGE,
-                    Status::Exited { .. } => crate::theme::RED_STATUS,
-                    _ => crate::theme::GREY,
-                },
-            })
-    };
+    let sessions = |id: &str| session_chip(state, id);
     crate::todo::page(&send, &state.todo, inputs, &sessions, look)
+}
+
+/// A session as the To-do list's chips show it.
+pub(crate) fn session_chip(state: &AppState, id: &str) -> Option<crate::todo::SessionChip> {
+    state
+        .workspace
+        .sessions
+        .iter()
+        .find(|s| s.id.as_str() == id)
+        .map(|s| crate::todo::SessionChip {
+            name: s.title.clone(),
+            dot: match s.status {
+                Status::Working => crate::theme::GREEN,
+                Status::NeedsYou => crate::theme::ORANGE,
+                Status::Exited { .. } => crate::theme::RED_STATUS,
+                _ => crate::theme::GREY,
+            },
+        })
 }

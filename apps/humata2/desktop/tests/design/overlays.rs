@@ -109,6 +109,9 @@ pub fn new_session(look: Look, under: Div) -> Div {
                 .border_color(c(look.line))
                 .shadow_lg()
                 .text_size(px(12.5))
+                // The app's dialog keeps the window's line height whatever
+                // page lies under it; the To-do mock sets its own (1.35).
+                .line_height(phi())
                 .child(div().flex().items_center().gap(px(8.)).child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("New session")).child(secondary(look, "in # payments-rewrite · for PAY-9")))
                 .child(row("Title", field(look, "Backfill progress bar", false)))
                 .child(row(

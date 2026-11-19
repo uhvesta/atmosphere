@@ -52,53 +52,83 @@ pub(crate) fn ranked_keys(state: &TodoState, session: &str) -> Vec<Row> {
         .collect()
 }
 
-/// The panel's body; the shell puts its header above it.
+/// The way back to the session's list while an item is open in the
+/// drawer: "‹ To-do", then the item's key and channel (frame 191). Beside
+/// the terminal the shell draws it as the panel header; `None` while the
+/// list shows.
+pub fn back(send: &Send, state: &TodoState, session: &str, look: Look) -> Option<Div> {
+    let key = open_key(state, session)?;
+    let e = state.items.iter().find(|e| e.todo.key == key)?;
+    Some(
+        row()
+            .gap(px(8.))
+            .min_w_0()
+            .child(
+                div()
+                    .id("todo-panel-back")
+                    .role(Role::Button)
+                    .aria_label("Back to the To-do list")
+                    .cursor_pointer()
+                    .flex_shrink_0()
+                    .text_color(rgb(look.accent))
+                    .child("‹ To-do")
+                    .on_click({
+                        let send = send.clone();
+                        move |_, _, cx| send(A::Close, cx)
+                    })
+                    .test_support(),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(px(12.))
+                    .text_color(rgb(look.secondary))
+                    .child(format!(
+                        "{}{}",
+                        e.todo.key,
+                        e.todo.channel.as_ref().map_or(String::new(), |c| format!(" · {c}"))
+                    )),
+            ),
+    )
+}
+
+/// The panel's body; the shell puts its header above it. With
+/// `back_in_body`, an open item's [`back`] row leads the body (full screen,
+/// where the header is the window's title bar).
 pub fn panel(
     send: &Send,
     state: &TodoState,
     session: &str,
     inputs: &Inputs,
     sessions: Sessions<'_>,
+    back_in_body: bool,
     look: Look,
 ) -> Div {
     let open = open_key(state, session)
         .and_then(|k| state.items.iter().find(|e| e.todo.key == k));
-    let body = match open {
-        Some(e) => col()
-            .gap(px(8.))
-            .child(
-                row()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .id("todo-panel-back")
-                            .role(Role::Button)
-                            .aria_label("Back to the To-do list")
-                            .cursor_pointer()
-                            .text_color(rgb(look.accent))
-                            .child("‹ To-do")
-                            .on_click({
-                                let send = send.clone();
-                                move |_, _, cx| send(A::Close, cx)
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(look.secondary))
-                            .child(format!(
-                                "{}{}",
-                                e.todo.key,
-                                e.todo.channel.as_ref().map_or(String::new(), |c| format!(" · {c}"))
-                            )),
-                    ),
-            )
-            .child(todo::drawer(send, state, e, inputs, sessions, look, false)),
-        None => list(send, state, session, look),
+    let scroll = |body: Div| {
+        col().id("todo-panel").flex_1().min_h_0().overflow_y_scroll().p(px(12.)).child(body)
     };
-    col().size_full().child(
-        div().id("todo-panel").flex_1().min_h_0().overflow_y_scroll().p(px(12.)).child(body),
-    )
+    match open {
+        // Frame 191: the drawer scrolls and its History · Pin · Hide until…
+        // row stays at the panel's bottom, a divider above it.
+        // It takes what the panel header leaves, so the footer stays in view.
+        Some(e) => col()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .child(scroll(
+                col()
+                    .gap(px(8.))
+                    .when(back_in_body, |body| body.children(back(send, state, session, look)))
+                    .child(todo::drawer(send, state, e, inputs, sessions, look, false)),
+            ))
+            .child(todo::footer(send, state, &e.todo, look).flex_shrink_0().px(px(12.)).py(px(10.))),
+        None => col().w_full().flex_1().min_h_0().child(scroll(list(send, state, session, look))),
+    }
 }
 
 fn list(send: &Send, state: &TodoState, session: &str, look: Look) -> Div {
@@ -125,6 +155,7 @@ fn list(send: &Send, state: &TodoState, session: &str, look: Look) -> Div {
                 .border_color(rgb(look.line))
                 .bg(rgb(if t.ask.is_some() { look.attention_bg } else { look.card }))
                 .on_click(move |_, _, cx| sender(open.clone(), cx))
+                .test_support()
                 .child(
                     row()
                         .gap(px(7.))

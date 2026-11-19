@@ -217,12 +217,10 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("23-board-table", LIGHT, board::table),
     ("24-board-dashboard", DARK, board::dashboard),
     ("25-home", LIGHT, pages::home_list),
-    ("26-inbox", LIGHT, pages::inbox_split),
-    ("27-inbox-dark", DARK, pages::inbox_all),
     ("28-hosts", LIGHT, pages::hosts),
     ("29-settings", DARK, pages::settings),
     ("30-palette", DARK, |look| overlays::palette(look, session::session(look, Screen::new(Some(Panel::Diff), Term::Working)))),
-    ("31-new-session", LIGHT, |look| overlays::new_session(look, board::kanban(look))),
+    ("31-new-session", LIGHT, |look| overlays::new_session(look, todo::list(look))),
     ("32-toast", LIGHT, |look| overlays::toast(look, pages::home_list(look), "Archived “Currency codes”. Frees 1.4 GB when this closes.", "Undo")),
     // Empty states, the Desk and markdown review (owner sign-off 2026-11-15, D100).
     ("34-empty-home", LIGHT, desk::empty_home),

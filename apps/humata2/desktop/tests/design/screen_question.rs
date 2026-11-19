@@ -177,7 +177,7 @@ fn screen_question(look: Look, screen: Screen) -> Div {
     let heading = |name: &'static str| div().px(px(14.)).pt(px(10.)).pb(px(4.)).child(label(look, name));
     page(
         look,
-        Side::at("Inbox"),
+        Side::at("Agent inbox"),
         toolbar(look, "Inbox", Some("5 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
         div()
             .flex()
