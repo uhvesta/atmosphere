@@ -476,6 +476,17 @@ pub trait Daemon: Send + Sync + 'static {
         let _ = key;
         self.send(session, text)
     }
+    /// Like [`Daemon::send_keyed`], into terminal tab `tab` of `session`
+    /// (0 is its agent), for text that must reach a tab other than the
+    /// agent's, such as the opening prompt of a new agent tab (D857). The
+    /// text and its Enter go as one write.
+    fn send_to_tab(&self, session: &SessionId, tab: usize, text: &str, key: &str) -> Reply<()> {
+        if tab == 0 {
+            return self.send_keyed(session, text, key);
+        }
+        let what = format!("Typing into tab {tab} of {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Answers an Inbox request.
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()>;
     /// Connects to a host again, and says what happened to each of its
@@ -822,6 +833,9 @@ impl LinkSink {
         (self.send)(frame)
     }
 }
+
+/// A frame from a terminal, as a link delivers it.
+pub use terminal_wire::ServerFrame;
 
 /// One tab's link: the frames from the terminal, in order, and where the
 /// view's frames go. Dropping it closes the link; the program keeps running.

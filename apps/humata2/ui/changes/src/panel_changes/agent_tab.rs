@@ -106,13 +106,31 @@ fn entry(ui: &Rc<Ui>, agent: Agent, last: Option<Agent>, look: Look) -> impl Int
             cx.stop_propagation();
             ui.send(AppAction::Review(ReviewAction::AgentTabPicked(agent)), cx);
             ui.send(AppAction::Session(SessionAction::ToggleWiden), cx);
-            ui.send(
-                AppAction::Session(SessionAction::OpenTerminal {
-                    agent,
-                    split: false,
-                }),
-                cx,
-            );
+            if shell {
+                ui.send(
+                    AppAction::Session(SessionAction::OpenTerminal {
+                        agent,
+                        split: false,
+                    }),
+                    cx,
+                );
+                return;
+            }
+            // The wording is fixed now, from what the Diff shows.
+            let prompt = ui.read(|state| {
+                let id = state.session.open.as_ref()?;
+                let session = state.session.workspace.session(id)?;
+                Some(humata2_review::opening_prompt::opening_prompt(
+                    &state.review,
+                    session,
+                ))
+            });
+            if let Some(prompt) = prompt {
+                ui.send(
+                    AppAction::Session(SessionAction::OpenAgentTab { agent, prompt }),
+                    cx,
+                );
+            }
         })
         .test_support()
 }

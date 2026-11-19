@@ -602,6 +602,13 @@ impl Daemon for FakeDaemon {
         sessions::send(self, session, text)
     }
 
+    fn send_to_tab(&self, session: &SessionId, tab: usize, text: &str, key: &str) -> Reply<()> {
+        if tab == 0 {
+            return self.send_keyed(session, text, key);
+        }
+        sessions::send_to_tab(self, session, tab, text, key)
+    }
+
     fn send_keyed(&self, session: &SessionId, text: &str, key: &str) -> Reply<()> {
         if self.inner().sent_keys.contains(key) {
             return Box::pin(async { Ok(()) });

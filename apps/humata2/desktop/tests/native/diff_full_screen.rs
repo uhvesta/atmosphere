@@ -162,6 +162,32 @@ fn new_agent_tab_opens_a_tab_beside_the_diff() {
     assert!(app.contains("new-agent-tab-last-used-copilot"));
 }
 
+/// D857: an agent pick keeps its opening prompt for the new tab, and types
+/// nothing before the tab has painted and gone quiet. The harness clock
+/// never moves, so the typing itself is tested in `features/session`.
+/// Terminal keeps no prompt.
+#[test]
+fn an_agent_pick_waits_with_its_prompt_and_terminal_has_none() {
+    let mut app = app();
+    let waiting = |app: &mut App| {
+        app.ui.read(|state| {
+            let id = state.session.open.clone()?;
+            let shells = state.session.workspace.session(&id)?.shells.len();
+            Some((1..=shells).any(|tab| state.session.awaits_opening_prompt(&id, tab)))
+        })
+    };
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.click("new-agent-tab");
+    app.click("new-agent-tab-zsh");
+    assert_eq!(waiting(&mut app), Some(false));
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.click("new-agent-tab");
+    app.click("new-agent-tab-copilot");
+    assert_eq!(waiting(&mut app), Some(true));
+    let typed = app.fakes.daemon.calls().into_iter().any(|call| call.starts_with("send_to_tab"));
+    assert!(!typed, "nothing is typed before the tab is quiet");
+}
+
 /// Escape closes the menu before it leaves full screen.
 #[test]
 fn escape_closes_the_new_agent_tab_menu_first() {

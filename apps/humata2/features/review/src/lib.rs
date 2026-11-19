@@ -9,6 +9,7 @@
 pub mod comments;
 pub mod file_filter;
 pub mod looks;
+pub mod opening_prompt;
 pub mod order;
 pub mod stack;
 mod reopen;
@@ -588,7 +589,7 @@ impl ReviewState {
     }
 
     /// The stack `session`'s plan carries, if any.
-    fn stack_of(&self, session: &SessionId) -> Option<&StackView> {
+    pub(crate) fn stack_of(&self, session: &SessionId) -> Option<&StackView> {
         self.plans.get(session)?.stack.as_ref()
     }
 

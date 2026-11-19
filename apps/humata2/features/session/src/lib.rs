@@ -16,6 +16,7 @@ mod document;
 mod history;
 mod menu;
 mod message;
+mod opening_prompt;
 mod tabs;
 pub use menu::{MenuItem, RenameDraft};
 pub use close::{CloseAction, CloseChoice, CloseConfirm, CloseKey, CloseKind, CloseNotice, CloseThen};
@@ -25,6 +26,7 @@ pub use document::{DocumentEntry, DocumentMode, DocumentView, is_markdown};
 pub use history::{CompareDiff, DocCompare, DocHistory, HistoryAction, Position};
 use editor::{CodeMode, CodeView};
 pub use message::QueuedMessage;
+pub use opening_prompt::OpeningPrompt;
 pub use tabs::{GroupWidth, Tab, TabGroup, group_widths};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -316,6 +318,19 @@ pub struct SessionState {
     /// The session the close dialog's End for good is archiving, so its
     /// toast's Undo restores it as Stopped (D784).
     pub ending_for_good: Option<SessionId>,
+    /// The prompt a new agent tab gets once its agent is ready (D857).
+    pub opening_prompt: Option<OpeningPrompt>,
+}
+
+impl SessionState {
+    /// Whether a prompt still waits to be typed into tab `tab` of
+    /// `session`: the tab's view uses it to notice the person typing first.
+    #[must_use]
+    pub fn awaits_opening_prompt(&self, session: &SessionId, tab: usize) -> bool {
+        self.opening_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.waits_for(session, tab))
+    }
 }
 
 impl SessionState {
@@ -419,6 +434,17 @@ pub enum SessionAction {
     TerminalMenu(Option<usize>),
     /// Start/attach a program in the focused group or in the second group.
     OpenTerminal { agent: Agent, split: bool },
+    /// An agent picked from New agent tab: always a new tab, which starts
+    /// the agent and then types `prompt` once the agent is ready (D857).
+    OpenAgentTab { agent: Agent, prompt: String },
+    /// The person typed into a tab that was waiting for its opening prompt.
+    PersonTyped { session: SessionId, tab: usize },
+    /// The opening prompt's sequence ended: typed, given up on, or refused.
+    OpeningPromptDone {
+        session: SessionId,
+        tab: usize,
+        result: Result<(), DaemonError>,
+    },
     /// ⌘T: a new Terminal tab in the open session's focused group, as the
     /// strip's `+` with Terminal. The app leaves a full-screen panel first
     /// (UXSIMPLE 3-3).
@@ -706,6 +732,11 @@ pub enum SessionAction {
     Delegate(Delegate),
 }
 
+/// The name that cancels the opening prompt of one tab.
+fn opening_prompt_id(session: &SessionId, tab: usize) -> String {
+    format!("opening-prompt-{session}-{tab}")
+}
+
 /// The session pages' reducer.
 #[derive(Clone)]
 pub struct Sessions {
@@ -744,6 +775,27 @@ impl Sessions {
                 result,
             }
         })
+    }
+
+    /// Starts the agent in the new shell tab and types the prompt once it
+    /// is ready. The person typing into the tab cancels it.
+    fn start_opening_prompt(&self, prompt: &OpeningPrompt, tab: usize) -> Effect<SessionAction> {
+        let serial = self.queued.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        let now = self.clients.clock.now().as_nanos();
+        let key = |n: u64| format!("opening-{}-{tab}-{now}-{}", prompt.session, serial + n);
+        let keys = [key(0), key(1)];
+        let (clients, prompt) = (self.clients.clone(), prompt.clone());
+        let id = opening_prompt_id(&prompt.session, tab);
+        Effect::future(async move {
+            let session = prompt.session.clone();
+            let result = opening_prompt::run(clients, prompt, tab, keys).await;
+            SessionAction::OpeningPromptDone {
+                session,
+                tab,
+                result,
+            }
+        })
+        .cancellable(id, true)
     }
 
     fn read_file(&self, session: SessionId, repo: String, path: String) -> Effect<SessionAction> {
@@ -1074,6 +1126,40 @@ impl Reducer for Sessions {
                     },
                 );
             }
+            SessionAction::OpenAgentTab { agent, prompt } => {
+                if state.opening_terminal || agent == Agent::Shell {
+                    return Effect::none();
+                }
+                let Some(session) = state.open.clone() else {
+                    return Effect::none();
+                };
+                state.opening_prompt = Some(OpeningPrompt::new(session, agent, prompt));
+                return self.reduce(
+                    state,
+                    SessionAction::OpenTerminal {
+                        agent: Agent::Shell,
+                        split: false,
+                    },
+                );
+            }
+            SessionAction::PersonTyped { session, tab } => {
+                if state.awaits_opening_prompt(&session, tab) {
+                    state.opening_prompt = None;
+                    return Effect::cancel(opening_prompt_id(&session, tab));
+                }
+            }
+            SessionAction::OpeningPromptDone {
+                session,
+                tab,
+                result,
+            } => {
+                if state.awaits_opening_prompt(&session, tab) {
+                    state.opening_prompt = None;
+                }
+                if let Err(error) = result {
+                    state.fail(&error);
+                }
+            }
             SessionAction::OpenTerminal { agent, split } => {
                 if state.opening_terminal {
                     return Effect::none();
@@ -1105,6 +1191,21 @@ impl Reducer for Sessions {
                 result,
             } => {
                 state.opening_terminal = false;
+                let mut start = Effect::none();
+                if state
+                    .opening_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.session == session && prompt.tab.is_none())
+                {
+                    match (&result, state.opening_prompt.take()) {
+                        (Ok((tab, _)), Some(mut prompt)) => {
+                            prompt.tab = Some(*tab);
+                            start = self.start_opening_prompt(&prompt, *tab);
+                            state.opening_prompt = Some(prompt);
+                        }
+                        _ => {}
+                    }
+                }
                 match result {
                     Ok((tab, snapshot)) => {
                         let shells = snapshot.shells.len();
@@ -1122,6 +1223,7 @@ impl Reducer for Sessions {
                     }
                     Err(error) => state.fail(&error),
                 }
+                return start;
             }
             SessionAction::CloneMenu(path) => state.clone_menu = path,
             SessionAction::CopyClonePath(path) => {

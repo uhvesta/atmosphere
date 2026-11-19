@@ -762,13 +762,14 @@ impl Shared {
     async fn send(
         self: &Arc<Self>,
         session: SessionId,
+        tab: usize,
         text: String,
         key: Option<String>,
     ) -> Result<(), DaemonError> {
         let id = pb::SessionId {
             value: session.as_str().to_owned(),
         };
-        let tab = self.tab(&session, 0).await?;
+        let tab = self.tab(&session, tab).await?;
         self.terminal()
             .r#type(pb::TypeRequest {
                 idempotency_key: key.map_or_else(fresh_key, key_of),
@@ -923,13 +924,19 @@ impl Daemon for LiveDaemon {
     fn send(&self, session: &SessionId, text: &str) -> Reply<()> {
         let shared = self.shared.clone();
         let (session, text) = (session.clone(), text.to_owned());
-        Box::pin(async move { shared.send(session, text, None).await })
+        Box::pin(async move { shared.send(session, 0, text, None).await })
     }
 
     fn send_keyed(&self, session: &SessionId, text: &str, key: &str) -> Reply<()> {
         let shared = self.shared.clone();
         let (session, text, key) = (session.clone(), text.to_owned(), key.to_owned());
-        Box::pin(async move { shared.send(session, text, Some(key)).await })
+        Box::pin(async move { shared.send(session, 0, text, Some(key)).await })
+    }
+
+    fn send_to_tab(&self, session: &SessionId, tab: usize, text: &str, key: &str) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (session, text, key) = (session.clone(), text.to_owned(), key.to_owned());
+        Box::pin(async move { shared.send(session, tab, text, Some(key)).await })
     }
 
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {

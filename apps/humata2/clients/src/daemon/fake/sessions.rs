@@ -28,6 +28,38 @@ pub(super) fn events(daemon: &FakeDaemon) -> Reply<Events> {
     })
 }
 
+/// Types `text` into a shell or agent tab other than the session's own
+/// agent: recorded as a call and shown in the tab's output, with no answer.
+pub(super) fn send_to_tab(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    tab: usize,
+    text: &str,
+    key: &str,
+) -> Reply<()> {
+    let id = session.clone();
+    let text = text.to_owned();
+    let key = key.to_owned();
+    daemon.reply(
+        Some(Operation::Send),
+        format!("send_to_tab {session} {tab} {text:?}"),
+        move |inner| {
+            if inner.sent_keys.contains(&key) {
+                return Ok(());
+            }
+            let found = inner.session_mut(&id)?;
+            if tab > found.shells.len() {
+                return Err(DaemonError::NotFound {
+                    what: format!("Terminal {tab} of {id}"),
+                });
+            }
+            inner.output(&id, tab, Speaker::You, &text);
+            inner.sent_keys.insert(key);
+            Ok(())
+        },
+    )
+}
+
 pub(super) fn send(daemon: &FakeDaemon, session: &SessionId, text: &str) -> Reply<()> {
     let id = session.clone();
     let text = text.to_owned();

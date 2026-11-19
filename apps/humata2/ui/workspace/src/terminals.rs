@@ -264,6 +264,17 @@ impl Terminals {
             cx.subscribe(&replica, move |replica, event: &ReplicaEvent, cx| match event {
                 // Typing again is moving on from the reconnect.
                 ReplicaEvent::InputQueued(_) => {
+                    // The person typing first cancels an opening prompt.
+                    let (session, tab) = key.clone();
+                    if ui.read(|state| state.session.awaits_opening_prompt(&session, tab)) {
+                        let ui = ui.clone();
+                        cx.defer(move |cx| {
+                            ui.send(
+                                AppAction::Session(SessionAction::PersonTyped { session, tab }),
+                                cx,
+                            );
+                        });
+                    }
                     if reconnected.take().is_some()
                         && let Some(shell) = shell.get()
                     {
