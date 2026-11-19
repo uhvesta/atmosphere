@@ -114,7 +114,7 @@ pub fn peer_unproven(
     fix: impl Into<String>,
 ) -> Status {
     failure(
-        Code::PermissionDenied,
+        Code::Unauthenticated,
         pb::Error {
             message: message.into(),
             fix: fix.into(),
@@ -151,7 +151,13 @@ pub trait PeerBoardPort: Send + Sync {
 
 /// Relay registration handle returned by [`PeerInboxPort::relays`].
 pub trait PeerRelaysPort: Send + Sync {
-    fn register(&self, machine: &str, tx: tokio::sync::mpsc::Sender<pb::HostToMachine>);
+    /// The registration lasts until the returned guard is dropped, which the
+    /// link does when it ends.
+    fn register(
+        &self,
+        machine: &str,
+        tx: tokio::sync::mpsc::Sender<pb::HostToMachine>,
+    ) -> Box<dyn std::any::Any + Send>;
     fn refused(&self, machine: &str, refused: pb::InboxAnswerRefused);
 }
 
@@ -329,41 +335,12 @@ pub mod host_vars {
     }
 }
 
-/// Stop folder state reader (decoupled from `humatad::stop::StopFolder`).
+/// The stop folder and the host's copies of its machines' stops.
 pub mod stop {
-    use std::path::{Path, PathBuf};
+    pub use humata2_svc_stop_restart::stop::{StopFolder, StopState, boot};
 
-    pub struct StopFolder(PathBuf);
-    pub enum StopState {
-        Running,
-        Starting(String),
-        Stopped(StopRecord),
-    }
-    pub struct StopRecord;
-    impl StopFolder {
-        pub fn new(path: &Path) -> Self {
-            Self(path.to_path_buf())
-        }
-        pub fn read(&self) -> std::io::Result<StopState> {
-            Ok(StopState::Running)
-        }
-    }
-    pub mod boot {
-        use super::StopRecord;
-        use humata2_grpc::humata::v1 as pb;
-        pub fn to_pb(_record: &StopRecord) -> pb::SessionsStopped {
-            pb::SessionsStopped::default()
-        }
-    }
     pub mod remote {
-        #[derive(Clone, Default)]
-        pub struct HostStops;
-        impl HostStops {
-            pub fn link_up(&self, _machine: &str) {}
-            pub fn is_delivered(&self, _machine: &str) -> bool {
-                false
-            }
-        }
+        pub use humata2_svc_stop_restart::stop::remote::HostStops;
     }
 }
 

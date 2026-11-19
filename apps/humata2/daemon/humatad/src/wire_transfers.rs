@@ -72,12 +72,30 @@ impl LinkProvider for LinksAdapter {
     }
 
     fn watch_all(&self) -> broadcast::Receiver<(String, LinkState)> {
-        let (_tx, rx) = broadcast::channel(16);
+        let (tx, rx) = broadcast::channel(256);
+        let mut follow = self.0.watch_all();
+        tokio::spawn(async move {
+            while let Some((machine, state)) = follow.next().await {
+                let state = match state {
+                    crate::host_relay::LinkState::Up { generation } => LinkState::Up { generation },
+                    crate::host_relay::LinkState::Down => LinkState::Down,
+                };
+                // Nobody left listening ends the bridge.
+                if tx.send((machine, state)).is_err() {
+                    break;
+                }
+            }
+        });
         rx
     }
 
     fn up_machines(&self) -> Vec<String> {
-        Vec::new()
+        self.0
+            .states()
+            .into_iter()
+            .filter(|(_, state)| matches!(state, crate::host_relay::LinkState::Up { .. }))
+            .map(|(machine, _)| machine)
+            .collect()
     }
 }
 

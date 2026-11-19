@@ -427,7 +427,8 @@ pub enum LinkEvent {
     Up {
         daemon_version: String,
         channel: tonic::transport::Channel,
-        stopped: bool,
+        /// The stop the machine's Hello told, while its sessions are stopped (D262).
+        stopped: Option<pb::SessionsStopped>,
     },
     Down {
         reason: String,
@@ -464,7 +465,12 @@ pub struct StopCopy {
 pub trait MachineStopsPort: Send + Sync {
     fn get(&self, machine: &str) -> Option<StopCopy>;
     fn this_machine(&self) -> Option<pb::SessionsStopped>;
-    fn link_up(&self, machine: &str, stopped: bool, channel: tonic::transport::Channel);
+    fn link_up(
+        &self,
+        machine: &str,
+        told: Option<&pb::SessionsStopped>,
+        channel: tonic::transport::Channel,
+    );
     fn remove(&self, machine: &str) -> Result<(), Status>;
     fn forget(&self, machine: &str);
     async fn stop_remote(

@@ -753,7 +753,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         );
         // D262: the stops kept for other machines, on this host's disk, set
         // before any link starts.
-        let _stops = crate::stop::remote::HostStops::open(&state);
+        let stops = crate::stop::remote::HostStops::open(&state);
+        remote.use_stops(stops.clone());
+        let _ = work.login.set(Arc::new(crate::wire_machines::LoginAdapter::new(work)));
+        let _ = work.stops.set(Arc::new(crate::wire_machines::StopsAdapter::new(work.clone(), stops)));
         let _ = remote_slot.set(remote.clone());
         // What the machines report, for the daemon's life (SL-3, TR-7).
         tokio::spawn({
@@ -992,7 +995,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         terminals.core(),
         state.clone(),
         desk_handle,
-        None,
+        remote_work.clone().map(crate::wire_desk::desk_remote),
         migrations.clone(),
         channel_svc.clone(),
         last_start.clone(),
@@ -1097,6 +1100,32 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             // UP-1: each link-up posts or withdraws its machine's Migrate item.
             let _ = work.upgrade.set(Arc::new(crate::wire_machines::UpgradeAdapter(
                 crate::wire_upgrade::watch(migrations.clone(), release.clone()),
+            )));
+            // Each link replays its machine's journal and hears the host's policy;
+            // set before any link starts, so the first dial has all of it.
+            #[cfg(feature = "svc_board")]
+            let boards = crate::wire_peer::peer_board(Arc::new(board_svc.clone()));
+            #[cfg(not(feature = "svc_board"))]
+            let boards: Arc<dyn humata2_svc_peer::ports::PeerBoardPort> =
+                Arc::new(crate::wire_machines::NoBoards);
+            #[cfg(feature = "svc_review")]
+            let views = crate::wire_peer::peer_review(Arc::new(review.clone()));
+            #[cfg(not(feature = "svc_review"))]
+            let views: Arc<dyn humata2_svc_peer::ports::PeerReviewPort> =
+                Arc::new(crate::wire_machines::NoViews);
+            let _ = work.peer_dial.set(Arc::new(crate::wire_machines::PeerDialAdapter::new(
+                &work,
+                host_reports.clone(),
+                crate::wire_machines::HostParts {
+                    policy: crate::wire_peer::policy_source(policy_copy.clone()),
+                    inbox: crate::wire_peer::peer_inbox(inbox.clone()),
+                    boards,
+                    views,
+                    upgrade: Some(crate::wire_peer::peer_upgrade_watch(crate::wire_upgrade::watch(
+                        migrations.clone(),
+                        release.clone(),
+                    ))),
+                },
             )));
             if let Some(remote) = remote_slot.get() {
                 remote.use_upgrade(crate::wire_peer::peer_upgrade_watch(

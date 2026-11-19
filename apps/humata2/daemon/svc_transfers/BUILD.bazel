@@ -25,6 +25,7 @@ rust_library(
     crate_name = "humata2_svc_transfers",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SHARED_DEPS + [
+        "//apps/humata2/daemon/runtime",
         "//apps/humata2/daemon/sessions",
         "//apps/humata2/daemon/store",
         "//apps/humata2/daemon/svc_files",
@@ -40,6 +41,7 @@ rust_library(
     crate_name = "humata2_svc_transfers",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SHARED_DEPS + [
+        "//apps/humata2/daemon/runtime:runtime_faults",
         "//apps/humata2/daemon/sessions:sessions_faults",
         "//apps/humata2/daemon/store:store_faults",
         "//apps/humata2/daemon/svc_files:svc_files_faults",

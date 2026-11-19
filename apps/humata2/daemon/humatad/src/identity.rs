@@ -224,6 +224,22 @@ const OPEN_TO_ANYONE: [(&str, &str); 5] = [
 pub(crate) fn mark_open(request: http::Request<Body>) -> http::Request<Body> {
     // D144: the relay's per-connection check reads the method from here.
     let mut request = crate::relay_auth::mark_method(request);
+    // D144: the daemon service reads the connection and its peer from the
+    // types of its own crate, which the accept loop's `PeerInfo` fills.
+    let from_socket = request.extensions().get::<humata2_app_peer::PeerInfo>().map(|info| {
+        let cred = info.uds.peer_cred;
+        (
+            humata2_svc_stop_restart::ports::ConnId(info.conn),
+            humata2_svc_stop_restart::ports::PeerFacts {
+                pid: cred.and_then(|cred| cred.pid()).and_then(|pid| u32::try_from(pid).ok()),
+                uid: cred.map(|cred| cred.uid()),
+            },
+        )
+    });
+    if let Some((conn, facts)) = from_socket {
+        request.extensions_mut().insert(conn);
+        request.extensions_mut().insert(facts);
+    }
     let open = request
         .uri()
         .path()

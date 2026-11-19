@@ -24,12 +24,14 @@ COMMON_DEPS = [
 NORMAL_DEPS = COMMON_DEPS + [
     "//apps/humata2/daemon/runtime",
     "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/svc_stop_restart",
     "//apps/humata2/daemon/transfers",
 ]
 
 FAULTS_DEPS = COMMON_DEPS + [
     "//apps/humata2/daemon/runtime:runtime_faults",
     "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/svc_stop_restart:svc_stop_restart_faults",
     "//apps/humata2/daemon/transfers:transfers_faults",
 ]
 

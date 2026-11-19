@@ -560,6 +560,9 @@ impl Work {
             return;
         }
         let Some(dial) = self.peer_dial.get() else {
+            humata2_rpc_kit::log::say!(
+                "humatad2: no peer link dialer is set, so {machine} is not linked; this is a wiring bug in this daemon"
+            );
             return;
         };
         let entry = match self.machines.get(machine) {
@@ -663,7 +666,7 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent) {
     } = &event
     {
         if let Some(stops) = work.stops.get() {
-            stops.link_up(machine, *stopped, channel.clone());
+            stops.link_up(machine, stopped.as_ref(), channel.clone());
         }
         if let Some(upgrade) = work.upgrade.get() {
             upgrade.link_up(machine, daemon_version);

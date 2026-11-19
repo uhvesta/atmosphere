@@ -859,3 +859,297 @@ pub(crate) fn new_box_machine_svc(
         Arc::new(HoldersAdapter { storage, sessions }),
     )
 }
+
+// ---------------------------------------------------------------------------
+// Peer links: the host dials each machine's `serve --stdio`
+// ---------------------------------------------------------------------------
+
+/// Boards for a daemon built without them: nothing a machine journals as
+/// `board.` is its own, and a forwarded call has no board to run on.
+#[cfg(not(feature = "svc_board"))]
+pub(crate) struct NoBoards;
+
+#[cfg(not(feature = "svc_board"))]
+#[tonic::async_trait]
+impl humata2_svc_peer::ports::PeerBoardPort for NoBoards {
+    async fn replay_at(
+        &self,
+        _machine: &str,
+        _entry: &pb::JournalEntry,
+        _link_up: i64,
+    ) -> humata2_svc_peer::ports::Replayed {
+        humata2_svc_peer::ports::Replayed::Rejected
+    }
+
+    async fn forwarded(&self, _machine: &str, call: pb::ForwardedCall) -> pb::ForwardedResult {
+        pb::ForwardedResult {
+            call_id: call.call_id,
+            outcome: Some(pb::forwarded_result::Outcome::Error(pb::Error {
+                message: "this daemon is built without boards, so it can't run the call".to_owned(),
+                ..pb::Error::default()
+            })),
+        }
+    }
+}
+
+/// Views for a daemon built without them.
+#[cfg(not(feature = "svc_review"))]
+pub(crate) struct NoViews;
+
+#[cfg(not(feature = "svc_review"))]
+#[tonic::async_trait]
+impl humata2_svc_peer::ports::PeerReviewPort for NoViews {
+    async fn replay_offered(
+        &self,
+        _machine: &str,
+        _entry: &pb::JournalEntry,
+    ) -> humata2_svc_peer::ports::Replayed {
+        humata2_svc_peer::ports::Replayed::Rejected
+    }
+}
+
+/// What the host does with a link besides keeping it up (see
+/// [`crate::peer_client::HostSide`]).
+pub(crate) struct HostParts {
+    pub(crate) policy: Arc<dyn humata2_svc_peer::ports::PolicySourcePort>,
+    pub(crate) inbox: Arc<dyn humata2_svc_peer::ports::PeerInboxPort>,
+    pub(crate) boards: Arc<dyn humata2_svc_peer::ports::PeerBoardPort>,
+    pub(crate) views: Arc<dyn humata2_svc_peer::ports::PeerReviewPort>,
+    pub(crate) upgrade: Option<Arc<dyn humata2_svc_peer::ports::PeerUpgradeWatchPort>>,
+}
+
+/// Dials each machine through its link command and keeps the link up.
+pub(crate) struct PeerDialAdapter {
+    work: std::sync::Weak<Work>,
+    runtime: tokio::runtime::Handle,
+    reports: PeerReports,
+    host: HostParts,
+}
+
+impl PeerDialAdapter {
+    /// Must be made inside the daemon's runtime: links are spawned on it,
+    /// whichever thread asks for one.
+    pub(crate) fn new(work: &Arc<Work>, reports: PeerReports, host: HostParts) -> Self {
+        Self {
+            work: Arc::downgrade(work),
+            runtime: tokio::runtime::Handle::current(),
+            reports,
+            host,
+        }
+    }
+
+    fn host_side(&self) -> crate::peer_client::HostSide {
+        crate::peer_client::HostSide {
+            policy: self.host.policy.clone(),
+            inbox: self.host.inbox.clone(),
+            boards: self.host.boards.clone(),
+            views: self.host.views.clone(),
+            upgrade: self.host.upgrade.clone(),
+        }
+    }
+}
+
+fn identity_wrong(error: &crate::peer_client::LinkError) -> bool {
+    use crate::peer_client::LinkError;
+    matches!(
+        error,
+        LinkError::MachineProofWrong { .. }
+            | LinkError::MachineRefused {
+                reason: pb::peer_unproven::Reason::HostProofWrong,
+                ..
+            }
+    )
+}
+
+impl humata2_svc_machines::ports::MachinePeerDialPort for PeerDialAdapter {
+    fn spawn_supervisor(
+        &self,
+        entry: humata2_machines::HostEntry,
+        on_event: Arc<dyn Fn(humata2_svc_machines::ports::LinkEvent) + Send + Sync>,
+    ) -> tokio::task::AbortHandle {
+        use crate::peer_client::{CommandDial, LinkEvent as Event};
+        use humata2_svc_machines::ports::LinkEvent as Told;
+        let name = entry.name;
+        let Some(work) = self.work.upgrade() else {
+            return self.runtime.spawn(async {}).abort_handle();
+        };
+        let invocation = match work.machines.peer_link(&name) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: couldn't make the peer link command for {name}: {}",
+                    crate::status::chain(&error)
+                );
+                return self.runtime.spawn(async {}).abort_handle();
+            }
+        };
+        let key_file = work.machines.peer_key(&name);
+        let sink: crate::peer_client::Sink = {
+            let (reports, name) = (self.reports.clone(), name.clone());
+            Box::new(move |message| reports.accept(&name, message))
+        };
+        let report: crate::peer_client::Report = Box::new(move |event: Event<'_>| {
+            on_event(match event {
+                Event::Up {
+                    daemon_version,
+                    channel,
+                    stopped,
+                } => Told::Up {
+                    daemon_version: daemon_version.to_owned(),
+                    channel: channel.clone(),
+                    stopped: stopped.cloned(),
+                },
+                Event::Down { error, retry_in } => {
+                    let reason = format!("{}; {}", crate::status::chain(error), error.fix());
+                    if identity_wrong(error) {
+                        Told::IdentityMismatch { reason }
+                    } else {
+                        Told::Down {
+                            reason,
+                            next_retry_at: retry_in.map(|wait| SystemTime::now() + wait),
+                        }
+                    }
+                }
+            });
+        });
+        self.runtime
+            .spawn(crate::peer_client::supervise(
+                Box::new(CommandDial::new(name.clone(), invocation)),
+                key_file,
+                name,
+                report,
+                sink,
+                Some(self.host_side()),
+            ))
+            .abort_handle()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stops kept for other machines (D262)
+// ---------------------------------------------------------------------------
+
+/// Adapts the host's stop copies and `stop::remote` to [`MachineStopsPort`].
+pub(crate) struct StopsAdapter {
+    stops: HostStops,
+    remote: Arc<dyn humata2_svc_stop_restart::ports::RemoteStopPort>,
+}
+
+impl StopsAdapter {
+    pub(crate) fn new(work: Arc<Work>, stops: HostStops) -> Self {
+        let remote = Arc::new(crate::wire_stop_restart::RemoteStopAdapter::new(
+            work,
+            Some(stops.clone()),
+        ));
+        Self { stops, remote }
+    }
+}
+
+fn stop_copy(copy: &crate::stop::host_copy::HostCopy) -> StopCopy {
+    StopCopy {
+        pb_record: crate::stop::boot::to_pb(&copy.record),
+        by_user: copy.record.by.kind == crate::stop::ByKind::User,
+        delivered: copy.delivered,
+    }
+}
+
+#[tonic::async_trait]
+impl MachineStopsPort for StopsAdapter {
+    fn get(&self, machine: &str) -> Option<StopCopy> {
+        self.stops.get(machine).as_ref().map(stop_copy)
+    }
+
+    fn this_machine(&self) -> Option<pb::SessionsStopped> {
+        self.stops.this_machine()
+    }
+
+    fn link_up(&self, machine: &str, told: Option<&pb::SessionsStopped>, channel: tonic::transport::Channel) {
+        crate::stop::remote::link_up(&self.remote, machine, told, &channel);
+    }
+
+    fn remove(&self, machine: &str) -> Result<(), Status> {
+        self.stops
+            .remove(machine)
+            .map_err(|error| Status::internal(crate::status::chain(&error)))
+    }
+
+    fn forget(&self, machine: &str) {
+        if let Err(error) = self.stops.remove(machine) {
+            crate::log::say!(
+                "humatad2: couldn't drop the stop kept for {machine}: {}",
+                crate::status::chain(&error)
+            );
+        }
+    }
+
+    async fn stop_remote(
+        &self,
+        machine: &str,
+        stop_id: String,
+        reason: String,
+        via: pb::StopVia,
+        by: String,
+    ) -> Result<StopCopy, Status> {
+        use crate::stop::Via;
+        let via = match via {
+            pb::StopVia::Unspecified | pb::StopVia::App => Via::App,
+            pb::StopVia::Cli | pb::StopVia::Ssh | pb::StopVia::Direct => Via::Cli,
+        };
+        let ask = crate::stop::remote::Ask {
+            stop_id,
+            reason,
+            via,
+            by,
+        };
+        let reach = crate::stop::remote::stop(&self.remote, machine, ask)
+            .await
+            .map_err(|error| error.status())?;
+        Ok(StopCopy {
+            pb_record: crate::stop::boot::to_pb(&reach.record),
+            by_user: reach.record.by.kind == crate::stop::ByKind::User,
+            delivered: reach.delivered,
+        })
+    }
+
+    async fn start_remote(&self, machine: &str) -> Result<bool, Status> {
+        let started = crate::stop::remote::start(&self.remote, machine)
+            .await
+            .map_err(|error| error.status())?;
+        Ok(matches!(started, crate::stop::remote::Started::Cancelled))
+    }
+}
+
+/// Shows a machine whose link is down and whose reconnects need the user as
+/// NeedsLogin (MP-16).
+pub(crate) struct LoginAdapter {
+    hosts_file: PathBuf,
+}
+
+impl LoginAdapter {
+    pub(crate) fn new(work: &Work) -> Self {
+        Self {
+            hosts_file: work.machines.hosts_file().to_owned(),
+        }
+    }
+}
+
+impl humata2_svc_machines::ports::MachineLoginPort for LoginAdapter {
+    fn needs_login(&self, entry: &humata2_machines::HostEntry, reachability: pb::Reachability) -> pb::Reachability {
+        if reachability == pb::Reachability::Offline
+            && humata2_machines::is_interactive(&self.hosts_file, &entry.name)
+        {
+            pb::Reachability::NeedsLogin
+        } else {
+            reachability
+        }
+    }
+
+    fn login_needs_user(&self, machine: &str, _reason: &str) -> pb::LoginNeedsUser {
+        pb::LoginNeedsUser {
+            machine: Some(pb::MachineId {
+                value: machine.to_owned(),
+            }),
+            ..pb::LoginNeedsUser::default()
+        }
+    }
+}

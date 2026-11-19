@@ -96,8 +96,12 @@ impl PeerBoardPort for PeerBoardAdapter {
 pub(crate) struct PeerRelaysAdapter(pub(crate) Arc<Relays>);
 
 impl PeerRelaysPort for PeerRelaysAdapter {
-    fn register(&self, machine: &str, tx: mpsc::Sender<pb::HostToMachine>) {
-        let _guard = self.0.register(machine, tx);
+    fn register(
+        &self,
+        machine: &str,
+        tx: mpsc::Sender<pb::HostToMachine>,
+    ) -> Box<dyn std::any::Any + Send> {
+        Box::new(self.0.register(machine, tx))
     }
 
     fn refused(&self, machine: &str, refused: pb::InboxAnswerRefused) {

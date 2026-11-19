@@ -1156,7 +1156,7 @@ impl Carry {
                     tell(Chunks::Moved(chunk.len));
                 }
                 // A test holds the copy here, once the chunk is sent and told.
-                humata2_store::fault::point("move.copy.chunk_sent");
+                humata2_daemon_runtime::fault::hold_blocking("move.copy.chunk_sent");
             }
             Ok(sent)
         })
