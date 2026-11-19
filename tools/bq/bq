@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""bq: one bazel at a time; requests that arrive while it runs share the next run.
+
+    tools/bq/bq [--build] [--fast] <targets...> [-- <extra bazel flags>]
+
+Runs `bazel test` (or `bazel build` with --build) with --jobs=6 --keep_going.
+If nothing is running, your request runs now. If bazel is busy, your request
+is queued; when the current run ends, everything queued with the same command
+and flags runs as one bazel invocation. You get back your own targets' lines
+and the full log path. Exit 0 when the run passed, or when it failed but every
+target you named exactly shows PASSED.
+"""
+import fcntl
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import uuid
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+Q = pathlib.Path(os.environ.get("BQ_DIR", ROOT / ".bq"))
+QUEUE, RUNNING, DONE, LOGS = (Q / d for d in ("queue", "running", "done", "logs"))
+
+
+def parse(argv):
+    cmd, flags, targets = "test", ["--jobs=6", "--keep_going"], []
+    extra = argv.index("--") if "--" in argv else len(argv)
+    for arg in argv[:extra]:
+        if arg == "--build":
+            cmd = "build"
+        elif arg == "--fast":
+            flags.append("--config=fast")
+        else:
+            targets.append(arg)
+    if not targets:
+        sys.exit(__doc__)
+    return cmd, flags + argv[extra + 1 :], targets
+
+
+def run_batch(reqs):
+    """Run one bazel invocation for requests sharing a command and flags."""
+    cmd, flags = reqs[0]["cmd"], reqs[0]["flags"]
+    targets = sorted({t for r in reqs for t in r["targets"]})
+    log = LOGS / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.log"
+    env = dict(os.environ, PATH=f"{ROOT / '.tools/bin'}:{os.environ['PATH']}")
+    print(f"bq: running {len(reqs)} request(s), {len(targets)} target(s) -> {log}", file=sys.stderr)
+    with open(log, "w") as out:
+        code = subprocess.call([os.environ.get("BQ_BAZEL", "bazel"), cmd, *flags, *targets], cwd=ROOT, env=env,
+                               stdout=out, stderr=subprocess.STDOUT)
+    for r in reqs:
+        (DONE / f"{r['id']}.json").write_text(json.dumps({"exit": code, "log": str(log)}))
+        (RUNNING / f"{r['id']}.json").unlink(missing_ok=True)
+
+
+def drain():
+    """Holding the lock: run everything queued, until the queue is empty."""
+    for orphan in RUNNING.glob("*.json"):  # a holder died mid-run
+        orphan.rename(QUEUE / orphan.name)
+    while True:
+        taken = sorted(QUEUE.glob("*.json"))
+        if not taken:
+            return
+        groups = {}
+        for path in taken:
+            dest = RUNNING / path.name
+            path.rename(dest)
+            req = json.loads(dest.read_text())
+            groups.setdefault((req["cmd"], tuple(req["flags"])), []).append(req)
+        for reqs in groups.values():
+            run_batch(reqs)
+
+
+def report(req, result):
+    lines = pathlib.Path(result["log"]).read_text(errors="replace").splitlines()
+    mine = [l for l in lines if any(l.startswith(t.rstrip(".").rstrip("/")) for t in req["targets"])]
+    errors = [l for l in lines if l.startswith("ERROR:")]
+    print("\n".join(errors[:20] + mine))
+    print(f"bq: exit {result['exit']}, log {result['log']}")
+    if result["exit"] == 0:
+        return 0
+    exact = [t for t in req["targets"] if not t.endswith("...") and ":" in t]
+    passed = {l.split()[0] for l in mine if " PASSED" in l}
+    ok = len(exact) == len(req["targets"]) and all(t in passed for t in exact)
+    return 0 if ok else result["exit"] or 1
+
+
+def main():
+    cmd, flags, targets = parse(sys.argv[1:])
+    for d in (QUEUE, RUNNING, DONE, LOGS):
+        d.mkdir(parents=True, exist_ok=True)
+    req = {"id": f"{time.time_ns()}-{uuid.uuid4().hex[:6]}", "cmd": cmd, "flags": flags, "targets": targets}
+    tmp = QUEUE / f".{req['id']}"
+    tmp.write_text(json.dumps(req))
+    tmp.rename(QUEUE / f"{req['id']}.json")
+    done = DONE / f"{req['id']}.json"
+    waiting = False
+    with open(Q / "lock", "w") as lock:
+        while not done.exists():
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if not waiting:
+                    print("bq: bazel is busy; queued for the next batch", file=sys.stderr)
+                    waiting = True
+                time.sleep(0.5)
+                continue
+            try:
+                drain()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    result = json.loads(done.read_text())
+    done.unlink()
+    sys.exit(report(req, result))
+
+
+if __name__ == "__main__":
+    main()

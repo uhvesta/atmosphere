@@ -4,6 +4,7 @@
 
 - Build, test, bench and lint only through Bazel. Never run `cargo` directly; if something needs it, add a Bazel target instead.
 - For fast local edit-test loops, pass `--config=fast` to skip lint aspects (`clippy`, etc.) so Rust crates compile once instead of twice. Always run without `--config=fast` (default `--config=lint`) before committing.
+- Run builds and tests through `tools/bq/bq [--build] [--fast] <targets...>`, not bare `bazel`. If bazel is idle it runs at once; if busy, your request waits and shares the next run with everything else queued, so many agents cost one invocation instead of a queue of them. It prints your targets' results and the log path.
 
 ## Errors
 
