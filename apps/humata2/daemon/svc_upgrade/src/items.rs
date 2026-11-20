@@ -2531,6 +2531,8 @@ mod tests {
 
     // D892: a remote machine's daemon is never migrated on detection; its
     // item waits until the owner clicks Migrate.
+    // `Watch` does all its work before its calls return (nothing on the
+    // migrate path is spawned), so the checks below need no wait.
     #[tokio::test]
     async fn watch_linked_leaves_an_older_remote_daemon_waiting_until_migrate_is_clicked() {
         let directory = tempfile::tempdir().unwrap();
@@ -2541,9 +2543,6 @@ mod tests {
 
         watch.linked("gpu", Some(&elsewhere(4))).await;
         watch.unsupported("gpu").await;
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
 
         assert_eq!(calls(&fake), 0, "a remote daemon waits for the click");
         let id = migrations.pending(pb::MigrateThing::Daemon, &gpu()).unwrap();
@@ -2578,9 +2577,6 @@ mod tests {
         // A second link-up at the same host bundle does not retry.
         fake.fails.store(false, Ordering::SeqCst);
         watch.linked("gpu", Some(&elsewhere(4))).await;
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(calls(&fake), 1, "a failed Migrate is not retried without a click");
 
         // Re-opening Migrations from the same state folder preserves the tripped breaker.
@@ -2665,9 +2661,6 @@ mod tests {
             moved: None,
         };
         watch.holders("gpu", report.clone(), true, &channel).await;
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(calls(&fake), 0, "holders wait for the click");
         let id = migrations.pending(pb::MigrateThing::Holders, &gpu()).unwrap();
         assert_eq!(card(&held(&inbox, &id).await).phase(), pb::MigratePhase::Waiting);
@@ -2688,9 +2681,6 @@ mod tests {
 
         // A later clean report does not retry on its own.
         watch.holders("gpu", report, false, &channel).await;
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(calls(&fake), 1, "a reported failure is not retried without a click");
     }
 }
