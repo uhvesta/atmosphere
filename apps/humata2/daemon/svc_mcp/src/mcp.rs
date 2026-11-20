@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use humata2_grpc::humata::v1 as pb;
@@ -44,9 +44,14 @@ pub struct McpArgs {
 }
 
 pub async fn run_on_socket(socket: PathBuf) -> Result<(), humata2_mcp::ServeError> {
-    Server::new(GrpcDaemon::new(socket), SessionToken::from_env())
-        .serve_stdio()
-        .await
+    let (changed, changes) = mpsc::unbounded_channel();
+    Server::new(
+        GrpcDaemon::with_tool_list_changes(socket, changed),
+        SessionToken::from_env(),
+    )
+    .with_tool_list_changes(changes)
+    .serve_stdio()
+    .await
 }
 
 /// The daemon on its socket. Connects on the first call, and again after
@@ -58,8 +63,26 @@ struct GrpcDaemon {
     /// The release this binary is, named on every call (UP-1).
     bundle: Option<tonic::metadata::AsciiMetadataValue>,
     /// Whether `tools/list` offers `sessions_delete_many`: learned from the
-    /// caller's rule at connect, so false until then (D876).
-    delete_many_offered: AtomicBool,
+    /// caller's rule at connect and refreshed on rule changes (D876).
+    delete_many_offered: Arc<AtomicBool>,
+    /// Signals the MCP server to emit `notifications/tools/list_changed` when
+    /// the offered tool set changes (D876).
+    tool_list_changes: Option<mpsc::UnboundedSender<()>>,
+    /// Background watcher refreshing `delete_many_offered` after `bind`.
+    rule_watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for GrpcDaemon {
+    fn drop(&mut self) {
+        if let Some(handle) = self
+            .rule_watcher
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            handle.abort();
+        }
+    }
 }
 
 /// The bundle id of the release this binary was installed with: the sha256
@@ -74,7 +97,16 @@ fn bundle_id() -> Option<tonic::metadata::AsciiMetadataValue> {
 }
 
 impl GrpcDaemon {
+    #[cfg(test)]
     fn new(socket: PathBuf) -> Self {
+        Self::build(socket, None)
+    }
+
+    fn with_tool_list_changes(socket: PathBuf, changed: mpsc::UnboundedSender<()>) -> Self {
+        Self::build(socket, Some(changed))
+    }
+
+    fn build(socket: PathBuf, tool_list_changes: Option<mpsc::UnboundedSender<()>>) -> Self {
         let path = socket.clone();
         // The address is a placeholder: the connector dials the socket.
         let channel =
@@ -91,7 +123,9 @@ impl GrpcDaemon {
             channel,
             token: Mutex::new(None),
             bundle: bundle_id(),
-            delete_many_offered: AtomicBool::new(false),
+            delete_many_offered: Arc::new(AtomicBool::new(false)),
+            tool_list_changes,
+            rule_watcher: Mutex::new(None),
         }
     }
 
@@ -1326,6 +1360,7 @@ impl Daemon for GrpcDaemon {
         *lock(&self.token) = Some(token.clone());
         self.agent().await?;
         self.ask_delete_many_rule().await;
+        self.watch_delete_many_rule(token.clone());
         Ok(())
     }
 

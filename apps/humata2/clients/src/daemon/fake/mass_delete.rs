@@ -10,7 +10,7 @@ use crate::mass_delete::{
     DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan, EndingState, LeftAlone, SessionToDelete,
     SessionWork, TerminalEnding,
 };
-use crate::model::{Session, SessionId, Status};
+use crate::model::{ForkKind, Session, SessionId, Status};
 
 /// What the fake keeps of the plan it last gave out.
 #[derive(Default)]
@@ -26,7 +26,7 @@ pub(super) struct State {
 struct Held {
     token: String,
     scope: DeleteScope,
-    sessions: Vec<SessionId>,
+    sessions: Vec<SessionToDelete>,
 }
 
 /// What a plan lists, before it is given a token.
@@ -36,10 +36,6 @@ struct Computed {
     forks_staying: Vec<SessionWork>,
     desk_sessions_left_out: u32,
 }
-
-/// The words a Changed answer gives when no session differs by name.
-const CHANGED_WORDS: &str =
-    "The sessions changed since the plan. Nothing was deleted; review the new list and delete again";
 
 fn not_found(what: String) -> DaemonError {
     DaemonError::NotFound { what }
@@ -184,7 +180,41 @@ fn compute(inner: &Inner, scope: &DeleteScope) -> Result<Computed, DaemonError> 
         }
     }
 
-    // A fork of a deleted session that isn't deleted keeps running.
+    // Recursively pull in non-archived, non-Desk context-only forks whose
+    // parent is in the delete set (D187).
+    loop {
+        let to_add: Vec<(&Session, SessionId)> = inner
+            .workspace
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                if session.archived
+                    || desk::is_desk(session)
+                    || session.fork != Some(ForkKind::Conversation)
+                    || machine_offline(inner, session)
+                    || sessions.iter().any(|planned| planned.session == session.id)
+                {
+                    return None;
+                }
+                let parent = session.parent.as_ref()?;
+                if sessions.iter().any(|planned| &planned.session == parent) {
+                    Some((session, parent.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if to_add.is_empty() {
+            break;
+        }
+        for (session, parent) in to_add {
+            let mut planned = to_delete(inner, session);
+            planned.goes_with = Some(parent);
+            sessions.push(planned);
+        }
+    }
+
+    // A non-conversation fork of a deleted session that isn't deleted keeps running.
     let deleted: Vec<&SessionId> = sessions.iter().map(|session| &session.session).collect();
     let forks_staying = inner
         .workspace
@@ -192,6 +222,7 @@ fn compute(inner: &Inner, scope: &DeleteScope) -> Result<Computed, DaemonError> 
         .iter()
         .filter(|session| {
             !session.archived
+                && session.fork != Some(ForkKind::Conversation)
                 && !deleted.contains(&&session.id)
                 && session
                     .parent
@@ -213,16 +244,11 @@ fn compute(inner: &Inner, scope: &DeleteScope) -> Result<Computed, DaemonError> 
 fn issue(inner: &mut Inner, scope: DeleteScope, computed: Computed) -> DeleteSessionsPlan {
     inner.mass_delete.issued += 1;
     let token = format!("mass-delete-{}", inner.mass_delete.issued);
-    let sessions: Vec<SessionId> = computed
-        .sessions
-        .iter()
-        .map(|session| session.session.clone())
-        .collect();
     let needs_count = matches!(scope, DeleteScope::All);
     inner.mass_delete.held = Some(Held {
         token: token.clone(),
         scope,
-        sessions,
+        sessions: computed.sessions.clone(),
     });
     DeleteSessionsPlan {
         sessions: computed.sessions,
@@ -234,30 +260,88 @@ fn issue(inner: &mut Inner, scope: DeleteScope, computed: Computed) -> DeleteSes
     }
 }
 
-/// The name people see for a session the workspace knows, or its id.
-fn name_of(inner: &Inner, session: &SessionId) -> String {
-    inner
-        .workspace
-        .session(session)
-        .map_or_else(|| session.to_string(), |found| found.title.clone())
+fn parse_commits(what: &str) -> Option<u32> {
+    let words: Vec<&str> = what.split_whitespace().collect();
+    for pair in words.windows(2) {
+        let word = pair[1].trim_matches(|c: char| !c.is_ascii_alphabetic());
+        if word.eq_ignore_ascii_case("commit") || word.eq_ignore_ascii_case("commits") {
+            if let Ok(count) = pair[0].parse::<u32>() {
+                return Some(count);
+            }
+        }
+    }
+    None
+}
+
+fn parse_branch(what: &str) -> Option<&str> {
+    let (_, after) = what.split_once(" on ")?;
+    let branch = after
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | ':'));
+    (!branch.is_empty()).then_some(branch)
+}
+
+fn unpushed_change_line(inner: &Inner, prev: &SessionToDelete, curr: &SessionToDelete) -> String {
+    for item in &curr.unpushed {
+        let Some(now_commits) = parse_commits(&item.what) else {
+            continue;
+        };
+        let then_commits = prev
+            .unpushed
+            .iter()
+            .find(|old| old.repo == item.repo)
+            .and_then(|old| parse_commits(&old.what))
+            .unwrap_or(0);
+        if let Some(added) = now_commits.checked_sub(then_commits).filter(|&n| n > 0) {
+            let noun = if added == 1 { "commit" } else { "commits" };
+            let branch = parse_branch(&item.what).or_else(|| {
+                inner
+                    .workspace
+                    .session(&curr.session)
+                    .map(|session| session.branch.as_str())
+                    .filter(|branch| !branch.is_empty())
+            });
+            return match branch {
+                Some(branch) => format!("{}: {added} new {noun} on {branch}.", curr.title),
+                None => format!("{}: {added} new {noun}.", curr.title),
+            };
+        }
+    }
+    format!("{}: changed.", curr.title)
 }
 
 /// What differs between the sessions listed then and the sessions now.
-fn changes_since(inner: &Inner, listed: &[SessionId], now: &[SessionId]) -> Vec<String> {
-    let added = now
-        .iter()
-        .filter(|id| !listed.contains(id))
-        .map(|id| format!("\"{}\" is now in this delete", name_of(inner, id)));
-    let removed = listed
-        .iter()
-        .filter(|id| !now.contains(id))
-        .map(|id| format!("\"{}\" is no longer in it", name_of(inner, id)));
-    let changes: Vec<String> = added.chain(removed).collect();
-    if changes.is_empty() {
-        vec![CHANGED_WORDS.to_owned()]
-    } else {
-        changes
+fn changes_since(
+    inner: &Inner,
+    listed: &[SessionToDelete],
+    now: &[SessionToDelete],
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    for curr in now {
+        let Some(prev) = listed.iter().find(|s| s.session == curr.session) else {
+            changes.push(format!("\"{}\" is now in this delete", curr.title));
+            continue;
+        };
+        if prev.unpushed != curr.unpushed {
+            changes.push(unpushed_change_line(inner, prev, curr));
+        } else if prev != curr {
+            changes.push(format!("{}: changed.", curr.title));
+        }
     }
+    for prev in listed {
+        if !now.iter().any(|s| s.session == prev.session) {
+            changes.push(format!("\"{}\" is no longer in it", prev.title));
+        }
+    }
+    if changes.is_empty() {
+        if let Some(first) = now.first() {
+            changes.push(format!("{}: changed.", first.title));
+        } else {
+            changes.push("Plan changed.".to_owned());
+        }
+    }
+    changes
 }
 
 pub(super) fn plan(daemon: &FakeDaemon, scope: DeleteScope) -> Reply<DeleteSessionsPlan> {
@@ -295,18 +379,18 @@ pub(super) fn delete(
             };
             let forced = std::mem::take(&mut inner.mass_delete.change_next);
             let computed = compute(inner, &scope)?;
+
+            if forced || held_token != token || computed.sessions != listed {
+                let changes = changes_since(inner, &listed, &computed.sessions);
+                let plan = issue(inner, scope, computed);
+                return Ok(DeleteSessionsOutcome::Changed { plan, changes });
+            }
+
             let now: Vec<SessionId> = computed
                 .sessions
                 .iter()
                 .map(|session| session.session.clone())
                 .collect();
-
-            if forced || held_token != token || now != listed {
-                let changes = changes_since(inner, &listed, &now);
-                let plan = issue(inner, scope, computed);
-                return Ok(DeleteSessionsOutcome::Changed { plan, changes });
-            }
-
             let total = u32::try_from(computed.sessions.len()).unwrap_or(u32::MAX);
             if matches!(scope, DeleteScope::All) && typed_count != total {
                 return Err(refused(
@@ -333,6 +417,10 @@ pub(super) fn delete(
                 .workspace
                 .sessions
                 .retain(|session| !now.contains(&session.id));
+            inner
+                .workspace
+                .requests
+                .retain(|request| !now.contains(&request.session));
             inner.mass_delete.held = None;
             inner.emit(Event::Resync);
             Ok(DeleteSessionsOutcome::Deleted { sessions: total })
@@ -454,5 +542,91 @@ mod tests {
             .expect("s-passkey is planned");
         assert_eq!(passkey.terminals.first().map(|t| t.state), Some(EndingState::WaitingForYou));
         assert!(!passkey.exited);
+    }
+
+    #[test]
+    fn conversation_forks_go_with_their_parent_while_code_forks_stay() {
+        let daemon = daemon();
+        let plan = block_on(daemon.plan_delete_sessions(&DeleteScope::Picked(vec![
+            SessionId::new("s-passkey"),
+        ])))
+        .expect("the plan is made");
+
+        let planned: Vec<SessionId> = plan.sessions.iter().map(|s| s.session.clone()).collect();
+        assert_eq!(ids(&planned), ["s-passkey", "s-copy"]);
+        assert_eq!(plan.sessions[0].goes_with, None);
+        assert_eq!(plan.sessions[1].goes_with, Some(SessionId::new("s-passkey")));
+        assert!(plan.forks_staying.is_empty());
+
+        let login_plan = block_on(daemon.plan_delete_sessions(&DeleteScope::Picked(vec![
+            SessionId::new("s-login"),
+        ])))
+        .expect("the login plan is made");
+        let staying: Vec<SessionId> = login_plan
+            .forks_staying
+            .iter()
+            .map(|s| s.session.clone())
+            .collect();
+        assert_eq!(ids(&staying), ["s-passkey", "s-email"]);
+    }
+
+    #[test]
+    fn deleting_a_plan_withdraws_its_sessions_requests() {
+        let daemon = daemon();
+        assert!(
+            daemon
+                .workspace()
+                .requests
+                .iter()
+                .any(|r| r.session == SessionId::new("s-passkey"))
+        );
+        let plan = block_on(daemon.plan_delete_sessions(&DeleteScope::Picked(vec![
+            SessionId::new("s-passkey"),
+        ])))
+        .expect("the plan is made");
+
+        let outcome = block_on(daemon.delete_sessions(&plan.token, false, 0))
+            .expect("the delete answers");
+        assert_eq!(outcome, DeleteSessionsOutcome::Deleted { sessions: 2 });
+        assert!(
+            !daemon
+                .workspace()
+                .requests
+                .iter()
+                .any(|r| r.session == SessionId::new("s-passkey"))
+        );
+    }
+
+    #[test]
+    fn change_after_plan_reports_per_session_unpushed_commit_changes() {
+        let daemon = daemon();
+        daemon.set_unpushed(
+            &SessionId::new("s-notes"),
+            vec![(
+                "scratch".to_owned(),
+                "2 commits on uhvesta/notes never pushed".to_owned(),
+            )],
+        );
+        let plan = block_on(daemon.plan_delete_sessions(&DeleteScope::Channel(
+            ChannelId::new("scratch"),
+        )))
+        .expect("the plan is made");
+        daemon.set_unpushed(
+            &SessionId::new("s-notes"),
+            vec![(
+                "scratch".to_owned(),
+                "3 commits on uhvesta/notes never pushed".to_owned(),
+            )],
+        );
+        daemon.change_after_plan();
+
+        let outcome = block_on(daemon.delete_sessions(&plan.token, true, 0))
+            .expect("the delete answers");
+        match outcome {
+            DeleteSessionsOutcome::Changed { changes, .. } => {
+                assert_eq!(changes, vec!["Shell: 1 new commit on uhvesta/notes."]);
+            }
+            DeleteSessionsOutcome::Deleted { .. } => panic!("expected Changed"),
+        }
     }
 }

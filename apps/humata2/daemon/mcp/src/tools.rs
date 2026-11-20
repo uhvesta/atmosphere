@@ -1406,12 +1406,16 @@ fn definition(operation: Operation) -> Definition {
             "Delete a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",
         ),
         Op::SessionsDeleteMany => define(
-            "Delete several sessions at once: the session_ids you name, or every session of one channel or one machine. Never your own session, never all. Asks the user first; a session with unpushed work blocks the delete.",
+            "Delete several sessions at once: the session_ids you name, or every session of one channel or one machine. Never your own session, never all. Asks the user first; a session with unpushed work blocks the delete unless delete_unpushed_work is true.",
             Effect::Remove,
             asks(vec![
                 opt("session_ids", array(session()).describe("Sessions to delete, from topology_get")),
                 opt("channel", string().describe("A channel id from channels_list")),
                 opt("machine", machine()),
+                opt(
+                    "delete_unpushed_work",
+                    boolean().describe("Also delete uncommitted or unpushed git work; default false"),
+                ),
             ])
             .exactly_one_of(&["session_ids", "channel", "machine"]),
         ),

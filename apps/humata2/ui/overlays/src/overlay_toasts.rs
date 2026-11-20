@@ -1,10 +1,9 @@
 //! The toast stack at the bottom of the screen.
 
 use humata2_ui_core::bridge::Ui;
-use humata2_ui_core::widgets::{self, col, row};
+use humata2_ui_core::widgets::{col, row};
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, Toast, ToastAction};
 use humata2_clients::model::{SessionId, Status};
@@ -115,16 +114,26 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                     )
                 })
                 .when(toast.action.is_none(), |x| {
+                    let dismiss = AppAction::DismissToast(toast.id);
+                    let ui = ui.clone();
                     x.child(
-                        widgets::ghost_in(look,
-                            ui,
-                            ("toast-dismiss", toast.id as usize),
-                            "",
-                            AppAction::DismissToast(toast.id),
-                        )
-                        .icon(IconName::X)
-                        .xsmall()
-                        .accessibility_label("Dismiss"),
+                        row()
+                            .id(("toast-dismiss", toast.id as usize))
+                            .role(Role::Button)
+                            .aria_label("Dismiss")
+                            .test_support()
+                            .size(px(20.))
+                            .rounded(px(5.))
+                            .justify_center()
+                            .flex_shrink_0()
+                            .cursor_pointer()
+                            .text_color(rgb(0xd8d8dc))
+                            .hover(|x| x.bg(rgba(0xffff_ff1a)))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                ui.send(dismiss.clone(), cx);
+                            })
+                            .child(chrome::icon(IconName::X, 0xd8d8dc, 12.)),
                     )
                 })
                 .test_support()

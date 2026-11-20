@@ -1,0 +1,68 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home" selected
+  Link "Agent inbox"
+  Link "To-do"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
+  TreeItem "web"
+    Button "Unfold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Heading "Home"
+Button "Done"
+Button "New session" disabled
+Group "Delete sessions"
+  Dialog "Delete sessions" focused
+    #delete-sessions-totals
+    List "Sessions to delete"
+      ListItem "Ledger schema migration"
+        CheckBox "Delete that work too" selected
+      ListItem "Try BRIN index"
+      ListItem "Review the schema"
+      ListItem "Refund retries"
+        CheckBox "Delete that work too"
+      ListItem "Upgrade Postgres 17"
+    #delete-sessions-trash
+    Button "Cancel"
+    Button "Delete 5 sessions" disabled
+    #delete-sessions-hint
+Link "Ledger schema migration"
+  text "Asks to move the folder ledger-2026 from This Mac to devbox-1?"
+Link "Try BRIN index"
+  text "Asks to push try-brin to origin"
+Link "Upgrade Postgres 17"
+  text "Exited with code 1 after the dump step"
+Link "Partial BRIN on posted_at"
+  text "Comparing partial BRIN on posted_at"
+Link "Refund retries"
+  text "Running cargo test -p refunds"
+Link "Benchmark BRIN"
+  text "pgbench run 2 of 4"
+Button "Open To-do"
+Link "API rate limiter"
+Button "Select"
+Button "Cancel"
+Button "Delete 5 sessions…"

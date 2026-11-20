@@ -20,7 +20,7 @@ use humata2_ui_core::bridge::Ui;
 use humata2_ui_core::chrome::{self, runs};
 use humata2_ui_core::theme::Look;
 use humata2_ui_core::widgets::{self, col, row};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
@@ -32,7 +32,11 @@ const SHELLS: [&str; 7] = ["zsh", "bash", "fish", "sh", "nu", "pwsh", "shell"];
 /// The count field, and which channels' folded lines the person opened.
 pub(super) struct Inputs {
     count: Entity<InputState>,
+    /// Whether the count field has taken initial focus for the current open sheet.
+    count_focused: Cell<bool>,
     opened: RefCell<BTreeSet<String>>,
+    /// The plan token `opened` belongs to; a new plan or closing clears `opened`.
+    plan_token: RefCell<Option<String>>,
 }
 
 impl Inputs {
@@ -54,10 +58,34 @@ impl Inputs {
                 InputEvent::PressEnter { .. } => {
                     this.ui.send(AppAction::MassDelete(MassDeleteAction::Confirm), cx);
                 }
-                InputEvent::Focus | InputEvent::Blur => {}
+                InputEvent::Focus | InputEvent::Blur => cx.notify(),
             },
         ));
-        Self { count, opened: RefCell::new(BTreeSet::new()) }
+        Self {
+            count,
+            count_focused: Cell::new(false),
+            opened: RefCell::new(BTreeSet::new()),
+            plan_token: RefCell::new(None),
+        }
+    }
+
+    /// Clears the `Show`-expanded channels when the sheet closes or reopens.
+    fn reset_opened(&self) {
+        self.count_focused.set(false);
+        self.opened.borrow_mut().clear();
+        *self.plan_token.borrow_mut() = None;
+    }
+
+    /// Clears the `Show`-expanded channels whenever the plan resets or changes.
+    fn sync_plan(&self, token: Option<&str>) {
+        let mut current = self.plan_token.borrow_mut();
+        if current.as_deref() != token {
+            self.opened.borrow_mut().clear();
+            if token.is_none() {
+                self.count_focused.set(false);
+            }
+            *current = token.map(str::to_owned);
+        }
     }
 }
 
@@ -160,6 +188,7 @@ impl Overlays {
     /// Puts focus where the sheet starts: the count field for delete-all,
     /// the sheet itself otherwise (Return deletes from there).
     pub(super) fn delete_sessions_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_sessions.reset_opened();
         let counts = self
             .ui
             .read(|state| state.mass_delete.sheet.as_ref().is_some_and(|sheet| matches!(sheet.scope, DeleteScope::All)));
@@ -180,11 +209,13 @@ impl Overlays {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let sheet = &view.sheet;
+        self.delete_sessions
+            .sync_plan(sheet.plan.as_ref().map(|plan| plan.token.as_str()));
         super::sync(&self.delete_sessions.count, &sheet.typed, window, cx);
         let send = |action: MassDeleteAction| AppAction::MassDelete(action);
         let all = view.counts();
         let planned = sheet.planned_count();
-        let mut body = card("delete-sessions-dialog", "Delete sessions", 700., look)
+        let mut body = card("delete-sessions-sheet", "Delete sessions", 700., look)
             .child(heading(title(sheet, planned)));
         if let Some(stale) = &sheet.stale {
             body = body.child(stale_notice(look, &stale.changes));
@@ -219,12 +250,18 @@ impl Overlays {
             }
             body = body.child(trash_box(view, look));
             if all {
-                body = body.child(self.count_field(sheet, look));
+                if !self.delete_sessions.count_focused.replace(true) {
+                    self.delete_sessions
+                        .count
+                        .update(cx, |input, cx| input.focus(window, cx));
+                }
+                body = body.child(self.count_field(sheet, look, window, cx));
             }
         }
         body = body.child(footer(view, look, ui));
         let (keys, dismiss, focus) = (ui.clone(), ui.clone(), self.sheet.clone());
-        body.track_focus(&self.sheet)
+        let body = body
+            .track_focus(&self.sheet)
             .on_key_down(move |event, window, cx| {
                 if event.keystroke.key == "enter" && focus.is_focused(window) {
                     cx.stop_propagation();
@@ -236,11 +273,29 @@ impl Overlays {
                 dismiss.send(AppAction::MassDelete(MassDeleteAction::Cancel), cx);
             })
             .test_support()
-            .focus_trap("delete-sessions-trap", &self.sheet)
+            .focus_trap("delete-sessions-trap", &self.sheet);
+        div()
+            .id("delete-sessions-dialog")
+            .role(Role::Group)
+            .aria_label("Delete sessions")
+            .test_support()
+            .child(body)
             .into_any_element()
     }
 
-    fn count_field(&self, sheet: &DeleteSheet, look: Look) -> Div {
+    fn count_field(
+        &self,
+        sheet: &DeleteSheet,
+        look: Look,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let focused = self
+            .delete_sessions
+            .count
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
         row()
             .flex_shrink_0()
             .gap(px(12.))
@@ -249,14 +304,27 @@ impl Overlays {
                 sheet.planned_count()
             )))
             .child(
-                div()
+                row()
                     .id("delete-sessions-count")
                     .role(Role::Group)
                     .aria_label("Number of sessions")
                     .test_support()
                     .w(px(108.))
+                    .h(px(28.))
+                    .rounded(px(6.))
+                    .bg(rgb(look.content))
+                    .border_1()
+                    .border_color(rgb(if focused { look.accent } else { look.line }))
                     .text_color(rgb(look.text))
-                    .child(Input::new(&self.delete_sessions.count).small().aria_label("Number of sessions")),
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.delete_sessions.count)
+                                .small()
+                                .appearance(false)
+                                .text_size(px(12.5))
+                                .aria_label("Number of sessions"),
+                        ),
+                    ),
             )
     }
 
@@ -267,6 +335,7 @@ impl Overlays {
             return div().into_any_element();
         };
         let all = view.counts();
+        let scrollable = plan.sessions.len() > 3;
         let mut channels: Vec<ChannelId> = Vec::new();
         for session in &plan.sessions {
             if !channels.contains(&session.channel) {
@@ -283,6 +352,7 @@ impl Overlays {
             .gap(px(12.))
             .py(px(10.))
             .border_t_1()
+            .when(scrollable, |x| x.border_b_1())
             .border_color(rgb(look.line))
             .when(all, |x| x.max_h(px(296.)));
         for channel in channels {

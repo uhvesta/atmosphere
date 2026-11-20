@@ -102,14 +102,23 @@ impl Entry {
     }
 }
 
+/// A code fork of a deleted session: it keeps its own folder and stays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Staying {
+    title: String,
+    /// The remote machine whose plan reported this fork; `None` when resolved
+    /// locally on this daemon.
+    from_machine: Option<String>,
+}
+
 /// What a plan listed, and what the delete lists again to compare.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct Listing {
     sessions: BTreeMap<String, Entry>,
     /// Sessions on another machine, by machine: id and title.
     left_alone: BTreeMap<String, Vec<(String, String)>>,
-    /// Code forks of a deleted session: id and title.
-    staying: BTreeMap<String, String>,
+    /// Code forks of a deleted session, by session id.
+    staying: BTreeMap<String, Staying>,
     desk_left_out: u32,
     all: bool,
     /// The machines whose sessions the host relays: machine to the token of
@@ -149,8 +158,9 @@ fn entry_of(session: &pb::SessionToDelete, machine: &str) -> Option<(String, Ent
 }
 
 impl Listing {
-    /// Takes the machines `before` relayed, and their sessions, from it: a
-    /// fresh listing of this machine knows them only as left alone.
+    /// Takes the machines `before` relayed, and their sessions and staying
+    /// forks, from it: a fresh listing of this machine knows them only as left
+    /// alone.
     fn adopt_remote(&mut self, before: &Self) {
         for (machine, token) in &before.remote {
             self.left_alone.remove(machine);
@@ -159,6 +169,15 @@ impl Listing {
         for (id, entry) in &before.sessions {
             if before.remote.contains_key(&entry.machine) {
                 self.sessions.insert(id.clone(), entry.clone());
+            }
+        }
+        for (id, staying) in &before.staying {
+            if staying
+                .from_machine
+                .as_deref()
+                .is_some_and(|machine| before.remote.contains_key(machine))
+            {
+                self.staying.insert(id.clone(), staying.clone());
             }
         }
     }
@@ -172,9 +191,14 @@ impl Listing {
                 self.sessions.insert(id, entry);
             }
         }
+        self.staying
+            .retain(|_, staying| staying.from_machine.as_deref() != Some(machine));
         for work in &plan.forks_staying {
             if let Some(id) = &work.session {
-                self.staying.insert(id.value.clone(), work.title.clone());
+                self.staying.insert(
+                    id.value.clone(),
+                    Staying { title: work.title.clone(), from_machine: Some(machine.to_owned()) },
+                );
             }
         }
         if let Some(token) = &plan.token {
@@ -225,9 +249,9 @@ impl Listing {
                 changes.push(format!("\"{}\" is no longer there", then.title));
             }
         }
-        for (id, title) in &self.staying {
+        for (id, staying) in &self.staying {
             if !before.staying.contains_key(id) {
-                changes.push(format!("\"{title}\" was forked from a session in the delete and stays"));
+                changes.push(format!("\"{}\" was forked from a session in the delete and stays", staying.title));
             }
         }
         changes
@@ -422,7 +446,10 @@ fn resolve(
             && !chosen.contains(&origin.session_id)
             && let Some(fork) = all.iter().find(|session| session.id == origin.session_id)
         {
-            listing.staying.insert(fork.id.clone(), fork.title.clone());
+            listing.staying.insert(
+                fork.id.clone(),
+                Staying { title: fork.title.clone(), from_machine: None },
+            );
         }
     }
     for id in &chosen {
@@ -501,7 +528,7 @@ fn plan_pb(listing: &Listing, token: &str) -> pb::DeleteSessionsPlan {
                 sessions: sessions.iter().map(|(id, title)| work(id, title)).collect(),
             })
             .collect(),
-        forks_staying: listing.staying.iter().map(|(id, title)| work(id, title)).collect(),
+        forks_staying: listing.staying.iter().map(|(id, staying)| work(id, &staying.title)).collect(),
         desk_sessions_left_out: listing.desk_left_out,
         token: Some(pb::PlanToken { value: token.to_owned() }),
         needs_count: listing.all,
@@ -819,6 +846,42 @@ impl SessionSvc {
         }
     }
 
+    /// Adds forks known to this daemon's store whose parent is in
+    /// `listing.sessions` (including relayed remote sessions) and which are
+    /// not themselves being deleted. Remote forks record their `ForkOrigin` in
+    /// the host's store, so the remote machine's own plan may not know them.
+    async fn add_host_staying_forks(&self, listing: &mut Listing) -> Result<(), Status> {
+        if listing.remote.is_empty() {
+            return Ok(());
+        }
+        let deleting: BTreeSet<String> = listing.sessions.keys().cloned().collect();
+        let store = self.starter.store.clone();
+        let machine = self.machine.clone();
+        let extra = blocking(move || -> Result<Vec<(String, String)>, StoreError> {
+            let origins = store.fork_origins()?;
+            let all = store.sessions()?;
+            let mut found = Vec::new();
+            for origin in &origins {
+                if deleting.contains(&origin.parent)
+                    && !deleting.contains(&origin.session_id)
+                    && let Some(fork) = all.iter().find(|session| session.id == origin.session_id)
+                {
+                    found.push((fork.id.clone(), fork.title.clone()));
+                }
+            }
+            Ok(found)
+        })
+        .await?
+        .map_err(|error| status::store(error, &machine, "list the forks that stay"))?;
+        for (id, title) in extra {
+            listing
+                .staying
+                .entry(id)
+                .or_insert(Staying { title, from_machine: None });
+        }
+        Ok(())
+    }
+
     /// The body of PlanDeleteSessions; changes nothing.
     pub(super) async fn plan_delete_sessions_of(
         &self,
@@ -832,6 +895,7 @@ impl SessionSvc {
         let scope = scope.ok_or_else(|| status::missing("scope"))?;
         let mut listing = self.resolve_now(&scope, caller, false).await?;
         self.relay_plans(&mut listing).await?;
+        self.add_host_staying_forks(&mut listing).await?;
         let token = make_token(&scope, &listing);
         Ok(Gated::Done(plan_pb(&listing, &token)))
     }
@@ -884,10 +948,14 @@ impl SessionSvc {
         }
         let mut now = self.resolve_now(&scope, caller, exempt_own).await?;
         now.adopt_remote(&before);
+        self.add_host_staying_forks(&mut now).await?;
         let mut changes = now.changes_since(&before);
         if changes.is_empty() {
             // Every machine passes its check before any machine deletes.
             changes = self.check_remote(&mut now, request.delete_unpushed_work).await?;
+            if !changes.is_empty() {
+                self.add_host_staying_forks(&mut now).await?;
+            }
         }
         if !changes.is_empty() {
             take_token(&token);
@@ -1311,5 +1379,75 @@ fn deleted(sessions: u32, items: Vec<pb::TrashItemId>, operation: Option<pb::Ope
             trash_items: items,
             operation,
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote_plan(machine: &str, session: &str, staying: &[(&str, &str)], token: &str) -> pb::DeleteSessionsPlan {
+        pb::DeleteSessionsPlan {
+            sessions: vec![pb::SessionToDelete {
+                session: Some(pb::SessionId { value: session.to_owned() }),
+                title: format!("Session {session}"),
+                channel: Some(pb::ChannelId { value: "ch_1".to_owned() }),
+                machine: Some(pb::MachineId { value: machine.to_owned() }),
+                ..Default::default()
+            }],
+            forks_staying: staying
+                .iter()
+                .map(|(id, title)| pb::SessionWork {
+                    session: Some(pb::SessionId { value: (*id).to_owned() }),
+                    title: (*title).to_owned(),
+                    dirty_files: 0,
+                    unpushed_commits: 0,
+                })
+                .collect(),
+            token: Some(pb::PlanToken { value: token.to_owned() }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn adopt_remote_preserves_remote_forks_staying_on_replan() {
+        let mut before = Listing::default();
+        before.staying.insert(
+            "se_local_fork".to_owned(),
+            Staying { title: "Local fork".to_owned(), from_machine: None },
+        );
+        before.take_machine_plan("box-1", &remote_plan("box-1", "se_r1", &[("se_rf1", "Remote fork")], "tok_1"));
+
+        let mut now = Listing::default();
+        now.staying.insert(
+            "se_local_fork".to_owned(),
+            Staying { title: "Local fork".to_owned(), from_machine: None },
+        );
+        now.adopt_remote(&before);
+
+        assert_eq!(now.staying.get("se_rf1").map(|s| s.title.as_str()), Some("Remote fork"));
+        assert_eq!(now.staying.get("se_rf1").and_then(|s| s.from_machine.as_deref()), Some("box-1"));
+        assert_eq!(now.staying.get("se_local_fork").map(|s| s.title.as_str()), Some("Local fork"));
+        assert!(now.changes_since(&before).is_empty());
+        let pb = plan_pb(&now, "tok_fresh");
+        assert!(pb.forks_staying.iter().any(|w| w.session.as_ref().map(|id| id.value.as_str()) == Some("se_rf1")));
+    }
+
+    #[test]
+    fn take_machine_plan_replaces_only_that_machines_forks_staying() {
+        let mut listing = Listing::default();
+        listing.staying.insert(
+            "se_local_fork".to_owned(),
+            Staying { title: "Local fork".to_owned(), from_machine: None },
+        );
+        listing.take_machine_plan("box-1", &remote_plan("box-1", "se_r1", &[("se_rf1", "Old fork")], "tok_1"));
+        listing.take_machine_plan("box-2", &remote_plan("box-2", "se_r2", &[("se_rf2", "Box 2 fork")], "tok_2"));
+
+        listing.take_machine_plan("box-1", &remote_plan("box-1", "se_r1", &[("se_rf1_new", "New fork")], "tok_1b"));
+
+        assert!(!listing.staying.contains_key("se_rf1"), "box-1's stale staying fork is replaced");
+        assert_eq!(listing.staying.get("se_rf1_new").map(|s| s.title.as_str()), Some("New fork"));
+        assert_eq!(listing.staying.get("se_rf2").map(|s| s.title.as_str()), Some("Box 2 fork"));
+        assert_eq!(listing.staying.get("se_local_fork").map(|s| s.title.as_str()), Some("Local fork"));
     }
 }

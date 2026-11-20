@@ -48,6 +48,7 @@ pub struct Server<D> {
     daemon: Arc<D>,
     token: Result<SessionToken, TokenError>,
     nonce: String,
+    tool_list_changes: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 impl<D: Daemon> Server<D> {
@@ -61,7 +62,16 @@ impl<D: Daemon> Server<D> {
             // D29: each MCP process adds its own nonce to its keys, so a
             // restarted server's request ids are new intents.
             nonce: Uuid::new_v4().simple().to_string(),
+            tool_list_changes: None,
         }
+    }
+
+    /// Emits `notifications/tools/list_changed` whenever `changes` signals
+    /// that the offered tool set changed (D876), and advertises
+    /// `capabilities.tools.listChanged: true` on `initialize`.
+    pub fn with_tool_list_changes(mut self, changes: mpsc::UnboundedReceiver<()>) -> Self {
+        self.tool_list_changes = Some(changes);
+        self
     }
 
     /// Serves on this process's stdin and stdout until stdin closes.
@@ -83,10 +93,12 @@ impl<D: Daemon> Server<D> {
         let (out, outgoing) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let writer = tokio::spawn(write_all(output, outgoing, Arc::clone(&queued)));
+        let list_changed = self.tool_list_changes.is_some();
         let shared = Arc::new(Shared {
             daemon: self.daemon,
             token: self.token,
             nonce: self.nonce,
+            list_changed,
             binding: tokio::sync::Mutex::new(Binding::Unbound),
             out,
             queued,
@@ -103,6 +115,17 @@ impl<D: Daemon> Server<D> {
                 let _ = shared.ensure_bound().await;
             })
         };
+        let list_watcher = self.tool_list_changes.map(|mut changes| {
+            let shared = Arc::clone(&shared);
+            tokio::spawn(async move {
+                while changes.recv().await.is_some() {
+                    shared.send(jsonrpc::notification(
+                        "notifications/tools/list_changed",
+                        json!({}),
+                    ));
+                }
+            })
+        });
 
         let read = shared.read_all(input).await;
 
@@ -116,6 +139,9 @@ impl<D: Daemon> Server<D> {
         let mut withdrawals = std::mem::take(&mut *lock(&shared.withdrawals));
         while withdrawals.join_next().await.is_some() {}
         binder.abort();
+        if let Some(watcher) = list_watcher {
+            watcher.abort();
+        }
         shared.send_close();
 
         let written = match writer.await {
@@ -178,6 +204,7 @@ struct Shared<D> {
     daemon: Arc<D>,
     token: Result<SessionToken, TokenError>,
     nonce: String,
+    list_changed: bool,
     binding: tokio::sync::Mutex<Binding>,
     out: mpsc::UnboundedSender<Outgoing>,
     /// Messages sent to the writer and not yet taken by it.
@@ -261,7 +288,7 @@ impl<D: Daemon> Shared<D> {
                     if method == "tools/list" {
                         let _ = self.ensure_bound().await;
                     }
-                    let reply = match answer(&method, &params, |operation| {
+                    let reply = match answer(&method, &params, self.list_changed, |operation| {
                         self.daemon.serves(operation)
                     }) {
                         Ok(result) => jsonrpc::result(&id, result),
@@ -531,10 +558,11 @@ fn no_token(missing: &TokenError) -> ToolError {
 fn answer(
     method: &str,
     params: &Value,
+    list_changed: bool,
     serves: impl Fn(Operation) -> bool,
 ) -> Result<Value, RpcError> {
     match method {
-        "initialize" => Ok(initialize(params)),
+        "initialize" => Ok(initialize(params, list_changed)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools::list(serves)),
         _ => Err(RpcError::new(
@@ -545,7 +573,7 @@ fn answer(
     }
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(params: &Value, list_changed: bool) -> Value {
     let asked = params.get("protocolVersion").and_then(Value::as_str);
     let version = PROTOCOL_VERSIONS
         .iter()
@@ -554,7 +582,7 @@ fn initialize(params: &Value) -> Value {
         .unwrap_or(PROTOCOL_VERSIONS[0]);
     json!({
         "protocolVersion": version,
-        "capabilities": { "tools": { "listChanged": false } },
+        "capabilities": { "tools": { "listChanged": list_changed } },
         "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
         "instructions": INSTRUCTIONS,
     })
@@ -570,3 +598,123 @@ inbox_ask asks the user a question and inbox_request asks for their approval; wh
 The same calls are on the `humata` command in your terminal: run `humata --help`. \
 A call that needs the user's approval returns pending with a request_id; then call inbox_wait with it, and never repeat the call itself. \
 Act on error.kind, never on the text.";
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    struct FlippingDaemon {
+        delete_many: Arc<AtomicBool>,
+    }
+
+    impl Daemon for FlippingDaemon {
+        async fn bind(&self, _token: &SessionToken) -> Result<(), ToolError> {
+            Ok(())
+        }
+
+        async fn call(&self, _call: Call) -> Result<Reply, ToolError> {
+            Ok(Reply::Applied {
+                result: json!({}),
+                request: None,
+                stale_as_of: None,
+            })
+        }
+
+        async fn wait(
+            &self,
+            _request: &RequestId,
+            _wait: Duration,
+        ) -> Result<mpsc::Receiver<WaitEvent>, ToolError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+
+        async fn withdraw(&self, _request: &RequestId) -> Result<(), ToolError> {
+            Ok(())
+        }
+
+        fn serves(&self, operation: Operation) -> bool {
+            if operation == Operation::SessionsDeleteMany {
+                return self.delete_many.load(Ordering::Relaxed);
+            }
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_list_changes_emit_notifications_and_update_tools_list() {
+        let delete_many = Arc::new(AtomicBool::new(false));
+        let (changed_tx, changed_rx) = mpsc::unbounded_channel();
+        let (mut to_server, server_input) = tokio::io::duplex(1 << 16);
+        let (server_output, from_server) = tokio::io::duplex(1 << 16);
+        let server = Server::new(
+            FlippingDaemon {
+                delete_many: Arc::clone(&delete_many),
+            },
+            SessionToken::new("token-1"),
+        )
+        .with_tool_list_changes(changed_rx);
+        let task = tokio::spawn(server.serve(server_input, server_output));
+        let mut lines = BufReader::new(from_server).lines();
+
+        async fn send(stream: &mut tokio::io::DuplexStream, msg: Value) {
+            let mut line = msg.to_string();
+            line.push('\n');
+            stream.write_all(line.as_bytes()).await.unwrap();
+        }
+
+        send(
+            &mut to_server,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),
+        )
+        .await;
+        let init: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(init["result"]["capabilities"]["tools"]["listChanged"], true);
+
+        send(
+            &mut to_server,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
+        )
+        .await;
+        let before: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let has_tool = |reply: &Value| {
+            reply["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "sessions_delete_many")
+        };
+        assert!(!has_tool(&before));
+
+        delete_many.store(true, Ordering::Relaxed);
+        changed_tx.send(()).unwrap();
+        let notice: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(notice["method"], "notifications/tools/list_changed");
+
+        send(
+            &mut to_server,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {} }),
+        )
+        .await;
+        let after: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(has_tool(&after));
+
+        delete_many.store(false, Ordering::Relaxed);
+        changed_tx.send(()).unwrap();
+        let notice2: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(notice2["method"], "notifications/tools/list_changed");
+
+        send(
+            &mut to_server,
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {} }),
+        )
+        .await;
+        let hidden: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(!has_tool(&hidden));
+
+        drop(to_server);
+        task.await.unwrap().unwrap();
+    }
+}

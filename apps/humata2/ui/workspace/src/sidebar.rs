@@ -8,16 +8,28 @@ use std::rc::Rc;
 
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, AppState, PaneAction, Route};
-use humata2_clients::model::{MachineKind, Status};
+use humata2_clients::model::{MachineKind, SessionId, Status};
 use humata2_sidebar::{Move, Row, RowKey, RowKind, SidebarAction};
+use humata2_ui_machines::machine_page::select_mode::{
+    self, MassDeleteAction, Snapshot, Surface, Tick,
+};
 
 use humata2_ui_core::bridge::{Part, Ui};
 use humata2_ui_core::keys;
 use humata2_ui_core::theme;
 use humata2_ui_core::widgets::{self, row};
+
+/// Right-click context menu on a sidebar session row.
+#[derive(Clone)]
+struct RowMenu {
+    session: SessionId,
+    y: Pixels,
+}
 
 /// The sidebar's view.
 pub struct Sidebar {
@@ -25,17 +37,23 @@ pub struct Sidebar {
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     shown_cursor: Option<RowKey>,
+    row_menu: Entity<Option<RowMenu>>,
+    _row_menu_observer: Subscription,
 }
 
 impl Sidebar {
     /// The sidebar on `ui`, taking focus through `focus`.
     pub fn new(ui: Rc<Ui>, focus: FocusHandle, cx: &mut Context<Self>) -> Self {
         ui.attach(Part::Sidebar, cx.entity_id());
+        let row_menu = cx.new(|_| None);
+        let _row_menu_observer = cx.observe(&row_menu, |_, _, cx| cx.notify());
         Self {
             ui,
             focus,
             scroll: UniformListScrollHandle::new(),
             shown_cursor: None,
+            row_menu,
+            _row_menu_observer,
         }
     }
 
@@ -78,6 +96,21 @@ fn row_id(row: &Row, index: usize) -> ElementId {
     }
 }
 
+/// What a session row's tick box shows in sidebar select mode.
+fn session_tick(ui: &Rc<Ui>, snap: &Snapshot, id: &SessionId) -> Tick {
+    let offline = ui.read(|s| {
+        s.workspace
+            .session(id)
+            .is_some_and(|sess| s.mass_delete.listing.offline.contains(&sess.machine))
+    });
+    if offline || (!snap.can_pick(id) && !snap.ticked(id)) {
+        Tick::Barred
+    } else {
+        snap.tick(id)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_row(
     ui: &Rc<Ui>,
     focus: &FocusHandle,
@@ -85,6 +118,9 @@ fn draw_row(
     index: usize,
     cursor: bool,
     current: bool,
+    select: Option<&Snapshot>,
+    visible: &Rc<Vec<SessionId>>,
+    row_menu: &Entity<Option<RowMenu>>,
     look: Look,
     width: f32,
 ) -> AnyElement {
@@ -96,10 +132,20 @@ fn draw_row(
     let Some(key) = entry.key.clone() else {
         return div().into_any_element();
     };
-    let selected = if current { 0xffffff } else { look.text };
-    let faint = if current { 0xffffff } else { look.tertiary };
+    let session_id = match &key {
+        RowKey::Session(id) => Some(id.clone()),
+        _ => None,
+    };
+    let ticked = select
+        .zip(session_id.as_ref())
+        .is_some_and(|(snap, id)| snap.ticked(id));
+    let show_current = current && !ticked;
+    let selected = if show_current { 0xffffff } else { look.text };
+    let faint = if show_current { 0xffffff } else { look.tertiary };
     let mut body = row().gap(px(7.)).flex_1().min_w_0();
     let mut dimmed = false;
+    let mut channel_select: Option<(bool, Vec<MassDeleteAction>)> = None;
+    let mut barred_session = false;
     let indent;
     match &entry.kind {
         RowKind::Channel { name, sessions, .. } => {
@@ -122,40 +168,54 @@ fn draw_row(
             } else {
                 FontWeight::MEDIUM
             };
-            let fold_ui = ui.clone();
-            let key = key.clone();
-            body = body
-                .child(
-                    div()
-                        .id(("sidebar-fold", index))
-                        .size(px(12.))
-                        .flex_shrink_0()
-                        .role(Role::Button)
-                        .aria_label(if open { "Fold" } else { "Unfold" })
-                        .child(chrome::icon(
-                            if open {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            },
-                            faint,
-                            12.,
-                        ))
-                        .on_click(move |_, _, cx| {
-                            cx.stop_propagation();
-                            fold_ui.send(AppAction::Sidebar(SidebarAction::Toggle(key.clone())), cx)
-                        })
-                        .test_support(),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .font_weight(weight)
-                        .child(name.clone()),
-                );
+            let lead = if let (Some(snap), RowKey::Channel(id)) = (select, &key) {
+                let (tick, can) = snap.channel(id);
+                let actions = if can {
+                    snap.channel_click(id)
+                } else {
+                    Vec::new()
+                };
+                channel_select = Some((can, actions));
+                div()
+                    .id(("sidebar-channel-tick", index))
+                    .flex_shrink_0()
+                    .when(can, |box_el| box_el.cursor_pointer())
+                    .child(select_mode::tick_box(look, 13., tick))
+                    .into_any_element()
+            } else {
+                let fold_ui = ui.clone();
+                let key = key.clone();
+                div()
+                    .id(("sidebar-fold", index))
+                    .size(px(12.))
+                    .flex_shrink_0()
+                    .role(Role::Button)
+                    .aria_label(if open { "Fold" } else { "Unfold" })
+                    .child(chrome::icon(
+                        if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        },
+                        faint,
+                        12.,
+                    ))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        fold_ui.send(AppAction::Sidebar(SidebarAction::Toggle(key.clone())), cx)
+                    })
+                    .test_support()
+                    .into_any_element()
+            };
+            body = body.child(lead).child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .font_weight(weight)
+                    .child(name.clone()),
+            );
             if entry.expanded != Some(true) && *sessions > 0 {
                 let channel = match &entry.key {
                     Some(RowKey::Channel(id)) => Some(id),
@@ -181,7 +241,7 @@ fn draw_row(
                         .ml(px(-2.))
                         .text_size(px(11.))
                         .font_weight(weight)
-                        .text_color(rgb(if current { 0xffffff } else { look.secondary }))
+                        .text_color(rgb(if show_current { 0xffffff } else { look.secondary }))
                         .child(sessions.to_string()),
                 );
             }
@@ -194,21 +254,40 @@ fn draw_row(
             ..
         } => {
             let fork = entry.depth > 1;
-            indent = if entry.depth == 0 {
-                8.
+            if let (Some(snap), Some(id)) = (select, session_id.as_ref()) {
+                // MASSDELETE (D875): every tick box sits in the same left
+                // gutter; forks indent after the box.
+                indent = 4.;
+                let tick = session_tick(ui, snap, id);
+                barred_session = tick == Tick::Barred;
+                body = body.child(select_mode::tick_box(look, 13., tick));
+                if fork {
+                    let extra = f32::from(entry.depth.saturating_sub(2)) * 14.;
+                    body = body.child(
+                        div()
+                            .ml(px(extra))
+                            .mr(px(-2.))
+                            .flex_shrink_0()
+                            .child(chrome::icon(IconName::GitFork, faint, 12.)),
+                    );
+                }
             } else {
-                18. + f32::from(entry.depth - 1) * 16. - if fork { 19. } else { 0. }
-            };
-            if fork {
-                // The design sits the fork glyph 2 pt nearer the status dot than the
-                // row's gap, with the dot and title where they are.
-                body = body.child(
-                    div()
-                        .ml(px(2.))
-                        .mr(px(-2.))
-                        .flex_shrink_0()
-                        .child(chrome::icon(IconName::GitFork, faint, 12.)),
-                );
+                indent = if entry.depth == 0 {
+                    8.
+                } else {
+                    18. + f32::from(entry.depth - 1) * 16. - if fork { 19. } else { 0. }
+                };
+                if fork {
+                    // The design sits the fork glyph 2 pt nearer the status dot than the
+                    // row's gap, with the dot and title where they are.
+                    body = body.child(
+                        div()
+                            .ml(px(2.))
+                            .mr(px(-2.))
+                            .flex_shrink_0()
+                            .child(chrome::icon(IconName::GitFork, faint, 12.)),
+                    );
+                }
             }
             // A session whose machine's sessions were stopped shows the square,
             // dimmed, with no inbox count: its requests ended (frame 73).
@@ -240,7 +319,7 @@ fn draw_row(
                     .whitespace_nowrap()
                     // Unread rows read semibold, and so does the selected row while
                     // it has requests waiting (golden 15 bolds it, golden 16 doesn't).
-                    .when(*unread > 0 || (current && count > 0), |x| {
+                    .when(*unread > 0 || (show_current && count > 0), |x| {
                         x.font_weight(FontWeight::SEMIBOLD)
                     })
                     .child(title.clone()),
@@ -251,7 +330,7 @@ fn draw_row(
                         .gap(px(2.))
                         .child(chrome::icon(
                             IconName::Inbox,
-                            if current { 0xffffff } else { 0xff453a },
+                            if show_current { 0xffffff } else { 0xff453a },
                             12.,
                         ))
                         .child(div().text_size(px(11.)).child(count.to_string())),
@@ -262,11 +341,15 @@ fn draw_row(
     }
     let ui = ui.clone();
     let focus = focus.clone();
+    let selecting = select.is_some();
+    let visible = visible.clone();
+    let menu = row_menu.clone();
+    let right_click_id = session_id.clone();
     let mut item = div()
         .id(row_id(entry, index))
         .role(Role::TreeItem)
         .aria_label(label(entry))
-        .aria_selected(current)
+        .aria_selected(show_current || ticked)
         .h(px(theme::ROW))
         .w(px(width - 20.))
         .mx(px(10.))
@@ -276,14 +359,71 @@ fn draw_row(
         .flex()
         .items_center()
         .text_color(rgb(selected))
-        .when(current, |x| x.bg(rgb(look.selection)))
-        .when(cursor && !current, |x| x.bg(rgb(look.fill)))
+        .when(ticked, |x| x.bg(select_mode::tint(look)))
+        .when(show_current, |x| x.bg(rgb(look.selection)))
+        .when(cursor && !show_current && !ticked, |x| x.bg(rgb(look.fill)))
         .when(dimmed, |x| x.opacity(0.5))
+        .when(selecting && !barred_session && channel_select.as_ref().is_none_or(|(can, _)| *can), |x| {
+            x.cursor_pointer()
+        })
         .child(body)
-        .on_click(move |_, window, cx| {
+        .on_click(move |event, window, cx| {
+            if let Some((can, actions)) = &channel_select {
+                cx.stop_propagation();
+                if *can {
+                    for action in actions {
+                        ui.send(select_mode::act(action.clone()), cx);
+                    }
+                }
+                return;
+            }
+            if let Some(id) = &session_id {
+                let keys = event.modifiers();
+                if selecting {
+                    cx.stop_propagation();
+                    if barred_session {
+                        return;
+                    }
+                    let action = if keys.shift {
+                        MassDeleteAction::RangeTo {
+                            to: id.clone(),
+                            visible: visible.to_vec(),
+                        }
+                    } else {
+                        MassDeleteAction::Toggle(id.clone())
+                    };
+                    ui.send(select_mode::act(action), cx);
+                    return;
+                }
+                if keys.platform {
+                    cx.stop_propagation();
+                    ui.send(
+                        select_mode::act(MassDeleteAction::Enter {
+                            surface: Surface::Sidebar,
+                            first: id.clone(),
+                        }),
+                        cx,
+                    );
+                    return;
+                }
+            }
             window.focus(&focus, cx);
             ui.send(AppAction::Sidebar(SidebarAction::Activate(key.clone())), cx)
         });
+    if !selecting
+        && let Some(id) = right_click_id
+    {
+        item = item.on_mouse_down(MouseButton::Right, move |event, _, cx| {
+            cx.stop_propagation();
+            menu.update(cx, |m, cx| {
+                *m = Some(RowMenu {
+                    session: id.clone(),
+                    y: event.position.y,
+                });
+                cx.notify();
+            });
+        });
+    }
     if let Some(open) = entry.expanded {
         item = item.aria_expanded(open);
     }
@@ -495,12 +635,18 @@ impl Render for Sidebar {
             }
             self.shown_cursor.clone_from(&cursor);
         }
+        let select = Snapshot::on(&self.ui, &Surface::Sidebar);
+        let selecting = select.is_some();
+        let visible: Rc<Vec<SessionId>> = Rc::new(visible_from_lines(&lines));
         let ui = self.ui.clone();
         let focus = self.focus.clone();
+        let row_menu = self.row_menu.clone();
         let list = {
             let lines = lines.clone();
             let cursor = cursor.clone();
             let current = current.clone();
+            let select = select.clone();
+            let visible = visible.clone();
             uniform_list("sidebar-rows", lines.len(), move |range, _, _| {
                 range
                     .filter_map(|at| {
@@ -509,7 +655,17 @@ impl Render for Sidebar {
                                 let at_cursor = row.key.is_some() && row.key == cursor;
                                 let is_current = row.key.is_some() && row.key == current;
                                 draw_row(
-                                    &ui, &focus, row, *index, at_cursor, is_current, look, width,
+                                    &ui,
+                                    &focus,
+                                    row,
+                                    *index,
+                                    at_cursor,
+                                    is_current,
+                                    select.as_ref(),
+                                    &visible,
+                                    &row_menu,
+                                    look,
+                                    width,
                                 )
                             }
                             Line::NoSessions => no_sessions(look, width),
@@ -578,8 +734,13 @@ impl Render for Sidebar {
             crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
         });
         let pinned_gap = if pinned.is_some() { 5.5 } else { 4. };
+        let open_menu = (!selecting)
+            .then(|| self.row_menu.read(cx).clone())
+            .flatten();
+        let row_menu_handle = self.row_menu.clone();
         widgets::col()
             .id("sidebar")
+            .relative()
             .role(Role::Navigation)
             .aria_label("Sidebar")
             .test_support()
@@ -638,14 +799,31 @@ impl Render for Sidebar {
                         },
                         look.secondary,
                     ))
-                    .child(chrome::action(
-                        ui,
-                        "sidebar-new-session",
-                        "New session",
-                        IconName::SquarePen,
-                        AppAction::StartNewSession,
-                        look.secondary,
-                    )),
+                    .child(if selecting {
+                        div()
+                            .id("sidebar-new-session")
+                            .role(Role::Button)
+                            .aria_label("New session")
+                            .size(px(15.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .opacity(0.4)
+                            .child(chrome::icon(IconName::SquarePen, look.secondary, 15.))
+                            .test_support()
+                            .into_any_element()
+                    } else {
+                        chrome::action(
+                            ui,
+                            "sidebar-new-session",
+                            "New session",
+                            IconName::SquarePen,
+                            AppAction::StartNewSession,
+                            look.secondary,
+                        )
+                        .into_any_element()
+                    }),
             )
             .child(
                 div()
@@ -722,16 +900,32 @@ impl Render for Sidebar {
                 let ui = ui.clone();
                 // Its stop reached it: a stop still on its way keeps the offline dot.
                 let halted = m.stop.as_ref().is_some_and(|stop| stop.delivered);
-                let selected = (route == Route::Hosts && selected_host.as_ref() == Some(&m.id))
-                    || route == Route::Machine(m.id.clone());
+                let selected = !selecting
+                    && ((route == Route::Hosts && selected_host.as_ref() == Some(&m.id))
+                        || route == Route::Machine(m.id.clone()));
+                let machine_select = select.as_ref().map(|snap| {
+                    let (tick, can) = snap.machine(&m.id);
+                    let actions = if can {
+                        snap.machine_click(&m.id)
+                    } else {
+                        Vec::new()
+                    };
+                    (tick, can, actions)
+                });
+                let can_tick = machine_select.as_ref().is_some_and(|(_, can, _)| *can);
                 row()
                     .id(("sidebar-machine", index))
                     .role(Role::Link)
                     .aria_label(m.name.clone())
                     .h(px(26.))
                     .mx(px(10.))
-                    .px(px(8.))
+                    .pl(px(if selecting { 4. } else { 8. }))
+                    .pr(px(8.))
                     .gap(px(7.))
+                    .when(can_tick, |x| x.cursor_pointer())
+                    .children(machine_select.as_ref().map(|(tick, _, _)| {
+                        select_mode::tick_box(look, 13., *tick)
+                    }))
                     .child(if halted {
                         chrome::stopped()
                     } else {
@@ -756,7 +950,16 @@ impl Render for Sidebar {
                             .text_color(rgb(0xffffff))
                     })
                     .on_click(move |_, _, cx| {
-                        ui.send(AppAction::Switch(Route::Machine(m.id.clone())), cx);
+                        if let Some((_, can, actions)) = &machine_select {
+                            cx.stop_propagation();
+                            if *can {
+                                for action in actions {
+                                    ui.send(select_mode::act(action.clone()), cx);
+                                }
+                            }
+                        } else {
+                            ui.send(AppAction::Switch(Route::Machine(m.id.clone())), cx);
+                        }
                     })
                     .test_support()
             }))
@@ -772,6 +975,7 @@ impl Render for Sidebar {
                 ))
             })
             .when(!channels_fill(lines.len()), |bar| bar.child(div().flex_1()))
+            .children(select.as_ref().map(|snap| select_mode::card(ui, snap, look)))
             .child(div().pb(px(10.)).child(nav(
                 ui,
                 "rail-settings",
@@ -782,8 +986,94 @@ impl Render for Sidebar {
                 None,
                 look,
             )))
+            .when_some(open_menu, |bar, menu| {
+                let close_left = row_menu_handle.clone();
+                let close_right = row_menu_handle.clone();
+                let close_pick = row_menu_handle.clone();
+                let ui = ui.clone();
+                let session = menu.session;
+                let fill = Hsla::from(rgb(look.fill));
+                let scrim = div()
+                    .id("sidebar-row-menu-scrim")
+                    .absolute()
+                    .top(px(-10_000.))
+                    .left(px(-10_000.))
+                    .w(px(20_000.))
+                    .h(px(20_000.))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        close_left.update(cx, |m, cx| {
+                            *m = None;
+                            cx.notify();
+                        });
+                    })
+                    .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                        cx.stop_propagation();
+                        close_right.update(cx, |m, cx| {
+                            *m = None;
+                            cx.notify();
+                        });
+                    });
+                let card = crate::action_menu::card("sidebar-row-menu", 176., look)
+                    .role(Role::Menu)
+                    .aria_label("Session actions")
+                    .left(px(10.))
+                    .top(px(f32::from(menu.y).max(8.)))
+                    .child(
+                        Button::new("sidebar-row-select-sessions")
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .foreground(rgb(look.text).into())
+                                    .hover(fill)
+                                    .active(fill),
+                            )
+                            .accessibility_label("Select sessions\u{2026}")
+                            .small()
+                            .w_full()
+                            .h(px(26.))
+                            .px(px(8.))
+                            .rounded(px(5.))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(px(12.5))
+                                    .child("Select sessions\u{2026}"),
+                            )
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                close_pick.update(cx, |m, cx| {
+                                    *m = None;
+                                    cx.notify();
+                                });
+                                ui.send(
+                                    select_mode::act(MassDeleteAction::Enter {
+                                        surface: Surface::Sidebar,
+                                        first: session.clone(),
+                                    }),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .test_support();
+                bar.child(scrim).child(card)
+            })
             .into_any_element()
     }
+}
+
+/// The visible session rows in the sidebar, top to bottom, for Shift-click
+/// range selection.
+fn visible_from_lines(lines: &[Line]) -> Vec<SessionId> {
+    lines
+        .iter()
+        .filter_map(|line| match line {
+            Line::Row(_, row) => match &row.key {
+                Some(RowKey::Session(id)) => Some(id.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether the machine `id` runs on has its sessions stopped and the stop
@@ -823,4 +1113,55 @@ fn inbox_count(s: &AppState, id: &humata2_clients::model::SessionId, vip: bool) 
         .iter()
         .filter(|r| r.answer.is_none() && descends(&r.session))
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humata2_clients::model::{Agent, ChannelId};
+
+    fn session_row(id: &str) -> Row {
+        Row {
+            key: Some(RowKey::Session(SessionId(id.to_owned()))),
+            depth: 1,
+            kind: RowKind::Session {
+                title: id.to_owned(),
+                status: Status::Idle,
+                agent: Agent::Claude,
+                unread: 0,
+                vip: false,
+                recovered: false,
+            },
+            expanded: None,
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn visible_from_lines_keeps_only_channel_sessions_in_order() {
+        let ch = ChannelId("c1".to_owned());
+        let lines = vec![
+            Line::Row(
+                0,
+                Row {
+                    key: Some(RowKey::Channel(ch.clone())),
+                    depth: 0,
+                    kind: RowKind::Channel {
+                        name: "payments".to_owned(),
+                        sessions: 2,
+                        needs_you: 0,
+                    },
+                    expanded: Some(true),
+                },
+            ),
+            Line::ChannelDesk(ch, 1),
+            Line::ChannelDeskSession(session_row("desk-1")),
+            Line::Row(1, session_row("s1")),
+            Line::Row(2, session_row("s2")),
+            Line::NoSessions,
+        ];
+        assert_eq!(
+            visible_from_lines(&lines),
+            vec![SessionId("s1".to_owned()), SessionId("s2".to_owned())]
+        );
+    }
 }

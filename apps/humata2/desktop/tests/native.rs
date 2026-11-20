@@ -316,5 +316,7 @@ mod stack;
 
 #[path = "native/looks_good.rs"]
 mod looks_good;
+#[path = "native/mass_delete.rs"]
+mod mass_delete;
 #[path = "native/review_ui.rs"]
 mod review_ui;

@@ -60,6 +60,8 @@ mod fork_move;
 mod machine_page;
 #[path = "design/machines.rs"]
 mod machines;
+#[path = "design/mass_delete.rs"]
+mod mass_delete;
 #[path = "design/pr_review.rs"]
 mod pr_review;
 #[path = "design/views.rs"]
@@ -373,6 +375,15 @@ const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
     ("208-settings-agent-access", LIGHT, agent_inbox_more::agent_access),
     ("209-agent-inbox-notification-dark", DARK, agent_inbox_more::notification),
     ("210-session-inbox-after-no", LIGHT, agent_inbox_more::after_no),
+    // MASSDELETE (D875): multi-select mode and delete confirmation sheet.
+    ("massdelete-m1-1-sidebar-select", LIGHT, mass_delete::sidebar_select),
+    ("massdelete-m1-2-plan-picked", LIGHT, mass_delete::plan_picked),
+    ("massdelete-m1-3-plan-all-empty", LIGHT, mass_delete::plan_all_empty),
+    ("massdelete-m1-4-plan-stale", LIGHT, mass_delete::plan_stale),
+    ("massdelete-m2-1-home-select-channel", LIGHT, mass_delete::home_select_channel),
+    ("massdelete-m2-2-machine-select-all", LIGHT, mass_delete::machine_select_all),
+    ("massdelete-m2-5-plan-all-typed-dark", DARK, mass_delete::plan_all_typed_dark),
+    ("massdelete-m2-6-after-delete", LIGHT, mass_delete::after_delete),
 ];
 
 

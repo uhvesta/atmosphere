@@ -173,6 +173,7 @@ humata2_snapshot_test(
         "//apps/humata2/features/app",
         "//apps/humata2/features/desk",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/mass_delete",
         "//apps/humata2/features/palette",
         "//apps/humata2/features/pr_review",
         "//apps/humata2/features/review",

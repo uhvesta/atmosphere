@@ -14,6 +14,7 @@ use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::{ChannelId, SessionId};
 use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
+use humata2_ui_machines::machine_page::select_mode::{MassDeleteAction, Surface};
 
 use crate::bridge::{Part, Ui};
 use crate::keys;
@@ -54,6 +55,8 @@ pub struct Shell {
     terminals: crate::terminals::Terminals,
     documents: crate::document_tab::Documents,
     focus_target: Option<crate::terminals::FocusTarget>,
+    /// The session focused by ↑/↓ while select mode is active (D875).
+    select_focus: Option<SessionId>,
 }
 
 impl Shell {
@@ -158,6 +161,7 @@ impl Shell {
             terminals,
             documents,
             focus_target: None,
+            select_focus: None,
             ui,
             sidebar,
             sidebar_focus,
@@ -186,6 +190,87 @@ impl Shell {
 
     fn send(&self, action: AppAction, cx: &mut App) {
         self.ui.send(action, cx);
+    }
+
+    fn input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.file_filter.read(cx).focus_handle(cx).is_focused(window)
+            || self.channel_filter.read(cx).focus_handle(cx).is_focused(window)
+            || self.files_name.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    /// MASSDELETE (D875): ⌘A selects all visible on the current surface, ↑/↓
+    /// moves focus, Space ticks/unticks the focused session, Return or ⌘⌫
+    /// opens the delete confirmation sheet.
+    fn handle_select_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.input_focused(window, cx) {
+            return false;
+        }
+        let Some(key) = match_select_key(&event.keystroke) else {
+            return false;
+        };
+        let Some((visible, fallback_focus, has_selection)) = self.ui.read(|state| {
+            let surface = state.mass_delete.surface.clone()?;
+            if state.mass_delete.sheet.is_some()
+                || state.dialog_holds_keys()
+                || state.report.form.is_some()
+            {
+                return None;
+            }
+            let visible = visible_sessions(state, &surface);
+            let sidebar_cursor = match (&surface, &state.sidebar.cursor) {
+                (Surface::Sidebar, Some(humata2_sidebar::RowKey::Session(id))) => Some(id.clone()),
+                _ => None,
+            };
+            let fallback = sidebar_cursor.or_else(|| state.mass_delete.anchor.clone());
+            Some((visible, fallback, state.mass_delete.selected_count() > 0))
+        }) else {
+            return false;
+        };
+        match key {
+            SelectKey::SelectAll => {
+                self.send(
+                    AppAction::MassDelete(MassDeleteAction::SelectAllVisible(visible)),
+                    cx,
+                );
+                true
+            }
+            SelectKey::MoveUp | SelectKey::MoveDown => {
+                let current = self
+                    .select_focus
+                    .as_ref()
+                    .filter(|id| visible.contains(id))
+                    .or_else(|| fallback_focus.as_ref().filter(|id| visible.contains(id)));
+                if let Some(next) = step_focus(&visible, current, key == SelectKey::MoveDown) {
+                    self.select_focus = Some(next);
+                    cx.notify();
+                }
+                true
+            }
+            SelectKey::ToggleFocused => {
+                let target = self
+                    .select_focus
+                    .clone()
+                    .filter(|id| visible.contains(id))
+                    .or_else(|| fallback_focus.filter(|id| visible.contains(id)))
+                    .or_else(|| visible.first().cloned());
+                if let Some(id) = target {
+                    self.select_focus = Some(id.clone());
+                    self.send(AppAction::MassDelete(MassDeleteAction::Toggle(id)), cx);
+                }
+                true
+            }
+            SelectKey::OpenSheet => {
+                if has_selection {
+                    self.send(AppAction::MassDelete(MassDeleteAction::OpenPicked), cx);
+                }
+                true
+            }
+        }
     }
 }
 
@@ -325,6 +410,11 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.select_focus.is_some()
+            && self.ui.read(|state| state.mass_delete.surface.is_none())
+        {
+            self.select_focus = None;
+        }
         let theme = self.ui.read(|s| s.settings.preferences.theme);
         if self.applied_theme != Some(theme) {
             self.applied_theme = Some(theme);
@@ -572,12 +662,18 @@ impl Render for Shell {
             .track_focus(&self.focus)
             // Escape in a terminal reaches its program (keys.rs unbinds
             // Dismiss there), unless something over the page would close.
+            // While select mode is active, its keys (⌘A, Space, ↑/↓, Return,
+            // ⌘⌫) are captured here before children act on them.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let bare = !event.keystroke.modifiers.modified();
                 let escape = event.keystroke.key == "escape" && bare;
                 if escape && this.ui.read(escape_closes_something) {
                     cx.stop_propagation();
                     this.send(AppAction::Escape, cx);
+                    return;
+                }
+                if this.handle_select_key(event, window, cx) {
+                    cx.stop_propagation();
                 }
             }))
             // Tab from the Inbox's list moves into its open item's
@@ -895,6 +991,7 @@ impl Render for Shell {
 /// even while a terminal holds the keyboard.
 fn escape_closes_something(state: &humata2_app::AppState) -> bool {
     state.dialog_holds_keys()
+        || state.mass_delete.selecting()
         || state.report.form.is_some()
         || state.navigation_overlay
         || state.settings.font_menu
@@ -904,4 +1001,202 @@ fn escape_closes_something(state: &humata2_app::AppState) -> bool {
         || state.hosts.start_confirm.is_some()
         || state.machine_page.confirm.is_some()
         || state.machine_page.menu_open
+}
+
+/// Select-mode keyboard actions (MASSDELETE, D875).
+#[derive(Debug, PartialEq, Eq)]
+enum SelectKey {
+    SelectAll,
+    MoveUp,
+    MoveDown,
+    ToggleFocused,
+    OpenSheet,
+}
+
+fn match_select_key(keystroke: &Keystroke) -> Option<SelectKey> {
+    let m = &keystroke.modifiers;
+    // macOS sets the function flag on arrow keys, so ignore it here.
+    let unmodified = !m.platform && !m.control && !m.alt && !m.shift;
+    let cmd_only = m.platform && !m.control && !m.alt && !m.shift;
+    match keystroke.key.as_str() {
+        "a" if cmd_only => Some(SelectKey::SelectAll),
+        "backspace" if cmd_only => Some(SelectKey::OpenSheet),
+        "enter" if unmodified => Some(SelectKey::OpenSheet),
+        "space" if unmodified => Some(SelectKey::ToggleFocused),
+        "up" if unmodified => Some(SelectKey::MoveUp),
+        "down" if unmodified => Some(SelectKey::MoveDown),
+        _ => None,
+    }
+}
+
+fn step_focus(
+    visible: &[SessionId],
+    current: Option<&SessionId>,
+    down: bool,
+) -> Option<SessionId> {
+    if visible.is_empty() {
+        return None;
+    }
+    let next = match current.and_then(|id| visible.iter().position(|x| x == id)) {
+        Some(index) if down => (index + 1).min(visible.len() - 1),
+        Some(index) => index.saturating_sub(1),
+        None if down => 0,
+        None => visible.len() - 1,
+    };
+    visible.get(next).cloned()
+}
+
+fn visible_sessions(state: &humata2_app::AppState, surface: &Surface) -> Vec<SessionId> {
+    match surface {
+        Surface::Sidebar => {
+            let channel_start = state
+                .sidebar
+                .rows
+                .iter()
+                .position(|r| matches!(r.kind, humata2_sidebar::RowKind::Section("Channels")))
+                .unwrap_or(0);
+            state
+                .sidebar
+                .rows
+                .iter()
+                .skip(channel_start + 1)
+                .filter_map(|r| match &r.key {
+                    Some(humata2_sidebar::RowKey::Session(id)) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        Surface::Home => {
+            let needs = humata2_app::needs_you(&state.workspace);
+            let listed: Vec<&SessionId> = needs
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    humata2_app::NeedsRow::Session { session, .. } => Some(&session.id),
+                    humata2_app::NeedsRow::Request(_) => None,
+                })
+                .collect();
+            let all = state
+                .workspace
+                .sessions
+                .iter()
+                .filter(|s| !s.archived && !listed.contains(&&s.id));
+            let working = all
+                .clone()
+                .filter(|s| s.status == humata2_clients::model::Status::Working);
+            let recent = all.filter(|s| {
+                matches!(
+                    s.status,
+                    humata2_clients::model::Status::Idle
+                        | humata2_clients::model::Status::ProbablyIdle
+                ) && !s.activity.is_empty()
+            });
+            let (stopped, ended): (Vec<_>, Vec<_>) = needs
+                .rows
+                .iter()
+                .filter(|row| {
+                    !matches!(
+                        row,
+                        humata2_app::NeedsRow::Request(r) if r.operation.starts_with("board.")
+                    )
+                })
+                .partition(|row| match row {
+                    humata2_app::NeedsRow::Session { session, request } => {
+                        request.is_some()
+                            || session.status == humata2_clients::model::Status::NeedsYou
+                    }
+                    humata2_app::NeedsRow::Request(_) => true,
+                });
+            stopped
+                .into_iter()
+                .chain(ended)
+                .filter_map(|row| match row {
+                    humata2_app::NeedsRow::Session { session, .. } => Some(session.id.clone()),
+                    humata2_app::NeedsRow::Request(_) => None,
+                })
+                .chain(working.map(|s| s.id.clone()))
+                .chain(recent.map(|s| s.id.clone()))
+                .collect()
+        }
+        Surface::Machine(machine) => {
+            if state.machine_page.machine.as_ref() == Some(machine)
+                && let Some(detail) = &state.machine_page.detail
+            {
+                detail
+                    .sessions
+                    .iter()
+                    .filter(|id| state.workspace.session(id).is_some())
+                    .cloned()
+                    .collect()
+            } else {
+                state
+                    .workspace
+                    .sessions
+                    .iter()
+                    .filter(|s| !s.archived && &s.machine == machine)
+                    .map(|s| s.id.clone())
+                    .collect()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(name: &str, platform: bool) -> Keystroke {
+        Keystroke {
+            modifiers: Modifiers {
+                platform,
+                ..Modifiers::default()
+            },
+            key: name.to_owned(),
+            key_char: None,
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn select_mode_key_matching() {
+        assert_eq!(match_select_key(&key("a", true)), Some(SelectKey::SelectAll));
+        assert_eq!(match_select_key(&key("a", false)), None);
+        assert_eq!(
+            match_select_key(&key("backspace", true)),
+            Some(SelectKey::OpenSheet)
+        );
+        assert_eq!(match_select_key(&key("backspace", false)), None);
+        assert_eq!(
+            match_select_key(&key("enter", false)),
+            Some(SelectKey::OpenSheet)
+        );
+        assert_eq!(
+            match_select_key(&key("space", false)),
+            Some(SelectKey::ToggleFocused)
+        );
+        assert_eq!(match_select_key(&key("up", false)), Some(SelectKey::MoveUp));
+        assert_eq!(
+            match_select_key(&key("down", false)),
+            Some(SelectKey::MoveDown)
+        );
+        // macOS sets the function flag on arrow keys; arrows still match.
+        let mut arrow = key("down", false);
+        arrow.modifiers.function = true;
+        assert_eq!(match_select_key(&arrow), Some(SelectKey::MoveDown));
+    }
+
+    #[::core::prelude::v1::test]
+    fn step_focus_clamps_to_visible_bounds() {
+        let s1 = SessionId("s1".to_owned());
+        let s2 = SessionId("s2".to_owned());
+        let s3 = SessionId("s3".to_owned());
+        let visible = vec![s1.clone(), s2.clone(), s3.clone()];
+
+        assert_eq!(step_focus(&visible, None, true), Some(s1.clone()));
+        assert_eq!(step_focus(&visible, None, false), Some(s3.clone()));
+        assert_eq!(step_focus(&visible, Some(&s1), true), Some(s2.clone()));
+        assert_eq!(step_focus(&visible, Some(&s3), true), Some(s3.clone()));
+        assert_eq!(step_focus(&visible, Some(&s1), false), Some(s1.clone()));
+        assert_eq!(step_focus(&visible, Some(&s2), false), Some(s1));
+        assert_eq!(step_focus(&[], None, true), None);
+    }
 }

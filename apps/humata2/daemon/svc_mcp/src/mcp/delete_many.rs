@@ -4,13 +4,25 @@
 //! the agent's own session, never all); this side carries the plan and
 //! answers back.
 
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
+use humata2_mcp::{Call, ErrorKind, Reply, SessionToken, ToolError};
 use serde_json::{Map, Value, json};
+use tokio::sync::mpsc;
+use tonic::metadata::{AsciiMetadataValue, MetadataValue};
+use tonic::transport::Channel;
+use tonic::{Request, Streaming};
 
-use super::{GrpcDaemon, applied, key, text};
+use crate::ports::TOKEN_HEADER;
+
+use super::{GrpcDaemon, applied, key, lock, text};
+
+/// How often the watcher re-checks `AccessService.Explain` when no access
+/// event arrived on the stream.
+const RULE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 impl GrpcDaemon {
     /// `sessions_delete_many`: plans the scope, then deletes with that plan.
@@ -18,6 +30,7 @@ impl GrpcDaemon {
     /// turns into a pending reply like any other.
     pub(super) async fn sessions_delete_many(&self, call: Call) -> Result<Reply, ToolError> {
         let scope = delete_scope(&call.arguments)?;
+        let delete_work = delete_unpushed_work(&call.arguments);
         let plan = self
             .sessions()
             .plan_delete_sessions(self.request(pb::PlanDeleteSessionsRequest {
@@ -31,8 +44,7 @@ impl GrpcDaemon {
             .delete_sessions(self.request(pb::DeleteSessionsRequest {
                 idempotency_key: Some(key(&call)),
                 plan: plan.token.clone(),
-                // Unpushed work blocks the delete unless the owner says so.
-                delete_unpushed_work: false,
+                delete_unpushed_work: delete_work,
                 typed_count: 0,
                 check_only: false,
             })?)
@@ -68,10 +80,14 @@ impl GrpcDaemon {
 
     /// Keeps the caller's rule for `sessions_delete_many` as the daemon last
     /// gave it: the tool is listed only while the rule is Allow or Ask
-    /// (D876). Anything else hides it.
-    pub(super) fn learn_delete_many_rule(&self, decision: pb::Decision) {
-        let listed = matches!(decision, pb::Decision::Allow | pb::Decision::Ask);
-        self.delete_many_offered.store(listed, Ordering::Relaxed);
+    /// (D876). Anything else hides it, and a flip notifies the MCP server.
+    #[cfg(test)]
+    pub(super) fn learn_delete_many_rule(&self, decision: pb::Decision) -> bool {
+        apply_delete_many_rule(
+            &self.delete_many_offered,
+            self.tool_list_changes.as_ref(),
+            decision,
+        )
     }
 
     /// Whether `tools/list` offers the tool, as last learned.
@@ -96,8 +112,160 @@ impl GrpcDaemon {
                 .map(|explained| explained.into_inner().decision()),
             Err(_) => None,
         };
-        self.learn_delete_many_rule(explained.unwrap_or(pb::Decision::Never));
+        apply_delete_many_rule(
+            &self.delete_many_offered,
+            None,
+            explained.unwrap_or(pb::Decision::Never),
+        );
     }
+
+    /// Starts watching for `sessions_delete_many` rule changes once `bind`
+    /// succeeds, notifying the MCP server whenever the offered state flips.
+    pub(super) fn watch_delete_many_rule(&self, token: SessionToken) {
+        let Some(changed) = self.tool_list_changes.clone() else {
+            return;
+        };
+        let mut watcher = lock(&self.rule_watcher);
+        if watcher.is_some() {
+            return;
+        }
+        let channel = self.channel.clone();
+        let bundle = self.bundle.clone();
+        let offered = Arc::clone(&self.delete_many_offered);
+        *watcher = Some(tokio::spawn(watch_rule_loop(
+            channel, token, bundle, offered, changed,
+        )));
+    }
+}
+
+/// Updates `offered` from `decision` and signals `changed` when the offered
+/// state flips. Returns `true` if it flipped.
+fn apply_delete_many_rule(
+    offered: &AtomicBool,
+    changed: Option<&mpsc::UnboundedSender<()>>,
+    decision: pb::Decision,
+) -> bool {
+    let listed = matches!(decision, pb::Decision::Allow | pb::Decision::Ask);
+    let previous = offered.swap(listed, Ordering::Relaxed);
+    if previous != listed {
+        if let Some(tx) = changed {
+            let _ = tx.send(());
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn signed_request<T>(
+    message: T,
+    token: &SessionToken,
+    bundle: Option<&AsciiMetadataValue>,
+) -> Option<Request<T>> {
+    let mut request = Request::new(message);
+    let mut value = MetadataValue::try_from(token.expose()).ok()?;
+    value.set_sensitive(true);
+    request.metadata_mut().insert(TOKEN_HEADER, value);
+    if let Some(bundle) = bundle {
+        request
+            .metadata_mut()
+            .insert(humata2_daemon_ports::release::BUNDLE_HEADER, bundle.clone());
+    }
+    Some(request)
+}
+
+async fn subscribe_access_events(
+    channel: &Channel,
+    token: &SessionToken,
+    bundle: Option<&AsciiMetadataValue>,
+) -> Option<Streaming<pb::Event>> {
+    let request = signed_request(
+        pb::SubscribeRequest {
+            topics: vec![pb::Topic::Access as i32],
+            ..Default::default()
+        },
+        token,
+        bundle,
+    )?;
+    pb::event_service_client::EventServiceClient::new(channel.clone())
+        .subscribe(request)
+        .await
+        .ok()
+        .map(tonic::Response::into_inner)
+}
+
+async fn explain_delete_many(
+    channel: &Channel,
+    token: &SessionToken,
+    bundle: Option<&AsciiMetadataValue>,
+) -> Option<pb::Decision> {
+    let request = signed_request(
+        pb::ExplainRequest {
+            session: None,
+            capability: pb::Capability::SessionsDeleteMany as i32,
+            target: None,
+        },
+        token,
+        bundle,
+    )?;
+    pb::access_service_client::AccessServiceClient::new(channel.clone())
+        .explain(request)
+        .await
+        .ok()
+        .map(|explained| explained.into_inner().decision())
+}
+
+async fn next_access_event(stream: &mut Option<Streaming<pb::Event>>) -> bool {
+    match stream {
+        Some(events) => match events.message().await {
+            Ok(Some(_)) => true,
+            Ok(None) | Err(_) => {
+                *stream = None;
+                false
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+async fn watch_rule_loop(
+    channel: Channel,
+    token: SessionToken,
+    bundle: Option<AsciiMetadataValue>,
+    offered: Arc<AtomicBool>,
+    changed: mpsc::UnboundedSender<()>,
+) {
+    let mut interval = tokio::time::interval(RULE_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `bind` just asked; wait for the first interval or an access event.
+    interval.tick().await;
+    let mut stream = subscribe_access_events(&channel, &token, bundle.as_ref()).await;
+    loop {
+        let wake = tokio::select! {
+            () = changed.closed() => return,
+            _ = interval.tick() => {
+                if stream.is_none() {
+                    stream = subscribe_access_events(&channel, &token, bundle.as_ref()).await;
+                }
+                true
+            }
+            got = next_access_event(&mut stream) => got,
+        };
+        if wake
+            && let Some(decision) = explain_delete_many(&channel, &token, bundle.as_ref()).await
+        {
+            apply_delete_many_rule(&offered, Some(&changed), decision);
+        }
+    }
+}
+
+/// Whether the caller explicitly asked to delete uncommitted or unpushed git
+/// work. Defaults to false (D876).
+fn delete_unpushed_work(arguments: &Map<String, Value>) -> bool {
+    arguments
+        .get("delete_unpushed_work")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The scope the call names: picked session ids, one channel, or one
@@ -218,6 +386,39 @@ mod tests {
             daemon.learn_delete_many_rule(decision);
             assert_eq!(daemon.serves(Operation::SessionsDeleteMany), listed, "{decision:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn rule_flips_notify_tool_list_changes_only_when_offered_state_changes() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let daemon = GrpcDaemon::with_tool_list_changes(
+            PathBuf::from("/nonexistent/humatad.sock"),
+            tx,
+        );
+
+        assert!(!daemon.learn_delete_many_rule(pb::Decision::Never));
+        assert!(rx.try_recv().is_err());
+
+        assert!(daemon.learn_delete_many_rule(pb::Decision::Ask));
+        assert!(rx.try_recv().is_ok());
+
+        // Ask -> Allow keeps the tool listed, so no redundant notification.
+        assert!(!daemon.learn_delete_many_rule(pb::Decision::Allow));
+        assert!(rx.try_recv().is_err());
+
+        assert!(daemon.learn_delete_many_rule(pb::Decision::Never));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn delete_unpushed_work_defaults_to_false_and_reads_explicit_flag() {
+        assert!(!delete_unpushed_work(&arguments(json!({ "channel": "ch_1" }))));
+        assert!(!delete_unpushed_work(&arguments(
+            json!({ "channel": "ch_1", "delete_unpushed_work": false })
+        )));
+        assert!(delete_unpushed_work(&arguments(
+            json!({ "channel": "ch_1", "delete_unpushed_work": true })
+        )));
     }
 
     #[test]

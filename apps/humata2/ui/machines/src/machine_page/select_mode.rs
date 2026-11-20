@@ -526,6 +526,7 @@ impl RenderOnce for Bar {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .text_ellipsis()
                     .text_size(px(12.))
                     .text_color(rgb(look.secondary))
                     .child(note),
@@ -542,7 +543,7 @@ impl RenderOnce for Bar {
             .child(cancel_button(&ui, "select-bar-cancel", look))
             .child(delete_button(&ui, "select-bar-delete", &self.snap, look))
             .when(menu_open, |bar| {
-                bar.child(self.menu(&names, open, look))
+                bar.child(deferred(self.menu(&names, open, look)).with_priority(1))
             })
     }
 }
@@ -698,7 +699,7 @@ impl Bar {
             .w(px(20_000.))
             .h(px(20_000.))
             .on_click(move |_, _, cx| close(cx));
-        div().absolute().child(scrim).child(menu)
+        div().absolute().inset_0().child(scrim).child(menu.test_support())
     }
 }
 

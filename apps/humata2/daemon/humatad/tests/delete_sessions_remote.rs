@@ -59,7 +59,8 @@ async fn delete(rig: &Rig, plan: &pb::DeleteSessionsPlan) -> pb::delete_sessions
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_on_an_online_machine_is_deleted_there_through_the_host() {
     let rig = Rig::start(&[BOX], &[REPO]).await;
-    let one = Rig::box_id(BOX);
+    let one = rig.linked(BOX).await.id.expect("box-1 has a machine id");
+    assert_eq!(one, Rig::box_id(BOX), "remote_rig names the box by its machine id");
     let channel = rig.create_channel("Payments", &[REPO], &[rig.host_id().await, one.clone()]).await;
     let session = rig.start_on(&channel, &one, "Ledger work").await;
     rig.wait_session(&session, "live", is_live).await;
@@ -88,7 +89,10 @@ async fn a_session_on_an_online_machine_is_deleted_there_through_the_host() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_on_an_offline_machine_is_listed_as_left_alone_and_untouched() {
     let rig = Rig::start(&[BOX, OTHER], &[REPO]).await;
-    let (one, two) = (Rig::box_id(BOX), Rig::box_id(OTHER));
+    let one = rig.linked(BOX).await.id.expect("box-1 has a machine id");
+    let two = rig.linked(OTHER).await.id.expect("box-2 has a machine id");
+    assert_eq!(one, Rig::box_id(BOX));
+    assert_eq!(two, Rig::box_id(OTHER));
     let channel = rig
         .create_channel("Payments", &[REPO], &[rig.host_id().await, one.clone(), two.clone()])
         .await;
@@ -113,4 +117,106 @@ async fn a_session_on_an_offline_machine_is_listed_as_left_alone_and_untouched()
     );
     let still = rig.session(&away).await;
     assert_eq!(still.id.as_ref(), Some(&away), "the host still lists it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_forks_staying_are_preserved_on_local_and_remote_replans() {
+    let rig = Rig::start(&[BOX], &[REPO]).await;
+    let host = rig.host_id().await;
+    let one = rig.linked(BOX).await.id.expect("box-1 has a machine id");
+    assert_eq!(one, Rig::box_id(BOX));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let local = rig.start_on(&channel, &host, "Local work").await;
+    let remote = rig.start_on(&channel, &one, "Remote parent").await;
+    rig.wait_session(&local, "live", is_live).await;
+    rig.wait_session(&remote, "live", is_live).await;
+
+    let started = sessions(&rig)
+        .await
+        .fork_session(pb::ForkSessionRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: "fork-code-stay".to_owned() }),
+            parent: Some(remote.clone()),
+            kind: pb::ForkKind::CodeOnly as i32,
+            title: "Staying fork".to_owned(),
+            machine: Some(one.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("the code fork starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{ended:?}");
+    let Some(pb::operation::Result::Session(code_fork)) = ended.result else {
+        panic!("the fork names no session: {ended:?}");
+    };
+    rig.wait_session(&code_fork, "live", is_live).await;
+
+    let planned = plan(&rig, &[&local, &remote]).await;
+    assert!(
+        planned.forks_staying.iter().any(|work| work.session.as_ref() == Some(&code_fork)),
+        "initial plan lists the remote code fork as staying: {planned:?}"
+    );
+
+    // A local change triggers a re-plan without re-querying box-1: box-1's
+    // staying forks must survive adopt_remote.
+    let local_clone = rig.session(&local).await.repos[0].path.clone();
+    std::fs::write(std::path::Path::new(&local_clone).join("local_wip.txt"), "wip\n").unwrap();
+    let answered = sessions(&rig)
+        .await
+        .delete_sessions(pb::DeleteSessionsRequest {
+            idempotency_key: None,
+            plan: planned.token.clone(),
+            delete_unpushed_work: true,
+            typed_count: 0,
+            check_only: false,
+        })
+        .await
+        .expect("re-plan is returned")
+        .into_inner();
+    let Some(pb::delete_sessions_response::Result::Changed(changed)) = answered.result else {
+        panic!("expected Changed after local edit, got {answered:?}");
+    };
+    let after_local = changed.plan.expect("a fresh plan after local change");
+    assert!(
+        after_local.forks_staying.iter().any(|work| work.session.as_ref() == Some(&code_fork)),
+        "re-plan after local change must preserve remote forks_staying: {after_local:?}"
+    );
+
+    // A remote change on box-1 triggers check_remote to replace box-1's plan:
+    // staying forks must still be present.
+    let remote_folder = rig
+        .the(BOX)
+        .store()
+        .session(&remote.value)
+        .unwrap()
+        .expect("the box holds the remote session")
+        .folder;
+    std::fs::write(remote_folder.join("api").join("remote_wip.txt"), "wip\n").unwrap();
+    let answered = sessions(&rig)
+        .await
+        .delete_sessions(pb::DeleteSessionsRequest {
+            idempotency_key: None,
+            plan: after_local.token.clone(),
+            delete_unpushed_work: true,
+            typed_count: 0,
+            check_only: false,
+        })
+        .await
+        .expect("re-plan is returned")
+        .into_inner();
+    let Some(pb::delete_sessions_response::Result::Changed(changed)) = answered.result else {
+        panic!("expected Changed after remote edit, got {answered:?}");
+    };
+    let after_remote = changed.plan.expect("a fresh plan after remote change");
+    assert!(
+        after_remote.forks_staying.iter().any(|work| work.session.as_ref() == Some(&code_fork)),
+        "re-plan after remote change must preserve remote forks_staying: {after_remote:?}"
+    );
+
+    delete(&rig, &after_remote).await;
+    assert!(rig.the(BOX).store().session(&remote.value).unwrap().is_none());
+    assert!(
+        rig.the(BOX).store().session(&code_fork.value).unwrap().is_some(),
+        "the staying code fork is untouched"
+    );
 }

@@ -1,0 +1,72 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home" selected
+  Link "Agent inbox"
+  Link "To-do"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "Train reranker"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
+  TreeItem "web"
+    Button "Unfold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Heading "Home"
+Button "Select"
+Button "New session"
+Group "Delete sessions"
+  Dialog "Delete sessions" focused
+    #delete-sessions-totals
+    List "Sessions to delete"
+      ListItem "Ledger schema migration"
+        CheckBox "Delete that work too"
+      ListItem "Try BRIN index"
+      ListItem "Partial BRIN on posted_at"
+      ListItem "Review the schema"
+      ListItem "Refund retries"
+    #delete-sessions-trash
+    Group "Number of sessions"
+      #input focused
+        TextInput "Number of sessions" value="" focused
+    Button "Cancel"
+    Button "Delete all 9 sessions" disabled
+    #delete-sessions-hint
+Link "Ledger schema migration"
+  Button "Answer"
+  text "Asks to move the folder ledger-2026 from This Mac to devbox-1?"
+Link "Try BRIN index"
+  Button "Answer"
+  text "Asks to push try-brin to origin"
+Link "Upgrade Postgres 17"
+  Button "Resume"
+  text "Exited with code 1 after the dump step"
+Link "Train reranker"
+  text "3 new commits since your review"
+Link "Partial BRIN on posted_at"
+  text "Comparing partial BRIN on posted_at"
+Link "Refund retries"
+  text "Running cargo test -p refunds"
+Link "Benchmark BRIN"
+  text "pgbench run 2 of 4"
+Button "Open To-do"

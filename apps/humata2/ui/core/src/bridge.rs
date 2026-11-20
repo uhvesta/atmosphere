@@ -228,6 +228,7 @@ impl Ui {
                     state.navigation_overlay,
                     state.hosts.selected.clone(),
                     state.settings.preferences.show_pinned,
+                    state.mass_delete.clone(),
                 )
             },
             move |_| changed(),
@@ -260,6 +261,7 @@ impl Ui {
                         state.view_step.clone(),
                         state.desk.clone(),
                         state.machine_page.clone(),
+                        state.mass_delete.clone(),
                     ),
                     // The open session's status and its machine draw the
                     // terminal's notices (Lost the connection to …, exited)
@@ -299,6 +301,7 @@ impl Ui {
                         state.machine_page.clone(),
                         // The close-tab dialog (D784).
                         state.session.closing.clone(),
+                        state.mass_delete.sheet.clone(),
                     ),
                 )
             },
