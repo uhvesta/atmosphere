@@ -304,6 +304,16 @@ pub type TodoLists = mpsc::Receiver<Vec<Entry>>;
 
 /// What the app asks the host about the To-do list.
 pub trait TodoClient: Send + Sync + 'static {
+    /// The day the list is ranked and dated on: this computer's (UTC) day.
+    /// Fakes answer the fixed day their frames were signed off on, so a
+    /// capture doesn't change with the wall clock.
+    fn today(&self) -> Day {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Day::from_epoch_days(i32::try_from(secs / 86_400).unwrap_or(0))
+    }
+
     /// The items `filter` keeps.
     fn list(&self, filter: &TodoFilter) -> Reply<Vec<Entry>>;
 

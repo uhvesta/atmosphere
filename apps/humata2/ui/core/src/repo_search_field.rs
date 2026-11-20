@@ -158,7 +158,16 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
         .is_none()
         .then(|| search.highlighted_index(rows.len()))
         .flatten();
-    let mut list = col().id(SharedString::from(format!("{id}-repo-list"))).gap(px(7.));
+    // The rows' keyboard highlight reaches past their text (6 pt each side,
+    // 2 pt above and below), so the list and its clip widen by as much while
+    // the rows keep the places frame 44 draws them at.
+    let mut list = col()
+        .id(SharedString::from(format!("{id}-repo-list")))
+        .gap(px(7.))
+        .mx(px(-HIGHLIGHT_X))
+        .px(px(HIGHLIGHT_X))
+        .my(px(-HIGHLIGHT_Y))
+        .py(px(HIGHLIGHT_Y));
     let mut shown_group: Option<RepoGroup> = None;
     let now_ms = search.now_ms;
     for (idx, pick_row) in rows.iter().enumerate() {
@@ -222,10 +231,15 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
     if more > 0 {
         list = list.child(hint_line(look, format!("and {more} more; type to narrow")));
     }
+    let list_height = 8. * 21. + 7. * 7. + 2. * HIGHLIGHT_Y;
     let list = col()
-        .max_h(px(8. * 21. + 7. * 7.))
+        .max_h(px(list_height))
+        .mx(px(-HIGHLIGHT_X))
+        .px(px(HIGHLIGHT_X))
+        .my(px(-HIGHLIGHT_Y))
+        .py(px(HIGHLIGHT_Y))
         .overflow_hidden()
-        .child(list.max_h(px(8. * 21. + 7. * 7.)).overflow_y_scroll());
+        .child(list.max_h(px(list_height)).overflow_y_scroll());
 
     let row_actions: Vec<AppAction> = rows.iter().map(|row| pick(&row.repo)).collect();
     let ui_keys = ui.clone();
@@ -443,6 +457,10 @@ fn action_pill(
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }
 
+/// How far a row's highlight reaches past its text, sideways and up and down.
+const HIGHLIGHT_X: f32 = 6.;
+const HIGHLIGHT_Y: f32 = 2.;
+
 /// One repo: a check box when several can be picked, its name, and a note:
 /// where a library repo was last used, or GitHub's description.
 #[allow(clippy::too_many_arguments)]
@@ -469,8 +487,10 @@ fn repo_row(
         .aria_label(pick_row.repo.clone())
         .aria_selected(on)
         .test_support()
-        .px(px(6.))
-        .py(px(2.))
+        .mx(px(-HIGHLIGHT_X))
+        .px(px(HIGHLIGHT_X))
+        .my(px(-HIGHLIGHT_Y))
+        .py(px(HIGHLIGHT_Y))
         .rounded(px(6.))
         .when(highlighted, |x| x.bg(rgb(look.fill)))
         .gap(px(8.))

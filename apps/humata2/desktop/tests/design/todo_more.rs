@@ -738,10 +738,11 @@ pub(crate) fn panel_drawer_full(look: Look) -> Div {
     let small = |text: &'static str| div().text_color(c(look.secondary)).text_size(px(12.)).child(text);
     let link = |text: &'static str| div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child(text);
     let field = |label: &'static str, body: Div| row().gap(px(12.)).py(px(4.)).child(small(label).w(px(96.)).flex_shrink_0()).child(body.min_w_0());
+    // TODO2: the panel's segments wrap and take the narrow 7 pt padding.
     let seg = |options: &[&'static str], on: &str| {
-        row().p(px(2.)).rounded(px(7.)).bg(c(look.fill)).children(options.iter().map(|name| {
+        row().flex_wrap().min_w_0().p(px(2.)).rounded(px(7.)).bg(c(look.fill)).children(options.iter().map(|name| {
             div()
-                .px(px(10.))
+                .px(px(7.))
                 .py(px(2.))
                 .rounded(px(5.))
                 .text_size(px(12.))
@@ -814,17 +815,30 @@ pub(crate) fn panel_drawer_full(look: Look) -> Div {
                 .child(button(look, Kind::Secondary, "Ask why"))
                 .child(button(look, Kind::Secondary, "Open session")),
         );
+    // TODO2 (T1): one wrapping row for the exact date, then the loose dates,
+    // which are never red. "Next week" is the loose chip, not a link.
+    let loose = |text: &'static str| {
+        div()
+            .px(px(7.))
+            .py(px(1.))
+            .rounded(px(5.))
+            .text_size(px(11.5))
+            .bg(c(look.fill))
+            .text_color(tone_c(look, 0x55555b, 0xc4c4ca))
+            .child(text)
+    };
     let due = col()
         .gap(px(4.))
         .child(
-            col()
-                .gap(px(4.))
+            row()
+                .flex_wrap()
+                .gap(px(8.))
                 .child(
                     row()
                         .gap(px(10.))
                         .child(
                             row()
-                                .w(px(150.))
+                                .w(px(120.))
                                 .flex_shrink(1.)
                                 .min_w_0()
                                 .px(px(8.))
@@ -838,13 +852,36 @@ pub(crate) fn panel_drawer_full(look: Look) -> Div {
                         )
                         .child(small("tomorrow")),
                 )
-                .child(row().gap(px(8.)).child(link("Today")).child(link("Tomorrow")).child(link("Next week"))),
+                .child(row().gap(px(8.)).flex_none().child(link("Today")).child(link("Tomorrow"))),
+        )
+        .child(
+            row()
+                .gap(px(6.))
+                .flex_wrap()
+                .child(small("Loose:"))
+                .child(loose("In a few days"))
+                .child(loose("Next week"))
+                .child(loose("Next month")),
         );
+    // TODO2 (T4): an unset field sits in a faint dashed box.
+    let unset = |label: &'static str, body: Div| {
+        row()
+            .gap(px(12.))
+            .py(px(4.))
+            .px(px(4.))
+            .rounded(px(6.))
+            .border_1()
+            .border_dashed()
+            .border_color(tone_c(look, 0xe2e2e8, 0x35353a))
+            .child(small(label).w(px(96.)).flex_shrink_0())
+            .child(body.min_w_0())
+    };
     let drawer = col()
         .gap(px(6.))
         .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("Ledger schema v2"))
         .child(ask)
-        .child(field("State", seg(&["Open", "In progress", "Closed"], "In progress")))
+        .child(field("State", row().gap(px(6.)).flex_wrap().child(seg(&["Open", "In progress", "Closed", "Won't do"], "In progress"))))
+        .child(unset("Need", seg(&["Idea", "Nice to have", "Expected", "Critical"], "")))
         .child(field("Due", due))
         .child(field("Effort", row().gap(px(14.)).flex_wrap().child(seg(&["S", "M", "L"], "M"))))
         .child(field("Impact", seg(&["Low", "Medium", "High"], "High")))

@@ -288,7 +288,7 @@ impl AppState {
             review: ReviewState::default(),
             comments: CommentsState::default(),
             inbox: InboxState::default(),
-            todo: TodoState::new(humata2_todo_feature::View::default(), today()),
+            todo: TodoState::new(humata2_todo_feature::View::default(), clients.todo.today()),
             hosts: HostsState {
                 selected: saved.selected_host.clone(),
                 ..Default::default()
@@ -560,13 +560,6 @@ pub enum AppAction {
 }
 
 /// Today in UTC, for ranking by due date.
-fn today() -> humata2_todo::Day {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    humata2_todo::Day::from_epoch_days(i32::try_from(secs / 86_400).unwrap_or(0))
-}
-
 /// The app's reducer.
 #[derive(Clone)]
 pub struct App {
@@ -603,7 +596,10 @@ impl App {
             review: Review::new(clients.daemon.clone(), clients.clock.clone()),
             comments: Comments::new(clients.comments.clone(), clients.clock.clone()),
             inbox: Inbox::new(clients.clone()),
-            todo: Todo::new(clients.todo.clone(), today),
+            todo: Todo::new(clients.todo.clone(), {
+                let todo = clients.todo.clone();
+                move || todo.today()
+            }),
             desk: Desk::new(clients.desk.clone()),
             hosts: Hosts::new(clients.clone()),
             files: Files::new(clients.clone()),

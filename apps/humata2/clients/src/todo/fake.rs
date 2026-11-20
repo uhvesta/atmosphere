@@ -377,6 +377,10 @@ fn not_found(what: &str) -> DaemonError {
 }
 
 impl TodoClient for FakeTodo {
+    fn today(&self) -> Day {
+        FakeTodo::today(self)
+    }
+
     fn list(&self, filter: &TodoFilter) -> Reply<Vec<Entry>> {
         self.call(Call::List(filter.clone()), |inner| {
             Ok(inner

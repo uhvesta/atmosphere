@@ -5332,3 +5332,10 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
 - **Ruling:** trimmed to what `humata status` and the list commands show: `GetServerInfo`, `ListChannels`, `ListSessions`, `ListTabs`, `ListMachines`, `ListAgents`, `ListOperations`. Everything that reads contents needs `humata login`. `tests/auth.rs` checks a conversation and the Inbox are refused.
 - **Owner question:** D41 reads as "nothing without a login". Should even these seven stay open?
 - **Reverse:** put the removed routes back in `LOCAL_READ_ONLY`, or empty it to follow D41 exactly.
+
+## D894: Frame 12's golden shows the TODO2 drawer; frame 44's repo rows go back to the golden (look_test, 2026-11-20). Provisional, Fable judged
+- **Why:** look_test failed on two frames. On `12-panel-full-screen-board`, 5.85% of the sidebar strip differed because the golden predates TODO2: the T1 Need field and loose due dates, the T2 `Won't do` state, and the T4 unset-field highlight. On `44-new-channel`, 3.54% differed because REPOAUTO's keyboard highlight (`.px(6).py(2)` on each repo row) made the rows 4 pt taller and moved them 6 pt right. No decision signed off that layout change.
+- **Ruling:**
+  - Frame 12: the design drawing (`desktop/tests/design/todo_more.rs`, `panel_drawer_full`) now draws the shipped narrow drawer, and the golden is re-recorded. The rows are State with `Won't do`, Need inside a dashed unset box, and Due as a date box with Today/Tomorrow links on one line and `Loose:` chips on a second. Segments wrap with 7 pt padding. The hint stays "tomorrow" because the fixture day is Thu 19 Nov. Fable approved it as faithful to the app with no clipping or regression.
+  - Frame 44: the app is fixed (`ui/core/src/repo_search_field.rs`). The row highlight reaches past the text with negative margins, so rows keep the golden's places, and the list and its clip widen by the same amount. No mask and no budget change.
+- **Reverse:** restore the old `12-panel-full-screen-board.png` and `panel_drawer_full`, and put the row padding back in `repo_row`. Either way, look_test fails again until the other side is changed to match.
