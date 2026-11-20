@@ -59,3 +59,45 @@ fn matching_puts_whole_matches_before_scattered_ones() {
     let all = repos(&["acme/docs", "octo/notes"]);
     assert_eq!(matching("es", &all), repos(&["octo/notes", "acme/docs"]));
 }
+
+#[test]
+fn matching_ranks_exact_prefix_boundary_substring_then_fuzzy() {
+    let all = repos(&[
+        "acme/a_p_i",      // fuzzy subsequence
+        "acme/rapid",      // contiguous substring
+        "acme/my-api",     // word-boundary match
+        "api-org/web",     // owner/repo prefix
+        "acme/api-v2",     // repo-name prefix
+        "acme/api",        // exact repo-name match
+        "octo/notes",      // non-match
+    ]);
+    assert_eq!(
+        matching("api", &all),
+        repos(&[
+            "acme/api",
+            "acme/api-v2",
+            "api-org/web",
+            "acme/my-api",
+            "acme/rapid",
+            "acme/a_p_i",
+        ])
+    );
+}
+
+#[test]
+fn matching_preserves_original_order_on_ties() {
+    let all = repos(&["acme/web-b", "acme/web-a", "octo/web-c"]);
+    assert_eq!(
+        matching("web", &all),
+        repos(&["acme/web-b", "acme/web-a", "octo/web-c"])
+    );
+}
+
+#[test]
+fn matching_ranks_plain_owner_names_cleanly() {
+    let owners = repos(&["a-c-m-e", "superacme", "my-acme", "acme-tools", "acme"]);
+    assert_eq!(
+        matching("acme", &owners),
+        repos(&["acme", "acme-tools", "my-acme", "superacme", "a-c-m-e"])
+    );
+}

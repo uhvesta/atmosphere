@@ -1,9 +1,7 @@
-//! The to-do fields kept beside each board item (BOARDSIMPLE, D832).
+//! The to-do fields kept beside each board item (BOARDSIMPLE, D832, TODO2).
 //!
 //! The board item stays in the store as it always was; what the list adds
-//! to it (due, effort, impact, tags, steps, hide until, pin order,
-//! suggested, where it stood on the boards, the review request and when it
-//! closed) lives in one saved document of this crate, keyed by item key.
+//! to it lives in one saved document of this crate, keyed by item key.
 //! Every field is additive with a default, so a document written by an
 //! older build still reads, and an item with no entry reads as a plain old
 //! board item whose state comes from its column.
@@ -11,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use humata2_store::{Store, StoreError};
-use humata2_todo::{Day, Effort, Impact, State};
+use humata2_todo::{CheckpointState, Day, Effort, FuzzyDue, Impact, Need, OwnerKind, State};
 use serde::{Deserialize, Serialize};
 
 const FIELDS_KEY: &str = "todo.fields";
@@ -55,16 +53,156 @@ pub(super) enum FieldsError {
     },
 }
 
+/// Optional diff or markdown source anchor on an item or step.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct SourceAnchorRow {
+    pub repo: String,
+    pub path: String,
+    pub line: u32,
+    pub end_line: u32,
+    pub comment_id: String,
+}
+
 /// A step inside an item.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct StepRow {
-    #[serde(default)]
+    pub id: String,
     pub text: String,
-    #[serde(default)]
     pub done: bool,
     /// The session that ticked it.
-    #[serde(default)]
     pub ticked_by: Option<String>,
+    pub markdown_context: Option<String>,
+    pub dropped: bool,
+    pub from_key: Option<String>,
+    pub source_anchor: Option<SourceAnchorRow>,
+}
+
+/// Free-text external blocker reason.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct ExternalBlockRow {
+    pub reason: String,
+    pub since_ms: Option<i64>,
+}
+
+/// Append-only comment on an item or step.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct TodoCommentRow {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at_ms: i64,
+    pub step_id: Option<String>,
+}
+
+/// Explicit current owner (user or agent session).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct TodoOwnerRow {
+    pub kind: OwnerKind,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub session: Option<String>,
+}
+
+/// Notice when an assigned agent appears stuck.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct StuckAgentRow {
+    pub session: String,
+    pub agent_label: String,
+    pub reason: String,
+    pub since_ms: i64,
+}
+
+/// Notice when a dependency closed as Won't do or Became.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct BlockerGoneRow {
+    pub blocker_key: String,
+    pub blocker_state: State,
+    #[serde(default)]
+    pub replacement_keys: Vec<String>,
+}
+
+/// A pull request or stack watched by a to-do item.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct WatchedPrRow {
+    pub owner: String,
+    pub name: String,
+    pub number: u32,
+    pub note: String,
+    pub title: String,
+    pub ci_state: String,
+    pub unresolved_comments: u32,
+    pub has_conflicts: bool,
+    pub upstream_merged: bool,
+    pub merged: bool,
+    pub closed_without_merge: bool,
+    pub stack_key: String,
+}
+
+impl WatchedPrRow {
+    pub(super) fn repo_pr(&self) -> String {
+        if self.owner.is_empty() && self.name.is_empty() {
+            format!("#{}", self.number)
+        } else {
+            format!("{}/{}#{}", self.owner, self.name, self.number)
+        }
+    }
+}
+
+/// Compact close-readiness summary.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct CloseReadinessRow {
+    pub steps_done: u32,
+    pub steps_total: u32,
+    pub unresolved_comments: u32,
+    pub ci_status: String,
+    pub commits: u32,
+}
+
+/// Quiet live session signal on an In progress item.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct SessionSignalRow {
+    pub session: String,
+    pub label: String,
+    pub status: String,
+    pub idle_days: u32,
+    pub active_turn: bool,
+}
+
+/// Quiet 1-click lifecycle prompt (PR merge, idle session, etc.).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct LifecyclePromptRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub choices: Vec<String>,
+    pub pr_ref: String,
+    pub session: Option<String>,
+}
+
+/// Extra history entry recorded for to-do-only operations (comments, split,
+/// fold, ownership, PR sync, etc.).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct TodoHistoryRow {
+    pub at_unix_ms: i64,
+    pub by: String,
+    pub kind: i32,
+    pub field: String,
+    pub before: String,
+    pub after: String,
+    pub change: String,
+    pub revision: u64,
 }
 
 /// Where a migrated item stood on the boards.
@@ -108,43 +246,47 @@ pub(super) struct ReviewRow {
 
 /// What the list keeps for one item.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct Fields {
     /// The state the list set, good while the item is still in
     /// `state_column`; a board move after that makes the column win again.
-    #[serde(default)]
     pub state: Option<State>,
-    #[serde(default)]
     pub state_column: Option<i32>,
-    #[serde(default)]
     pub due: Option<Day>,
-    #[serde(default)]
     pub effort: Option<Effort>,
-    #[serde(default)]
     pub impact: Option<Impact>,
-    #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
     pub steps: Vec<StepRow>,
-    #[serde(default)]
     pub hide_until: Option<Day>,
     /// Pinned items, smaller first; 0 is unpinned.
-    #[serde(default)]
     pub pin_order: u32,
-    #[serde(default)]
     pub suggested: bool,
-    #[serde(default)]
     pub start: Option<StartRow>,
-    #[serde(default)]
     pub review: Option<ReviewRow>,
-    #[serde(default)]
     pub closed_at_ms: Option<i64>,
     /// The channel the list moved the item to; an empty text is no channel.
-    #[serde(default)]
     pub channel: Option<String>,
     /// Applied changes that left the board item alone, so the revision still
     /// goes up with every change.
-    #[serde(default)]
     pub extra_revisions: u64,
+    // TODO2 extended fields
+    pub need: Option<Need>,
+    pub fuzzy_due: Option<FuzzyDue>,
+    pub external_block: Option<ExternalBlockRow>,
+    pub from_keys: Vec<String>,
+    pub became_keys: Vec<String>,
+    pub source_anchor: Option<SourceAnchorRow>,
+    pub comments: Vec<TodoCommentRow>,
+    pub owner: Option<TodoOwnerRow>,
+    pub checkpoint: Option<CheckpointState>,
+    pub stuck_agent: Option<StuckAgentRow>,
+    pub blocker_gone: Vec<BlockerGoneRow>,
+    pub watched_prs: Vec<WatchedPrRow>,
+    pub close_readiness: Option<CloseReadinessRow>,
+    pub session_signals: Vec<SessionSignalRow>,
+    pub lifecycle_prompts: Vec<LifecyclePromptRow>,
+    pub wont_do_reason: Option<String>,
+    pub extra_history: Vec<TodoHistoryRow>,
 }
 
 /// What a board column says about state, for an item with no say of its own.
@@ -164,8 +306,8 @@ pub(super) fn column_for(state: State, current: i32) -> i32 {
     } else {
         match state {
             State::Open => TODO_COLUMN,
-            State::InProgress => IN_PROGRESS_COLUMN,
-            State::Closed => DONE_COLUMN,
+            State::InProgress | State::WatchingPr => IN_PROGRESS_COLUMN,
+            State::Closed | State::WontDo | State::Became => DONE_COLUMN,
         }
     }
 }
@@ -278,6 +420,8 @@ mod tests {
         assert_eq!(fields.pin_order, 2);
         assert!(fields.tags.is_empty());
         assert!(!fields.suggested);
+        assert_eq!(fields.need, None);
+        assert!(fields.comments.is_empty());
     }
 
     #[test]
@@ -316,6 +460,9 @@ mod tests {
         assert_eq!(column_for(State::InProgress, 1), IN_PROGRESS_COLUMN);
         assert_eq!(column_for(State::Open, 1), 1);
         assert_eq!(column_for(State::Closed, 2), DONE_COLUMN);
+        assert_eq!(column_for(State::WontDo, 2), DONE_COLUMN);
+        assert_eq!(column_for(State::Became, 2), DONE_COLUMN);
+        assert_eq!(column_for(State::WatchingPr, 2), IN_PROGRESS_COLUMN);
     }
 
     #[test]
@@ -329,6 +476,8 @@ mod tests {
             "PAY-1".to_owned(),
             Fields {
                 tags: vec!["a".to_owned()],
+                need: Some(Need::Critical),
+                fuzzy_due: Some(FuzzyDue::NextWeek),
                 ..Fields::default()
             },
         );

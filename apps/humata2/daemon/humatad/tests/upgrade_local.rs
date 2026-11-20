@@ -106,12 +106,36 @@ impl Mac {
         }
     }
 
+    async fn start_manual() -> Self {
+        let dir = folder();
+        let world = World::new(dir.path());
+        world.remote("acme", "api");
+        let bin = dir.path().join("bin");
+        let from = install_release_a(&bin);
+        let args = world.args();
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let daemon = Daemon::start_with_env(Build::Admin, dir, &refs, &[("HUMATA2_AUTO_MIGRATE", "0")]).await;
+        assert_eq!(upgrade::build_of(&daemon).await.bundle, from, "the daemon runs release a");
+        let (channel, setup) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+        assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{setup:?}");
+        let (session, _) = start_session(&daemon, &channel, "Fix login").await;
+        wait_running(&daemon, &session).await;
+        let tab = common::agent_tab(&daemon, &session).await;
+        Attach::start(&daemon, open(&tab, 0)).await.wait_for("agent up").await;
+        Self {
+            daemon,
+            bin,
+            from,
+            session,
+        }
+    }
+
     /// A daemon with nothing running in it: for the calls that are refused.
     async fn bare() -> Self {
         let dir = folder();
         let bin = dir.path().join("bin");
         let from = install_release_a(&bin);
-        let daemon = Daemon::start_in(dir).await;
+        let daemon = Daemon::start_env(dir, &[("HUMATA2_AUTO_MIGRATE", "0")]).await;
         Self {
             daemon,
             bin,
@@ -222,9 +246,8 @@ async fn an_upgrade_swaps_the_staged_release_in_and_restarts_the_daemon_with_its
     let to = stage_release_b(&mac.bin);
     assert_ne!(to, mac.from);
 
-    let reply = mac.upgrade(&to).await.expect("the user's upgrade is taken");
-
-    assert_eq!(reply.from.expect("the reply says what the daemon was").bundle, mac.from);
+    // Auto-migrate detects `.bundle.json.next`, swaps the release in, and
+    // restarts the daemon in place without requiring a manual Upgrade call.
     let build = wait_at_release(&mac.daemon, &to).await;
     assert_eq!(build.own_sha256, upgrade::admin_sha(), "the new run is the swapped-in file");
     assert_eq!(mac.daemon.pid(), pid, "the daemon started itself again in its own process");
@@ -324,7 +347,7 @@ async fn an_upgrade_to_the_release_the_daemon_already_runs_changes_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_or_a_script_cannot_upgrade_the_daemon() {
-    let mac = Mac::start().await;
+    let mac = Mac::start_manual().await;
     // Before the release is staged: a staged release posts this Mac's
     // Migrate item, and the gate then refuses a shell and a writable attach
     // until it is migrated (D370).

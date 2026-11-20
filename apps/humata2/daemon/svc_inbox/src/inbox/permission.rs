@@ -510,7 +510,7 @@ pub(super) fn decide(
     let state = match &mut answer {
         A::Deny(_) => pb::RequestState::Denied,
         A::Reply(reply) if question => {
-            if reply.text.trim().is_empty() {
+            if reply.text.trim().is_empty() && reply.selected_choices.is_empty() {
                 return Err(status::missing("answer.reply.text"));
             }
             if only_choices {
@@ -533,7 +533,7 @@ pub(super) fn decide(
             }
             pb::RequestState::Answered
         }
-        A::Approve(_) | A::Always(_) if question => {
+        A::Approve(_) | A::Always(_) | A::TodoAction(_) | A::TodoReview(_) if question => {
             return Err(status::invalid_field(
                 "answer",
                 Problem::NotAllowedHere,
@@ -542,7 +542,7 @@ pub(super) fn decide(
             ));
         }
         A::Approve(_) => pb::RequestState::Approved,
-        A::Always(_) | A::Reply(_) => {
+        A::Always(_) | A::Reply(_) | A::TodoAction(_) | A::TodoReview(_) => {
             return Err(status::invalid_field(
                 "answer",
                 Problem::NotAllowedHere,

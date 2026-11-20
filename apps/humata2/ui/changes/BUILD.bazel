@@ -21,6 +21,7 @@ rust_library(
         "//apps/humata2/features/session",
         "//apps/humata2/features/settings",
         "//apps/humata2/markdown",
+        "//apps/humata2/todo",
         "//apps/humata2/ui/core",
         "@crates//:gpui-kit",
         "@crates//:unicode-segmentation",

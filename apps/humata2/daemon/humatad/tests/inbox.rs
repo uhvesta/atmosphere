@@ -221,6 +221,7 @@ fn deny() -> pb::request_answer::Answer {
 fn reply(text: &str) -> pb::request_answer::Answer {
     pb::request_answer::Answer::Reply(pb::Reply {
         text: text.to_owned(),
+        selected_choices: Vec::new(),
     })
 }
 

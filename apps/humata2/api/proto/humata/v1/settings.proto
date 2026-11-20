@@ -110,6 +110,21 @@ message MachineSettings {
   bool vm_tier = 3;  // changed with MachineService.SetVmTier
 }
 
+enum TodoSyncMode {
+  TODO_SYNC_MODE_UNSPECIFIED = 0;
+  TODO_SYNC_MODE_ASK = 1;
+  TODO_SYNC_MODE_AUTO = 2;
+}
+
+message TodoAutomationSettings {
+  TodoSyncMode on_pr_merged = 1;
+  TodoSyncMode on_todo_closed_archive_sessions = 2;
+  bool auto_wake_on_ci_fail = 3;
+  bool auto_wake_on_review_comments = 4;
+  // Days of inactivity before offering a soft idle nudge; 0 disables or uses default.
+  uint32 idle_nudge_days = 5;
+}
+
 message Settings {
   DefaultAgent default_agent = 1;       // ST-15
   TerminalSettings terminal = 2;        // ST-3
@@ -123,6 +138,7 @@ message Settings {
   Revision revision = 10;
   SecuritySettings security = 11;       // SEC-6
   AgentSettings agents = 12;            // D199
+  TodoAutomationSettings todo_automation = 13;
 }
 
 // D199, kept for older callers (D782): `permissions_in_agent` reads true
@@ -161,6 +177,7 @@ message UpdateSettingsRequest {
   PresenceProof presence = 10;
   SecuritySettings security = 11;
   AgentSettings agents = 12;
+  TodoAutomationSettings todo_automation = 13;
 }
 
 message ChannelSettings {
@@ -172,6 +189,7 @@ message ChannelSettings {
   Revision revision = 5;
   // SEC-6 per-channel override; unset: the global setting.
   optional bool contain_agents = 6;
+  TodoAutomationSettings todo_automation = 7;
 }
 
 message GetChannelSettingsRequest { ChannelId channel = 1; }
@@ -188,6 +206,8 @@ message UpdateChannelSettingsRequest {
   PresenceProof presence = 9;
   optional bool contain_agents = 10;
   bool clear_contain_agents = 11;
+  TodoAutomationSettings todo_automation = 12;
+  bool clear_todo_automation = 13;
 }
 
 // ---------------------------------------------------------------------------

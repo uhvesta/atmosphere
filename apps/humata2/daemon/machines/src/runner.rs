@@ -13,8 +13,12 @@ pub enum Purpose {
     /// A provider command (MP-2).
     Create,
     Identity,
+    List,
     Start,
     Stop,
+    Wake,
+    Refresh,
+    Ssh,
     Delete,
     Status,
     /// `uname -sm` over the link: the connect step.

@@ -82,6 +82,28 @@ fn a_session_archived_in_another_window_closes_its_page_here() {
 }
 
 #[test]
+fn a_session_archived_in_another_window_does_not_move_other_screens() {
+    let probe = fixture::design();
+    let (id, other) = two_sessions(&probe);
+    let (mut store, workspace) = on_session(Arc::new(TestClock::new()), Some(&other));
+    store.send(A::Navigate(Route::Machine(humata2_clients::model::MachineId::new("devbox-1"))), |_| {});
+    store.skip_received();
+    let mut gone = workspace
+        .session(&id)
+        .cloned()
+        .unwrap_or_else(|| panic!("the fixture has {id:?}"));
+    gone.archived = true;
+    store.send(A::Event(Event::Session(gone)), |_| {});
+    store.skip_received();
+    assert_eq!(
+        store.state().route,
+        Route::Machine(humata2_clients::model::MachineId::new("devbox-1")),
+        "background archive event for another session must not change the current route"
+    );
+    assert!(!store.state().trail.contains(&Route::Session(id)));
+}
+
+#[test]
 fn an_archived_toast_with_undo_stays_for_the_whole_undo_window() {
     let clock = Arc::new(TestClock::new());
     let (mut store, workspace) = on_session(clock.clone(), None);

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::check::{self, Facts};
+use crate::check::{self, EnrollmentKeyState, Facts};
 use crate::enroll::{self, Key};
 use crate::error::{Remedy, SetupError, ValuesError};
 use crate::identity::{self, HostKey, Identity};
@@ -18,7 +18,7 @@ use crate::link::Link;
 use crate::login::{Prompt, detect_prompt, kind_of_line};
 use crate::name::MachineName;
 use crate::platform::{Os, Platform};
-use crate::provider::{Action, Provider, Reach};
+use crate::provider::{Action, Provider};
 use crate::runner::{Exit, Output, Purpose, Runner};
 use crate::service::{self, ServiceKind, ServiceOutcome};
 use crate::stack_config::{self, StackConfig};
@@ -188,6 +188,16 @@ pub struct Setup {
     service: Option<ServiceKind>,
     /// The enrollment key to write on the machine, until it is written.
     enroll: Option<Key>,
+    /// When true, `enroll` only writes `~/.humata2/state/enrollment-key` if
+    /// missing and refuses to overwrite a conflicting key.
+    enroll_only_if_missing: bool,
+    /// Host's existing enrollment key to restore if missing on an ephemeral
+    /// or woken machine (never silently overwriting a conflicting key).
+    restore_enroll: Option<Key>,
+    /// Repair mode (`Setup::ensure_ready`): repairs both missing and
+    /// mismatched binaries, restores missing enrollment, and ensures
+    /// `humatad2` is running.
+    repair: bool,
     /// Whether the install step must start the service again after it.
     restart: bool,
 }
@@ -228,8 +238,9 @@ enum Done {
 }
 
 impl Setup {
-    /// Makes `machine` with `provider`, from Create. `values` are the params
-    /// typed into Add machine; `known_hosts` is Humata's own file (MP-9).
+    /// Makes `machine` with `provider`, from Create (or Identity/Connect when
+    /// the provider omits `create`). `values` are the params typed into Add
+    /// machine; `known_hosts` is Humata's own file (MP-9).
     pub fn new(
         provider: Provider,
         machine: MachineName,
@@ -237,7 +248,28 @@ impl Setup {
         known_hosts: &Path,
     ) -> Result<Self, ValuesError> {
         provider.environment(&machine, &values)?;
-        Ok(Self::empty(machine, Some(provider), values, known_hosts, Step::Create))
+        if provider.has(Action::Create) {
+            return Ok(Self::empty(
+                machine,
+                Some(provider),
+                values,
+                known_hosts,
+                Step::Create,
+            ));
+        }
+        if provider.has(Action::Identity) {
+            return Ok(Self::empty(
+                machine,
+                Some(provider),
+                values,
+                known_hosts,
+                Step::Identity,
+            ));
+        }
+        let link = provider.link(&machine, &values)?;
+        let mut setup = Self::empty(machine, Some(provider), values, known_hosts, Step::Connect);
+        setup.link = link;
+        Ok(setup)
     }
 
     /// Sets up a machine that already exists and is reached through `link`
@@ -252,6 +284,16 @@ impl Setup {
             Step::Connect,
         );
         setup.link = Some(link);
+        setup
+    }
+
+    /// Ensures a woken or ephemeral machine is ready: repairs wiped or
+    /// mismatched `~/.humata2/bin` binaries, restores a missing enrollment
+    /// key without ever silently overwriting a conflicting one, and ensures
+    /// `humatad2` is running.
+    pub fn ensure_ready(link: Link, known_hosts: &Path) -> Self {
+        let mut setup = Self::existing(link, known_hosts);
+        setup.repair = true;
         setup
     }
 
@@ -277,6 +319,9 @@ impl Setup {
             pending: Vec::new(),
             service: None,
             enroll: None,
+            enroll_only_if_missing: false,
+            restore_enroll: None,
+            repair: false,
             restart: false,
         }
     }
@@ -289,6 +334,19 @@ impl Setup {
     /// Writes `key` on the machine in the install step, before any file.
     pub(crate) fn with_enrollment(mut self, key: Key) -> Self {
         self.enroll = Some(key);
+        self.enroll_only_if_missing = false;
+        self
+    }
+
+    /// Restores the enrollment key on the machine ONLY if missing; fails with
+    /// [`SetupError::EnrollmentKeyConflict`] if a different key is present.
+    pub fn with_restore_enrollment(mut self, key_bytes: Arc<[u8]>) -> Self {
+        self.restore_enroll = Some(Key::from_bytes(key_bytes));
+        self
+    }
+
+    pub(crate) fn with_restore_key(mut self, key: Key) -> Self {
+        self.restore_enroll = Some(key);
         self
     }
 
@@ -511,15 +569,19 @@ impl Setup {
                 ));
             }
         }
-        match provider.reach() {
-            Reach::Connect => {
-                self.link = provider
-                    .link(&self.machine, &self.values)
-                    .map_err(Failed::new)?;
-                Ok(Done::Next(Step::Connect))
-            }
-            Reach::Identity => Ok(Done::Next(Step::Identity)),
+        if provider.has(Action::Identity) {
+            return Ok(Done::Next(Step::Identity));
         }
+        if let Some(link) = provider
+            .link(&self.machine, &self.values)
+            .map_err(Failed::new)?
+        {
+            self.link = Some(link);
+            return Ok(Done::Next(Step::Connect));
+        }
+        Err(Failed::new(SetupError::BadProbe {
+            machine: self.machine.clone(),
+        }))
     }
 
     fn identify(&mut self, runner: &dyn Runner) -> Result<Done, Failed> {
@@ -559,13 +621,23 @@ impl Setup {
         // A key the provider gave is pinned with no prompt (MP-9),
         // replacing the one an earlier machine of this name had.
         if let Some(key) = &identity.ssh.host_key {
-            known_hosts::pin(&self.known_hosts, &self.machine, key).map_err(Failed::new)?;
+            known_hosts::replace(&self.known_hosts, &known_hosts::alias(&self.machine), key)
+                .map_err(Failed::new)?;
         }
-        self.link = Some(Link::ssh(
-            self.machine.clone(),
-            identity.ssh.clone(),
-            &self.known_hosts,
-        ));
+        // When `connect` is also declared alongside `identity`, `connect`
+        // provides the custom stdio transport while `identity` refreshes
+        // endpoint/host_key/state metadata.
+        self.link = match provider
+            .link(&self.machine, &self.values)
+            .map_err(Failed::new)?
+        {
+            Some(connect_link) => Some(connect_link),
+            None => Some(Link::ssh(
+                self.machine.clone(),
+                identity.ssh.clone(),
+                &self.known_hosts,
+            )),
+        };
         self.identity = Some(identity);
         Ok(Done::Next(Step::Connect))
     }
@@ -697,13 +769,14 @@ impl Setup {
         };
         let payloads = builds.payloads(found).map_err(Failed::new)?;
         // A machine that already runs humatad2 is upgraded by Migrate
-        // (UP-1), never by a reconnect: only a file it lacks is put back.
-        // A first install sends every file and the release's bundle.json.
+        // (UP-1), never by a plain reconnect: only a file it lacks is put back.
+        // A first install or `ensure_ready` repair sends every missing or
+        // mismatched file and writes the release's bundle.json.
         let first = facts.installed(InstalledFile::Humatad).is_none();
         self.pending.clear();
         for payload in payloads {
             let file = payload.file();
-            let wanted = if first {
+            let wanted = if first || self.repair {
                 facts.installed(file) != Some(payload.sha256())
             } else {
                 facts.installed(file).is_none()
@@ -712,9 +785,30 @@ impl Setup {
                 self.pending.push(Pending::Send(payload));
             }
         }
-        if first {
+        if first || (self.repair && !self.pending.is_empty()) {
             if let Some(bundle) = builds.bundle_json(found).map_err(Failed::new)? {
                 self.pending.push(Pending::Bundle(bundle));
+            }
+        }
+        // Safe enrollment restoration: restore only when missing; never
+        // silently overwrite a conflicting key already on the machine.
+        if self.enroll.is_none() {
+            if let Some(restore_key) = self.restore_enroll.clone() {
+                match facts.enrollment_key() {
+                    EnrollmentKeyState::Missing => {
+                        self.enroll = Some(restore_key);
+                        self.enroll_only_if_missing = true;
+                    }
+                    EnrollmentKeyState::Present(Some(sha)) if *sha == restore_key.sha256() => {}
+                    EnrollmentKeyState::Present(_) => {
+                        return Err(Failed::new(SetupError::EnrollmentKeyConflict { machine }));
+                    }
+                    EnrollmentKeyState::Unknown if self.repair => {
+                        self.enroll = Some(restore_key);
+                        self.enroll_only_if_missing = true;
+                    }
+                    EnrollmentKeyState::Unknown => {}
+                }
             }
         }
         // Nothing to install and the service already runs the way setup
@@ -758,11 +852,24 @@ impl Setup {
     /// Writes the enrollment key on the machine, from stdin.
     fn enroll(&mut self, runner: &dyn Runner, key: Key) -> Result<Done, Failed> {
         let link = self.require_link()?;
+        let script = if self.enroll_only_if_missing {
+            enroll::restore_if_missing_script(&key.sha256())
+        } else {
+            enroll::machine_script()
+        };
         let invocation = link
-            .script(&enroll::machine_script(), Purpose::Enroll, Some(CHECK_TIMEOUT), Some(key.bytes()))
+            .script(&script, Purpose::Enroll, Some(CHECK_TIMEOUT), Some(key.bytes()))
             .map_err(Failed::new)?;
         let output = runner.run(&invocation).map_err(Failed::new)?;
         if !output.exit.success() {
+            if self.enroll_only_if_missing && output.exit == Exit::Code(enroll::CONFLICT_EXIT) {
+                return Err(Failed::with_output(
+                    SetupError::EnrollmentKeyConflict {
+                        machine: self.machine.clone(),
+                    },
+                    &output,
+                ));
+            }
             return Err(Failed::with_output(
                 SetupError::Enroll {
                     machine: self.machine.clone(),
@@ -773,6 +880,8 @@ impl Setup {
             ));
         }
         self.enroll = None;
+        self.enroll_only_if_missing = false;
+        self.restore_enroll = None;
         Ok(self.after_install())
     }
 

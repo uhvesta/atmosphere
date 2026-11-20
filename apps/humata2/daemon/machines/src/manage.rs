@@ -32,14 +32,16 @@ use thiserror::Error;
 
 use crate::check::Facts;
 use crate::enroll::{self, Key};
-use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError, ValuesError};
+use crate::error::{IdentityError, KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError, ValuesError};
 use crate::hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine};
-use crate::identity::{SshAccess, SshTarget};
+use crate::identity::{self, SshAccess, SshTarget};
 use crate::install::Builds;
 use crate::known_hosts;
 use crate::link::{Link, BIN_DIR};
 use crate::name::MachineName;
-use crate::provider::{Action, Provider, Reach};
+use crate::provider::{
+    self, parse_list, parse_status_report, Action, DiscoveredInstance, MachineStatus, Provider, Reach,
+};
 use crate::quote;
 use crate::runner::{Exit, Invocation, Output, Purpose, Runner};
 use crate::setup::{self, Progress, RetryPolicy, Setup};
@@ -524,8 +526,195 @@ impl Machines {
                 presented: presented.fingerprint().to_owned(),
             });
         }
-        known_hosts::pin(&self.known_hosts, link.machine(), &presented)?;
+        known_hosts::replace(&self.known_hosts, &known_hosts::alias(link.machine()), &presented)?;
         Ok(())
+    }
+
+    /// Discovers existing instances via a provider's `list` command.
+    pub fn list_instances(
+        &self,
+        provider: &Provider,
+        runner: &dyn Runner,
+    ) -> Result<Vec<DiscoveredInstance>, ManageError> {
+        let invocation = provider
+            .list_invocation()
+            .ok_or_else(|| ManageError::ActionUndefined {
+                provider: provider.id().to_owned(),
+                action: Action::List,
+            })?;
+        let output = runner.run(&invocation).map_err(|source| ManageError::Run {
+            machine: provider.id().to_owned(),
+            source,
+        })?;
+        let secret = identity::has_key_material(&output.stdout)
+            || identity::has_key_material(&output.stderr);
+        if secret {
+            return Err(ManageError::Step {
+                machine: provider.id().to_owned(),
+                step: OpStep::Provider,
+                output_tail: String::new(),
+                remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+                source: SetupError::Identity(IdentityError::KeyMaterial),
+            });
+        }
+        if !output.exit.success() {
+            return Err(ManageError::ActionFailed {
+                machine: provider.id().to_owned(),
+                action: Action::List,
+                exit: output.exit,
+                output_tail: tail(&output),
+            });
+        }
+        parse_list(&output.stdout).map_err(|err| ManageError::Step {
+            machine: provider.id().to_owned(),
+            step: OpStep::Provider,
+            output_tail: tail(&output),
+            remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+            source: SetupError::Identity(err),
+        })
+    }
+
+    /// Refreshes how Humata reaches a provider machine: runs `refresh` (if
+    /// declared), `wake` (if sleeping, or stopped with `wake_on_demand`), and
+    /// `identity` (if declared), atomically updates `StoredLink` in
+    /// `hosts.json`, and updates attested `known_hosts`.
+    pub fn refresh_reach(
+        &self,
+        provider: &Provider,
+        name: &str,
+        runner: &dyn Runner,
+    ) -> Result<Link, ManageError> {
+        let _busy = self.claim(name)?;
+        let entry = self.get(name)?;
+        let record = provider_record(&entry, provider)?;
+        let machine = machine_name(&entry)?;
+        let params = record.params.clone();
+
+        let run_action = |action: Action| -> Result<Output, ManageError> {
+            let invocation = provider
+                .invocation(action, &machine, &params)
+                .map_err(|source| ManageError::Params { source })?
+                .ok_or_else(|| ManageError::ActionUndefined {
+                    provider: provider.id().to_owned(),
+                    action,
+                })?;
+            let output = runner.run(&invocation).map_err(|source| ManageError::Run {
+                machine: name.to_owned(),
+                source,
+            })?;
+            if !output.exit.success() {
+                let secret = identity::has_key_material(&output.stdout)
+                    || identity::has_key_material(&output.stderr);
+                if secret {
+                    return Err(ManageError::Step {
+                        machine: name.to_owned(),
+                        step: OpStep::Identity,
+                        output_tail: String::new(),
+                        remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+                        source: SetupError::Identity(IdentityError::KeyMaterial),
+                    });
+                }
+                return Err(ManageError::ActionFailed {
+                    machine: name.to_owned(),
+                    action,
+                    exit: output.exit,
+                    output_tail: tail(&output),
+                });
+            }
+            Ok(output)
+        };
+
+        let parse_id = |output: &Output| -> Result<identity::Identity, ManageError> {
+            let secret = identity::has_key_material(&output.stdout)
+                || identity::has_key_material(&output.stderr);
+            if secret {
+                return Err(ManageError::Step {
+                    machine: name.to_owned(),
+                    step: OpStep::Identity,
+                    output_tail: String::new(),
+                    remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+                    source: SetupError::Identity(IdentityError::KeyMaterial),
+                });
+            }
+            identity::parse_identity(&output.stdout, &machine).map_err(|err| ManageError::Step {
+                machine: name.to_owned(),
+                step: OpStep::Identity,
+                output_tail: tail(output),
+                remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+                source: SetupError::Identity(err),
+            })
+        };
+
+        let should_wake = |state: &MachineStatus| -> bool {
+            *state == MachineStatus::Sleeping
+                || (*state == MachineStatus::Stopped && provider.wake_on_demand())
+        };
+
+        // 1. Declarative refresh before checking/waking/reconnecting.
+        if provider.has(Action::Refresh) {
+            run_action(Action::Refresh)?;
+        }
+
+        // 2. Check status & wake if sleeping (or stopped with wake_on_demand).
+        let mut woke = false;
+        let mut status_ssh: Option<SshTarget> = None;
+        if provider.has(Action::Status) {
+            let output = run_action(Action::Status)?;
+            let report = parse_status_report(&output.stdout).map_err(|err| ManageError::Step {
+                machine: name.to_owned(),
+                step: OpStep::Provider,
+                output_tail: if matches!(err, IdentityError::KeyMaterial) {
+                    String::new()
+                } else {
+                    tail(&output)
+                },
+                remedies: vec![Remedy::TryAgain, Remedy::FixProvider],
+                source: SetupError::Identity(err),
+            })?;
+            status_ssh = report.ssh;
+            if provider.has(Action::Wake) && should_wake(&report.state) {
+                run_action(Action::Wake)?;
+                woke = true;
+            }
+        }
+
+        // 3. Refresh identity (and wake if identity itself reports sleeping).
+        let link = if provider.has(Action::Identity) {
+            let mut id = parse_id(&run_action(Action::Identity)?)?;
+            if !woke
+                && provider.has(Action::Wake)
+                && id.state.as_ref().is_some_and(should_wake)
+            {
+                run_action(Action::Wake)?;
+                id = parse_id(&run_action(Action::Identity)?)?;
+            }
+            if let Some(ref key) = id.ssh.host_key {
+                known_hosts::replace(&self.known_hosts, &known_hosts::alias(&machine), key)?;
+            }
+            match provider
+                .link(&machine, &params)
+                .map_err(|source| ManageError::Params { source })?
+            {
+                Some(connect_link) => connect_link,
+                None => Link::ssh(machine.clone(), id.ssh, &self.known_hosts),
+            }
+        } else if let Some(connect_link) = provider
+            .link(&machine, &params)
+            .map_err(|source| ManageError::Params { source })?
+        {
+            connect_link
+        } else if let Some(ssh) = status_ssh {
+            if let Some(ref key) = ssh.host_key {
+                known_hosts::replace(&self.known_hosts, &known_hosts::alias(&machine), key)?;
+            }
+            Link::ssh(machine.clone(), ssh, &self.known_hosts)
+        } else {
+            need_link(self.link_if_any(&entry)?, &entry)?
+        };
+
+        // 4. Atomically update StoredLink in hosts.json.
+        self.hosts.update_provider_link(name, link.stored())?;
+        Ok(link)
     }
 
     /// Checks `request` without touching any machine: the host parses, the
@@ -855,9 +1044,14 @@ impl Machines {
             }
         }
         let link = need_link(link, &entry)?;
-        // A machine added before the host kept keys gets one now.
-        let key = (!self.peer_key(machine).exists()).then(Key::new);
-        let ready = self.set_up(&link, key.as_ref(), drive)?;
+        // A machine added before the host kept keys gets one now; one whose
+        // host copy exists restores it if missing on an ephemeral machine.
+        let (new_key, restore_key) = match enroll::read_host(&self.peer_keys, machine) {
+            Ok(Some(existing)) => (None, Some(existing)),
+            Ok(None) => (Some(Key::new()), None),
+            Err(_) => (None, None),
+        };
+        let ready = self.set_up_with_restore(&link, new_key.as_ref(), restore_key, drive)?;
         let entry = registered(entry, &ready);
         self.hosts.put(entry.clone())?;
         Ok(entry)
@@ -1185,9 +1379,21 @@ impl Machines {
     /// With `key`, the install step writes it on the machine and, once the
     /// rest is set up, the host keeps its copy.
     fn set_up(&self, link: &Link, key: Option<&Key>, drive: &mut Drive<'_>) -> Result<setup::Ready, ManageError> {
+        self.set_up_with_restore(link, key, None, drive)
+    }
+
+    fn set_up_with_restore(
+        &self,
+        link: &Link,
+        key: Option<&Key>,
+        restore: Option<Key>,
+        drive: &mut Drive<'_>,
+    ) -> Result<setup::Ready, ManageError> {
         let mut setup = Setup::existing(link.clone(), &self.known_hosts).with_retry(self.retry);
         if let Some(key) = key {
             setup = setup.with_enrollment(key.clone());
+        } else if let Some(restore) = restore {
+            setup = setup.with_restore_key(restore);
         }
         self.run_setup(setup, key, drive, false)
     }

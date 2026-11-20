@@ -619,9 +619,47 @@ impl Inbox {
             answer,
             grant,
         };
+        let preview = current
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.preview.as_ref());
+        let is_todo_action = matches!(preview, Some(pb::request_preview::Preview::TodoAction(_)));
+        let is_todo_review = matches!(preview, Some(pb::request_preview::Preview::TodoReview(_)));
         match (&entry.access, answer) {
             (_, answer @ A::Deny(_)) => Ok(decided(pb::RequestState::Denied, answer, None)),
-            (None, A::Reply(reply)) if reply.text.trim().is_empty() => {
+            (_, answer @ A::TodoAction(_)) if is_todo_action => {
+                Ok(decided(pb::RequestState::Answered, answer, None))
+            }
+            (_, A::TodoAction(_)) => Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is not a to-do action request"),
+                "answer this card with the answer kind it expects, or deny it",
+            )),
+            (_, answer @ A::TodoReview(_)) if is_todo_review => {
+                Ok(decided(pb::RequestState::Answered, answer, None))
+            }
+            (_, A::TodoReview(_)) => Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is not a to-do review request"),
+                "answer this card with the answer kind it expects, or deny it",
+            )),
+            (_, _) if is_todo_action => Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is a to-do action request: it takes Done or Can't be done"),
+                "answer with a to-do action response (Done or Can't be done), or deny it",
+            )),
+            (_, _) if is_todo_review => Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is a to-do review request: it takes Approved or Changes asked"),
+                "answer with a to-do review response (Approved or Changes asked), or deny it",
+            )),
+            (None, A::Reply(reply))
+                if reply.text.trim().is_empty() && reply.selected_choices.is_empty() =>
+            {
                 Err(status::missing("answer.reply.text"))
             }
             (None, answer @ A::Reply(_)) => Ok(decided(pb::RequestState::Answered, answer, None)),
@@ -1087,6 +1125,14 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 format!("offer at most {CHOICES_MAX} choices, or none for a free reply"),
             ));
         }
+        if request.multi_select && request.choices.is_empty() {
+            return Err(status::invalid_field(
+                "multi_select",
+                Problem::NotAllowedHere,
+                "multi_select requires at least one choice",
+                "offer 1 to 4 choices, or set multi_select to false for a free-text question",
+            ));
+        }
         let session = agent.session.id.to_string();
         let key = id_of(request.idempotency_key.map(|key| key.value))
             .map(|key| format!("{session}/{key}"));
@@ -1095,7 +1141,18 @@ impl pb::inbox_service_server::InboxService for Inbox {
             return Ok(Response::new(made));
         }
         let id = new_id();
-        let mut made = question(&id, agent, request.question, request.choices);
+        let mut made = question_with(
+            &id,
+            agent,
+            pb::QuestionPreview {
+                question: request.question,
+                choices: request.choices,
+                todo_item: request.todo_item,
+                step_id: request.step_id,
+                multi_select: request.multi_select,
+                details: request.details,
+            },
+        );
         made.working_on = self.working_on(agent);
         let held = Held::new(made);
         let reply = settled(&held);
@@ -1563,6 +1620,25 @@ fn question(
     question: String,
     choices: Vec<String>,
 ) -> pb::InboxRequest {
+    question_with(
+        id,
+        agent,
+        pb::QuestionPreview {
+            question,
+            choices,
+            todo_item: None,
+            step_id: String::new(),
+            multi_select: false,
+            details: String::new(),
+        },
+    )
+}
+
+fn question_with(
+    id: &str,
+    agent: &AgentCaller,
+    preview: pb::QuestionPreview,
+) -> pb::InboxRequest {
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -1576,9 +1652,7 @@ fn question(
         operation: agent.operation(),
         action_title: format!("{} asks you a question", agent.title),
         preview: Some(pb::RequestPreview {
-            preview: Some(pb::request_preview::Preview::Question(
-                pb::QuestionPreview { question, choices },
-            )),
+            preview: Some(pb::request_preview::Preview::Question(preview)),
         }),
         capability: pb::Capability::InboxAsk as i32,
         created_at: Some(now_timestamp()),
@@ -1898,10 +1972,42 @@ fn fits_card(
         .map(|id| id.value.as_str())
         .unwrap_or_default();
     let question = request.kind == pb::RequestKind::Question as i32;
+    let preview = request
+        .preview
+        .as_ref()
+        .and_then(|preview| preview.preview.as_ref());
+    let is_todo_action = matches!(preview, Some(pb::request_preview::Preview::TodoAction(_)));
+    let is_todo_review = matches!(preview, Some(pb::request_preview::Preview::TodoReview(_)));
     match answer {
         A::Deny(_) => Ok(()),
+        A::TodoAction(_) if is_todo_action => Ok(()),
+        A::TodoAction(_) => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is not a to-do action request"),
+            "answer this card with the answer kind it expects, or deny it",
+        )),
+        A::TodoReview(_) if is_todo_review => Ok(()),
+        A::TodoReview(_) => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is not a to-do review request"),
+            "answer this card with the answer kind it expects, or deny it",
+        )),
+        _ if is_todo_action => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is a to-do action request: it takes Done or Can't be done"),
+            "answer with a to-do action response (Done or Can't be done), or deny it",
+        )),
+        _ if is_todo_review => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is a to-do review request: it takes Approved or Changes asked"),
+            "answer with a to-do review response (Approved or Changes asked), or deny it",
+        )),
         A::Reply(reply) if question => {
-            if reply.text.trim().is_empty() {
+            if reply.text.trim().is_empty() && reply.selected_choices.is_empty() {
                 Err(status::missing("answer.reply.text"))
             } else {
                 Ok(())
@@ -2742,5 +2848,196 @@ mod tests {
         assert_eq!(files.lead, "acme/api/src/retry/backoff.rs");
         assert!(card.affects.iter().any(|e| e.lead.contains("Refund retries") && !e.warn));
         assert!(!card.undo_text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ask_user_preserves_todo_question_fields_and_accepts_selected_choices_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        inbox
+            .store
+            .put_session(&SessionRecord {
+                id: "se_1".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: String::new(),
+                title: "t".to_owned(),
+                agent: "claude".to_owned(),
+                folder: std::path::PathBuf::from("/tmp/x"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+
+        let err = inbox
+            .ask_user(agent_req(
+                pb::AskUserRequest {
+                    question: "Pick?".to_owned(),
+                    multi_select: true,
+                    ..Default::default()
+                },
+                "se_1",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+
+        let waited = inbox
+            .ask_user(agent_req(
+                pb::AskUserRequest {
+                    question: "Which targets?".to_owned(),
+                    choices: vec!["mac".to_owned(), "linux".to_owned()],
+                    todo_item: Some(pb::BoardItemId { value: "PAY-3".to_owned() }),
+                    step_id: "st_1".to_owned(),
+                    multi_select: true,
+                    details: "Used to build release artifacts".to_owned(),
+                    ..Default::default()
+                },
+                "se_1",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let rq_id = waited.id.unwrap().value;
+
+        let got = inbox
+            .get_request(user_req(pb::GetRequestRequest { id: id(&rq_id) }))
+            .await
+            .unwrap()
+            .into_inner();
+        let Some(pb::request_preview::Preview::Question(q)) =
+            got.preview.as_ref().and_then(|p| p.preview.as_ref())
+        else {
+            panic!("expected QuestionPreview");
+        };
+        assert_eq!(q.todo_item.as_ref().map(|i| i.value.as_str()), Some("PAY-3"));
+        assert_eq!(q.step_id, "st_1");
+        assert!(q.multi_select);
+        assert_eq!(q.details, "Used to build release artifacts");
+
+        let answered = inbox
+            .answer_request(user_req(pb::AnswerRequestRequest {
+                id: id(&rq_id),
+                answer: Some(pb::RequestAnswer {
+                    answer: Some(pb::request_answer::Answer::Reply(pb::Reply {
+                        text: String::new(),
+                        selected_choices: vec!["mac".to_owned(), "linux".to_owned()],
+                    })),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(answered.state, pb::RequestState::Answered as i32);
+        let Some(pb::request_answer::Answer::Reply(reply)) =
+            answered.answer.and_then(|a| a.answer)
+        else {
+            panic!("expected Reply answer");
+        };
+        assert_eq!(reply.selected_choices, vec!["mac", "linux"]);
+    }
+
+    #[tokio::test]
+    async fn todo_action_and_review_cards_accept_only_matching_structured_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        inbox
+            .store
+            .put_session(&SessionRecord {
+                id: "se_1".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: String::new(),
+                title: "t".to_owned(),
+                agent: "claude".to_owned(),
+                folder: std::path::PathBuf::from("/tmp/x"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+
+        let action_req = pb::InboxRequest {
+            id: id("rq_act"),
+            kind: pb::RequestKind::Question as i32,
+            state: pb::RequestState::Pending as i32,
+            revision: Some(pb::Revision { value: 1 }),
+            preview: Some(pb::RequestPreview {
+                preview: Some(pb::request_preview::Preview::TodoAction(pb::TodoActionPreview {
+                    todo_item: Some(pb::BoardItemId { value: "PAY-5".to_owned() }),
+                    step_id: "st_1".to_owned(),
+                    action: "Rotate key".to_owned(),
+                    details: String::new(),
+                })),
+            }),
+            ..Default::default()
+        };
+        let review_req = pb::InboxRequest {
+            id: id("rq_rev"),
+            kind: pb::RequestKind::Question as i32,
+            state: pb::RequestState::Pending as i32,
+            revision: Some(pb::Revision { value: 1 }),
+            preview: Some(pb::RequestPreview {
+                preview: Some(pb::request_preview::Preview::TodoReview(pb::TodoReviewPreview {
+                    todo_item: Some(pb::BoardItemId { value: "PAY-5".to_owned() }),
+                    step_id: String::new(),
+                    summary: "Check schema".to_owned(),
+                    details: String::new(),
+                    round: 1,
+                    checkpoint: "defined".to_owned(),
+                })),
+            }),
+            ..Default::default()
+        };
+        {
+            let mut state = inbox.state.lock().await;
+            state.add(Entry::new("rq_act".to_owned(), "se_1".to_owned(), None, None, None, Held::new(action_req)));
+            state.add(Entry::new("rq_rev".to_owned(), "se_1".to_owned(), None, None, None, Held::new(review_req)));
+        }
+
+        // Wrong answer kind on action card is refused.
+        let wrong = inbox
+            .answer_request(user_req(pb::AnswerRequestRequest {
+                id: id("rq_act"),
+                answer: Some(pb::RequestAnswer {
+                    answer: Some(pb::request_answer::Answer::TodoReview(pb::TodoReviewAnswer {
+                        approved: true,
+                        note: String::new(),
+                    })),
+                }),
+                ..Default::default()
+            }))
+            .await;
+        assert_eq!(wrong.unwrap_err().code(), Code::InvalidArgument);
+
+        // Matching TodoActionAnswer succeeds.
+        let act_done = inbox
+            .answer_request(user_req(pb::AnswerRequestRequest {
+                id: id("rq_act"),
+                answer: Some(pb::RequestAnswer {
+                    answer: Some(pb::request_answer::Answer::TodoAction(pb::TodoActionAnswer {
+                        done: true,
+                        note: "rotated".to_owned(),
+                    })),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(act_done.state, pb::RequestState::Answered as i32);
+
+        // Matching TodoReviewAnswer succeeds.
+        let rev_changes = inbox
+            .answer_request(user_req(pb::AnswerRequestRequest {
+                id: id("rq_rev"),
+                answer: Some(pb::RequestAnswer {
+                    answer: Some(pb::request_answer::Answer::TodoReview(pb::TodoReviewAnswer {
+                        approved: false,
+                        note: "add edge case test".to_owned(),
+                    })),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(rev_changes.state, pb::RequestState::Answered as i32);
     }
 }

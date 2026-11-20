@@ -47,9 +47,19 @@ impl Inputs {
                         this.ui
                             .send(AppAction::ChannelAddRepo(ChannelAddRepoAction::Query(text)), cx);
                     }
-                    InputEvent::PressEnter { .. } => this
-                        .ui
-                        .send(AppAction::ChannelAddRepo(ChannelAddRepoAction::Submit), cx),
+                    InputEvent::PressEnter { .. } => {
+                        let picked = this.ui.read(|state| {
+                            let Some(Overlay::ChannelAddRepo(sheet)) = state.overlay() else {
+                                return None;
+                            };
+                            sheet.search.highlighted_repo(&[], 50)
+                        });
+                        let action = match picked {
+                            Some(repo) => ChannelAddRepoAction::Pick(repo),
+                            None => ChannelAddRepoAction::Submit,
+                        };
+                        this.ui.send(AppAction::ChannelAddRepo(action), cx);
+                    }
                     InputEvent::Focus | InputEvent::Blur => {}
                 }
             },

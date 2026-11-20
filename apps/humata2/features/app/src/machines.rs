@@ -125,10 +125,8 @@ impl App {
             // needs a client call the Daemon trait doesn't have yet.
             PageDelegate::Running(humata2_hosts::RunningDelegate::Open { session: None, .. }) => Effect::none(),
             PageDelegate::Running(humata2_hosts::RunningDelegate::ArchiveSession(session)) => {
-                // The session page's own Archive, frame 65's dialog included.
-                let go = self.navigate(state, Route::Session(session));
-                let archive = self.handle(state, AppAction::Session(humata2_session::SessionAction::Archive));
-                Effect::merge([go, archive])
+                // Archive (or close a Desk session) in place without jumping off the Machine page.
+                self.archive_session(state, session)
             }
         };
         effect.and(asked)

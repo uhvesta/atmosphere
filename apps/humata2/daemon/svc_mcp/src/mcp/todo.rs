@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use tonic::transport::Channel;
 
 use super::boards::{expected_revision, read_reply, stale_as_of, strings};
-use super::{GrpcDaemon, applied, key, lower, text};
+use super::{GrpcDaemon, applied, key, lower, outcome, text};
 
 impl GrpcDaemon {
     fn todo_client(&self) -> pb::todo_service_client::TodoServiceClient<Channel> {
@@ -106,6 +106,329 @@ impl GrpcDaemon {
             .into_inner();
         Ok(write_reply(&written, written_json(&written)))
     }
+
+    /// `todo_ask_question`.
+    pub(super) async fn todo_ask_question(&self, call: Call) -> Result<Reply, ToolError> {
+        let ask = ask_question_request(&call.arguments, key(&call))?;
+        let request = self.request(ask)?;
+        let response = self
+            .inbox()
+            .ask_user(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        outcome(response)
+    }
+
+    /// `todo_request_action`.
+    pub(super) async fn todo_request_action(&self, call: Call) -> Result<Reply, ToolError> {
+        let ask = request_action_request(&call.arguments, key(&call))?;
+        let request = self.request(ask)?;
+        let response = self
+            .inbox()
+            .ask_user(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        outcome(response)
+    }
+
+    /// `todo_request_review`.
+    pub(super) async fn todo_request_review(&self, call: Call) -> Result<Reply, ToolError> {
+        let ask = request_review_request(&call.arguments, key(&call))?;
+        let request = self.request(ask)?;
+        let response = self
+            .inbox()
+            .ask_user(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        outcome(response)
+    }
+
+    /// `todo_step_update`.
+    pub(super) async fn todo_step_update(&self, call: Call) -> Result<Reply, ToolError> {
+        let update = step_update_request(&call.arguments, key(&call))?;
+        let request = self.request(update)?;
+        let written = self
+            .todo_client()
+            .update_todo(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(write_reply(&written, written_json(&written)))
+    }
+
+    /// `todo_set_checkpoint`.
+    pub(super) async fn todo_set_checkpoint(&self, call: Call) -> Result<Reply, ToolError> {
+        let update = set_checkpoint_request(&call.arguments, key(&call))?;
+        let request = self.request(update)?;
+        let written = self
+            .todo_client()
+            .update_todo(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(write_reply(&written, written_json(&written)))
+    }
+
+    /// `todo_report_run`.
+    pub(super) async fn todo_report_run(&self, call: Call) -> Result<Reply, ToolError> {
+        let (comment_req, mut summary) = report_run_request(&call.arguments, key(&call))?;
+        let request = self.request(comment_req)?;
+        let added = self
+            .todo_client()
+            .add_todo_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        if let Value::Object(map) = &mut summary {
+            if let Some(comment) = added.comment {
+                map.insert("comment_id".to_owned(), json!(comment.id));
+            }
+            if let Some(item) = added.item {
+                map.insert("item".to_owned(), todo_json(&item));
+            }
+        }
+        Ok(applied(summary, None))
+    }
+}
+
+fn require_non_empty(arguments: &Map<String, Value>, field: &str) -> Result<String, ToolError> {
+    let value = text(arguments, field);
+    if value.trim().is_empty() {
+        return Err(invalid(field, &value, "a non-empty string"));
+    }
+    Ok(value)
+}
+
+fn ask_question_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<pb::AskUserRequest, ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let question = require_non_empty(arguments, "question")?;
+    let choices = strings(arguments, "choices");
+    if choices.len() > 4 {
+        return Err(invalid("choices", &choices.len().to_string(), "at most 4 choices"));
+    }
+    let multi_select = arguments
+        .get("multi_select")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if multi_select && choices.is_empty() {
+        return Err(invalid(
+            "multi_select",
+            "true",
+            "false when no choices are provided, or pass 1 to 4 choices",
+        ));
+    }
+    Ok(pb::AskUserRequest {
+        idempotency_key: Some(idempotency_key),
+        question,
+        choices,
+        wait_seconds: 0,
+        todo_item: Some(pb::BoardItemId { value: item_key }),
+        step_id: text(arguments, "step_id"),
+        multi_select,
+        details: text(arguments, "details"),
+    })
+}
+
+fn request_action_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<pb::AskUserRequest, ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let action = require_non_empty(arguments, "action")?;
+    Ok(pb::AskUserRequest {
+        idempotency_key: Some(idempotency_key),
+        question: action,
+        choices: vec!["Done".to_owned(), "Can't be done".to_owned()],
+        wait_seconds: 0,
+        todo_item: Some(pb::BoardItemId { value: item_key }),
+        step_id: text(arguments, "step_id"),
+        multi_select: false,
+        details: text(arguments, "details"),
+    })
+}
+
+fn request_review_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<pb::AskUserRequest, ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let summary = require_non_empty(arguments, "summary")?;
+    let round = match arguments.get("round") {
+        None => None,
+        Some(value) => {
+            let n = value
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| invalid("round", &value.to_string(), "an integer >= 1"))?;
+            Some(n)
+        }
+    };
+    let checkpoint = match arguments.get("checkpoint").and_then(Value::as_str) {
+        None => None,
+        Some(raw) => {
+            let parsed = parse_checkpoint(raw)?;
+            Some(lower(parsed.as_str_name(), "TODO_CHECKPOINT_"))
+        }
+    };
+    let question = match (round, checkpoint.as_deref()) {
+        (Some(r), Some(cp)) => format!("[Review round {r} · {cp}] {summary}"),
+        (Some(r), None) => format!("[Review round {r}] {summary}"),
+        (None, Some(cp)) => format!("[Review · {cp}] {summary}"),
+        (None, None) => summary,
+    };
+    Ok(pb::AskUserRequest {
+        idempotency_key: Some(idempotency_key),
+        question,
+        choices: vec!["Approved".to_owned(), "Changes asked".to_owned()],
+        wait_seconds: 0,
+        todo_item: Some(pb::BoardItemId { value: item_key }),
+        step_id: text(arguments, "step_id"),
+        multi_select: false,
+        details: text(arguments, "details"),
+    })
+}
+
+fn step_update_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<pb::UpdateTodoRequest, ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let raw_steps = arguments
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("steps", "", "an array of step objects"))?;
+    let mut steps = Vec::with_capacity(raw_steps.len());
+    for raw in raw_steps {
+        let obj = raw
+            .as_object()
+            .ok_or_else(|| invalid("steps", &raw.to_string(), "an object with text"))?;
+        let step_text = require_non_empty(obj, "text")?;
+        steps.push(pb::TodoStep {
+            id: text(obj, "id"),
+            text: step_text,
+            done: obj.get("done").and_then(Value::as_bool).unwrap_or(false),
+            markdown_context: text(obj, "markdown_context"),
+            dropped: obj.get("dropped").and_then(Value::as_bool).unwrap_or(false),
+            ..pb::TodoStep::default()
+        });
+    }
+    Ok(pb::UpdateTodoRequest {
+        idempotency_key: Some(idempotency_key),
+        id: Some(pb::BoardItemId { value: item_key }),
+        patch: Some(pb::TodoPatch {
+            steps: Some(pb::TodoSteps { steps }),
+            ..pb::TodoPatch::default()
+        }),
+        expected_revision: expected_revision(arguments),
+        reason: text(arguments, "reason"),
+        evidence: Vec::new(),
+    })
+}
+
+fn parse_checkpoint(raw: &str) -> Result<pb::TodoCheckpoint, ToolError> {
+    match raw {
+        "with_context" => Ok(pb::TodoCheckpoint::WithContext),
+        "defined" => Ok(pb::TodoCheckpoint::Defined),
+        "done" => Ok(pb::TodoCheckpoint::Done),
+        other => Err(invalid("checkpoint", other, "with_context, defined or done")),
+    }
+}
+
+fn set_checkpoint_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<pb::UpdateTodoRequest, ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let raw = arguments
+        .get("checkpoint")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let checkpoint = parse_checkpoint(raw)?;
+    Ok(pb::UpdateTodoRequest {
+        idempotency_key: Some(idempotency_key),
+        id: Some(pb::BoardItemId { value: item_key }),
+        patch: Some(pb::TodoPatch {
+            checkpoint: Some(checkpoint as i32),
+            ..pb::TodoPatch::default()
+        }),
+        expected_revision: expected_revision(arguments),
+        reason: text(arguments, "reason"),
+        evidence: Vec::new(),
+    })
+}
+
+fn format_cost_micros(cost_micros: u64) -> String {
+    let cents = (cost_micros + 5_000) / 10_000;
+    format!("${}.{:02}", cents / 100, cents % 100)
+}
+
+fn report_run_request(
+    arguments: &Map<String, Value>,
+    idempotency_key: pb::IdempotencyKey,
+) -> Result<(pb::AddTodoCommentRequest, Value), ToolError> {
+    let item_key = require_non_empty(arguments, "key")?;
+    let tool = require_non_empty(arguments, "tool")?;
+    let outcome_text = require_non_empty(arguments, "outcome")?;
+    let model = text(arguments, "model");
+    let cost_micros = arguments
+        .get("cost_micros")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let links: Vec<(String, String)> = arguments
+        .get("links")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_object)
+                .map(|obj| (text(obj, "label"), text(obj, "target")))
+                .filter(|(label, target)| !label.is_empty() && !target.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut header = if model.is_empty() {
+        format!("Run: {tool} — {outcome_text}")
+    } else {
+        format!("Run: {tool} ({model}) — {outcome_text}")
+    };
+    if cost_micros > 0 {
+        header.push_str(&format!(" · {}", format_cost_micros(cost_micros)));
+    }
+    let mut lines = vec![header];
+    for (label, target) in &links {
+        lines.push(format!("- [{label}]({target})"));
+    }
+    let body = lines.join("\n");
+
+    let req = pb::AddTodoCommentRequest {
+        idempotency_key: Some(idempotency_key),
+        id: Some(pb::BoardItemId {
+            value: item_key.clone(),
+        }),
+        body,
+        step_id: String::new(),
+    };
+    let links_json: Vec<Value> = links
+        .into_iter()
+        .map(|(label, target)| json!({ "label": label, "target": target }))
+        .collect();
+    let summary = json!({
+        "key": item_key,
+        "tool": tool,
+        "model": if model.is_empty() { Value::Null } else { json!(model) },
+        "outcome": outcome_text,
+        "cost_micros": cost_micros,
+        "links": links_json,
+    });
+    Ok((req, summary))
 }
 
 fn invalid(field: &str, given: &str, accepted: &str) -> ToolError {
@@ -322,5 +645,171 @@ mod tests {
         ));
         let done = pb::WriteTodoResponse::default();
         assert!(matches!(write_reply(&done, written_json(&done)), Reply::Applied { .. }));
+    }
+
+    fn ikey() -> pb::IdempotencyKey {
+        pb::IdempotencyKey {
+            value: "k1".to_owned(),
+        }
+    }
+
+    #[test]
+    fn todo_ask_question_builds_free_text_and_multi_choice_requests() {
+        let free = ask_question_request(
+            &args(json!({
+                "key": "PAY-3",
+                "question": "Which env?",
+                "step_id": "st_1",
+                "details": "Needed for **staging** config."
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert_eq!(free.todo_item.as_ref().map(|i| i.value.as_str()), Some("PAY-3"));
+        assert_eq!(free.step_id, "st_1");
+        assert!(!free.multi_select);
+        assert!(free.choices.is_empty());
+        assert_eq!(free.details, "Needed for **staging** config.");
+
+        let multi = ask_question_request(
+            &args(json!({
+                "key": "PAY-3",
+                "question": "Pick targets",
+                "choices": ["mac", "linux", "ci"],
+                "multi_select": true
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert!(multi.multi_select);
+        assert_eq!(multi.choices, vec!["mac", "linux", "ci"]);
+
+        let bad_multi = ask_question_request(
+            &args(json!({
+                "key": "PAY-3",
+                "question": "Pick?",
+                "multi_select": true
+            })),
+            ikey(),
+        )
+        .unwrap_err();
+        assert_eq!(bad_multi.kind, ErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn todo_request_action_and_review_build_structured_choices() {
+        let action = request_action_request(
+            &args(json!({
+                "key": "PAY-7",
+                "action": "Rotate staging API key",
+                "step_id": "st_2",
+                "details": "In AWS Secrets Manager"
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert_eq!(action.todo_item.as_ref().map(|i| i.value.as_str()), Some("PAY-7"));
+        assert_eq!(action.step_id, "st_2");
+        assert_eq!(action.question, "Rotate staging API key");
+        assert_eq!(action.choices, vec!["Done", "Can't be done"]);
+        assert!(!action.multi_select);
+
+        let review = request_review_request(
+            &args(json!({
+                "key": "PAY-7",
+                "summary": "Schema migration ready",
+                "round": 2,
+                "checkpoint": "defined",
+                "details": "Addressed round 1 feedback"
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert_eq!(review.todo_item.as_ref().map(|i| i.value.as_str()), Some("PAY-7"));
+        assert_eq!(review.question, "[Review round 2 · defined] Schema migration ready");
+        assert_eq!(review.choices, vec!["Approved", "Changes asked"]);
+        assert_eq!(review.details, "Addressed round 1 feedback");
+
+        let bad_round = request_review_request(
+            &args(json!({
+                "key": "PAY-7",
+                "summary": "Check",
+                "round": 0
+            })),
+            ikey(),
+        )
+        .unwrap_err();
+        assert_eq!(bad_round.kind, ErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn todo_step_update_preserves_order_markdown_context_and_drop_restore() {
+        let update = step_update_request(
+            &args(json!({
+                "key": "PAY-9",
+                "expected_revision": 3,
+                "steps": [
+                    { "id": "s2", "text": "Second moved first", "done": false, "markdown_context": "See `a.rs`", "dropped": false },
+                    { "id": "s1", "text": "Old step", "done": false, "dropped": true }
+                ]
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert_eq!(update.id.as_ref().map(|i| i.value.as_str()), Some("PAY-9"));
+        assert_eq!(update.expected_revision.as_ref().map(|r| r.value), Some(3));
+        let steps = update.patch.unwrap().steps.unwrap().steps;
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, "s2");
+        assert_eq!(steps[0].markdown_context, "See `a.rs`");
+        assert!(!steps[0].dropped);
+        assert_eq!(steps[1].id, "s1");
+        assert!(steps[1].dropped);
+    }
+
+    #[test]
+    fn todo_set_checkpoint_maps_all_valid_values_and_rejects_unknown() {
+        for (raw, expected) in [
+            ("with_context", pb::TodoCheckpoint::WithContext as i32),
+            ("defined", pb::TodoCheckpoint::Defined as i32),
+            ("done", pb::TodoCheckpoint::Done as i32),
+        ] {
+            let update = set_checkpoint_request(
+                &args(json!({ "key": "PAY-4", "checkpoint": raw })),
+                ikey(),
+            )
+            .unwrap();
+            assert_eq!(update.patch.unwrap().checkpoint, Some(expected));
+        }
+        let err = set_checkpoint_request(
+            &args(json!({ "key": "PAY-4", "checkpoint": "unknown" })),
+            ikey(),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn todo_report_run_formats_cost_and_links() {
+        let (req, summary) = report_run_request(
+            &args(json!({
+                "key": "PAY-11",
+                "tool": "claude",
+                "model": "sonnet-4",
+                "outcome": "Tests green",
+                "cost_micros": 1_250_000,
+                "links": [
+                    { "label": "PR #42", "target": "https://github.com/acme/api/pull/42" }
+                ]
+            })),
+            ikey(),
+        )
+        .unwrap();
+        assert_eq!(req.id.as_ref().map(|i| i.value.as_str()), Some("PAY-11"));
+        assert!(req.body.contains("Run: claude (sonnet-4) — Tests green · $1.25"));
+        assert!(req.body.contains("- [PR #42](https://github.com/acme/api/pull/42)"));
+        assert_eq!(summary["tool"], "claude");
+        assert_eq!(summary["cost_micros"], 1_250_000);
+        assert_eq!(summary["links"][0]["label"], "PR #42");
     }
 }

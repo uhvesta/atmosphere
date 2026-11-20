@@ -73,6 +73,10 @@ message AskUserRequest {
   // user can always reply in words.
   repeated string choices = 3;
   uint32 wait_seconds = 4;
+  BoardItemId todo_item = 5;
+  string step_id = 6;
+  bool multi_select = 7;
+  string details = 8;
 }
 
 message RequestAccessRequest {
@@ -290,6 +294,8 @@ message RequestPreview {
     AccessAheadPreview access_ahead = 13;
     MigratePreview migrate = 14;
     ProviderImportPreview provider_import = 15;
+    TodoActionPreview todo_action = 16;
+    TodoReviewPreview todo_review = 17;
   }
 }
 
@@ -413,6 +419,26 @@ message QuestionPreview {
   string question = 1;
   // Optional answers the agent offered; the user may also write their own.
   repeated string choices = 2;
+  BoardItemId todo_item = 3;
+  string step_id = 4;
+  bool multi_select = 5;
+  string details = 6;
+}
+
+message TodoActionPreview {
+  BoardItemId todo_item = 1;
+  string step_id = 2;
+  string action = 3;
+  string details = 4;
+}
+
+message TodoReviewPreview {
+  BoardItemId todo_item = 1;
+  string step_id = 2;
+  string summary = 3;
+  string details = 4;
+  uint32 round = 5;
+  string checkpoint = 6;
 }
 
 message MovePreview {
@@ -551,6 +577,10 @@ message RequestAnswer {
     AlwaysLet always = 3;
     // A question's reply; becomes the result of the agent's call.
     Reply reply = 4;
+    // An answer to a TodoActionPreview (Done / Can't be done).
+    TodoActionAnswer todo_action = 5;
+    // An answer to a TodoReviewPreview (Approved / Changes asked).
+    TodoReviewAnswer todo_review = 6;
   }
 }
 
@@ -569,6 +599,17 @@ message AlwaysLet {
 
 message Reply {
   string text = 1;
+  repeated string selected_choices = 2;
+}
+
+message TodoActionAnswer {
+  bool done = 1;
+  string note = 2;
+}
+
+message TodoReviewAnswer {
+  bool approved = 1;
+  string note = 2;
 }
 
 message InboxScope {

@@ -1,0 +1,43 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Pure desktop notification rules (NOTIFY, D889): no GPUI, no OS dependencies.
+rust_library(
+    name = "notify",
+    srcs = glob(["src/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_notify",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/features/settings:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/clients:api",
+        "@crates//:serde",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+        crate_root = src,
+        deps = [
+            ":notify",
+            "//apps/humata2/clients:api",
+            "@crates//:serde_json",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

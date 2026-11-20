@@ -114,7 +114,8 @@ impl App {
                 };
                 state.channel_pages.entry(channel.clone()).or_default().tab =
                     crate::channel::Tab::Desk;
-                let go = self.navigate(state, Route::Channel(channel));
+                let gone = Route::Session(session.clone());
+                let go = self.leave(state, &gone, Route::Channel(channel));
                 Effect::merge([go, self.load()])
             }
             DeskAction::Changed {
@@ -122,7 +123,8 @@ impl App {
                 change: Change::Close,
                 result: Ok(()),
             } if state.route == Route::Session(session.clone()) => {
-                self.navigate(state, Route::Desk)
+                let gone = Route::Session(session.clone());
+                self.leave(state, &gone, Route::Desk)
             }
             // REPOS (RL-5, DK-14): New desk session's repo search opens on the library.
             DeskAction::New(humata2_desk::NewAction::AddingRepo(true)) => {
@@ -167,6 +169,22 @@ impl App {
             Some(id) => self.handle(state, AppAction::Desk(DeskAction::AskClose(id))),
             None => self.child(state, AppAction::Session(SessionAction::Archive)),
         }
+    }
+
+    /// Archives `id` (or asks to close it on the Desk when it is a Desk
+    /// session) without navigating away from the current screen.
+    pub(super) fn archive_session(
+        &self,
+        state: &mut AppState,
+        id: SessionId,
+    ) -> Effect<AppAction> {
+        if state.is_desk_session(&id) {
+            return self.handle(state, AppAction::Desk(DeskAction::AskClose(id)));
+        }
+        let previous = state.session.open.replace(id);
+        let effect = self.child(state, AppAction::Session(SessionAction::Archive));
+        state.session.open = previous;
+        effect
     }
 
     /// Fork, from the palette or a shortcut. A Desk session has none

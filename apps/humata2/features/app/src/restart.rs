@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use humata2_clients::model::{MachineId, Restart, Session, SessionId, Status};
 use humata2_clients::{DaemonError, Workspace};
+use humata2_notify::NotifyEvent;
 use tca::Effect;
 
-use crate::{App, AppAction, AppState, Route};
+use crate::{App, AppAction, AppState, Load, Route};
 
 /// A change from the restart views.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,10 +92,41 @@ impl App {
     ) -> Effect<AppAction> {
         let clock = self.clients.clock.clone();
         let text = told(state, &restart);
+        let notice = if state.load == Load::Ready && !restart.not_brought_back.is_empty() {
+            let frontmost = Self::frontmost_context(state);
+            let now_secs = self.clients.clock.now().as_secs();
+            let machine_name = state
+                .workspace
+                .machine(&restart.machine)
+                .map_or_else(|| restart.machine.as_str().to_owned(), |m| m.name.clone());
+            let sessions = restart
+                .not_brought_back
+                .iter()
+                .filter_map(|item| item.session.clone())
+                .collect();
+            humata2_notify::evaluate(
+                &state.settings.preferences.notify,
+                &frontmost,
+                &mut state.notify_burst,
+                NotifyEvent::RestartFailed {
+                    machine_id: restart.machine.clone(),
+                    machine_name,
+                    sessions,
+                    not_brought_back: restart.not_brought_back.len(),
+                },
+                now_secs,
+            )
+        } else {
+            None
+        };
         let workspace = Arc::make_mut(&mut state.workspace);
         workspace.restarts.retain(|old| old.machine != restart.machine);
         workspace.restarts.insert(0, restart);
-        state.toast(text, &clock)
+        let toast = state.toast(text, &clock);
+        match notice {
+            Some(notice) => Effect::merge([toast, self.post_notice(notice)]),
+            None => toast,
+        }
     }
 
     /// Tells each restart a load brought that the app hadn't held before:

@@ -3,12 +3,16 @@
 //! maps the wire items to the app's [`Entry`]s.
 
 use humata2_clients::todo::{
-    Entry, MigrationNotice, NewTodo, TodoClient, TodoFilter, TodoLists, TodoPatch,
+    BlockerGoneResolution, BulkUpdateFailure, BulkUpdateItem, BulkUpdateResult, Entry, FoldResult,
+    MigrationNotice, NewTodo, SplitResult, TodoClient, TodoFilter, TodoHistoryEntry, TodoLists,
+    TodoPatch, TodoRunsResult,
 };
 use humata2_clients::{DaemonError, Reply};
 use humata2_todo::{
-    Ask, AskDetail, AskKind, ChannelFilter, Day, Effort, Evidence, Impact, OldColumn, Review, Start, State,
-    Step, Summary, Todo,
+    Ask, AskDetail, AskKind, BlockerGone, ChannelFilter, CheckpointState, CloseReadiness, Day,
+    Effort, Evidence, ExternalBlock, FuzzyDue, Impact, LifecyclePrompt, Need, OldColumn, OwnerKind,
+    Review, RunEntry, RunLink, SessionSignal, SourceAnchor, Start, State, Step, StuckAgent,
+    Summary, Todo, TodoComment, TodoOwner, WatchedPr, WordDiffKind, WordDiffSpan,
 };
 use tokio::sync::mpsc;
 use tonic::Streaming;
@@ -124,11 +128,70 @@ fn impact_pb(impact: Option<Impact>) -> pb::TodoImpact {
     }
 }
 
+fn need(value: i32) -> Option<Need> {
+    match pb::TodoNeed::try_from(value) {
+        Ok(pb::TodoNeed::Idea) => Some(Need::Idea),
+        Ok(pb::TodoNeed::NiceToHave) => Some(Need::NiceToHave),
+        Ok(pb::TodoNeed::Expected) => Some(Need::Expected),
+        Ok(pb::TodoNeed::Critical) => Some(Need::Critical),
+        Ok(pb::TodoNeed::Unspecified) | Err(_) => None,
+    }
+}
+
+fn need_pb(need: Option<Need>) -> pb::TodoNeed {
+    match need {
+        None => pb::TodoNeed::Unspecified,
+        Some(Need::Idea) => pb::TodoNeed::Idea,
+        Some(Need::NiceToHave) => pb::TodoNeed::NiceToHave,
+        Some(Need::Expected) => pb::TodoNeed::Expected,
+        Some(Need::Critical) => pb::TodoNeed::Critical,
+    }
+}
+
+fn fuzzy_due(value: i32) -> Option<FuzzyDue> {
+    match pb::TodoFuzzyDue::try_from(value) {
+        Ok(pb::TodoFuzzyDue::InAFewDays) => Some(FuzzyDue::InAFewDays),
+        Ok(pb::TodoFuzzyDue::NextWeek) => Some(FuzzyDue::NextWeek),
+        Ok(pb::TodoFuzzyDue::NextMonth) => Some(FuzzyDue::NextMonth),
+        Ok(pb::TodoFuzzyDue::Unspecified) | Err(_) => None,
+    }
+}
+
+fn fuzzy_due_pb(fuzzy: Option<FuzzyDue>) -> pb::TodoFuzzyDue {
+    match fuzzy {
+        None => pb::TodoFuzzyDue::Unspecified,
+        Some(FuzzyDue::InAFewDays) => pb::TodoFuzzyDue::InAFewDays,
+        Some(FuzzyDue::NextWeek) => pb::TodoFuzzyDue::NextWeek,
+        Some(FuzzyDue::NextMonth) => pb::TodoFuzzyDue::NextMonth,
+    }
+}
+
+fn checkpoint(value: i32) -> Option<CheckpointState> {
+    match pb::TodoCheckpoint::try_from(value) {
+        Ok(pb::TodoCheckpoint::WithContext) => Some(CheckpointState::WithContext),
+        Ok(pb::TodoCheckpoint::Defined) => Some(CheckpointState::Defined),
+        Ok(pb::TodoCheckpoint::Done) => Some(CheckpointState::Done),
+        Ok(pb::TodoCheckpoint::Unspecified) | Err(_) => None,
+    }
+}
+
+fn checkpoint_pb(cp: Option<CheckpointState>) -> pb::TodoCheckpoint {
+    match cp {
+        None => pb::TodoCheckpoint::Unspecified,
+        Some(CheckpointState::WithContext) => pb::TodoCheckpoint::WithContext,
+        Some(CheckpointState::Defined) => pb::TodoCheckpoint::Defined,
+        Some(CheckpointState::Done) => pb::TodoCheckpoint::Done,
+    }
+}
+
 /// A state the app doesn't know reads as open, the list's start.
 fn state(value: i32) -> State {
     match pb::TodoState::try_from(value) {
         Ok(pb::TodoState::InProgress) => State::InProgress,
         Ok(pb::TodoState::Closed) => State::Closed,
+        Ok(pb::TodoState::WontDo) => State::WontDo,
+        Ok(pb::TodoState::Became) => State::Became,
+        Ok(pb::TodoState::WatchingPr) => State::WatchingPr,
         Ok(pb::TodoState::Open | pb::TodoState::Unspecified) | Err(_) => State::Open,
     }
 }
@@ -138,6 +201,9 @@ fn state_pb(state: State) -> pb::TodoState {
         State::Open => pb::TodoState::Open,
         State::InProgress => pb::TodoState::InProgress,
         State::Closed => pb::TodoState::Closed,
+        State::WontDo => pb::TodoState::WontDo,
+        State::Became => pb::TodoState::Became,
+        State::WatchingPr => pb::TodoState::WatchingPr,
     }
 }
 
@@ -151,11 +217,211 @@ fn old_column(value: i32) -> OldColumn {
     }
 }
 
+fn source_anchor(wire: &pb::SourceAnchor) -> SourceAnchor {
+    SourceAnchor {
+        repo: wire.repo.clone(),
+        path: wire.path.clone(),
+        line: wire.line,
+        end_line: (wire.end_line > 0).then_some(wire.end_line),
+        comment_id: (!wire.comment_id.is_empty()).then(|| wire.comment_id.clone()),
+    }
+}
+
+fn source_anchor_pb(anchor: &SourceAnchor) -> pb::SourceAnchor {
+    pb::SourceAnchor {
+        repo: anchor.repo.clone(),
+        path: anchor.path.clone(),
+        line: anchor.line,
+        end_line: anchor.end_line.unwrap_or(0),
+        comment_id: anchor.comment_id.clone().unwrap_or_default(),
+    }
+}
+
+fn external_block(wire: &pb::ExternalBlock) -> ExternalBlock {
+    ExternalBlock {
+        reason: wire.reason.clone(),
+        since: wire.since.as_ref().and_then(|at| day_of_secs(at.seconds)),
+    }
+}
+
+fn external_block_pb(block: &ExternalBlock) -> pb::ExternalBlock {
+    pb::ExternalBlock {
+        reason: block.reason.clone(),
+        since: None,
+    }
+}
+
+fn comment(wire: &pb::TodoComment) -> TodoComment {
+    TodoComment {
+        id: wire.id.clone(),
+        author: wire.author.clone(),
+        body: wire.body.clone(),
+        created: wire.created_at.as_ref().and_then(|at| day_of_secs(at.seconds)),
+        step_id: (!wire.step_id.is_empty()).then(|| wire.step_id.clone()),
+    }
+}
+
+fn owner(wire: &pb::TodoOwner) -> Option<TodoOwner> {
+    let kind = match pb::TodoOwnerKind::try_from(wire.kind) {
+        Ok(pb::TodoOwnerKind::User) => OwnerKind::User,
+        Ok(pb::TodoOwnerKind::Agent) => OwnerKind::Agent,
+        Ok(pb::TodoOwnerKind::Unspecified) | Err(_) => return None,
+    };
+    Some(TodoOwner {
+        kind,
+        label: wire.label.clone(),
+        session: wire
+            .session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .filter(|s| !s.is_empty()),
+    })
+}
+
+fn owner_pb(o: &TodoOwner) -> pb::TodoOwner {
+    pb::TodoOwner {
+        kind: match o.kind {
+            OwnerKind::User => pb::TodoOwnerKind::User as i32,
+            OwnerKind::Agent => pb::TodoOwnerKind::Agent as i32,
+        },
+        label: o.label.clone(),
+        session: o.session.as_ref().map(|s| pb::SessionId { value: s.clone() }),
+    }
+}
+
+fn watched_pr(wire: &pb::WatchedPr) -> WatchedPr {
+    let repo_pr = wire.pr.as_ref().map_or_else(String::new, |pr| {
+        let repo = pr
+            .repo
+            .as_ref()
+            .map_or_else(String::new, |r| format!("{}/{}", r.owner, r.name));
+        format!("{repo}#{}", pr.number)
+    });
+    WatchedPr {
+        repo_pr,
+        title: wire.title.clone(),
+        ci_state: wire.ci_state.clone(),
+        unresolved_comments: wire.unresolved_comments,
+        has_conflicts: wire.has_conflicts,
+        upstream_merged: wire.upstream_merged,
+        merged: wire.merged,
+        closed_without_merge: wire.closed_without_merge,
+        stack_key: (!wire.stack_key.is_empty()).then(|| wire.stack_key.clone()),
+    }
+}
+
+fn watched_pr_pb(w: &WatchedPr) -> pb::WatchedPr {
+    let pr = w.repo_pr.split_once('#').and_then(|(repo_part, num_part)| {
+        let (owner, name) = repo_part.split_once('/')?;
+        let number = num_part.parse::<u32>().ok()?;
+        Some(pb::PullRequestRef {
+            repo: Some(pb::RepoRef {
+                owner: owner.to_owned(),
+                name: name.to_owned(),
+            }),
+            number,
+            note: String::new(),
+        })
+    });
+    pb::WatchedPr {
+        pr,
+        title: w.title.clone(),
+        ci_state: w.ci_state.clone(),
+        unresolved_comments: w.unresolved_comments,
+        has_conflicts: w.has_conflicts,
+        upstream_merged: w.upstream_merged,
+        merged: w.merged,
+        closed_without_merge: w.closed_without_merge,
+        stack_key: w.stack_key.clone().unwrap_or_default(),
+    }
+}
+
 fn step_pb(step: &Step) -> pb::TodoStep {
     pb::TodoStep {
         text: step.text.clone(),
         done: step.done,
         ticked_by: None,
+        id: step.id.clone(),
+        markdown_context: step.markdown_context.clone().unwrap_or_default(),
+        dropped: step.dropped,
+        from_key: step.from_key.clone().unwrap_or_default(),
+        source_anchor: step.source_anchor.as_ref().map(source_anchor_pb),
+    }
+}
+
+fn word_diff_span(wire: &pb::WordDiffSpan) -> Option<WordDiffSpan> {
+    let kind = match pb::WordDiffKind::try_from(wire.kind) {
+        Ok(pb::WordDiffKind::Equal) => WordDiffKind::Equal,
+        Ok(pb::WordDiffKind::Added) => WordDiffKind::Added,
+        Ok(pb::WordDiffKind::Removed) => WordDiffKind::Removed,
+        Ok(pb::WordDiffKind::Unspecified) | Err(_) => return None,
+    };
+    Some(WordDiffSpan {
+        kind,
+        text: wire.text.clone(),
+    })
+}
+
+fn history_entry(wire: &pb::ItemHistoryEntry) -> TodoHistoryEntry {
+    let kind = match pb::HistoryKind::try_from(wire.kind) {
+        Ok(pb::HistoryKind::Created) => "created",
+        Ok(pb::HistoryKind::Changed) => "changed",
+        Ok(pb::HistoryKind::Moved) => "moved",
+        Ok(pb::HistoryKind::Deleted) => "deleted",
+        Ok(pb::HistoryKind::Sessions) => "sessions",
+        Ok(pb::HistoryKind::Dependencies) => "dependencies",
+        Ok(pb::HistoryKind::Commented) => "commented",
+        Ok(pb::HistoryKind::Split) => "split",
+        Ok(pb::HistoryKind::Folded) => "folded",
+        Ok(pb::HistoryKind::StepChanged) => "step_changed",
+        Ok(pb::HistoryKind::OwnerChanged) => "owner_changed",
+        Ok(pb::HistoryKind::CheckpointChanged) => "checkpoint_changed",
+        Ok(pb::HistoryKind::PrSynced) => "pr_synced",
+        Ok(pb::HistoryKind::AskAnswered) => "ask_answered",
+        Ok(pb::HistoryKind::Unspecified) | Err(_) => "changed",
+    };
+    TodoHistoryEntry {
+        at_day: wire
+            .at
+            .as_ref()
+            .and_then(|t| t.at.as_ref())
+            .and_then(|ts| day_of_secs(ts.seconds)),
+        actor: wire
+            .at
+            .as_ref()
+            .and_then(|t| t.by.as_ref())
+            .map(|a| format!("{a:?}"))
+            .unwrap_or_default(),
+        kind: kind.to_owned(),
+        field: wire.field.clone(),
+        before: wire.before.clone(),
+        after: wire.after.clone(),
+        change: wire.change.clone(),
+        word_diff: wire.word_diff.iter().filter_map(word_diff_span).collect(),
+    }
+}
+
+fn run_entry(wire: &pb::TodoRun) -> RunEntry {
+    RunEntry {
+        id: wire.id.clone(),
+        tool: wire.tool.clone(),
+        model: wire.model.clone(),
+        outcome: wire.outcome.clone(),
+        cost_micros: wire.cost_micros,
+        started: wire.started_at.as_ref().and_then(|ts| day_of_secs(ts.seconds)),
+        links: wire
+            .links
+            .iter()
+            .map(|l| RunLink {
+                label: l.label.clone(),
+                target: l.target.clone(),
+            })
+            .collect(),
+        session: wire
+            .session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -235,8 +501,14 @@ fn entry(wire: &pb::TodoItem, today: Day, now: i64) -> Entry {
         .steps
         .iter()
         .map(|step| Step {
+            id: step.id.clone(),
             text: step.text.clone(),
             done: step.done,
+            markdown_context: (!step.markdown_context.is_empty())
+                .then(|| step.markdown_context.clone()),
+            dropped: step.dropped,
+            from_key: (!step.from_key.is_empty()).then(|| step.from_key.clone()),
+            source_anchor: step.source_anchor.as_ref().map(source_anchor),
         })
         .collect();
     todo.hide_until = day_of(fields.hide_until.as_ref());
@@ -264,6 +536,71 @@ fn entry(wire: &pb::TodoItem, today: Day, now: i64) -> Entry {
         .closed_at
         .as_ref()
         .and_then(|at| day_of_secs(at.seconds));
+    todo.need = need(fields.need);
+    todo.fuzzy_due = fuzzy_due(fields.fuzzy_due);
+    todo.external_block = fields.external_block.as_ref().map(external_block);
+    todo.from_keys = fields.from_keys.clone();
+    todo.became_keys = fields.became_keys.clone();
+    todo.source_anchor = fields.source_anchor.as_ref().map(source_anchor);
+    todo.comments = fields.comments.iter().map(comment).collect();
+    todo.owner = fields.owner.as_ref().and_then(owner);
+    todo.checkpoint = checkpoint(fields.checkpoint);
+    todo.stuck_agent = fields.stuck_agent.as_ref().map(|s| StuckAgent {
+        session: s.session.as_ref().map(|id| id.value.clone()).unwrap_or_default(),
+        agent_label: s.agent_label.clone(),
+        reason: s.reason.clone(),
+        since_minutes: s.since.as_ref().map_or(0, |at| {
+            u32::try_from((now - at.seconds).max(0) / 60).unwrap_or(u32::MAX)
+        }),
+    });
+    todo.blocker_gone = fields
+        .blocker_gone
+        .iter()
+        .map(|b| BlockerGone {
+            blocker_key: b.blocker_key.clone(),
+            blocker_state: state(b.blocker_state),
+            replacement_keys: b.replacement_keys.clone(),
+        })
+        .collect();
+    todo.watched_prs = fields.watched_prs.iter().map(watched_pr).collect();
+    todo.close_readiness = fields.close_readiness.as_ref().map(|cr| CloseReadiness {
+        steps_done: cr.steps_done,
+        steps_total: cr.steps_total,
+        unresolved_comments: cr.unresolved_comments,
+        ci_status: cr.ci_status.clone(),
+        commits: cr.commits,
+    });
+    todo.session_signals = fields
+        .session_signals
+        .iter()
+        .map(|s| SessionSignal {
+            session: s.session.as_ref().map(|id| id.value.clone()).unwrap_or_default(),
+            label: s.label.clone(),
+            status: s.status.clone(),
+            idle_days: s.idle_days,
+            active_turn: s.active_turn,
+        })
+        .collect();
+    todo.lifecycle_prompts = fields
+        .lifecycle_prompts
+        .iter()
+        .map(|p| LifecyclePrompt {
+            id: p.id.clone(),
+            kind: p.kind.clone(),
+            title: p.title.clone(),
+            detail: p.detail.clone(),
+            choices: p.choices.clone(),
+            pr_ref: (!p.pr_ref.is_empty()).then(|| p.pr_ref.clone()),
+            session: p
+                .session
+                .as_ref()
+                .map(|id| id.value.clone())
+                .filter(|s| !s.is_empty()),
+        })
+        .collect();
+    todo.run_count = fields.run_count;
+    todo.total_cost_micros = fields.total_cost_micros;
+    todo.wont_do_reason = (!fields.wont_do_reason.is_empty()).then(|| fields.wont_do_reason.clone());
     let pending = item.pending.first();
     todo.ask = pending.map(|ask| Ask {
         kind: ask_kind(ask.change.as_ref()),
@@ -338,6 +675,11 @@ fn create_pb(new: NewTodo) -> pb::CreateTodoRequest {
         effort: effort_pb(new.effort) as i32,
         impact: impact_pb(new.impact) as i32,
         tags: new.tags,
+        need: need_pb(new.need) as i32,
+        fuzzy_due: fuzzy_due_pb(new.fuzzy_due) as i32,
+        source_anchor: new.source_anchor.as_ref().map(source_anchor_pb),
+        from_keys: new.from_keys,
+        external_block: new.external_block.as_ref().map(external_block_pb),
         ..pb::CreateTodoRequest::default()
     }
 }
@@ -345,6 +687,21 @@ fn create_pb(new: NewTodo) -> pb::CreateTodoRequest {
 fn patch_pb(patch: TodoPatch) -> pb::TodoPatch {
     let (due, clear_due) = optional_day(patch.due);
     let (hide_until, clear_hide_until) = optional_day(patch.hide_until);
+    let (channel, clear_channel) = match patch.channel {
+        None => (None, false),
+        Some(None) => (None, true),
+        Some(Some(value)) => (Some(pb::ChannelId { value }), false),
+    };
+    let (external_block, clear_external_block) = match patch.external_block {
+        None => (None, false),
+        Some(None) => (None, true),
+        Some(Some(block)) => (Some(external_block_pb(&block)), false),
+    };
+    let (owner, clear_owner) = match patch.owner {
+        None => (None, false),
+        Some(None) => (None, true),
+        Some(Some(o)) => (Some(owner_pb(&o)), false),
+    };
     pb::TodoPatch {
         title: patch.title,
         description: patch.description,
@@ -362,7 +719,20 @@ fn patch_pb(patch: TodoPatch) -> pb::TodoPatch {
         clear_hide_until,
         // The app pins from 0, the wire from 1; 0 on the wire unpins.
         pin_order: patch.pin.map(|pin| pin.map_or(0, |at| at.saturating_add(1))),
+        channel,
+        clear_channel,
+        depends_on_add: patch.depends_on_add.iter().map(|k| id_pb(k)).collect(),
+        depends_on_remove: patch.depends_on_remove.iter().map(|k| id_pb(k)).collect(),
         accept_suggestion: patch.accept_suggestion,
+        need: patch.need.map(|n| need_pb(n) as i32),
+        fuzzy_due: patch.fuzzy_due.map(|f| fuzzy_due_pb(f) as i32),
+        external_block,
+        clear_external_block,
+        owner,
+        clear_owner,
+        checkpoint: patch.checkpoint.map(|c| checkpoint_pb(c) as i32),
+        wont_do_reason: patch.wont_do_reason,
+        watched_prs_add: patch.watched_prs_add.iter().map(watched_pr_pb).collect(),
         ..pb::TodoPatch::default()
     }
 }
@@ -649,6 +1019,316 @@ impl TodoClient for LiveTodo {
         let conn = self.conn.clone();
         Box::pin(async move { watch_todo(&conn).await })
     }
+
+    fn add_comment(
+        &self,
+        key: &str,
+        body: String,
+        step_id: Option<String>,
+    ) -> Reply<(Entry, TodoComment)> {
+        let conn = self.conn.clone();
+        let request = pb::AddTodoCommentRequest {
+            idempotency_key: fresh_key(),
+            id: Some(id_pb(key)),
+            body,
+            step_id: step_id.unwrap_or_default(),
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Adding a comment";
+            let now = now_secs();
+            let today = today(now)?;
+            let reply = client(&conn)
+                .add_todo_comment(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            let item = reply.item.ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon did not return the updated item".to_owned(),
+            })?;
+            let cmt = reply.comment.as_ref().map(comment).unwrap_or_default();
+            Ok((entry(&item, today, now), cmt))
+        })
+    }
+
+    fn split(&self, key: &str, titles: Vec<String>, keep_age: bool) -> Reply<SplitResult> {
+        let conn = self.conn.clone();
+        let request = pb::SplitTodoRequest {
+            idempotency_key: fresh_key(),
+            id: Some(id_pb(key)),
+            titles,
+            keep_age,
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Splitting the to-do";
+            let now = now_secs();
+            let today = today(now)?;
+            let reply = client(&conn)
+                .split_todo(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            let source = reply.source.ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon did not return the split source item".to_owned(),
+            })?;
+            Ok(SplitResult {
+                source: entry(&source, today, now),
+                created: reply.created.iter().map(|i| entry(i, today, now)).collect(),
+            })
+        })
+    }
+
+    fn fold_into_step(&self, source_key: &str, target_key: &str) -> Reply<FoldResult> {
+        let conn = self.conn.clone();
+        let request = pb::FoldTodoIntoStepRequest {
+            idempotency_key: fresh_key(),
+            source_id: Some(id_pb(source_key)),
+            target_id: Some(id_pb(target_key)),
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Folding the to-do into a step";
+            let now = now_secs();
+            let today = today(now)?;
+            let reply = client(&conn)
+                .fold_todo_into_step(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            let source = reply.source.ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon did not return the folded source item".to_owned(),
+            })?;
+            let target = reply.target.ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon did not return the target item".to_owned(),
+            })?;
+            Ok(FoldResult {
+                source: entry(&source, today, now),
+                target: entry(&target, today, now),
+            })
+        })
+    }
+
+    fn bulk_update(&self, items: Vec<BulkUpdateItem>) -> Reply<BulkUpdateResult> {
+        let conn = self.conn.clone();
+        let entries = items
+            .into_iter()
+            .map(|item| pb::BatchUpdateTodoEntry {
+                id: Some(id_pb(&item.key)),
+                patch: Some(patch_pb(item.patch)),
+                expected_revision: expected(item.expected_revision),
+            })
+            .collect();
+        let request = pb::BatchUpdateTodoRequest {
+            idempotency_key: fresh_key(),
+            entries,
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Bulk updating to-dos";
+            let now = now_secs();
+            let today = today(now)?;
+            let reply = client(&conn)
+                .batch_update_todo(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            Ok(BulkUpdateResult {
+                updated: reply.updated.iter().map(|i| entry(i, today, now)).collect(),
+                failed: reply
+                    .failed
+                    .into_iter()
+                    .map(|f| BulkUpdateFailure {
+                        key: if f.key.is_empty() {
+                            f.id.map(|id| id.value).unwrap_or_default()
+                        } else {
+                            f.key
+                        },
+                        reason: f.reason,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn history(&self, key: &str) -> Reply<Vec<TodoHistoryEntry>> {
+        let conn = self.conn.clone();
+        let key = key.to_owned();
+        Box::pin(async move {
+            let reply = client(&conn)
+                .get_todo_history(pb::GetTodoHistoryRequest {
+                    id: Some(id_pb(&key)),
+                    page: Some(pb::PageRequest {
+                        page_size: PAGE_SIZE,
+                        page_token: String::new(),
+                    }),
+                })
+                .await
+                .map_err(|status| conn.error(&status, "Loading to-do history"))?
+                .into_inner();
+            Ok(reply.entries.iter().map(history_entry).collect())
+        })
+    }
+
+    fn runs(&self, key: &str) -> Reply<TodoRunsResult> {
+        let conn = self.conn.clone();
+        let key = key.to_owned();
+        Box::pin(async move {
+            let reply = client(&conn)
+                .list_todo_runs(pb::ListTodoRunsRequest {
+                    id: Some(id_pb(&key)),
+                })
+                .await
+                .map_err(|status| conn.error(&status, "Loading to-do runs"))?
+                .into_inner();
+            Ok(TodoRunsResult {
+                runs: reply.runs.iter().map(run_entry).collect(),
+                total_cost_micros: reply.total_cost_micros,
+            })
+        })
+    }
+
+    fn answer_question(
+        &self,
+        ask_id: &str,
+        text: String,
+        selected_choices: Vec<String>,
+    ) -> Reply<()> {
+        let conn = self.conn.clone();
+        let id = pb::RequestId { value: ask_id.to_owned() };
+        Box::pin(async move {
+            inbox(&conn)
+                .answer_request(pb::AnswerRequestRequest {
+                    idempotency_key: fresh_key(),
+                    id: Some(id),
+                    answer: Some(pb::RequestAnswer {
+                        answer: Some(pb::request_answer::Answer::Reply(pb::Reply {
+                            text,
+                            selected_choices,
+                        })),
+                    }),
+                    expected_revision: None,
+                    presence: None,
+                })
+                .await
+                .map_err(|status| conn.error(&status, "Answering the question"))?;
+            Ok(())
+        })
+    }
+
+    fn answer_action(&self, ask_id: &str, done: bool, note: String) -> Reply<()> {
+        let conn = self.conn.clone();
+        let id = pb::RequestId { value: ask_id.to_owned() };
+        Box::pin(async move {
+            inbox(&conn)
+                .answer_request(pb::AnswerRequestRequest {
+                    idempotency_key: fresh_key(),
+                    id: Some(id),
+                    answer: Some(pb::RequestAnswer {
+                        answer: Some(pb::request_answer::Answer::TodoAction(pb::TodoActionAnswer {
+                            done,
+                            note,
+                        })),
+                    }),
+                    expected_revision: None,
+                    presence: None,
+                })
+                .await
+                .map_err(|status| conn.error(&status, "Answering the action request"))?;
+            Ok(())
+        })
+    }
+
+    fn answer_review(&self, ask_id: &str, approved: bool, note: String) -> Reply<()> {
+        let conn = self.conn.clone();
+        let id = pb::RequestId { value: ask_id.to_owned() };
+        Box::pin(async move {
+            inbox(&conn)
+                .answer_request(pb::AnswerRequestRequest {
+                    idempotency_key: fresh_key(),
+                    id: Some(id),
+                    answer: Some(pb::RequestAnswer {
+                        answer: Some(pb::request_answer::Answer::TodoReview(pb::TodoReviewAnswer {
+                            approved,
+                            note,
+                        })),
+                    }),
+                    expected_revision: None,
+                    presence: None,
+                })
+                .await
+                .map_err(|status| conn.error(&status, "Answering the review request"))?;
+            Ok(())
+        })
+    }
+
+    fn resolve_ownership(&self, key: &str, take_back: bool, retry: bool) -> Reply<Entry> {
+        let conn = self.conn.clone();
+        let request = pb::ResolveTodoOwnershipRequest {
+            idempotency_key: fresh_key(),
+            id: Some(id_pb(key)),
+            take_back,
+            retry,
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Resolving to-do ownership";
+            let reply = client(&conn)
+                .resolve_todo_ownership(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            written(reply, WHAT)
+        })
+    }
+
+    fn resolve_blocker_gone(
+        &self,
+        key: &str,
+        blocker_key: &str,
+        resolution: BlockerGoneResolution,
+    ) -> Reply<Entry> {
+        let conn = self.conn.clone();
+        let (action, rewire_to_keys) = match resolution {
+            BlockerGoneResolution::Unblock => ("unblock".to_owned(), Vec::new()),
+            BlockerGoneResolution::CloseWontDo => ("wont_do".to_owned(), Vec::new()),
+            BlockerGoneResolution::Rewire(keys) => ("rewire".to_owned(), keys),
+        };
+        let request = pb::ResolveBlockerGoneRequest {
+            idempotency_key: fresh_key(),
+            id: Some(id_pb(key)),
+            blocker_key: blocker_key.to_owned(),
+            action,
+            rewire_to_keys,
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Resolving a gone blocker";
+            let reply = client(&conn)
+                .resolve_blocker_gone(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            written(reply, WHAT)
+        })
+    }
+
+    fn resolve_lifecycle_prompt(&self, key: &str, prompt_id: &str, choice: &str) -> Reply<Entry> {
+        let conn = self.conn.clone();
+        let request = pb::ResolveLifecyclePromptRequest {
+            idempotency_key: fresh_key(),
+            id: Some(id_pb(key)),
+            prompt_id: prompt_id.to_owned(),
+            choice: choice.to_owned(),
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Resolving a lifecycle prompt";
+            let reply = client(&conn)
+                .resolve_lifecycle_prompt(request)
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            written(reply, WHAT)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -752,7 +1432,12 @@ mod tests {
                 effort: pb::TodoEffort::L as i32,
                 impact: pb::TodoImpact::High as i32,
                 tags: vec!["money".to_owned()],
-                steps: vec![pb::TodoStep { text: "a".to_owned(), done: true, ticked_by: None }],
+                steps: vec![pb::TodoStep {
+                    text: "a".to_owned(),
+                    done: true,
+                    ticked_by: None,
+                    ..pb::TodoStep::default()
+                }],
                 hide_until: Some(day_pb(day(2026, 12, 1))),
                 suggested: true,
                 ..pb::TodoFields::default()
@@ -767,7 +1452,7 @@ mod tests {
         assert_eq!(todo.effort, Some(Effort::L));
         assert_eq!(todo.impact, Some(Impact::High));
         assert_eq!(todo.tags, ["money"]);
-        assert_eq!(todo.steps, [Step { text: "a".to_owned(), done: true }]);
+        assert_eq!(todo.steps, [Step { text: "a".to_owned(), done: true, ..Step::default() }]);
         assert_eq!(todo.hide_until, Some(day(2026, 12, 1)));
         assert!(todo.suggested);
     }
@@ -890,5 +1575,76 @@ mod tests {
         assert_eq!(notice(&wire).map(|n| n.summary.items), Some(3));
         wire.banner_dismissed = true;
         assert!(notice(&wire).is_none());
+    }
+
+    #[test]
+    fn todo2_fields_and_patches_round_trip_wire_mapping() {
+        let made = entry(
+            &wire_item(pb::TodoFields {
+                key: "PAY-99".to_owned(),
+                state: pb::TodoState::WatchingPr as i32,
+                need: pb::TodoNeed::Critical as i32,
+                fuzzy_due: pb::TodoFuzzyDue::NextWeek as i32,
+                checkpoint: pb::TodoCheckpoint::Defined as i32,
+                from_keys: vec!["PAY-1".to_owned()],
+                became_keys: vec!["PAY-100".to_owned()],
+                run_count: 3,
+                total_cost_micros: 2_500_000,
+                wont_do_reason: "superseded".to_owned(),
+                external_block: Some(pb::ExternalBlock {
+                    reason: "Waiting on vendor".to_owned(),
+                    since: None,
+                }),
+                owner: Some(pb::TodoOwner {
+                    kind: pb::TodoOwnerKind::Agent as i32,
+                    label: "claude".to_owned(),
+                    session: Some(pb::SessionId { value: "s-1".to_owned() }),
+                }),
+                close_readiness: Some(pb::CloseReadiness {
+                    steps_done: 2,
+                    steps_total: 3,
+                    unresolved_comments: 1,
+                    ci_status: "passing".to_owned(),
+                    commits: 4,
+                }),
+                ..pb::TodoFields::default()
+            }),
+            day(2026, 11, 19),
+            0,
+        );
+        let t = made.todo;
+        assert_eq!(t.state, State::WatchingPr);
+        assert_eq!(t.need, Some(Need::Critical));
+        assert_eq!(t.fuzzy_due, Some(FuzzyDue::NextWeek));
+        assert_eq!(t.checkpoint, Some(CheckpointState::Defined));
+        assert_eq!(t.from_keys, ["PAY-1"]);
+        assert_eq!(t.became_keys, ["PAY-100"]);
+        assert_eq!(t.run_count, 3);
+        assert_eq!(t.total_cost_micros, 2_500_000);
+        assert_eq!(t.wont_do_reason.as_deref(), Some("superseded"));
+        assert_eq!(t.external_block.as_ref().map(|b| b.reason.as_str()), Some("Waiting on vendor"));
+        assert_eq!(t.owner.as_ref().map(|o| o.kind), Some(OwnerKind::Agent));
+        assert_eq!(
+            t.close_readiness.as_ref().map(CloseReadiness::summary_line).as_deref(),
+            Some("Steps 2/3 · 1 unresolved comment · CI passing · 4 commits")
+        );
+
+        let patch = patch_pb(TodoPatch {
+            need: Some(Some(Need::Expected)),
+            fuzzy_due: Some(Some(FuzzyDue::InAFewDays)),
+            checkpoint: Some(Some(CheckpointState::Done)),
+            external_block: Some(None),
+            owner: Some(None),
+            channel: Some(Some("infra".to_owned())),
+            depends_on_add: vec!["INF-1".to_owned()],
+            ..TodoPatch::default()
+        });
+        assert_eq!(patch.need, Some(pb::TodoNeed::Expected as i32));
+        assert_eq!(patch.fuzzy_due, Some(pb::TodoFuzzyDue::InAFewDays as i32));
+        assert_eq!(patch.checkpoint, Some(pb::TodoCheckpoint::Done as i32));
+        assert!(patch.clear_external_block);
+        assert!(patch.clear_owner);
+        assert_eq!(patch.channel.map(|c| c.value), Some("infra".to_owned()));
+        assert_eq!(patch.depends_on_add.len(), 1);
     }
 }

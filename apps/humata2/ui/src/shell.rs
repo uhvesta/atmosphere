@@ -51,6 +51,7 @@ pub struct Shell {
     providers_inputs: crate::settings::ProvidersInputs,
     _appearance: Subscription,
     _focus_lost: Subscription,
+    _activation: Subscription,
     viewport: f32,
     terminals: crate::terminals::Terminals,
     documents: crate::document_tab::Documents,
@@ -155,6 +156,9 @@ impl Shell {
                 .unwrap_or_else(|| this.focus.clone());
             window.focus(&target, cx);
         });
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            this.send(AppAction::WindowActive(window.is_window_active()), cx);
+        });
         let terminals = crate::terminals::Terminals::new(&ui, cx);
         let documents = crate::document_tab::Documents::new(&ui, window, cx);
         Self {
@@ -184,6 +188,7 @@ impl Shell {
             providers_inputs,
             _appearance: appearance,
             _focus_lost: focus_lost,
+            _activation: activation,
             viewport: 0.,
         }
     }

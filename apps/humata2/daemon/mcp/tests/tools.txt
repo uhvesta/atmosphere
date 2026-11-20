@@ -83,8 +83,14 @@ sessions_delete_many
 sessions_search
 skills_sync
 todo_add
+todo_ask_question
 todo_close
 todo_next
+todo_report_run
+todo_request_action
+todo_request_review
+todo_set_checkpoint
+todo_step_update
 topology_get
 trash_restore
 view_mark_ready

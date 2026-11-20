@@ -156,7 +156,8 @@ async fn deny_carries_its_note_and_reply_its_text() {
     assert_eq!(
         answer(&sent[1]),
         Some(Answer::Reply(pb::Reply {
-            text: "use the staging host".into()
+            text: "use the staging host".into(),
+            selected_choices: Vec::new(),
         }))
     );
 }

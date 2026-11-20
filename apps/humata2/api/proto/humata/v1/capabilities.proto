@@ -196,6 +196,10 @@ enum Capability {
   CAPABILITY_TODO_CLOSE = 73;
   // Delete many sessions at once; never by default, never the agent's own session.
   CAPABILITY_SESSIONS_DELETE_MANY = 74;
+  // An agent asking the user to perform an external action for a to-do item.
+  CAPABILITY_TODO_ACTION_REQUEST = 75;
+  // An agent asking the user to review work on a to-do item (distinct from close).
+  CAPABILITY_TODO_REVIEW_REQUEST = 76;
 }
 
 // A rule's setting for one capability in one channel.

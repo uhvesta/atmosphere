@@ -2,14 +2,20 @@
 //! Clones share it, so two clones stand for two apps open at once. No
 //! timers, no real IO.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use humata2_todo::{
-    Ask, AskDetail, AskKind, ChannelFilter, Evidence, Day, Review, State, Step, Summary, Todo,
+    Ask, AskDetail, AskKind, ChannelFilter, CheckpointState, Day, Evidence, OwnerKind, Review,
+    RunEntry, State, Step, Summary, Todo, TodoComment, TodoOwner, word_diff,
 };
 use tokio::sync::mpsc;
 
-use super::{Entry, MigrationNotice, NewTodo, TodoClient, TodoFilter, TodoLists, TodoPatch};
+use super::{
+    BlockerGoneResolution, BulkUpdateFailure, BulkUpdateItem, BulkUpdateResult, Entry, FoldResult,
+    MigrationNotice, NewTodo, SplitResult, TodoClient, TodoFilter, TodoHistoryEntry, TodoLists,
+    TodoPatch, TodoRunsResult,
+};
 use crate::daemon::{DaemonError, Reply};
 
 /// A call a test can read back, one per trait method.
@@ -29,6 +35,30 @@ pub enum Call {
     DismissMigration,
     /// `watch`.
     Watch,
+    /// `add_comment`.
+    AddComment(String, String, Option<String>),
+    /// `split`.
+    Split(String, Vec<String>, bool),
+    /// `fold_into_step`.
+    FoldIntoStep(String, String),
+    /// `bulk_update`.
+    BulkUpdate(Vec<BulkUpdateItem>),
+    /// `history`.
+    History(String),
+    /// `runs`.
+    Runs(String),
+    /// `answer_question`.
+    AnswerQuestion(String, String, Vec<String>),
+    /// `answer_action`.
+    AnswerAction(String, bool, String),
+    /// `answer_review`.
+    AnswerReview(String, bool, String),
+    /// `resolve_ownership`.
+    ResolveOwnership(String, bool, bool),
+    /// `resolve_blocker_gone`.
+    ResolveBlockerGone(String, String, BlockerGoneResolution),
+    /// `resolve_lifecycle_prompt`.
+    ResolveLifecyclePrompt(String, String, String),
 }
 
 /// Lists a watcher can fall behind by before the fake drops it.
@@ -38,10 +68,14 @@ struct Inner {
     entries: Vec<Entry>,
     today: Day,
     next_number: u32,
+    next_comment_id: u32,
+    next_step_id: u32,
     migration: Option<MigrationNotice>,
     watchers: Vec<mpsc::Sender<Vec<Entry>>>,
     failure: Option<DaemonError>,
     calls: Vec<Call>,
+    history: HashMap<String, Vec<TodoHistoryEntry>>,
+    runs: HashMap<String, Vec<RunEntry>>,
 }
 
 impl Inner {
@@ -53,6 +87,95 @@ impl Inner {
 
     fn entry_mut(&mut self, key: &str) -> Option<&mut Entry> {
         self.entries.iter_mut().find(|e| e.todo.key == key)
+    }
+
+    /// Returns true if adding `key -> dep` would introduce a cycle in `depends_on`.
+    fn would_cycle(&self, key: &str, dep: &str) -> bool {
+        if key == dep {
+            return true;
+        }
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(dep.to_owned());
+        while let Some(curr) = queue.pop_front() {
+            if !visited.insert(curr.clone()) {
+                continue;
+            }
+            if let Some(entry) = self.entries.iter().find(|e| e.todo.key == curr) {
+                for next in &entry.todo.depends_on {
+                    if next == key {
+                        return true;
+                    }
+                    queue.push_back(next.clone());
+                }
+            }
+        }
+        false
+    }
+
+    fn check_cycle(&self, key: &str, deps: &[String]) -> Result<(), DaemonError> {
+        for dep in deps {
+            if self.would_cycle(key, dep) {
+                return Err(DaemonError::Refused {
+                    what: key.to_owned(),
+                    reason: format!("adding dependency on {dep} would create a dependency cycle"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn push_history(&mut self, key: &str, entry: TodoHistoryEntry) {
+        self.history.entry(key.to_owned()).or_default().push(entry);
+    }
+
+    fn record_patch_history(&mut self, key: &str, before: &Todo, after: &Todo) {
+        let today = Some(self.today);
+        if before.title != after.title {
+            self.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: today,
+                    actor: "you".to_owned(),
+                    kind: "changed".to_owned(),
+                    field: "title".to_owned(),
+                    before: before.title.clone(),
+                    after: after.title.clone(),
+                    change: format!("title {} → {}", before.title, after.title),
+                    word_diff: word_diff(&before.title, &after.title),
+                },
+            );
+        }
+        if before.description != after.description {
+            self.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: today,
+                    actor: "you".to_owned(),
+                    kind: "changed".to_owned(),
+                    field: "description".to_owned(),
+                    before: before.description.clone(),
+                    after: after.description.clone(),
+                    change: "description edited".to_owned(),
+                    word_diff: word_diff(&before.description, &after.description),
+                },
+            );
+        }
+        if before.state != after.state {
+            self.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: today,
+                    actor: "you".to_owned(),
+                    kind: "changed".to_owned(),
+                    field: "state".to_owned(),
+                    before: format!("{:?}", before.state),
+                    after: format!("{:?}", after.state),
+                    change: format!("state {:?} → {:?}", before.state, after.state),
+                    word_diff: Vec::new(),
+                },
+            );
+        }
     }
 }
 
@@ -86,10 +209,14 @@ impl FakeTodo {
                 entries: Vec::new(),
                 today: today_default(),
                 next_number: 20,
+                next_comment_id: 1,
+                next_step_id: 1,
                 migration: None,
                 watchers: Vec::new(),
                 failure: None,
                 calls: Vec::new(),
+                history: HashMap::new(),
+                runs: HashMap::new(),
             })),
         }
     }
@@ -216,6 +343,19 @@ impl FakeTodo {
         self.inner().entries.clone()
     }
 
+    /// Records a run in the fake ledger and updates the item's run summary.
+    pub fn add_run(&self, key: &str, run: RunEntry) {
+        let mut inner = self.inner();
+        let cost = run.cost_micros;
+        inner.runs.entry(key.to_owned()).or_default().push(run);
+        if let Some(entry) = inner.entry_mut(key) {
+            entry.todo.run_count = entry.todo.run_count.saturating_add(1);
+            entry.todo.total_cost_micros = entry.todo.total_cost_micros.saturating_add(cost);
+            entry.revision += 1;
+            inner.changed();
+        }
+    }
+
     /// Records `call`, then answers with the scripted failure or `run`.
     fn call<T: Send + 'static>(
         &self,
@@ -250,7 +390,7 @@ impl TodoClient for FakeTodo {
                         Some(ChannelFilter::Channel(c)) => t.channel.as_deref() == Some(c),
                     };
                     let session = filter.session.as_ref().is_none_or(|s| t.sessions.contains(s));
-                    let closed = filter.show_closed || t.state != State::Closed;
+                    let closed = filter.show_closed || !t.state.is_terminal();
                     channel && session && closed
                 })
                 .cloned()
@@ -265,12 +405,30 @@ impl TodoClient for FakeTodo {
             let mut todo = Todo::new(&key, &draft.title, inner.today);
             todo.channel = draft.channel;
             todo.due = draft.due;
+            todo.fuzzy_due = draft.fuzzy_due;
             todo.effort = draft.effort;
             todo.impact = draft.impact;
+            todo.need = draft.need;
             todo.tags = draft.tags;
             todo.description = draft.description;
+            todo.source_anchor = draft.source_anchor;
+            todo.from_keys = draft.from_keys;
+            todo.external_block = draft.external_block;
             let entry = Entry { todo, revision: 0, ask_id: None };
             inner.entries.push(entry.clone());
+            inner.push_history(
+                &key,
+                TodoHistoryEntry {
+                    at_day: Some(inner.today),
+                    actor: "you".to_owned(),
+                    kind: "created".to_owned(),
+                    field: String::new(),
+                    before: String::new(),
+                    after: entry.todo.title.clone(),
+                    change: "created".to_owned(),
+                    word_diff: Vec::new(),
+                },
+            );
             inner.changed();
             Ok(entry)
         })
@@ -278,6 +436,7 @@ impl TodoClient for FakeTodo {
 
     fn update(&self, key: &str, patch: TodoPatch, expected_revision: u64) -> Reply<Entry> {
         self.call(Call::Update(key.to_owned(), patch.clone(), expected_revision), |inner| {
+            inner.check_cycle(key, &patch.depends_on_add)?;
             let today = inner.today;
             let entry = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
             if entry.revision != expected_revision {
@@ -288,9 +447,11 @@ impl TodoClient for FakeTodo {
                         .to_owned(),
                 });
             }
+            let before = entry.todo.clone();
             patch.apply(&mut entry.todo, today);
             entry.revision += 1;
             let done = entry.clone();
+            inner.record_patch_history(key, &before, &done.todo);
             inner.changed();
             Ok(done)
         })
@@ -336,6 +497,462 @@ impl TodoClient for FakeTodo {
             Ok(receive)
         })
     }
+
+    fn add_comment(
+        &self,
+        key: &str,
+        body: String,
+        step_id: Option<String>,
+    ) -> Reply<(Entry, TodoComment)> {
+        self.call(Call::AddComment(key.to_owned(), body.clone(), step_id.clone()), |inner| {
+            let today = inner.today;
+            let comment_id = format!("cmt-{}", inner.next_comment_id);
+            inner.next_comment_id += 1;
+            let entry = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
+            let comment = TodoComment {
+                id: comment_id,
+                author: "you".to_owned(),
+                body: body.clone(),
+                created: Some(today),
+                step_id,
+            };
+            entry.todo.comments.push(comment.clone());
+            entry.revision += 1;
+            let updated = entry.clone();
+            inner.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: Some(today),
+                    actor: "you".to_owned(),
+                    kind: "commented".to_owned(),
+                    field: "comments".to_owned(),
+                    before: String::new(),
+                    after: body,
+                    change: "commented".to_owned(),
+                    word_diff: Vec::new(),
+                },
+            );
+            inner.changed();
+            Ok((updated, comment))
+        })
+    }
+
+    fn split(&self, key: &str, titles: Vec<String>, keep_age: bool) -> Reply<SplitResult> {
+        self.call(Call::Split(key.to_owned(), titles.clone(), keep_age), |inner| {
+            if titles.is_empty() {
+                return Err(DaemonError::Refused {
+                    what: key.to_owned(),
+                    reason: "split requires at least one new title".to_owned(),
+                });
+            }
+            let today = inner.today;
+            let source_snapshot = inner
+                .entries
+                .iter()
+                .find(|e| e.todo.key == key)
+                .ok_or_else(|| not_found(key))?
+                .todo
+                .clone();
+
+            let mut created = Vec::with_capacity(titles.len());
+            let mut created_keys = Vec::with_capacity(titles.len());
+            for title in titles {
+                let new_key = format!("T-{}", inner.next_number);
+                inner.next_number += 1;
+                let created_day = if keep_age { source_snapshot.created } else { today };
+                let mut child = Todo::new(&new_key, &title, created_day);
+                child.channel = source_snapshot.channel.clone();
+                child.tags = source_snapshot.tags.clone();
+                child.need = source_snapshot.need;
+                child.impact = source_snapshot.impact;
+                child.from_keys.push(key.to_owned());
+                let entry = Entry { todo: child, revision: 0, ask_id: None };
+                inner.entries.push(entry.clone());
+                created_keys.push(new_key);
+                created.push(entry);
+            }
+
+            let source = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
+            source.todo.state = State::Became;
+            source.todo.closed = Some(today);
+            source.todo.pin = None;
+            for k in &created_keys {
+                if !source.todo.became_keys.contains(k) {
+                    source.todo.became_keys.push(k.clone());
+                }
+            }
+            source.revision += 1;
+            let source_out = source.clone();
+
+            inner.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: Some(today),
+                    actor: "you".to_owned(),
+                    kind: "split".to_owned(),
+                    field: "became_keys".to_owned(),
+                    before: String::new(),
+                    after: created_keys.join(", "),
+                    change: format!("split into {}", created_keys.join(", ")),
+                    word_diff: Vec::new(),
+                },
+            );
+            inner.changed();
+            Ok(SplitResult { source: source_out, created })
+        })
+    }
+
+    fn fold_into_step(&self, source_key: &str, target_key: &str) -> Reply<FoldResult> {
+        self.call(
+            Call::FoldIntoStep(source_key.to_owned(), target_key.to_owned()),
+            |inner| {
+                if source_key == target_key {
+                    return Err(DaemonError::Refused {
+                        what: source_key.to_owned(),
+                        reason: "cannot fold an item into itself".to_owned(),
+                    });
+                }
+                let today = inner.today;
+                let src_snap = inner
+                    .entries
+                    .iter()
+                    .find(|e| e.todo.key == source_key)
+                    .ok_or_else(|| not_found(source_key))?
+                    .todo
+                    .clone();
+                if !inner.entries.iter().any(|e| e.todo.key == target_key) {
+                    return Err(not_found(target_key));
+                }
+
+                let step_id = format!("step-{}", inner.next_step_id);
+                inner.next_step_id += 1;
+
+                let source_out = {
+                    let src = inner.entry_mut(source_key).ok_or_else(|| not_found(source_key))?;
+                    src.todo.state = State::Became;
+                    src.todo.closed = Some(today);
+                    src.todo.pin = None;
+                    if !src.todo.became_keys.iter().any(|k| k == target_key) {
+                        src.todo.became_keys.push(target_key.to_owned());
+                    }
+                    src.revision += 1;
+                    src.clone()
+                };
+
+                let target_out = {
+                    let tgt = inner.entry_mut(target_key).ok_or_else(|| not_found(target_key))?;
+                    tgt.todo.steps.push(Step {
+                        id: step_id,
+                        text: src_snap.title.clone(),
+                        done: false,
+                        markdown_context: (!src_snap.description.is_empty())
+                            .then_some(src_snap.description),
+                        dropped: false,
+                        from_key: Some(source_key.to_owned()),
+                        source_anchor: src_snap.source_anchor,
+                    });
+                    if !tgt.todo.from_keys.iter().any(|k| k == source_key) {
+                        tgt.todo.from_keys.push(source_key.to_owned());
+                    }
+                    tgt.revision += 1;
+                    tgt.clone()
+                };
+
+                inner.push_history(
+                    source_key,
+                    TodoHistoryEntry {
+                        at_day: Some(today),
+                        actor: "you".to_owned(),
+                        kind: "folded".to_owned(),
+                        field: "became_keys".to_owned(),
+                        before: String::new(),
+                        after: target_key.to_owned(),
+                        change: format!("folded into {target_key}"),
+                        word_diff: Vec::new(),
+                    },
+                );
+                inner.changed();
+                Ok(FoldResult { source: source_out, target: target_out })
+            },
+        )
+    }
+
+    fn bulk_update(&self, items: Vec<BulkUpdateItem>) -> Reply<BulkUpdateResult> {
+        self.call(Call::BulkUpdate(items.clone()), |inner| {
+            let today = inner.today;
+            let mut updated = Vec::new();
+            let mut failed = Vec::new();
+            for item in items {
+                if let Err(err) = inner.check_cycle(&item.key, &item.patch.depends_on_add) {
+                    failed.push(BulkUpdateFailure { key: item.key, reason: err.to_string() });
+                    continue;
+                }
+                let Some(entry) = inner.entry_mut(&item.key) else {
+                    failed.push(BulkUpdateFailure {
+                        key: item.key,
+                        reason: "item not found".to_owned(),
+                    });
+                    continue;
+                };
+                if entry.revision != item.expected_revision {
+                    failed.push(BulkUpdateFailure {
+                        key: item.key,
+                        reason: "revision conflict".to_owned(),
+                    });
+                    continue;
+                }
+                let before = entry.todo.clone();
+                item.patch.apply(&mut entry.todo, today);
+                entry.revision += 1;
+                let done = entry.clone();
+                inner.record_patch_history(&item.key, &before, &done.todo);
+                updated.push(done);
+            }
+            if !updated.is_empty() {
+                inner.changed();
+            }
+            Ok(BulkUpdateResult { updated, failed })
+        })
+    }
+
+    fn history(&self, key: &str) -> Reply<Vec<TodoHistoryEntry>> {
+        self.call(Call::History(key.to_owned()), |inner| {
+            Ok(inner.history.get(key).cloned().unwrap_or_default())
+        })
+    }
+
+    fn runs(&self, key: &str) -> Reply<TodoRunsResult> {
+        self.call(Call::Runs(key.to_owned()), |inner| {
+            let runs = inner.runs.get(key).cloned().unwrap_or_default();
+            let total_cost_micros = runs.iter().map(|r| r.cost_micros).sum();
+            Ok(TodoRunsResult { runs, total_cost_micros })
+        })
+    }
+
+    fn answer_question(
+        &self,
+        ask_id: &str,
+        text: String,
+        selected_choices: Vec<String>,
+    ) -> Reply<()> {
+        self.call(
+            Call::AnswerQuestion(ask_id.to_owned(), text.clone(), selected_choices.clone()),
+            |inner| {
+                let today = inner.today;
+                let entry = inner
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.ask_id.as_deref() == Some(ask_id))
+                    .ok_or_else(|| not_found("This ask"))?;
+                let key = entry.todo.key.clone();
+                entry.todo.ask = None;
+                entry.ask_id = None;
+                entry.revision += 1;
+                let reply_summary = if selected_choices.is_empty() {
+                    text
+                } else if text.is_empty() {
+                    selected_choices.join(", ")
+                } else {
+                    format!("{} ({text})", selected_choices.join(", "))
+                };
+                inner.push_history(
+                    &key,
+                    TodoHistoryEntry {
+                        at_day: Some(today),
+                        actor: "you".to_owned(),
+                        kind: "ask_answered".to_owned(),
+                        field: "question".to_owned(),
+                        before: String::new(),
+                        after: reply_summary.clone(),
+                        change: format!("answered question: {reply_summary}"),
+                        word_diff: Vec::new(),
+                    },
+                );
+                inner.changed();
+                Ok(())
+            },
+        )
+    }
+
+    fn answer_action(&self, ask_id: &str, done: bool, note: String) -> Reply<()> {
+        self.call(Call::AnswerAction(ask_id.to_owned(), done, note.clone()), |inner| {
+            let today = inner.today;
+            let entry = inner
+                .entries
+                .iter_mut()
+                .find(|e| e.ask_id.as_deref() == Some(ask_id))
+                .ok_or_else(|| not_found("This ask"))?;
+            let key = entry.todo.key.clone();
+            entry.todo.ask = None;
+            entry.ask_id = None;
+            entry.revision += 1;
+            let verdict = if done { "Done" } else { "Can't be done" };
+            inner.push_history(
+                &key,
+                TodoHistoryEntry {
+                    at_day: Some(today),
+                    actor: "you".to_owned(),
+                    kind: "ask_answered".to_owned(),
+                    field: "action".to_owned(),
+                    before: String::new(),
+                    after: note,
+                    change: format!("action request: {verdict}"),
+                    word_diff: Vec::new(),
+                },
+            );
+            inner.changed();
+            Ok(())
+        })
+    }
+
+    fn answer_review(&self, ask_id: &str, approved: bool, note: String) -> Reply<()> {
+        self.call(Call::AnswerReview(ask_id.to_owned(), approved, note.clone()), |inner| {
+            let today = inner.today;
+            let entry = inner
+                .entries
+                .iter_mut()
+                .find(|e| e.ask_id.as_deref() == Some(ask_id))
+                .ok_or_else(|| not_found("This ask"))?;
+            let key = entry.todo.key.clone();
+            let ask = entry.todo.ask.take();
+            entry.ask_id = None;
+            if approved {
+                if let Some(Ask { kind: AskKind::ReviewRequest { checkpoint: Some(cp), .. }, .. }) =
+                    ask
+                {
+                    entry.todo.checkpoint = Some(cp);
+                } else if entry.todo.checkpoint == Some(CheckpointState::Defined) {
+                    entry.todo.checkpoint = Some(CheckpointState::Done);
+                }
+            }
+            entry.revision += 1;
+            let verdict = if approved { "Approved" } else { "Changes asked" };
+            inner.push_history(
+                &key,
+                TodoHistoryEntry {
+                    at_day: Some(today),
+                    actor: "you".to_owned(),
+                    kind: "ask_answered".to_owned(),
+                    field: "review".to_owned(),
+                    before: String::new(),
+                    after: note,
+                    change: format!("review: {verdict}"),
+                    word_diff: Vec::new(),
+                },
+            );
+            inner.changed();
+            Ok(())
+        })
+    }
+
+    fn resolve_ownership(&self, key: &str, take_back: bool, retry: bool) -> Reply<Entry> {
+        self.call(Call::ResolveOwnership(key.to_owned(), take_back, retry), |inner| {
+            let today = inner.today;
+            let entry = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
+            if take_back {
+                entry.todo.owner = Some(TodoOwner {
+                    kind: OwnerKind::User,
+                    label: "You".to_owned(),
+                    session: None,
+                });
+                entry.todo.stuck_agent = None;
+            } else if retry {
+                entry.todo.stuck_agent = None;
+            }
+            entry.revision += 1;
+            let out = entry.clone();
+            inner.push_history(
+                key,
+                TodoHistoryEntry {
+                    at_day: Some(today),
+                    actor: "you".to_owned(),
+                    kind: "owner_changed".to_owned(),
+                    field: "owner".to_owned(),
+                    before: String::new(),
+                    after: if take_back { "You".to_owned() } else { "Retried".to_owned() },
+                    change: if take_back {
+                        "took back ownership".to_owned()
+                    } else {
+                        "retried stuck agent".to_owned()
+                    },
+                    word_diff: Vec::new(),
+                },
+            );
+            inner.changed();
+            Ok(out)
+        })
+    }
+
+    fn resolve_blocker_gone(
+        &self,
+        key: &str,
+        blocker_key: &str,
+        resolution: BlockerGoneResolution,
+    ) -> Reply<Entry> {
+        self.call(
+            Call::ResolveBlockerGone(key.to_owned(), blocker_key.to_owned(), resolution.clone()),
+            |inner| {
+                if let BlockerGoneResolution::Rewire(ref targets) = resolution {
+                    inner.check_cycle(key, targets)?;
+                }
+                let today = inner.today;
+                let entry = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
+                entry.todo.depends_on.retain(|d| d != blocker_key);
+                entry.todo.blocker_gone.retain(|b| b.blocker_key != blocker_key);
+                match resolution {
+                    BlockerGoneResolution::Unblock => {}
+                    BlockerGoneResolution::CloseWontDo => {
+                        entry.todo.state = State::WontDo;
+                        entry.todo.closed = Some(today);
+                        entry.todo.pin = None;
+                    }
+                    BlockerGoneResolution::Rewire(targets) => {
+                        for t in targets {
+                            if !entry.todo.depends_on.contains(&t) {
+                                entry.todo.depends_on.push(t);
+                            }
+                        }
+                    }
+                }
+                entry.revision += 1;
+                let out = entry.clone();
+                inner.changed();
+                Ok(out)
+            },
+        )
+    }
+
+    fn resolve_lifecycle_prompt(&self, key: &str, prompt_id: &str, choice: &str) -> Reply<Entry> {
+        self.call(
+            Call::ResolveLifecyclePrompt(key.to_owned(), prompt_id.to_owned(), choice.to_owned()),
+            |inner| {
+                let today = inner.today;
+                let entry = inner.entry_mut(key).ok_or_else(|| not_found(key))?;
+                entry.todo.lifecycle_prompts.retain(|p| p.id != prompt_id);
+                match choice {
+                    "close" => {
+                        entry.todo.state = State::Closed;
+                        entry.todo.closed = Some(today);
+                        entry.todo.pin = None;
+                    }
+                    "wont_do" => {
+                        entry.todo.state = State::WontDo;
+                        entry.todo.closed = Some(today);
+                        entry.todo.pin = None;
+                    }
+                    "open" => {
+                        entry.todo.state = State::Open;
+                        entry.todo.closed = None;
+                    }
+                    _ => {}
+                }
+                entry.revision += 1;
+                let out = entry.clone();
+                inner.changed();
+                Ok(out)
+            },
+        )
+    }
 }
 
 /// The notice of a migration of `items` items from `boards` boards.
@@ -356,7 +973,12 @@ fn b1_1_entries(today: Day) -> Vec<Entry> {
     };
     let steps = |done: usize, total: usize| {
         (0..total)
-            .map(|i| Step { text: format!("Step {}", i + 1), done: i < done })
+            .map(|i| Step {
+                id: format!("s-{}", i + 1),
+                text: format!("Step {}", i + 1),
+                done: i < done,
+                ..Step::default()
+            })
             .collect::<Vec<_>>()
     };
     let tags = |t: &[&str]| t.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
@@ -375,7 +997,12 @@ fn b1_1_entries(today: Day) -> Vec<Entry> {
     ]
     .into_iter()
     .enumerate()
-    .map(|(i, text)| Step { text: text.to_owned(), done: i < 4 })
+    .map(|(i, text)| Step {
+        id: format!("pay3-s-{}", i + 1),
+        text: text.to_owned(),
+        done: i < 4,
+        ..Step::default()
+    })
     .collect();
     pay3.effort = Some(humata2_todo::Effort::M);
     pay3.impact = Some(humata2_todo::Impact::High);
@@ -501,4 +1128,222 @@ fn b1_1_entries(today: Day) -> Vec<Entry> {
     out.into_iter()
         .map(|(todo, ask)| Entry { todo, revision: 0, ask_id: ask.map(str::to_owned) })
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use humata2_todo::{BlockerGone, LifecyclePrompt, RunLink, StuckAgent, WordDiffKind};
+
+    #[tokio::test]
+    async fn fake_rejects_dependency_cycles() {
+        let fake = FakeTodo::new();
+        let a = fake
+            .create(NewTodo { title: "A".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create A");
+        let b = fake
+            .create(NewTodo { title: "B".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create B");
+
+        // Self cycle rejected.
+        let self_err = fake
+            .update(
+                &a.todo.key,
+                TodoPatch { depends_on_add: vec![a.todo.key.clone()], ..TodoPatch::default() },
+                a.revision,
+            )
+            .await;
+        assert!(self_err.is_err());
+
+        // A -> B succeeds.
+        let a2 = fake
+            .update(
+                &a.todo.key,
+                TodoPatch { depends_on_add: vec![b.todo.key.clone()], ..TodoPatch::default() },
+                a.revision,
+            )
+            .await
+            .expect("A depends on B");
+        assert_eq!(a2.todo.depends_on, vec![b.todo.key.clone()]);
+
+        // B -> A rejected as cycle.
+        let cycle_err = fake
+            .update(
+                &b.todo.key,
+                TodoPatch { depends_on_add: vec![a.todo.key.clone()], ..TodoPatch::default() },
+                b.revision,
+            )
+            .await;
+        assert!(cycle_err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fake_bulk_update_retains_partial_failures() {
+        let fake = FakeTodo::new();
+        let a = fake
+            .create(NewTodo { title: "A".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create A");
+        let b = fake
+            .create(NewTodo { title: "B".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create B");
+
+        // Bump B's revision so the bulk update sees a conflict on B only.
+        fake.touch(&b.todo.key);
+
+        let res = fake
+            .bulk_update(vec![
+                BulkUpdateItem {
+                    key: a.todo.key.clone(),
+                    patch: TodoPatch { state: Some(State::Closed), ..TodoPatch::default() },
+                    expected_revision: a.revision,
+                },
+                BulkUpdateItem {
+                    key: b.todo.key.clone(),
+                    patch: TodoPatch { state: Some(State::Closed), ..TodoPatch::default() },
+                    expected_revision: b.revision,
+                },
+            ])
+            .await
+            .expect("bulk update");
+
+        assert_eq!(res.updated.len(), 1);
+        assert_eq!(res.updated[0].todo.key, a.todo.key);
+        assert_eq!(res.updated[0].todo.state, State::Closed);
+        assert_eq!(res.failed.len(), 1);
+        assert_eq!(res.failed[0].key, b.todo.key);
+    }
+
+    #[tokio::test]
+    async fn fake_split_and_fold_maintain_bidirectional_lineage() {
+        let fake = FakeTodo::new();
+        let orig = fake
+            .create(NewTodo { title: "Big task".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create");
+
+        let split = fake
+            .split(&orig.todo.key, vec!["Part 1".to_owned(), "Part 2".to_owned()], true)
+            .await
+            .expect("split");
+        assert_eq!(split.source.todo.state, State::Became);
+        assert_eq!(split.created.len(), 2);
+        assert_eq!(
+            split.source.todo.became_keys,
+            vec![split.created[0].todo.key.clone(), split.created[1].todo.key.clone()]
+        );
+        assert_eq!(split.created[0].todo.from_keys, vec![orig.todo.key.clone()]);
+        assert_eq!(split.created[0].todo.created, orig.todo.created);
+
+        let folded = fake
+            .fold_into_step(&split.created[1].todo.key, &split.created[0].todo.key)
+            .await
+            .expect("fold");
+        assert_eq!(folded.source.todo.state, State::Became);
+        assert_eq!(folded.source.todo.became_keys, vec![split.created[0].todo.key.clone()]);
+        assert!(folded.target.todo.from_keys.contains(&split.created[1].todo.key));
+        assert_eq!(folded.target.todo.steps.len(), 1);
+        assert_eq!(
+            folded.target.todo.steps[0].from_key.as_deref(),
+            Some(split.created[1].todo.key.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_records_word_diff_history_runs_and_structured_asks() {
+        let fake = FakeTodo::new();
+        let a = fake
+            .create(NewTodo { title: "Fix login loop".to_owned(), ..NewTodo::default() })
+            .await
+            .expect("create");
+        let a = fake
+            .update(
+                &a.todo.key,
+                TodoPatch { title: Some("Fix auth loop".to_owned()), ..TodoPatch::default() },
+                a.revision,
+            )
+            .await
+            .expect("update");
+        let hist = fake.history(&a.todo.key).await.expect("history");
+        let title_edit = hist.iter().find(|h| h.field == "title").expect("title edit");
+        assert!(title_edit.word_diff.iter().any(|s| s.kind == WordDiffKind::Removed && s.text == "login"));
+        assert!(title_edit.word_diff.iter().any(|s| s.kind == WordDiffKind::Added && s.text == "auth"));
+
+        fake.add_run(
+            &a.todo.key,
+            RunEntry {
+                id: "run-1".to_owned(),
+                tool: "claude".to_owned(),
+                model: "opus".to_owned(),
+                outcome: "ok".to_owned(),
+                cost_micros: 1_250_000,
+                started: Some(fake.today()),
+                links: vec![RunLink { label: "PR #1".to_owned(), target: "pr:1".to_owned() }],
+                session: Some("s-1".to_owned()),
+            },
+        );
+        let runs = fake.runs(&a.todo.key).await.expect("runs");
+        assert_eq!(runs.runs.len(), 1);
+        assert_eq!(runs.total_cost_micros, 1_250_000);
+
+        // Structured asks & resolution methods.
+        let mut q = Todo::new("Q-1", "Needs answer", fake.today());
+        q.ask = Some(Ask {
+            kind: AskKind::Question {
+                question: "Which DB?".to_owned(),
+                choices: vec!["Postgres".to_owned(), "SQLite".to_owned()],
+                multi_select: false,
+                step_id: None,
+                details: None,
+                editable: true,
+            },
+            by: "claude".to_owned(),
+            reason: "schema".to_owned(),
+        });
+        q.stuck_agent = Some(StuckAgent {
+            session: "s-1".to_owned(),
+            agent_label: "claude".to_owned(),
+            reason: "looping".to_owned(),
+            since_minutes: 15,
+        });
+        q.blocker_gone.push(BlockerGone {
+            blocker_key: "OLD-1".to_owned(),
+            blocker_state: State::WontDo,
+            replacement_keys: Vec::new(),
+        });
+        q.lifecycle_prompts.push(LifecyclePrompt {
+            id: "lp-1".to_owned(),
+            kind: "pr_merged".to_owned(),
+            title: "PR merged".to_owned(),
+            detail: String::new(),
+            choices: vec!["close".to_owned(), "keep".to_owned()],
+            pr_ref: None,
+            session: None,
+        });
+        fake.insert(q, Some("ask-q-1"));
+
+        fake.answer_question("ask-q-1", String::new(), vec!["Postgres".to_owned()])
+            .await
+            .expect("answer question");
+        let taken = fake.resolve_ownership("Q-1", true, false).await.expect("take back");
+        assert_eq!(taken.todo.owner.as_ref().map(|o| o.kind), Some(OwnerKind::User));
+        assert!(taken.todo.stuck_agent.is_none());
+
+        let unblocked = fake
+            .resolve_blocker_gone("Q-1", "OLD-1", BlockerGoneResolution::Unblock)
+            .await
+            .expect("resolve blocker");
+        assert!(unblocked.todo.blocker_gone.is_empty());
+
+        let closed = fake
+            .resolve_lifecycle_prompt("Q-1", "lp-1", "close")
+            .await
+            .expect("resolve lifecycle");
+        assert_eq!(closed.todo.state, State::Closed);
+        assert!(closed.todo.lifecycle_prompts.is_empty());
+    }
 }

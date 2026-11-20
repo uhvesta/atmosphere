@@ -158,7 +158,7 @@ async fn a_file_with_problems_shows_them_and_cannot_be_imported() {
     let daemon = common::shared::shared_daemon().await;
 
     let broken = preview(daemon, b"[providers.broken]\nstart = \"true\"\n").await.unwrap();
-    assert!(broken.problems.iter().any(|problem| problem.field == "create"), "{:?}", broken.problems);
+    assert!(broken.problems.iter().any(|problem| problem.field == "connect"), "{:?}", broken.problems);
     assert!(broken.token.as_ref().is_none_or(|token| token.value.is_empty()));
     assert_eq!(config(daemon).await.toml, "");
 

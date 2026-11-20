@@ -17,12 +17,17 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::{prelude::*, *};
-use humata2_clients::todo::Entry;
-use humata2_todo::{Ask, AskKind, Day, DueChip, Effort, Impact, Row, State, Todo, Tone, Weekday};
-use humata2_todo_feature::{
-    ChannelPick, DuePick, EditField, OnlyPick, SessionPick, TodoAction as A, TodoState, ViewFilter,
+use humata2_clients::todo::{BlockerGoneResolution, Entry, TodoHistoryEntry, TodoRunsResult};
+use humata2_todo::{
+    Ask, AskKind, BlockerGone, CheckpointState, Day, DueChip, Effort, FuzzyDue, HeldBackBy, Impact,
+    LifecyclePrompt, Need, OwnerKind, Row, SessionSignal, SortBy, State, StuckAgent, Todo, Tone,
+    Weekday, WordDiffKind, format_cost_usd,
 };
-use std::cell::Cell;
+use humata2_todo_feature::{
+    ChannelPick, DuePick, EditField, OnlyPick, SessionPick, TodoAction as A, TodoState, UndoToast,
+    ViewFilter,
+};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// How the page sends an action: the shell wraps it into the app's own.
@@ -46,6 +51,7 @@ pub type Sessions<'a> = &'a dyn Fn(&str) -> Option<SessionChip>;
 pub(crate) enum Group {
     Attention,
     InProgress,
+    WatchingPr,
     Next,
     Waiting,
     Hidden,
@@ -61,6 +67,7 @@ impl Group {
         match self {
             Self::Attention => "Needs attention",
             Self::InProgress => "In progress",
+            Self::WatchingPr => "Watching PR",
             Self::Next => "Next",
             Self::Waiting => "Waiting on another item",
             Self::Hidden => "Hidden until a date",
@@ -81,6 +88,7 @@ pub(crate) fn sections(state: &TodoState) -> Vec<Section> {
     [
         (Group::Attention, ranked.needs_attention),
         (Group::InProgress, ranked.in_progress),
+        (Group::WatchingPr, ranked.watching_pr),
         (Group::Next, ranked.next),
         (Group::Waiting, ranked.waiting),
         (Group::Hidden, ranked.hidden),
@@ -102,7 +110,7 @@ const LARGE: usize = 40;
 pub(crate) fn folded(state: &TodoState, group: Group, toggled: bool) -> bool {
     let by_default = match group {
         Group::Waiting | Group::Hidden => state.view.filter.channel.is_none(),
-        Group::Attention | Group::InProgress => state.shown().len() > LARGE,
+        Group::Attention | Group::InProgress | Group::WatchingPr => state.shown().len() > LARGE,
         Group::Next | Group::Closed => false,
     };
     by_default != toggled
@@ -147,13 +155,14 @@ pub(crate) fn add_placeholder(state: &TodoState) -> String {
     }
 }
 
-/// "4/5", for an item with steps.
+/// "4/5", for an item with active (non-dropped) steps.
 pub(crate) fn step_progress(todo: &Todo) -> Option<String> {
-    if todo.steps.is_empty() {
+    let active: Vec<_> = todo.steps.iter().filter(|s| !s.dropped).collect();
+    if active.is_empty() {
         return None;
     }
-    let done = todo.steps.iter().filter(|s| s.done).count();
-    Some(format!("{done}/{}", todo.steps.len()))
+    let done = active.iter().filter(|s| s.done).count();
+    Some(format!("{done}/{}", active.len()))
 }
 
 fn effort_letter(effort: Effort) -> &'static str {
@@ -172,28 +181,167 @@ fn impact_word(impact: Impact) -> &'static str {
     }
 }
 
+/// Human-readable label for any [`State`].
+pub(crate) fn state_label(state: State) -> &'static str {
+    match state {
+        State::Open => "Open",
+        State::InProgress => "In progress",
+        State::Closed => "Closed",
+        State::WontDo => "Won't do",
+        State::Became => "Became",
+        State::WatchingPr => "Watching PR",
+    }
+}
+
+/// All five temporary sort-by options in menu order.
+pub(crate) const SORT_OPTIONS: [SortBy; 5] = [
+    SortBy::Priority,
+    SortBy::DueSoonest,
+    SortBy::MostNeeded,
+    SortBy::SmallestEffort,
+    SortBy::LargestImpact,
+];
+
+/// Toolbar label for the temporary sort-by switcher pill.
+pub(crate) fn sort_pill_label(sort: SortBy) -> String {
+    format!("Sort: {}", sort.label())
+}
+
+/// Quiet `"Hidden until <day>"` pill shown on search-matched snoozed rows.
+pub(crate) fn hidden_until_pill(todo: &Todo, state: &TodoState) -> Option<String> {
+    if state.view.filter.search.trim().is_empty() {
+        return None;
+    }
+    let day = todo.hide_until?;
+    (day > state.today).then(|| format!("Hidden until {}", day.short()))
+}
+
+/// Soft `"Idle Nd — resume or pause?"` inline nudge for an idle `InProgress` session.
+pub(crate) fn idle_nudge(sig: &SessionSignal) -> Option<String> {
+    if sig.active_turn || sig.idle_days == 0 {
+        return None;
+    }
+    Some(format!("Idle {}d — resume or pause?", sig.idle_days))
+}
+
+/// What a keyboard triage keystroke does on the To-do page.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum TriageCommand {
+    Action(A),
+    FocusSearch,
+    FocusQuickAdd,
+}
+
+/// Maps a keystroke on the To-do page to a [`TriageCommand`], returning `None`
+/// whenever a text input is focused so typing is never hijacked.
+pub(crate) fn triage_command(
+    key: &str,
+    shift: bool,
+    drawer_open: bool,
+    input_focused: bool,
+    focused_key: Option<&str>,
+) -> Option<TriageCommand> {
+    if input_focused {
+        return None;
+    }
+    match key {
+        "up" if shift => Some(TriageCommand::Action(A::ExtendSelection(-1))),
+        "down" if shift => Some(TriageCommand::Action(A::ExtendSelection(1))),
+        "up" if drawer_open => Some(TriageCommand::Action(A::StepDrawer(-1))),
+        "down" if drawer_open => Some(TriageCommand::Action(A::StepDrawer(1))),
+        "up" => Some(TriageCommand::Action(A::MoveFocus(-1))),
+        "down" => Some(TriageCommand::Action(A::MoveFocus(1))),
+        "enter" => focused_key.map(|k| TriageCommand::Action(A::Open(k.to_owned()))),
+        "s" => Some(TriageCommand::Action(A::StartOrNextFocused)),
+        "x" => Some(TriageCommand::Action(A::ToggleFocusDone)),
+        "/" => Some(TriageCommand::FocusSearch),
+        "n" | "N" => Some(TriageCommand::FocusQuickAdd),
+        "escape" => Some(TriageCommand::Action(if drawer_open {
+            A::Close
+        } else {
+            A::ClearSelection
+        })),
+        _ => None,
+    }
+}
+
+/// What a click on a list row dispatches: multi-select when Shift/Cmd is held,
+/// otherwise open/close the drawer.
+pub(crate) fn row_click_action(key: &str, is_open: bool, shift: bool, toggle: bool) -> A {
+    if shift || toggle {
+        A::SelectRow {
+            key: key.to_owned(),
+            shift,
+            toggle,
+        }
+    } else if is_open {
+        A::Close
+    } else {
+        A::Open(key.to_owned())
+    }
+}
+
+/// Fields on an open item that are still unset, for subtle drawer highlights.
+pub(crate) fn unset_fields(todo: &Todo) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if todo.need.is_none() {
+        missing.push("Need");
+    }
+    if todo.due.is_none() && todo.fuzzy_due.is_none() {
+        missing.push("Due");
+    }
+    if todo.effort.is_none() {
+        missing.push("Effort");
+    }
+    if todo.impact.is_none() {
+        missing.push("Impact");
+    }
+    missing
+}
+
+/// Folded `"Runs N · $X.XX"` ledger summary label for an item.
+pub(crate) fn runs_ledger_label(todo: &Todo, loaded: Option<&TodoRunsResult>) -> Option<String> {
+    let (count, cost) = match loaded {
+        Some(res) if !res.runs.is_empty() => (res.runs.len() as u32, res.total_cost_micros),
+        _ if todo.run_count > 0 => (todo.run_count, todo.total_cost_micros),
+        _ => return None,
+    };
+    Some(format!("Runs {count} · {}", format_cost_usd(cost)))
+}
+
+/// Compact close-readiness summary line if present on `todo`.
+pub(crate) fn close_readiness_text(todo: &Todo) -> Option<String> {
+    todo.close_readiness.as_ref().map(|cr| cr.summary_line())
+}
+
 /// The question an ask puts to the person.
 pub(crate) fn ask_question(todo: &Todo, ask: &Ask) -> String {
     match &ask.kind {
         AskKind::Close => format!("Close {}?", todo.title),
         AskKind::Edit { field, .. } => format!("Change {field} on {}?", todo.title),
         AskKind::Add => format!("Add {}?", todo.title),
+        AskKind::Question { question, .. } => question.clone(),
+        AskKind::ActionRequest { action, .. } => action.clone(),
+        AskKind::ReviewRequest { summary, round, .. } => {
+            if *round > 1 {
+                format!("Review (round {round}): {summary}")
+            } else {
+                format!("Review: {summary}")
+            }
+        }
     }
 }
 
 /// What the ask would change, as "before → after".
 pub(crate) fn ask_change(todo: &Todo, ask: &Ask) -> Option<String> {
     match &ask.kind {
-        AskKind::Close => {
-            let before = match todo.state {
-                State::Open => "Open",
-                State::InProgress => "In progress",
-                State::Closed => "Closed",
-            };
-            Some(format!("State: {before} → Closed"))
-        }
+        AskKind::Close => Some(format!("State: {} → Closed", state_label(todo.state))),
         AskKind::Edit { field, before, after } => Some(format!("{field}: {before} → {after}")),
-        AskKind::Add => None,
+        AskKind::Add | AskKind::Question { .. } | AskKind::ActionRequest { .. } => None,
+        AskKind::ReviewRequest { checkpoint: Some(cp), .. } => {
+            Some(format!("Checkpoint: {}", cp.label()))
+        }
+        AskKind::ReviewRequest { checkpoint: None, .. } => None,
     }
 }
 
@@ -240,13 +388,17 @@ pub(crate) fn fold_summary(state: &TodoState, section: &Section) -> String {
                 .join(" · ")
         }
         Group::InProgress => format!("{} on it", section.rows.len()),
+        Group::WatchingPr => {
+            let n = section.rows.len();
+            if n == 1 { "1 PR watched".to_owned() } else { format!("{n} PRs watched") }
+        }
         Group::Next | Group::Closed => String::new(),
     }
 }
 
-/// The due chip a row shows, if it has a date.
+/// The due chip a row shows, if it has an exact or fuzzy date (fuzzy is never red).
 pub(crate) fn due_chip(todo: &Todo, today: Day) -> Option<DueChip> {
-    todo.due.map(|d| humata2_todo::chip(d, today))
+    humata2_todo::chip_for(todo, today)
 }
 
 /// The due day in words beside the date field (frame 191): "tomorrow".
@@ -423,15 +575,30 @@ fn dark(look: Look) -> bool {
 
 // ---- Local view state and inputs
 
-/// What the page keeps between draws: the fold toggles and the three fields.
+/// What the page keeps between draws: the fold toggles, local popovers, and inputs.
 pub struct Inputs {
     pub(crate) quick_add: Entity<InputState>,
     search: Entity<InputState>,
     pub(crate) edit: Entity<InputState>,
+    comment_input: Entity<InputState>,
+    ext_block_input: Entity<InputState>,
+    split_input: Entity<InputState>,
+    ask_input: Entity<InputState>,
+    page_focus: FocusHandle,
     toggles: Rc<Cell<u32>>,
     filters_open: Rc<Cell<bool>>,
+    sort_open: Rc<Cell<bool>>,
+    bulk_channel_open: Rc<Cell<bool>>,
+    held_back_open: Rc<Cell<bool>>,
+    runs_open: Rc<Cell<bool>>,
+    history_open: Rc<Cell<bool>>,
+    ask_details_open: Rc<Cell<bool>>,
+    split_open: Rc<Cell<bool>>,
+    split_keep_age: Rc<Cell<bool>>,
+    fold_open: Rc<Cell<bool>>,
+    ext_block_open: Rc<Cell<bool>>,
     editing: Cell<bool>,
-    placeholder: std::cell::RefCell<String>,
+    placeholder: RefCell<String>,
     scroll: ScrollHandle,
     _subscriptions: [Subscription; 3],
 }
@@ -442,6 +609,12 @@ impl Inputs {
         let quick_add = cx.new(|cx| InputState::new(window, cx).placeholder("Add an item…"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let edit = cx.new(|cx| InputState::new(window, cx));
+        let comment_input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a comment…"));
+        let ext_block_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Waiting on vendor / external reason…"));
+        let split_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Titles separated by commas…"));
+        let ask_input = cx.new(|cx| InputState::new(window, cx).placeholder("Write an answer or note…"));
         let (one, two, three) = (send.clone(), send.clone(), send.clone());
         let subs = [
             cx.subscribe(&quick_add, move |_, input, event: &InputEvent, cx| match event {
@@ -464,10 +637,25 @@ impl Inputs {
             quick_add,
             search,
             edit,
+            comment_input,
+            ext_block_input,
+            split_input,
+            ask_input,
+            page_focus: cx.focus_handle(),
             toggles: Rc::new(Cell::new(0)),
             filters_open: Rc::new(Cell::new(false)),
+            sort_open: Rc::new(Cell::new(false)),
+            bulk_channel_open: Rc::new(Cell::new(false)),
+            held_back_open: Rc::new(Cell::new(false)),
+            runs_open: Rc::new(Cell::new(false)),
+            history_open: Rc::new(Cell::new(false)),
+            ask_details_open: Rc::new(Cell::new(false)),
+            split_open: Rc::new(Cell::new(false)),
+            split_keep_age: Rc::new(Cell::new(true)),
+            fold_open: Rc::new(Cell::new(false)),
+            ext_block_open: Rc::new(Cell::new(false)),
             editing: Cell::new(false),
-            placeholder: std::cell::RefCell::new(String::new()),
+            placeholder: RefCell::new(String::new()),
             scroll: ScrollHandle::new(),
             _subscriptions: subs,
         }
@@ -637,7 +825,8 @@ fn link(send: &Send, id: impl Into<ElementId>, label: &str, action: A, look: Loo
 
 // ---- The page
 
-/// The whole page: header, toolbar, quick add, the groups and the drawer.
+/// The whole page: header, toolbar, active filter chips, quick add, groups,
+/// drawer, floating bulk action bar, and undo toast.
 pub fn page(
     send: &Send,
     state: &TodoState,
@@ -646,16 +835,58 @@ pub fn page(
     look: Look,
 ) -> Div {
     let open = state.open.as_deref().and_then(|k| entry(state, k));
+    let drawer_open = open.is_some();
+    let focused_key = state.focused.clone();
+    let key_send = send.clone();
+    let search_input = inputs.search.clone();
+    let quick_add_input = inputs.quick_add.clone();
+    let edit_input = inputs.edit.clone();
+    let comment_input = inputs.comment_input.clone();
+    let ext_block_input = inputs.ext_block_input.clone();
+    let split_input = inputs.split_input.clone();
+    let ask_input = inputs.ask_input.clone();
     col()
         .size_full()
+        .relative()
+        .track_focus(&inputs.page_focus)
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            let input_focused = [
+                &search_input,
+                &quick_add_input,
+                &edit_input,
+                &comment_input,
+                &ext_block_input,
+                &split_input,
+                &ask_input,
+            ]
+            .into_iter()
+            .any(|inp| inp.focus_handle(cx).is_focused(window));
+            let key = event.keystroke.key.as_str();
+            let shift = event.keystroke.modifiers.shift;
+            if let Some(cmd) =
+                triage_command(key, shift, drawer_open, input_focused, focused_key.as_deref())
+            {
+                cx.stop_propagation();
+                match cmd {
+                    TriageCommand::Action(action) => key_send(action, cx),
+                    TriageCommand::FocusSearch => {
+                        search_input.update(cx, |i, cx| i.focus(window, cx));
+                    }
+                    TriageCommand::FocusQuickAdd => {
+                        quick_add_input.update(cx, |i, cx| i.focus(window, cx));
+                    }
+                }
+            }
+        })
         .child(header(send, state, inputs, look))
         .child(channel_bar(send, state, look))
+        .children(active_filter_chips_bar(send, state, look))
         .child(
             row()
                 .flex_1()
                 .min_h_0()
                 .items_start()
-                .child(list(send, state, inputs, sessions, look, open.is_some()))
+                .child(list(send, state, inputs, sessions, look, drawer_open))
                 .children(open.map(|e| {
                     col()
                         .id("todo-drawer")
@@ -670,16 +901,20 @@ pub fn page(
                         .child(drawer(send, state, e, inputs, sessions, look, true))
                 })),
         )
+        .children((!state.selected.is_empty()).then(|| bulk_action_bar(send, state, inputs, look)))
+        .children(state.undo.as_ref().map(|toast| undo_toast(send, toast, look)))
 }
 
 fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
     let (label, key) = do_next(state);
     let toggle = inputs.filters_open.clone();
+    let sort_toggle = inputs.sort_open.clone();
     let filters_on = state.view.filter.due.len()
         + state.view.filter.tags.len()
         + usize::from(state.view.filter.session.is_some())
         + state.view.filter.effort.len()
         + state.view.filter.impact.len()
+        + state.view.filter.need.len()
         + state.view.filter.only.len();
     row()
         .h(px(52.))
@@ -706,7 +941,14 @@ fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
                 )
                 .test_support(),
         )
-        .child(small("Sort: Ranked", look).px(px(10.)).whitespace_nowrap())
+        .child(
+            push_quiet_shape("todo-sort", sort_pill_label(state.sort), look).on_click(
+                move |_, window, _| {
+                    sort_toggle.set(!sort_toggle.get());
+                    window.refresh();
+                },
+            ),
+        )
         .child(
             push_quiet_shape(
                 "todo-filters",
@@ -724,6 +966,225 @@ fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
                 .opacity(0.45)
                 .into_any_element(),
         })
+}
+
+fn sort_popover(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> impl IntoElement {
+    let close = inputs.sort_open.clone();
+    row()
+        .id("todo-sort-popover")
+        .flex_shrink_0()
+        .flex_wrap()
+        .gap(px(6.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.card))
+        .child(small("Sort by", look).font_weight(FontWeight::SEMIBOLD))
+        .children(SORT_OPTIONS.into_iter().map(|opt| {
+            let on = state.sort == opt;
+            let send = send.clone();
+            let close = close.clone();
+            div()
+                .id(SharedString::from(format!("todo-sort-{}", opt.label())))
+                .role(Role::Button)
+                .aria_label(opt.label())
+                .cursor_pointer()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .when(on, |c| c.bg(rgb(0x1c1c1e)).text_color(rgb(0xffffff)))
+                .when(!on, |c| c.bg(rgb(look.fill)).text_color(soft(look)))
+                .child(opt.label())
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    close.set(false);
+                    send(A::SetSort(opt), cx);
+                    window.refresh();
+                })
+                .test_support()
+        }))
+        .test_support()
+}
+
+fn active_filter_chips_bar(send: &Send, state: &TodoState, look: Look) -> Option<impl IntoElement> {
+    let chips = state.view.filter.active_chips();
+    if chips.is_empty() {
+        return None;
+    }
+    Some(
+        row()
+            .id("todo-active-filters")
+            .flex_shrink_0()
+            .flex_wrap()
+            .gap(px(6.))
+            .px(px(20.))
+            .pb(px(6.))
+            .children(chips.into_iter().enumerate().map(|(i, chip)| {
+                let label = format!("{} ×", chip.label());
+                clickable(
+                    send,
+                    SharedString::from(format!("todo-filter-chip-{i}")),
+                    &label,
+                    A::RemoveFilterChip(chip),
+                    outline(label.clone(), look.accent).py(px(1.)),
+                )
+            }))
+            .child(link(send, "todo-clear-all-filters", "Clear all", A::ClearFilter, look))
+            .test_support(),
+    )
+}
+
+fn bulk_action_bar(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> impl IntoElement {
+    let count = state.selected.len();
+    let ch_toggle = inputs.bulk_channel_open.clone();
+    let ch_open = inputs.bulk_channel_open.get();
+    let channels = state.channels();
+    col()
+        .id("todo-bulk-bar")
+        .flex_shrink_0()
+        .gap(px(6.))
+        .px(px(20.))
+        .py(px(8.))
+        .border_t_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.card))
+        .child(
+            row()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("{count} selected")),
+                )
+                .child(quiet(send, "todo-bulk-done", "Done", A::BulkSetState(State::Closed), look))
+                .child(quiet(
+                    send,
+                    "todo-bulk-wont-do",
+                    "Won't do",
+                    A::BulkSetState(State::WontDo),
+                    look,
+                ))
+                .child(quiet(
+                    send,
+                    "todo-bulk-start",
+                    "Start",
+                    A::BulkSetState(State::InProgress),
+                    look,
+                ))
+                .child(
+                    push_quiet_shape("todo-bulk-move-channel", "Move channel", look).on_click(
+                        move |_, window, _| {
+                            ch_toggle.set(!ch_toggle.get());
+                            window.refresh();
+                        },
+                    ),
+                )
+                .child(div().flex_1())
+                .child(link(send, "todo-bulk-clear", "Clear", A::ClearSelection, look)),
+        )
+        .children(ch_open.then(|| {
+            let close = inputs.bulk_channel_open.clone();
+            row()
+                .gap(px(6.))
+                .flex_wrap()
+                .child(small("Move to:", look))
+                .children(channels.into_iter().map(|ch| {
+                    let send = send.clone();
+                    let close = close.clone();
+                    let label = format!("# {ch}");
+                    let ch_val = ch.clone();
+                    div()
+                        .id(SharedString::from(format!("todo-bulk-ch-{ch}")))
+                        .role(Role::Button)
+                        .aria_label(label.clone())
+                        .cursor_pointer()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .bg(rgb(look.fill))
+                        .text_size(px(12.))
+                        .child(label)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            close.set(false);
+                            send(A::BulkMoveChannel(Some(ch_val.clone())), cx);
+                            window.refresh();
+                        })
+                        .test_support()
+                }))
+                .child({
+                    let send = send.clone();
+                    let close = inputs.bulk_channel_open.clone();
+                    div()
+                        .id("todo-bulk-ch-none")
+                        .role(Role::Button)
+                        .aria_label("No channel")
+                        .cursor_pointer()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .bg(rgb(look.fill))
+                        .text_size(px(12.))
+                        .child("No channel")
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            close.set(false);
+                            send(A::BulkMoveChannel(None), cx);
+                            window.refresh();
+                        })
+                        .test_support()
+                })
+        }))
+        .test_support()
+}
+
+fn undo_toast(send: &Send, toast: &UndoToast, look: Look) -> impl IntoElement {
+    row()
+        .id("todo-undo-toast")
+        .flex_shrink_0()
+        .gap(px(10.))
+        .px(px(20.))
+        .py(px(8.))
+        .border_t_1()
+        .border_color(rgb(look.line))
+        .bg(tone(look, 0x1c1c1e, 0x2c2c2e))
+        .text_color(rgb(0xffffff))
+        .text_size(px(12.5))
+        .child(div().flex_1().child(toast.message.clone()))
+        .child(clickable(
+            send,
+            "todo-undo-btn",
+            "Undo",
+            A::Undo,
+            div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x6eb5ff)).child("Undo"),
+        ))
+        .children(toast.start_next.as_ref().map(|next| {
+            let label = format!("Start next: {}", next.title);
+            clickable(
+                send,
+                "todo-undo-start-next",
+                &label,
+                A::StartNextFromUndo,
+                div()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .bg(rgb(0x3a3a3c))
+                    .text_color(rgb(0xffffff))
+                    .child(label.clone()),
+            )
+        }))
+        .child(clickable(
+            send,
+            "todo-undo-dismiss",
+            "Dismiss",
+            A::DismissUndo,
+            div().text_color(rgb(0xaeaeb2)).child("×"),
+        ))
+        .test_support()
 }
 
 fn channel_bar(send: &Send, state: &TodoState, look: Look) -> Div {
@@ -819,6 +1280,7 @@ fn list(
     narrow: bool,
 ) -> impl IntoElement {
     let sections = sections(state);
+    let sort_menu = inputs.sort_open.get().then(|| sort_popover(send, state, inputs, look));
     let filters = inputs.filters_open.get().then(|| filter_popover(send, state, inputs, sessions, look));
     let ranked = state.ranked().next.len();
     let footer = (state.shown().len() > LARGE && ranked > 0).then(|| {
@@ -836,6 +1298,7 @@ fn list(
         .overflow_y_scroll()
         .px(px(20.))
         .gap(px(8.))
+        .children(sort_menu)
         .children(filters)
         .child(quick_add(state, inputs, look))
         .children(state.migration.as_ref().map(|n| migration_banner(send, n, state.what_changed, look)))
@@ -992,9 +1455,13 @@ fn group(
         toggles.set(toggles.get() ^ g.bit());
         window.refresh();
     };
-    let folds = matches!(g, Group::Waiting | Group::Hidden | Group::Attention | Group::InProgress);
+    let folds = matches!(
+        g,
+        Group::Waiting | Group::Hidden | Group::Attention | Group::InProgress | Group::WatchingPr
+    );
     let note = match g {
         Group::Attention => "an agent wants to change these; open one to say yes or no",
+        Group::WatchingPr => "quietly watching linked PRs without holding an agent turn",
         Group::Next => "ranked for you; the order holds still while you look",
         Group::Waiting => "joins the list when what it waits on is closed",
         Group::Hidden => "each comes back on its date, without a notification",
@@ -1072,12 +1539,17 @@ fn item_row(
     narrow: bool,
 ) -> impl IntoElement {
     let t = &e.todo;
-    let selected = state.open.as_deref() == Some(t.key.as_str());
-    let closed = t.state == State::Closed;
+    let is_open = state.open.as_deref() == Some(t.key.as_str());
+    let is_bulk_selected = state.selected.contains(&t.key);
+    let is_focused = state.focused.as_deref() == Some(t.key.as_str());
+    let selected = is_open || is_bulk_selected;
+    let closed = t.state.is_terminal();
     let key = t.key.clone();
-    let open = if selected { A::Close } else { A::Open(key.clone()) };
+    let click_key = key.clone();
     let sender = send.clone();
     let reasons: Vec<String> = r.reasons.iter().map(humata2_todo::Reason::text).collect();
+    let bulk_err = state.bulk_errors.get(&t.key).cloned();
+    let hidden_pill = hidden_until_pill(t, state);
     let circle_action = A::SetState(key.clone(), if closed { State::Open } else { State::Closed });
     let circle = if closed {
         div()
@@ -1101,6 +1573,7 @@ fn item_row(
     );
     let title_line = row()
         .gap(px(8.))
+        .flex_wrap()
         .child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)
@@ -1108,9 +1581,18 @@ fn item_row(
                 .child(t.title.clone()),
         )
         .children(t.ask.as_ref().filter(|_| !t.suggested).map(|a| attention_pill(a.label(), look)))
+        .children(t.stuck_agent.as_ref().map(|_| attention_pill("stuck", look)))
+        .children((!t.blocker_gone.is_empty()).then(|| attention_pill("blocker gone", look)))
+        .children(t.lifecycle_prompts.first().map(|lp| attention_pill(&lp.title, look)))
         .children(t.suggested.then(|| {
             let label = t.ask.as_ref().map_or("add?", Ask::label);
             attention_pill(label, look)
+        }))
+        .children(matches!(t.state, State::WontDo | State::Became).then(|| {
+            tag(state_label(t.state), look)
+        }))
+        .children(hidden_pill.map(|text| {
+            pill(text, rgb(look.fill), rgb(look.secondary))
         }))
         .children(t.review.as_ref().map(|_| {
             pill("Pull request review", tone(look, 0xece9fd, 0x322c5c), tone(look, 0x4a2fa8, 0xcdc4ff))
@@ -1120,9 +1602,73 @@ fn item_row(
         .children(t.review.as_ref().map(|rv| small(format!("by {}", rv.author), look)))
         .children(step_progress(t).map(|s| small(s, look)))
         .children(due_chip(t, state.today).map(|c| due_pill(&c, look)))
-        .children(t.tags.iter().map(|g| tag(g.clone(), look)));
+        .children(t.tags.iter().map(|g| {
+            let active = state.view.filter.tags.iter().any(|x| x.eq_ignore_ascii_case(g));
+            let chip_div = if active {
+                pill(format!("#{g}"), rgb(look.accent), rgb(0xffffff))
+            } else {
+                tag(g.clone(), look)
+            };
+            clickable(
+                send,
+                SharedString::from(format!("todo-row-tag-{key}-{g}")),
+                &format!("Filter by tag {g}"),
+                A::ToggleTagChip(g.clone()),
+                chip_div,
+            )
+        }));
+    let signals_ui: Vec<AnyElement> = if t.state == State::InProgress {
+        t.session_signals
+            .iter()
+            .enumerate()
+            .map(|(idx, sig)| {
+                let dot_color = if sig.active_turn {
+                    teal(look)
+                } else {
+                    rgb(look.tertiary)
+                };
+                let nudge = idle_nudge(sig);
+                row()
+                    .gap(px(6.))
+                    .child(
+                        row()
+                            .gap(px(5.))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(5.))
+                            .bg(rgb(look.fill))
+                            .text_size(px(11.5))
+                            .child(div().size(px(6.)).rounded_full().bg(dot_color))
+                            .child(sig.label.clone()),
+                    )
+                    .children(nudge.map(|msg| {
+                        row()
+                            .gap(px(6.))
+                            .child(small(msg, look))
+                            .child(link(
+                                send,
+                                SharedString::from(format!("todo-idle-resume-{key}-{idx}")),
+                                "Resume",
+                                A::OpenSession(sig.session.clone()),
+                                look,
+                            ))
+                            .child(link(
+                                send,
+                                SharedString::from(format!("todo-idle-pause-{key}-{idx}")),
+                                "Pause",
+                                A::SetState(key.clone(), State::Open),
+                                look,
+                            ))
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let detail = row()
         .gap(px(6.))
+        .flex_wrap()
         .mt(px(3.))
         .text_size(px(12.))
         .text_color(rgb(look.secondary))
@@ -1138,6 +1684,17 @@ fn item_row(
                 .filter_map(|s| sessions(s))
                 .map(|chip| session_chip(chip, look)),
         )
+        .children(signals_ui)
+        .children(t.watched_prs.iter().map(|pr| {
+            let mut txt = pr.repo_pr.clone();
+            if !pr.ci_state.is_empty() {
+                txt.push_str(&format!(" · CI {}", pr.ci_state));
+            }
+            if pr.unresolved_comments > 0 {
+                txt.push_str(&format!(" · {} comments", pr.unresolved_comments));
+            }
+            tag(txt, look)
+        }))
         .children(reasons.into_iter().map(|text| {
             div()
                 .flex_shrink_0()
@@ -1181,34 +1738,61 @@ fn item_row(
     } else {
         None
     };
-    row()
-        .id(SharedString::from(format!("todo-row {key}")))
-        .role(Role::ListItem)
-        .aria_label(format!("{} {}", t.key, t.title))
-        .test_support()
-        .gap(px(11.))
-        .px(px(8.))
-        .py(px(7.))
-        .min_h(px(50.))
-        .rounded(px(9.))
-        .cursor_pointer()
-        .border_t_1()
-        .border_color(hairline(look))
-        .when(selected, |x| x.bg(selected_bg(look)))
-        .when(t.suggested, |x| x.border_1().border_dashed().border_color(rgb(look.line)))
-        .on_click(move |_, _, cx| sender(open.clone(), cx))
-        .child(circle)
+    col()
         .child(
-            div()
-                .w(px(14.))
-                .flex_shrink_0()
-                .text_size(px(12.))
-                .text_color(rgb(look.tertiary))
-                .child(r.position.map(|p| p.to_string()).unwrap_or_default()),
+            row()
+                .id(SharedString::from(format!("todo-row {key}")))
+                .role(Role::ListItem)
+                .aria_label(format!("{} {}", t.key, t.title))
+                .test_support()
+                .gap(px(11.))
+                .px(px(8.))
+                .py(px(7.))
+                .min_h(px(50.))
+                .rounded(px(9.))
+                .cursor_pointer()
+                .border_t_1()
+                .border_color(hairline(look))
+                .when(selected, |x| x.bg(selected_bg(look)))
+                .when(is_focused && !selected, |x| x.border_1().border_color(rgb(look.accent)))
+                .when(t.suggested, |x| x.border_1().border_dashed().border_color(rgb(look.line)))
+                .on_click(move |event: &ClickEvent, _, cx| {
+                    let mods = event.modifiers();
+                    let action = row_click_action(
+                        &click_key,
+                        is_open,
+                        mods.shift,
+                        mods.platform || mods.control,
+                    );
+                    sender(action, cx);
+                })
+                .child(circle)
+                .child(
+                    div()
+                        .w(px(14.))
+                        .flex_shrink_0()
+                        .text_size(px(12.))
+                        .text_color(rgb(look.tertiary))
+                        .child(r.position.map(|p| p.to_string()).unwrap_or_default()),
+                )
+                .child(col().flex_1().min_w_0().child(title_line).child(detail))
+                .children(actions)
+                .children(columns),
         )
-        .child(col().flex_1().min_w_0().child(title_line).child(detail))
-        .children(actions)
-        .children(columns)
+        .children(bulk_err.map(|reason| {
+            row()
+                .id(SharedString::from(format!("todo-bulk-err-{key}")))
+                .mx(px(12.))
+                .mb(px(4.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(tone(look, 0xfde4e4, 0x4b1f1f))
+                .text_color(tone(look, 0xa51d1d, 0xff9088))
+                .text_size(px(11.5))
+                .child(format!("Couldn't update {}: {reason}", t.key))
+                .test_support()
+        }))
 }
 
 fn session_chip(chip: SessionChip, look: Look) -> Div {
@@ -1465,15 +2049,88 @@ pub(crate) fn drawer(
                 .collect(),
         )
     };
-    let due_label = t.due.map_or("No date".to_owned(), Day::short);
+    let due_label = t
+        .due
+        .map(Day::short)
+        .or_else(|| t.fuzzy_due.map(|f| f.label().to_owned()))
+        .unwrap_or_else(|| "No date".to_owned());
     let made = small(format!("{} · made by you, {}", t.key, t.created.short()), look).flex_1();
+    let ranked_row = state
+        .ranked()
+        .next
+        .into_iter()
+        .find(|r| r.key == t.key);
+    let held_back = ranked_row.as_ref().and_then(|r| r.held_back.clone());
+    let rank_pos = ranked_row.as_ref().and_then(|r| r.position);
+    let unset = unset_fields(t);
+    let is_unset = |name: &str| t.state.is_active() && unset.contains(&name);
+    let field_hint = |label: &'static str, body: Div| {
+        let missing = is_unset(label);
+        row()
+            .gap(px(12.))
+            .py(px(4.))
+            .when(missing, |r| {
+                r.px(px(4.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(tone(look, 0xe2e2e8, 0x35353a))
+            })
+            .child(small(label, look).w(px(96.)).flex_shrink_0())
+            .child(body.min_w_0())
+    };
+    let held_toggle = inputs.held_back_open.clone();
+    let held_open = inputs.held_back_open.get();
+    let active_steps: Vec<(usize, &humata2_todo::Step)> =
+        t.steps.iter().enumerate().filter(|(_, s)| !s.dropped).collect();
+    let dropped_steps: Vec<(usize, &humata2_todo::Step)> =
+        t.steps.iter().enumerate().filter(|(_, s)| s.dropped).collect();
+    let steps_done = active_steps.iter().filter(|(_, s)| s.done).count();
+    let steps_total = active_steps.len();
+    let need_seg = seg(
+        "todo-need",
+        [Need::Idea, Need::NiceToHave, Need::Expected, Need::Critical]
+            .into_iter()
+            .map(|v| {
+                let on = t.need == Some(v);
+                (v.label().to_owned(), on, A::SetNeed(key.clone(), (!on).then_some(v)))
+            })
+            .collect(),
+    );
     col()
         .gap(px(6.))
         .children((!narrow).then(|| {
             row()
                 .gap(px(8.))
                 .child(made)
+                .children(rank_pos.map(|pos| {
+                    let toggle = held_toggle.clone();
+                    div()
+                        .id("todo-rank-pill")
+                        .role(Role::Button)
+                        .aria_label("Why this rank")
+                        .cursor_pointer()
+                        .px(px(7.))
+                        .py(px(1.))
+                        .rounded(px(5.))
+                        .bg(rgb(look.fill))
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.accent))
+                        .child(if held_back.is_some() {
+                            format!("#{pos} · Held back?")
+                        } else {
+                            format!("#{pos}")
+                        })
+                        .on_click(move |_, window, _| {
+                            toggle.set(!toggle.get());
+                            window.refresh();
+                        })
+                        .test_support()
+                }))
                 .child(link(send, "todo-close", "×", A::Close, look))
+        }))
+        .children((held_open && held_back.is_some()).then(|| {
+            held_back_popover(held_back.as_ref().expect("checked"), look)
         }))
         .child(if editing(EditField::Title) {
             edit_input("Title").into_any_element()
@@ -1487,32 +2144,61 @@ pub(crate) fn drawer(
             )
             .into_any_element()
         })
+        .children(close_readiness_text(t).map(|summary| {
+            row()
+                .id("todo-close-readiness")
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(rgb(look.fill))
+                .child(small(summary, look))
+                .test_support()
+        }))
+        .children(t.owner.as_ref().map(|owner| owner_bar(send, state, &key, owner, look)))
         .children(
             e.ask_id
                 .as_ref()
                 .zip(t.ask.as_ref())
                 .filter(|_| !t.suggested)
-                .map(|(id, ask)| ask_card(send, t, id, ask, look)),
+                .map(|(id, ask)| ask_card(send, state, inputs, t, id, ask, look)),
         )
-        .children(t.review.as_ref().filter(|_| t.state != State::Closed).map(|_| {
+        .children(t.stuck_agent.as_ref().map(|stuck| stuck_agent_card(send, &key, stuck, look)))
+        .children(t.blocker_gone.iter().map(|bg| blocker_gone_card(send, &key, bg, look)))
+        .children(t.lifecycle_prompts.iter().map(|lp| lifecycle_prompt_card(send, &key, lp, look)))
+        .children(t.review.as_ref().filter(|_| t.state.is_active()).map(|_| {
             row().child(primary(send, "todo-start-review", "Start the review", A::StartReview(key.clone()), look))
         }))
         .child(field(
             "State",
-            seg(
-                "todo-state",
-                [(State::Open, "Open"), (State::InProgress, "In progress"), (State::Closed, "Closed")]
+            row()
+                .gap(px(6.))
+                .flex_wrap()
+                .child(seg(
+                    "todo-state",
+                    [
+                        (State::Open, "Open"),
+                        (State::InProgress, "In progress"),
+                        (State::Closed, "Closed"),
+                        (State::WontDo, "Won't do"),
+                    ]
                     .into_iter()
                     .map(|(s, n)| (n.to_owned(), t.state == s, A::SetState(key.clone(), s)))
                     .collect(),
-            ),
+                ))
+                .children(matches!(t.state, State::Became | State::WatchingPr).then(|| {
+                    pill(state_label(t.state), tone(look, 0xdff5f1, 0x153a36), teal(look))
+                })),
         ))
+        .children(t.wont_do_reason.as_ref().filter(|r| !r.is_empty()).map(|reason| {
+            field("Reason", small(reason.clone(), look))
+        }))
+        .children((!narrow).then(|| checkpoint_bar(send, &key, t, look)))
         .children((!narrow).then(|| {
             field("Channel", div().child(t.channel.as_ref().map_or("No channel".to_owned(), |c| format!("# {c}"))))
         }))
         .children((!narrow).then(|| field(
             "Sessions",
-            row().gap(px(6.)).children(t.sessions.iter().map(|s| match sessions(s) {
+            row().gap(px(6.)).flex_wrap().children(t.sessions.iter().map(|s| match sessions(s) {
                 Some(chip) => row()
                     .gap(px(6.))
                     .px(px(8.))
@@ -1525,7 +2211,8 @@ pub(crate) fn drawer(
                 None => tag(s.clone(), look),
             })),
         )))
-        .child(field(
+        .child(field_hint("Need", need_seg))
+        .child(field_hint(
             "Due",
             col()
                 .gap(px(4.))
@@ -1542,8 +2229,6 @@ pub(crate) fn drawer(
                                     "todo-due-edit",
                                     "Type a due date",
                                     A::StartEdit(key.clone(), EditField::Due),
-                                    // Clear is an × inside the field, so the
-                                    // shortcuts keep one line at panel width.
                                     row()
                                         .w(px(150.))
                                         .flex_shrink(1.)
@@ -1555,12 +2240,16 @@ pub(crate) fn drawer(
                                         .border_color(rgb(look.line))
                                         .bg(rgb(look.card))
                                         .child(div().flex_1().min_w_0().child(due_label.clone()))
-                                        .children(t.due.map(|_| {
+                                        .children((t.due.is_some() || t.fuzzy_due.is_some()).then(|| {
                                             clickable(
                                                 send,
                                                 "todo-due-clear",
                                                 "Clear",
-                                                A::ClearDue(key.clone()),
+                                                if t.due.is_some() {
+                                                    A::ClearDue(key.clone())
+                                                } else {
+                                                    A::SetFuzzyDue(key.clone(), None)
+                                                },
                                                 div().text_color(rgb(look.secondary)).child("×"),
                                             )
                                         })),
@@ -1590,6 +2279,7 @@ pub(crate) fn drawer(
                 } else {
                     row()
                         .gap(px(8.))
+                        .flex_wrap()
                         .child(clickable(
                             send,
                             "todo-due-edit",
@@ -1618,11 +2308,51 @@ pub(crate) fn drawer(
                             A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
                             look,
                         ))
-                        .children(t.due.map(|_| {
-                            link(send, "todo-due-clear", "Clear", A::ClearDue(key.clone()), look)
+                        .children((t.due.is_some() || t.fuzzy_due.is_some()).then(|| {
+                            link(
+                                send,
+                                "todo-due-clear",
+                                "Clear",
+                                if t.due.is_some() {
+                                    A::ClearDue(key.clone())
+                                } else {
+                                    A::SetFuzzyDue(key.clone(), None)
+                                },
+                                look,
+                            )
                         }))
                         .into_any_element()
                 })
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .flex_wrap()
+                        .child(small("Loose:", look))
+                        .children(
+                            [FuzzyDue::InAFewDays, FuzzyDue::NextWeek, FuzzyDue::NextMonth]
+                                .into_iter()
+                                .map(|f| {
+                                    let on = t.fuzzy_due == Some(f);
+                                    let inner = div()
+                                        .px(px(7.))
+                                        .py(px(1.))
+                                        .rounded(px(5.))
+                                        .text_size(px(11.5))
+                                        .when(on, |d| {
+                                            d.bg(rgb(0x1c1c1e)).text_color(rgb(0xffffff))
+                                        })
+                                        .when(!on, |d| d.bg(rgb(look.fill)).text_color(soft(look)))
+                                        .child(f.label());
+                                    clickable(
+                                        send,
+                                        SharedString::from(format!("todo-fuzzy-{}", f.label())),
+                                        f.label(),
+                                        A::SetFuzzyDue(key.clone(), (!on).then_some(f)),
+                                        inner,
+                                    )
+                                }),
+                        ),
+                )
                 .children(state.due_error.as_ref().map(|err| {
                     div()
                         .text_size(px(12.))
@@ -1630,7 +2360,7 @@ pub(crate) fn drawer(
                         .child(err.to_string())
                 })),
         ))
-        .child(field(
+        .child(field_hint(
             "Effort",
             row()
                 .gap(px(14.))
@@ -1648,7 +2378,7 @@ pub(crate) fn drawer(
                 .children((!narrow).then(|| small("Impact", look)))
                 .children((!narrow).then(&impact)),
         ))
-        .children(narrow.then(|| field("Impact", impact())))
+        .children(narrow.then(|| field_hint("Impact", impact())))
         .child(field(
             "Tags",
             row()
@@ -1673,39 +2403,164 @@ pub(crate) fn drawer(
         .children((!narrow && !t.depends_on.is_empty()).then(|| {
             field(
                 "Waits on",
-                row().gap(px(6.)).children(
-                    t.depends_on
-                        .iter()
-                        .map(|k| pill(k.clone(), tone(look, 0xdff5f1, 0x153a36), teal(look))),
-                ),
+                row().gap(px(6.)).flex_wrap().children(t.depends_on.iter().map(|k| {
+                    clickable(
+                        send,
+                        SharedString::from(format!("todo-dep-{k}")),
+                        &format!("Open {k}"),
+                        A::Open(k.clone()),
+                        pill(k.clone(), tone(look, 0xdff5f1, 0x153a36), teal(look)),
+                    )
+                })),
+            )
+        }))
+        .children((!narrow).then(|| external_block_row(send, inputs, t, look)))
+        .children((!narrow && !t.from_keys.is_empty()).then(|| {
+            field(
+                "From",
+                row().gap(px(6.)).flex_wrap().children(t.from_keys.iter().map(|k| {
+                    clickable(
+                        send,
+                        SharedString::from(format!("todo-from-{k}")),
+                        &format!("Open {k}"),
+                        A::Open(k.clone()),
+                        tag(k.clone(), look),
+                    )
+                })),
+            )
+        }))
+        .children((!narrow && !t.became_keys.is_empty()).then(|| {
+            field(
+                "Became",
+                row().gap(px(6.)).flex_wrap().children(t.became_keys.iter().map(|k| {
+                    clickable(
+                        send,
+                        SharedString::from(format!("todo-became-{k}")),
+                        &format!("Open {k}"),
+                        A::Open(k.clone()),
+                        tag(k.clone(), look),
+                    )
+                })),
+            )
+        }))
+        .children(t.source_anchor.as_ref().map(|anchor| {
+            let label = anchor.display();
+            field(
+                "Source",
+                row().child(link(
+                    send,
+                    "todo-source-anchor",
+                    &label,
+                    A::NavigateAnchor(anchor.clone()),
+                    look,
+                )),
             )
         }))
         .child(
             row()
                 .mt(px(10.))
                 .child(small(
-                    format!("STEPS · {} OF {}", t.steps.iter().filter(|s| s.done).count(), t.steps.len()),
+                    format!("STEPS · {steps_done} OF {steps_total}"),
                     look,
                 ).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .children(ticked_by(t, narrow).map(|by| small(format!("ticked by {by}"), look))),
         )
-        .children(t.steps.iter().enumerate().map(|(i, s)| {
+        .children(active_steps.into_iter().map(|(i, s)| {
+            let total_len = t.steps.len();
             let boxed = div()
                 .size(px(15.))
+                .flex_shrink_0()
                 .rounded(px(4.))
                 .border_1()
                 .border_color(if s.done { teal(look) } else { tone(look, 0xb9b9c0, 0x55555a) })
                 .when(s.done, |b| b.bg(teal(look)).text_color(rgb(0xffffff)).text_size(px(10.)).child("✓"));
-            clickable(
-                send,
-                SharedString::from(format!("todo-step-{i}")),
-                &s.text,
-                A::ToggleStep(key.clone(), i),
-                row().gap(px(9.)).py(px(3.)).child(boxed).child(
-                    div().when(s.done, |d| d.text_color(rgb(look.secondary))).child(s.text.clone()),
-                ),
-            )
+            col()
+                .py(px(3.))
+                .gap(px(2.))
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(clickable(
+                            send,
+                            SharedString::from(format!("todo-step-{i}")),
+                            &s.text,
+                            A::ToggleStep(key.clone(), i),
+                            row().gap(px(9.)).child(boxed).child(
+                                div()
+                                    .when(s.done, |d| d.text_color(rgb(look.secondary)))
+                                    .child(s.text.clone()),
+                            ),
+                        ))
+                        .child(div().flex_1())
+                        .children((!narrow && i > 0).then(|| {
+                            link(
+                                send,
+                                SharedString::from(format!("todo-step-up-{i}")),
+                                "↑",
+                                A::MoveStep(key.clone(), i, i - 1),
+                                look,
+                            )
+                        }))
+                        .children((!narrow && i + 1 < total_len).then(|| {
+                            link(
+                                send,
+                                SharedString::from(format!("todo-step-down-{i}")),
+                                "↓",
+                                A::MoveStep(key.clone(), i, i + 1),
+                                look,
+                            )
+                        }))
+                        .children((!narrow).then(|| {
+                            link(
+                                send,
+                                SharedString::from(format!("todo-step-drop-{i}")),
+                                "Drop",
+                                A::DropStep(key.clone(), i),
+                                look,
+                            )
+                        })),
+                )
+                .children(s.markdown_context.as_ref().filter(|m| !m.is_empty()).map(|md| {
+                    div()
+                        .pl(px(24.))
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child(md.clone())
+                }))
+                .children(s.source_anchor.as_ref().map(|anchor| {
+                    let label = anchor.display();
+                    div().pl(px(24.)).text_size(px(11.5)).child(link(
+                        send,
+                        SharedString::from(format!("todo-step-anchor-{i}")),
+                        &label,
+                        A::NavigateAnchor(anchor.clone()),
+                        look,
+                    ))
+                }))
+                .children(s.from_key.as_ref().map(|fk| {
+                    div().pl(px(24.)).text_size(px(11.5)).child(link(
+                        send,
+                        SharedString::from(format!("todo-step-from-{i}")),
+                        &format!("From {fk}"),
+                        A::Open(fk.clone()),
+                        look,
+                    ))
+                }))
+        }))
+        .children(dropped_steps.into_iter().map(|(i, s)| {
+            row()
+                .gap(px(8.))
+                .py(px(2.))
+                .pl(px(24.))
+                .child(small(format!("Dropped: {}", s.text), look).flex_1())
+                .child(link(
+                    send,
+                    SharedString::from(format!("todo-step-restore-{i}")),
+                    "Restore",
+                    A::RestoreStep(key.clone(), i),
+                    look,
+                ))
         }))
         .child(if editing(EditField::Step) {
             edit_input("Step").into_any_element()
@@ -1755,6 +2610,10 @@ pub(crate) fn drawer(
                 .into_any_element()
             }
         }))
+        .children((!narrow).then(|| comments_section(send, inputs, t, look)))
+        .children((!narrow).then(|| split_fold_section(send, state, inputs, t, look)))
+        .children((!narrow).then(|| runs_ledger_section(send, state, inputs, t, look)).flatten())
+        .children((!narrow).then(|| history_section(send, state, inputs, t, look)))
         .children((!narrow).then(|| footer(send, state, t, look, true).mt(px(12.)).pt(px(10.))))
 }
 
@@ -1836,67 +2695,1042 @@ fn ticked_by(t: &Todo, narrow: bool) -> Option<String> {
     Some(if narrow { by.split(" in ").next().unwrap_or(by) } else { by }.to_owned())
 }
 
-fn ask_card(send: &Send, t: &Todo, ask_id: &str, ask: &Ask, look: Look) -> Div {
-    let session = t.sessions.first().cloned();
+fn held_back_popover(hb: &HeldBackBy, look: Look) -> impl IntoElement {
     col()
+        .id("todo-held-back-popover")
+        .gap(px(4.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.card))
+        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child("Held back by"))
+        .children((!hb.summary.is_empty()).then(|| small(hb.summary.clone(), look)))
+        .children(hb.factors.iter().map(|f| small(format!("• {f}"), look)))
+        .test_support()
+}
+
+fn owner_bar(
+    send: &Send,
+    state: &TodoState,
+    key: &str,
+    owner: &humata2_todo::TodoOwner,
+    look: Look,
+) -> Div {
+    let confirming = state.confirm_take_back.as_deref() == Some(key);
+    let is_agent = owner.kind == OwnerKind::Agent;
+    col()
+        .gap(px(6.))
+        .child(
+            row()
+                .id("todo-owner-bar")
+                .gap(px(8.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(rgb(look.fill))
+                .child(small(format!("Owner: {}", owner.label), look).flex_1())
+                .children((is_agent && !confirming).then(|| {
+                    quiet(
+                        send,
+                        "todo-take-back",
+                        "Take back",
+                        A::RequestTakeBack(key.to_owned()),
+                        look,
+                    )
+                }))
+                .test_support(),
+        )
+        .children(confirming.then(|| {
+            row()
+                .id("todo-take-back-confirm")
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(8.))
+                .bg(amber_soft(look))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.))
+                        .child(format!("Take ownership back from {}?", owner.label)),
+                )
+                .child(primary(
+                    send,
+                    "todo-take-back-yes",
+                    "Take back",
+                    A::ConfirmTakeBack(key.to_owned()),
+                    look,
+                ))
+                .child(quiet(send, "todo-take-back-cancel", "Cancel", A::CancelTakeBack, look))
+                .test_support()
+        }))
+}
+
+fn checkpoint_bar(send: &Send, key: &str, t: &Todo, look: Look) -> impl IntoElement {
+    let stages = [
+        CheckpointState::WithContext,
+        CheckpointState::Defined,
+        CheckpointState::Done,
+    ];
+    let review_ask_id = match (&t.ask, state_review_flag(t)) {
+        (Some(ask), true) => matches!(ask.kind, AskKind::ReviewRequest { .. }),
+        _ => false,
+    };
+    row()
+        .id("todo-checkpoint-bar")
+        .gap(px(6.))
+        .py(px(4.))
+        .flex_wrap()
+        .child(small("Checkpoint", look).w(px(96.)).flex_shrink_0())
+        .children(stages.into_iter().enumerate().map(|(i, stage)| {
+            let on = t.checkpoint == Some(stage);
+            let reached = t.checkpoint.is_some_and(|cur| cur >= stage);
+            let inner = div()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(11.5))
+                .when(on, |d| d.bg(teal(look)).text_color(rgb(0xffffff)).font_weight(FontWeight::SEMIBOLD))
+                .when(!on && reached, |d| {
+                    d.bg(tone(look, 0xdff5f1, 0x153a36)).text_color(teal(look))
+                })
+                .when(!reached, |d| d.bg(rgb(look.fill)).text_color(soft(look)))
+                .child(stage.label());
+            row()
+                .gap(px(4.))
+                .children((i > 0).then(|| small("→", look)))
+                .child(clickable(
+                    send,
+                    SharedString::from(format!("todo-checkpoint-{i}")),
+                    stage.label(),
+                    A::SetCheckpoint(key.to_owned(), (!on).then_some(stage)),
+                    inner,
+                ))
+        }))
+        .children((review_ask_id || t.checkpoint.is_some()).then(|| {
+            let bounce_to = match t.checkpoint {
+                Some(CheckpointState::Done) => Some(CheckpointState::Defined),
+                Some(CheckpointState::Defined) => Some(CheckpointState::WithContext),
+                _ => None,
+            };
+            link(
+                send,
+                "todo-checkpoint-changes-asked",
+                "Changes asked…",
+                A::SetCheckpoint(key.to_owned(), bounce_to),
+                look,
+            )
+        }))
+        .test_support()
+}
+
+fn state_review_flag(t: &Todo) -> bool {
+    t.ask.as_ref().is_some_and(|a| matches!(a.kind, AskKind::ReviewRequest { .. }))
+}
+
+fn external_block_row(send: &Send, inputs: &Inputs, t: &Todo, look: Look) -> Div {
+    let key = t.key.clone();
+    let open_toggle = inputs.ext_block_open.clone();
+    let is_open = inputs.ext_block_open.get();
+    row()
+        .gap(px(12.))
+        .py(px(4.))
+        .child(small("External", look).w(px(96.)).flex_shrink_0())
+        .child(if let Some(eb) = &t.external_block {
+            row()
+                .gap(px(8.))
+                .flex_1()
+                .min_w_0()
+                .child(small(format!("Waiting: {}", eb.reason), look).flex_1())
+                .child(link(
+                    send,
+                    "todo-ext-block-clear",
+                    "Clear",
+                    A::RemoveExternalBlock(key),
+                    look,
+                ))
+                .into_any_element()
+        } else if is_open {
+            let send = send.clone();
+            let input = inputs.ext_block_input.clone();
+            let close = inputs.ext_block_open.clone();
+            row()
+                .gap(px(6.))
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .id("todo-ext-block-input")
+                        .flex_1()
+                        .child(Input::new(&inputs.ext_block_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    push_quiet_shape("todo-ext-block-save", "Set", look).on_click(
+                        move |_, window, cx| {
+                            let reason = input.read(cx).value().trim().to_owned();
+                            if !reason.is_empty() {
+                                send(A::AddExternalBlock(key.clone(), reason), cx);
+                                input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                                close.set(false);
+                                window.refresh();
+                            }
+                        },
+                    ),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("todo-ext-block-add")
+                .role(Role::Button)
+                .aria_label("Add external block")
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(rgb(look.accent))
+                .child("+ Add external block")
+                .on_click(move |_, window, _| {
+                    open_toggle.set(true);
+                    window.refresh();
+                })
+                .test_support()
+                .into_any_element()
+        })
+}
+
+fn comments_section(send: &Send, inputs: &Inputs, t: &Todo, look: Look) -> Div {
+    let key = t.key.clone();
+    let send_c = send.clone();
+    let input = inputs.comment_input.clone();
+    col()
+        .mt(px(10.))
+        .gap(px(6.))
+        .child(
+            small(format!("COMMENTS · {}", t.comments.len()), look)
+                .font_weight(FontWeight::SEMIBOLD),
+        )
+        .children(t.comments.iter().map(|c| {
+            col()
+                .p(px(8.))
+                .rounded(px(6.))
+                .bg(rgb(look.fill))
+                .gap(px(2.))
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(c.author.clone()),
+                        )
+                        .children(c.created.map(|d| small(d.short(), look)))
+                        .children(c.step_id.as_ref().map(|sid| tag(format!("step {sid}"), look))),
+                )
+                .child(div().text_size(px(12.)).child(c.body.clone()))
+        }))
+        .child(
+            row()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .id("todo-comment-input")
+                        .flex_1()
+                        .child(Input::new(&inputs.comment_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    push_quiet_shape("todo-comment-submit", "Comment", look).on_click(
+                        move |_, window, cx| {
+                            let body = input.read(cx).value().trim().to_owned();
+                            if !body.is_empty() {
+                                send_c(
+                                    A::AddComment {
+                                        key: key.clone(),
+                                        body,
+                                        step_id: None,
+                                    },
+                                    cx,
+                                );
+                                input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                                window.refresh();
+                            }
+                        },
+                    ),
+                ),
+        )
+}
+
+fn split_fold_section(
+    send: &Send,
+    state: &TodoState,
+    inputs: &Inputs,
+    t: &Todo,
+    look: Look,
+) -> Div {
+    let key = t.key.clone();
+    let split_toggle = inputs.split_open.clone();
+    let fold_toggle = inputs.fold_open.clone();
+    let split_open = inputs.split_open.get();
+    let fold_open = inputs.fold_open.get();
+    let keep_age = inputs.split_keep_age.get();
+    let keep_age_cell = inputs.split_keep_age.clone();
+    col()
+        .mt(px(8.))
+        .gap(px(6.))
+        .child(
+            row()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .id("todo-split-toggle")
+                        .role(Role::Button)
+                        .aria_label("Split into tasks")
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(rgb(look.accent))
+                        .child("Split…")
+                        .on_click(move |_, window, _| {
+                            split_toggle.set(!split_toggle.get());
+                            window.refresh();
+                        })
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .id("todo-fold-toggle")
+                        .role(Role::Button)
+                        .aria_label("Fold into step")
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(rgb(look.accent))
+                        .child("Fold into step…")
+                        .on_click(move |_, window, _| {
+                            fold_toggle.set(!fold_toggle.get());
+                            window.refresh();
+                        })
+                        .test_support(),
+                ),
+        )
+        .children(split_open.then(|| {
+            let send = send.clone();
+            let input = inputs.split_input.clone();
+            let close = inputs.split_open.clone();
+            let k = key.clone();
+            col()
+                .gap(px(6.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(rgb(look.fill))
+                .child(
+                    div()
+                        .id("todo-split-input")
+                        .child(Input::new(&inputs.split_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("todo-split-keep-age")
+                                .role(Role::Button)
+                                .aria_label("Keep age")
+                                .cursor_pointer()
+                                .text_size(px(11.5))
+                                .text_color(rgb(look.secondary))
+                                .child(if keep_age { "☑ Keep age" } else { "☐ Fresh age" })
+                                .on_click(move |_, window, _| {
+                                    keep_age_cell.set(!keep_age_cell.get());
+                                    window.refresh();
+                                })
+                                .test_support(),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            push_primary_shape("todo-split-submit", "Split", look).on_click(
+                                move |_, window, cx| {
+                                    let titles: Vec<String> = input
+                                        .read(cx)
+                                        .value()
+                                        .split(',')
+                                        .map(|s| s.trim().to_owned())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                    if !titles.is_empty() {
+                                        send(
+                                            A::SplitItem {
+                                                key: k.clone(),
+                                                titles,
+                                                keep_age,
+                                            },
+                                            cx,
+                                        );
+                                        input.update(cx, |i, cx| {
+                                            i.set_value(String::new(), window, cx)
+                                        });
+                                        close.set(false);
+                                        window.refresh();
+                                    }
+                                },
+                            ),
+                        ),
+                )
+        }))
+        .children(fold_open.then(|| {
+            let targets: Vec<(String, String)> = state
+                .items
+                .iter()
+                .map(|e| &e.todo)
+                .filter(|other| other.key != key && other.state.is_active() && !other.key.is_empty())
+                .take(8)
+                .map(|other| (other.key.clone(), other.title.clone()))
+                .collect();
+            let close = inputs.fold_open.clone();
+            col()
+                .gap(px(4.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(rgb(look.fill))
+                .child(small("Fold this item as a step into:", look))
+                .children(targets.into_iter().map(|(tk, tt)| {
+                    let send = send.clone();
+                    let close = close.clone();
+                    let src = key.clone();
+                    let label = format!("{tk} · {tt}");
+                    div()
+                        .id(SharedString::from(format!("todo-fold-target-{tk}")))
+                        .role(Role::Button)
+                        .aria_label(label.clone())
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(3.))
+                        .rounded(px(5.))
+                        .bg(rgb(look.card))
+                        .text_size(px(12.))
+                        .child(label)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            send(
+                                A::FoldIntoStep {
+                                    source_key: src.clone(),
+                                    target_key: tk.clone(),
+                                },
+                                cx,
+                            );
+                            close.set(false);
+                            window.refresh();
+                        })
+                        .test_support()
+                }))
+        }))
+}
+
+fn runs_ledger_section(
+    send: &Send,
+    state: &TodoState,
+    inputs: &Inputs,
+    t: &Todo,
+    look: Look,
+) -> Option<impl IntoElement> {
+    let loaded = state.runs.get(&t.key);
+    let label = runs_ledger_label(t, loaded)?;
+    let open = inputs.runs_open.get();
+    let toggle = inputs.runs_open.clone();
+    let send_load = send.clone();
+    let key = t.key.clone();
+    Some(
+        col()
+            .id("todo-runs-ledger")
+            .mt(px(8.))
+            .gap(px(4.))
+            .child(
+                row()
+                    .id("todo-runs-toggle")
+                    .role(Role::Button)
+                    .aria_label(label.clone())
+                    .cursor_pointer()
+                    .gap(px(6.))
+                    .child(small(
+                        format!("{} {label}", if open { "⌄" } else { "›" }),
+                        look,
+                    ).font_weight(FontWeight::SEMIBOLD))
+                    .on_click(move |_, window, cx| {
+                        let next = !toggle.get();
+                        toggle.set(next);
+                        if next {
+                            send_load(A::LoadRuns(key.clone()), cx);
+                        }
+                        window.refresh();
+                    })
+                    .test_support(),
+            )
+            .children(open.then(|| {
+                let runs = loaded.map(|r| r.runs.as_slice()).unwrap_or_default();
+                col().gap(px(4.)).children(runs.iter().enumerate().map(|(i, run)| {
+                    row()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .bg(rgb(look.fill))
+                        .text_size(px(11.5))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(run.tool.clone()))
+                        .child(small(run.model.clone(), look))
+                        .child(small(run.outcome.clone(), look).flex_1())
+                        .children(run.links.iter().enumerate().map(|(li, rl)| {
+                            link(
+                                &opens_evidence(send),
+                                SharedString::from(format!("todo-run-link-{i}-{li}")),
+                                &rl.label,
+                                A::OpenEvidence(rl.target.clone()),
+                                look,
+                            )
+                        }))
+                        .child(small(format_cost_usd(run.cost_micros), look))
+                }))
+            }))
+            .test_support(),
+    )
+}
+
+fn history_section(
+    send: &Send,
+    state: &TodoState,
+    inputs: &Inputs,
+    t: &Todo,
+    look: Look,
+) -> impl IntoElement {
+    let open = inputs.history_open.get();
+    let toggle = inputs.history_open.clone();
+    let send_load = send.clone();
+    let key = t.key.clone();
+    let entries = state.history.get(&t.key).map(Vec::as_slice).unwrap_or_default();
+    col()
+        .id("todo-history-inline")
+        .mt(px(8.))
+        .gap(px(4.))
+        .child(
+            row()
+                .id("todo-history-toggle")
+                .role(Role::Button)
+                .aria_label("Toggle history")
+                .cursor_pointer()
+                .gap(px(6.))
+                .child(
+                    small(format!("{} HISTORY", if open { "⌄" } else { "›" }), look)
+                        .font_weight(FontWeight::SEMIBOLD),
+                )
+                .on_click(move |_, window, cx| {
+                    let next = !toggle.get();
+                    toggle.set(next);
+                    if next {
+                        send_load(A::LoadHistory(key.clone()), cx);
+                    }
+                    window.refresh();
+                })
+                .test_support(),
+        )
+        .children(open.then(|| {
+            if entries.is_empty() {
+                col().child(small("No history entries yet.", look))
+            } else {
+                col().gap(px(4.)).children(entries.iter().map(|entry| history_entry_row(entry, look)))
+            }
+        }))
+        .test_support()
+}
+
+fn history_entry_row(entry: &TodoHistoryEntry, look: Look) -> Div {
+    col()
+        .p(px(7.))
+        .rounded(px(6.))
+        .bg(rgb(look.fill))
+        .gap(px(2.))
+        .child(
+            row()
+                .gap(px(6.))
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).child(entry.actor.clone()))
+                .child(small(entry.field.clone(), look))
+                .children(entry.at_day.map(|d| small(d.short(), look))),
+        )
+        .child(if !entry.word_diff.is_empty() {
+            row()
+                .flex_wrap()
+                .gap(px(4.))
+                .text_size(px(11.5))
+                .children(entry.word_diff.iter().map(|span| match span.kind {
+                    WordDiffKind::Equal => div().text_color(soft(look)).child(span.text.clone()),
+                    WordDiffKind::Added => pill(
+                        format!("+{}", span.text),
+                        tone(look, 0xdff5f1, 0x153a36),
+                        teal(look),
+                    ),
+                    WordDiffKind::Removed => pill(
+                        format!("-{}", span.text),
+                        tone(look, 0xfde4e4, 0x4b1f1f),
+                        tone(look, 0xa51d1d, 0xff9088),
+                    ),
+                }))
+                .into_any_element()
+        } else {
+            small(entry.change.clone(), look).into_any_element()
+        })
+}
+
+fn ask_card(
+    send: &Send,
+    state: &TodoState,
+    inputs: &Inputs,
+    t: &Todo,
+    ask_id: &str,
+    ask: &Ask,
+    look: Look,
+) -> AnyElement {
+    let session = t.sessions.first().cloned();
+    let details_open = inputs.ask_details_open.get();
+    let details_toggle = inputs.ask_details_open.clone();
+    match &ask.kind {
+        AskKind::Question {
+            question,
+            choices,
+            multi_select,
+            step_id,
+            details,
+            editable: _,
+        } => {
+            let draft = state.question_drafts.get(ask_id).cloned().unwrap_or_default();
+            let ask_id_s = ask_id.to_owned();
+            let input = inputs.ask_input.clone();
+            let send_submit = send.clone();
+            let selected_for_submit = draft.selected_choices.clone();
+            col()
+                .id("todo-ask-question")
+                .mt(px(6.))
+                .p(px(12.))
+                .gap(px(8.))
+                .rounded(px(10.))
+                .bg(amber_soft(look))
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).flex_1().child(question.clone()))
+                        .children(step_id.as_ref().map(|sid| tag(format!("step {sid}"), look))),
+                )
+                .children((!ask.reason.is_empty()).then(|| {
+                    div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone())
+                }))
+                .children(details.as_ref().filter(|d| !d.is_empty()).map(|d| {
+                    col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .id("todo-ask-details-toggle")
+                                .role(Role::Button)
+                                .aria_label("Toggle details")
+                                .cursor_pointer()
+                                .text_size(px(11.5))
+                                .text_color(rgb(look.accent))
+                                .child(if details_open { "Hide details" } else { "Show details" })
+                                .on_click(move |_, window, _| {
+                                    details_toggle.set(!details_toggle.get());
+                                    window.refresh();
+                                })
+                                .test_support(),
+                        )
+                        .children(details_open.then(|| small(d.clone(), look)))
+                }))
+                .children((!choices.is_empty()).then(|| {
+                    row().flex_wrap().gap(px(6.)).children(choices.iter().enumerate().map(|(i, c)| {
+                        let on = draft.selected_choices.contains(c);
+                        let inner = div()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .rounded(px(6.))
+                            .text_size(px(12.))
+                            .when(on, |d| d.bg(rgb(0x1c1c1e)).text_color(rgb(0xffffff)))
+                            .when(!on, |d| d.bg(rgb(look.card)).text_color(soft(look)))
+                            .child(c.clone());
+                        clickable(
+                            send,
+                            SharedString::from(format!("todo-question-choice-{i}")),
+                            c,
+                            A::ToggleQuestionChoice {
+                                ask_id: ask_id_s.clone(),
+                                choice: c.clone(),
+                                multi_select: *multi_select,
+                            },
+                            inner,
+                        )
+                    }))
+                }))
+                .child(
+                    div()
+                        .id("todo-question-input")
+                        .child(Input::new(&inputs.ask_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            push_primary_shape("todo-question-submit", "Send answer", look)
+                                .on_click(move |_, window, cx| {
+                                    let text = input.read(cx).value().trim().to_owned();
+                                    send_submit(
+                                        A::AnswerQuestion {
+                                            ask_id: ask_id_s.clone(),
+                                            text,
+                                            selected_choices: selected_for_submit.clone(),
+                                        },
+                                        cx,
+                                    );
+                                    input.update(cx, |i, cx| {
+                                        i.set_value(String::new(), window, cx)
+                                    });
+                                    window.refresh();
+                                }),
+                        )
+                        .child(div().flex_1())
+                        .children(session.map(|s| {
+                            quiet(send, "todo-open-session", "Open session", A::OpenSession(s), look)
+                        })),
+                )
+                .test_support()
+                .into_any_element()
+        }
+        AskKind::ActionRequest { action, step_id, details } => {
+            let ask_id_done = ask_id.to_owned();
+            let ask_id_cant = ask_id.to_owned();
+            let input_done = inputs.ask_input.clone();
+            let input_cant = inputs.ask_input.clone();
+            let send_done = send.clone();
+            let send_cant = send.clone();
+            col()
+                .id("todo-ask-action")
+                .mt(px(6.))
+                .p(px(12.))
+                .gap(px(8.))
+                .rounded(px(10.))
+                .bg(amber_soft(look))
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).flex_1().child(action.clone()))
+                        .children(step_id.as_ref().map(|sid| tag(format!("step {sid}"), look))),
+                )
+                .children((!ask.reason.is_empty()).then(|| {
+                    div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone())
+                }))
+                .children(details.as_ref().filter(|d| !d.is_empty()).map(|d| small(d.clone(), look)))
+                .child(
+                    div()
+                        .id("todo-action-note")
+                        .child(Input::new(&inputs.ask_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            push_primary_shape("todo-action-done", "Done", look).on_click(
+                                move |_, window, cx| {
+                                    let note = input_done.read(cx).value().trim().to_owned();
+                                    send_done(
+                                        A::AnswerAction {
+                                            ask_id: ask_id_done.clone(),
+                                            done: true,
+                                            note,
+                                        },
+                                        cx,
+                                    );
+                                    input_done.update(cx, |i, cx| {
+                                        i.set_value(String::new(), window, cx)
+                                    });
+                                    window.refresh();
+                                },
+                            ),
+                        )
+                        .child(
+                            push_quiet_shape("todo-action-cant", "Can't be done", look).on_click(
+                                move |_, window, cx| {
+                                    let note = input_cant.read(cx).value().trim().to_owned();
+                                    send_cant(
+                                        A::AnswerAction {
+                                            ask_id: ask_id_cant.clone(),
+                                            done: false,
+                                            note,
+                                        },
+                                        cx,
+                                    );
+                                    input_cant.update(cx, |i, cx| {
+                                        i.set_value(String::new(), window, cx)
+                                    });
+                                    window.refresh();
+                                },
+                            ),
+                        ),
+                )
+                .test_support()
+                .into_any_element()
+        }
+        AskKind::ReviewRequest { summary, round, step_id, details, checkpoint } => {
+            let ask_id_ok = ask_id.to_owned();
+            let ask_id_chg = ask_id.to_owned();
+            let input_ok = inputs.ask_input.clone();
+            let input_chg = inputs.ask_input.clone();
+            let send_ok = send.clone();
+            let send_chg = send.clone();
+            col()
+                .id("todo-ask-review")
+                .mt(px(6.))
+                .p(px(12.))
+                .gap(px(8.))
+                .rounded(px(10.))
+                .bg(amber_soft(look))
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).flex_1().child(summary.clone()))
+                        .children((*round > 0).then(|| tag(format!("Round {round}"), look)))
+                        .children(checkpoint.map(|cp| tag(cp.label(), look)))
+                        .children(step_id.as_ref().map(|sid| tag(format!("step {sid}"), look))),
+                )
+                .children((!ask.reason.is_empty()).then(|| {
+                    div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone())
+                }))
+                .children(details.as_ref().filter(|d| !d.is_empty()).map(|d| small(d.clone(), look)))
+                .child(
+                    div()
+                        .id("todo-review-note")
+                        .child(Input::new(&inputs.ask_input).small().rounded(px(6.)).bg(rgb(look.card)))
+                        .test_support(),
+                )
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            push_primary_shape("todo-review-approve", "Approved", look).on_click(
+                                move |_, window, cx| {
+                                    let note = input_ok.read(cx).value().trim().to_owned();
+                                    send_ok(
+                                        A::AnswerReview {
+                                            ask_id: ask_id_ok.clone(),
+                                            approved: true,
+                                            note,
+                                        },
+                                        cx,
+                                    );
+                                    input_ok.update(cx, |i, cx| {
+                                        i.set_value(String::new(), window, cx)
+                                    });
+                                    window.refresh();
+                                },
+                            ),
+                        )
+                        .child(
+                            push_quiet_shape("todo-review-changes", "Changes asked", look)
+                                .on_click(move |_, window, cx| {
+                                    let note = input_chg.read(cx).value().trim().to_owned();
+                                    send_chg(
+                                        A::AnswerReview {
+                                            ask_id: ask_id_chg.clone(),
+                                            approved: false,
+                                            note,
+                                        },
+                                        cx,
+                                    );
+                                    input_chg.update(cx, |i, cx| {
+                                        i.set_value(String::new(), window, cx)
+                                    });
+                                    window.refresh();
+                                }),
+                        ),
+                )
+                .test_support()
+                .into_any_element()
+        }
+        AskKind::Close | AskKind::Edit { .. } | AskKind::Add => col()
+            .mt(px(6.))
+            .p(px(12.))
+            .gap(px(8.))
+            .rounded(px(10.))
+            .bg(amber_soft(look))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(ask_question(t, ask)))
+            .child(div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone()))
+            .children(
+                matches!(ask.kind, AskKind::Close)
+                    .then(|| close_readiness_text(t))
+                    .flatten()
+                    .map(|summary| small(summary, look)),
+            )
+            .child(col().p(px(8.)).rounded(px(8.)).bg(rgb(look.card)).children(
+                ask_rows(t, ask).into_iter().map(|r| {
+                    let body = if r.label == "Evidence" {
+                        let mut line = row().flex_wrap().gap(px(4.));
+                        for (i, (text, action)) in evidence_links(t).into_iter().enumerate() {
+                            if i > 0 {
+                                line = line.child(muted("·", look));
+                            }
+                            line = match action {
+                                Some(act) => line.child(link(
+                                    &opens_evidence(send),
+                                    SharedString::from(format!("todo-evidence-{i}")),
+                                    text,
+                                    act,
+                                    look,
+                                )),
+                                None => line.child(div().child(text.to_owned())),
+                            };
+                        }
+                        line.into_any_element()
+                    } else {
+                        div()
+                            .when(r.link, |d| d.text_color(rgb(look.accent)))
+                            .child(r.text)
+                            .into_any_element()
+                    };
+                    row()
+                        .items_start()
+                        .child(small(r.label, look).w(px(74.)).flex_shrink_0())
+                        .child(div().flex_1().min_w_0().child(body))
+                }),
+            ))
+            .child(
+                row()
+                    .gap(px(8.))
+                    .child(primary(send, "todo-yes", "Yes", A::Answer(ask_id.to_owned(), true), look))
+                    .child(quiet(send, "todo-no", "No", A::Answer(ask_id.to_owned(), false), look))
+                    .child(div().flex_1())
+                    .child(quiet(
+                        send,
+                        "todo-ask-why",
+                        ask_why_label(t),
+                        if t.ask_detail.session_ended {
+                            A::OpenSession(session.clone().unwrap_or_default())
+                        } else {
+                            A::AskWhy(ask_id.to_owned())
+                        },
+                        look,
+                    ))
+                    .children(session.map(|s| {
+                        quiet(send, "todo-open-session", "Open session", A::OpenSession(s), look)
+                    })),
+            )
+            .into_any_element(),
+    }
+}
+
+fn stuck_agent_card(send: &Send, key: &str, stuck: &StuckAgent, look: Look) -> impl IntoElement {
+    col()
+        .id("todo-stuck-agent")
         .mt(px(6.))
         .p(px(12.))
-        .gap(px(8.))
+        .gap(px(6.))
         .rounded(px(10.))
         .bg(amber_soft(look))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(ask_question(t, ask)))
-        .child(div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone()))
-        .child(col().p(px(8.)).rounded(px(8.)).bg(rgb(look.card)).children(
-            ask_rows(t, ask).into_iter().map(|r| {
-                let body = if r.label == "Evidence" {
-                    let mut line = row().flex_wrap().gap(px(4.));
-                    for (i, (text, action)) in evidence_links(t).into_iter().enumerate() {
-                        if i > 0 {
-                            line = line.child(muted("·", look));
-                        }
-                        line = match action {
-                            Some(act) => line.child(link(
-                                &opens_evidence(send),
-                                SharedString::from(format!("todo-evidence-{i}")),
-                                text,
-                                act,
-                                look,
-                            )),
-                            None => line.child(div().child(text.to_owned())),
-                        };
-                    }
-                    line.into_any_element()
-                } else {
-                    div()
-                        .when(r.link, |d| d.text_color(rgb(look.accent)))
-                        .child(r.text)
-                        .into_any_element()
-                };
-                row()
-                    .items_start()
-                    .child(small(r.label, look).w(px(74.)).flex_shrink_0())
-                    .child(div().flex_1().min_w_0().child(body))
-            }),
-        ))
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(format!("{} looks stuck ({})", stuck.agent_label, asked_ago(stuck.since_minutes))),
+        )
+        .child(small(stuck.reason.clone(), look))
         .child(
             row()
                 .gap(px(8.))
-                .child(primary(send, "todo-yes", "Yes", A::Answer(ask_id.to_owned(), true), look))
-                .child(quiet(send, "todo-no", "No", A::Answer(ask_id.to_owned(), false), look))
-                .child(div().flex_1())
+                .child(primary(send, "todo-stuck-retry", "Retry", A::RetryStuck(key.to_owned()), look))
                 .child(quiet(
                     send,
-                    "todo-ask-why",
-                    ask_why_label(t),
-                    if t.ask_detail.session_ended {
-                        A::OpenSession(session.clone().unwrap_or_default())
-                    } else {
-                        A::AskWhy(ask_id.to_owned())
+                    "todo-stuck-take-back",
+                    "Take back",
+                    A::RequestTakeBack(key.to_owned()),
+                    look,
+                )),
+        )
+        .test_support()
+}
+
+fn blocker_gone_card(send: &Send, key: &str, bg: &BlockerGone, look: Look) -> impl IntoElement {
+    col()
+        .id(SharedString::from(format!("todo-blocker-gone-{}", bg.blocker_key)))
+        .mt(px(6.))
+        .p(px(12.))
+        .gap(px(6.))
+        .rounded(px(10.))
+        .bg(amber_soft(look))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
+            "Blocker {} is {}",
+            bg.blocker_key,
+            state_label(bg.blocker_state)
+        )))
+        .child(
+            row()
+                .gap(px(8.))
+                .flex_wrap()
+                .child(primary(
+                    send,
+                    SharedString::from(format!("todo-bg-unblock-{}", bg.blocker_key)),
+                    "Unblock",
+                    A::ResolveBlockerGone {
+                        key: key.to_owned(),
+                        blocker_key: bg.blocker_key.clone(),
+                        resolution: BlockerGoneResolution::Unblock,
                     },
                     look,
                 ))
-                .children(session.map(|s| quiet(send, "todo-open-session", "Open session", A::OpenSession(s), look))),
+                .child(quiet(
+                    send,
+                    SharedString::from(format!("todo-bg-wontdo-{}", bg.blocker_key)),
+                    "Won't do",
+                    A::ResolveBlockerGone {
+                        key: key.to_owned(),
+                        blocker_key: bg.blocker_key.clone(),
+                        resolution: BlockerGoneResolution::CloseWontDo,
+                    },
+                    look,
+                ))
+                .children((!bg.replacement_keys.is_empty()).then(|| {
+                    let label = format!("Rewire to {}", bg.replacement_keys.join(", "));
+                    quiet(
+                        send,
+                        SharedString::from(format!("todo-bg-rewire-{}", bg.blocker_key)),
+                        &label,
+                        A::ResolveBlockerGone {
+                            key: key.to_owned(),
+                            blocker_key: bg.blocker_key.clone(),
+                            resolution: BlockerGoneResolution::Rewire(bg.replacement_keys.clone()),
+                        },
+                        look,
+                    )
+                })),
         )
+        .test_support()
+}
+
+fn lifecycle_prompt_card(send: &Send, key: &str, lp: &LifecyclePrompt, look: Look) -> impl IntoElement {
+    col()
+        .id(SharedString::from(format!("todo-lifecycle-{}", lp.id)))
+        .mt(px(6.))
+        .p(px(12.))
+        .gap(px(6.))
+        .rounded(px(10.))
+        .bg(rgb(look.fill))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(lp.title.clone()))
+        .children((!lp.detail.is_empty()).then(|| small(lp.detail.clone(), look)))
+        .child(row().gap(px(8.)).flex_wrap().children(lp.choices.iter().enumerate().map(|(i, choice)| {
+            let act = A::ResolveLifecyclePrompt {
+                key: key.to_owned(),
+                prompt_id: lp.id.clone(),
+                choice: choice.clone(),
+            };
+            let id = SharedString::from(format!("todo-lp-{}-{i}", lp.id));
+            if i == 0 {
+                primary(send, id, choice, act, look)
+            } else {
+                quiet(send, id, choice, act, look)
+            }
+        })))
+        .test_support()
 }
 
 #[cfg(test)]
@@ -2125,5 +3959,176 @@ mod tests {
             .find(|t| t.ask_detail.session_ended)
             .expect("an item whose session ended");
         assert_eq!(start_session_label(ended), "Start a session on this");
+    }
+
+    #[test]
+    fn sort_switcher_lists_all_five_modes() {
+        assert_eq!(SORT_OPTIONS.len(), 5);
+        assert_eq!(sort_pill_label(SortBy::Priority), "Sort: Priority");
+        assert_eq!(sort_pill_label(SortBy::DueSoonest), "Sort: Due soonest");
+        assert_eq!(sort_pill_label(SortBy::MostNeeded), "Sort: Most needed");
+        assert_eq!(sort_pill_label(SortBy::SmallestEffort), "Sort: Smallest effort");
+        assert_eq!(sort_pill_label(SortBy::LargestImpact), "Sort: Largest impact");
+    }
+
+    #[test]
+    fn hidden_until_pill_appears_only_when_searching_snoozed_item() {
+        let mut s = state();
+        let mut item = Todo::new("SNOOZE-1", "Renew cert", s.today);
+        item.hide_until = Some(s.today.add_days(5));
+        assert_eq!(hidden_until_pill(&item, &s), None);
+        s.view.filter.search = "cert".to_owned();
+        let pill = hidden_until_pill(&item, &s).expect("hidden pill when searching");
+        assert!(pill.starts_with("Hidden until "));
+    }
+
+    #[test]
+    fn idle_nudge_triggers_only_when_inactive_and_idle() {
+        let active = SessionSignal {
+            session: "s1".into(),
+            label: "claude".into(),
+            status: "working".into(),
+            idle_days: 3,
+            active_turn: true,
+        };
+        assert_eq!(idle_nudge(&active), None);
+        let idle = SessionSignal { active_turn: false, ..active };
+        assert_eq!(idle_nudge(&idle).as_deref(), Some("Idle 3d — resume or pause?"));
+    }
+
+    #[test]
+    fn watching_pr_appears_in_sections_between_in_progress_and_next() {
+        let mut s = state();
+        let mut pr = Todo::new("PR-9", "Watch PR #9", s.today);
+        pr.state = State::WatchingPr;
+        s.items.push(Entry { todo: pr, revision: 1, ask_id: None });
+        let groups: Vec<_> = sections(&s).iter().map(|sec| sec.group).collect();
+        let idx_ip = groups.iter().position(|g| *g == Group::InProgress).unwrap();
+        let idx_pr = groups.iter().position(|g| *g == Group::WatchingPr).unwrap();
+        let idx_next = groups.iter().position(|g| *g == Group::Next).unwrap();
+        assert!(idx_ip < idx_pr && idx_pr < idx_next);
+    }
+
+    #[test]
+    fn keyboard_triage_maps_shortcuts_and_never_hijacks_inputs() {
+        // When an input is focused, all shortcuts are ignored.
+        assert_eq!(triage_command("down", false, false, true, Some("A-1")), None);
+        assert_eq!(triage_command("x", false, false, true, Some("A-1")), None);
+        assert_eq!(triage_command("/", false, false, true, Some("A-1")), None);
+
+        // List navigation & triage shortcuts.
+        assert_eq!(
+            triage_command("down", false, false, false, Some("A-1")),
+            Some(TriageCommand::Action(A::MoveFocus(1)))
+        );
+        assert_eq!(
+            triage_command("up", false, true, false, Some("A-1")),
+            Some(TriageCommand::Action(A::StepDrawer(-1)))
+        );
+        assert_eq!(
+            triage_command("down", true, false, false, Some("A-1")),
+            Some(TriageCommand::Action(A::ExtendSelection(1)))
+        );
+        assert_eq!(
+            triage_command("enter", false, false, false, Some("A-1")),
+            Some(TriageCommand::Action(A::Open("A-1".into())))
+        );
+        assert_eq!(
+            triage_command("s", false, false, false, Some("A-1")),
+            Some(TriageCommand::Action(A::StartOrNextFocused))
+        );
+        assert_eq!(
+            triage_command("x", false, false, false, Some("A-1")),
+            Some(TriageCommand::Action(A::ToggleFocusDone))
+        );
+        assert_eq!(
+            triage_command("/", false, false, false, None),
+            Some(TriageCommand::FocusSearch)
+        );
+        assert_eq!(
+            triage_command("N", true, false, false, None),
+            Some(TriageCommand::FocusQuickAdd)
+        );
+    }
+
+    #[test]
+    fn shift_click_dispatches_multi_select_and_plain_click_opens_drawer() {
+        assert_eq!(
+            row_click_action("PAY-1", false, true, false),
+            A::SelectRow { key: "PAY-1".into(), shift: true, toggle: false }
+        );
+        assert_eq!(
+            row_click_action("PAY-1", false, false, true),
+            A::SelectRow { key: "PAY-1".into(), shift: false, toggle: true }
+        );
+        assert_eq!(row_click_action("PAY-1", false, false, false), A::Open("PAY-1".into()));
+        assert_eq!(row_click_action("PAY-1", true, false, false), A::Close);
+    }
+
+    #[test]
+    fn fuzzy_due_is_never_red_and_dropped_steps_are_excluded_from_progress() {
+        let s = state();
+        let mut t = Todo::new("FUZ-1", "Fuzzy task", s.today);
+        t.fuzzy_due = Some(FuzzyDue::InAFewDays);
+        let chip = due_chip(&t, s.today).expect("fuzzy due chip");
+        assert_eq!(chip.tone, Tone::Plain);
+        assert_eq!(chip.text, "In a few days");
+
+        t.steps = vec![
+            humata2_todo::Step { text: "one".into(), done: true, ..Default::default() },
+            humata2_todo::Step { text: "two".into(), done: false, dropped: true, ..Default::default() },
+            humata2_todo::Step { text: "three".into(), done: false, ..Default::default() },
+        ];
+        assert_eq!(step_progress(&t), Some("1/2".to_owned()));
+        assert_eq!(unset_fields(&t), vec!["Need", "Effort", "Impact"]);
+    }
+
+    #[test]
+    fn runs_ledger_and_structured_asks_format_cleanly() {
+        let s = state();
+        let mut t = Todo::new("RUN-1", "Ship API", s.today);
+        t.run_count = 3;
+        t.total_cost_micros = 1_450_000;
+        assert_eq!(runs_ledger_label(&t, None), Some("Runs 3 · $1.45".to_owned()));
+
+        t.close_readiness = Some(humata2_todo::CloseReadiness {
+            steps_done: 2,
+            steps_total: 3,
+            unresolved_comments: 1,
+            ci_status: "passing".into(),
+            commits: 4,
+        });
+        assert_eq!(
+            close_readiness_text(&t).as_deref(),
+            Some("Steps 2/3 · 1 unresolved comment · CI passing · 4 commits")
+        );
+
+        let q = Ask {
+            kind: AskKind::Question {
+                question: "Use OAuth or PAT?".into(),
+                choices: vec!["OAuth".into(), "PAT".into()],
+                multi_select: false,
+                step_id: Some("s1".into()),
+                details: None,
+                editable: true,
+            },
+            by: "claude".into(),
+            reason: "Need auth choice".into(),
+        };
+        assert_eq!(ask_question(&t, &q), "Use OAuth or PAT?");
+
+        let r = Ask {
+            kind: AskKind::ReviewRequest {
+                summary: "Check migration script".into(),
+                round: 2,
+                step_id: None,
+                details: None,
+                checkpoint: Some(CheckpointState::Defined),
+            },
+            by: "claude".into(),
+            reason: "Ready for round 2".into(),
+        };
+        assert_eq!(ask_question(&t, &r), "Review (round 2): Check migration script");
+        assert_eq!(ask_change(&t, &r).as_deref(), Some("Checkpoint: Defined"));
     }
 }

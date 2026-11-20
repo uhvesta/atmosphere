@@ -9,12 +9,17 @@ use crate::base64;
 use crate::error::{FieldProblem, IdentityError};
 use crate::name::MachineName;
 use crate::platform::{Arch, Os, Platform};
+use crate::provider::{parse_status_word, MachineStatus};
 
 /// Where a machine is and how to log in to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub ssh: SshTarget,
     pub platform: Platform,
+    /// Optional machine state reported alongside identity.
+    pub state: Option<MachineStatus>,
+    /// Optional provider-assigned instance identifier.
+    pub instance_id: Option<String>,
 }
 
 /// An SSH destination.
@@ -75,7 +80,7 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
     let Value::Object(top) = value else {
         return Err(field("", "output", FieldProblem::NotObject));
     };
-    known(&top, "", &["name", "ssh", "os", "arch"])?;
+    known(&top, "", &["name", "ssh", "os", "arch", "state", "instance_id"])?;
 
     let name = required(&top, "", "name")?;
     if name != machine.as_str() {
@@ -94,7 +99,43 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
         Some(_) => return Err(field("", "ssh", FieldProblem::NotObject)),
         None => return Err(field("", "ssh", FieldProblem::Missing)),
     };
-    let prefix = "ssh.";
+    let ssh = parse_ssh_object(ssh, "ssh.")?;
+
+    let os = required(&top, "", "os")?;
+    let os = Os::parse(os).ok_or_else(|| {
+        field(
+            "",
+            "os",
+            FieldProblem::UnknownOs {
+                value: os.to_owned(),
+            },
+        )
+    })?;
+    let arch = required(&top, "", "arch")?;
+    let arch = Arch::parse(arch).ok_or_else(|| {
+        field(
+            "",
+            "arch",
+            FieldProblem::UnknownArch {
+                value: arch.to_owned(),
+            },
+        )
+    })?;
+    let state = optional(&top, "", "state")?.map(parse_status_word);
+    let instance_id = optional(&top, "", "instance_id")?
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned);
+
+    Ok(Identity {
+        ssh,
+        platform: Platform { os, arch },
+        state,
+        instance_id,
+    })
+}
+
+/// Validates and parses an `ssh` JSON object from `identity`, `status`, or `list`.
+pub(crate) fn parse_ssh_object(ssh: &Map<String, Value>, prefix: &str) -> Result<SshTarget, IdentityError> {
     known(
         ssh,
         prefix,
@@ -125,42 +166,17 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
             HostKey::parse(value).ok_or_else(|| field(prefix, "host_key", FieldProblem::BadHostKey))
         })
         .transpose()?;
-
-    let os = required(&top, "", "os")?;
-    let os = Os::parse(os).ok_or_else(|| {
-        field(
-            "",
-            "os",
-            FieldProblem::UnknownOs {
-                value: os.to_owned(),
-            },
-        )
-    })?;
-    let arch = required(&top, "", "arch")?;
-    let arch = Arch::parse(arch).ok_or_else(|| {
-        field(
-            "",
-            "arch",
-            FieldProblem::UnknownArch {
-                value: arch.to_owned(),
-            },
-        )
-    })?;
-
-    Ok(Identity {
-        ssh: SshTarget {
-            host,
-            access,
-            host_key,
-        },
-        platform: Platform { os, arch },
+    Ok(SshTarget {
+        host,
+        access,
+        host_key,
     })
 }
 
 impl HostKey {
     /// `<algorithm> <base64>`, with an optional comment after. The base64
     /// must decode to an SSH key blob of that algorithm.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         let mut words = value.split_whitespace();
         let algorithm = words.next()?;
         let key = words.next()?;

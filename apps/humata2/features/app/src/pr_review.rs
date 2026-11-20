@@ -13,7 +13,6 @@ use humata2_pr_review::info::InfoAction;
 use humata2_pr_review::submit::{Delegate as SubmitDelegate, SubmitAction};
 use humata2_review::ReviewAction;
 use humata2_review::comments::CommentsAction;
-use humata2_session::SessionAction;
 use tca::Effect;
 
 use crate::{App, AppAction, AppState, Route};
@@ -55,13 +54,7 @@ impl App {
             // The pull request merged or closed: the session's own archive
             // dialog names what would be lost.
             AppAction::PrHeads(HeadsAction::Delegate(HeadsDelegate::Archiving(id))) => {
-                let arrived = if state.session.open.as_ref() == Some(id) {
-                    Effect::none()
-                } else {
-                    self.switch(state, Route::Session(id.clone()))
-                };
-                let archive = self.child(state, AppAction::Session(SessionAction::Archive));
-                arrived.and(archive)
+                self.archive_session(state, id.clone())
             }
             _ => Effect::none(),
         }

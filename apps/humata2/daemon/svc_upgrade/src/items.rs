@@ -9,6 +9,8 @@
 //! file in place it is Approved.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
@@ -17,6 +19,7 @@ use humata2_rpc_kit::helpers as status;
 use pb::invalid_field::Problem;
 use tonic::Status;
 
+use super::breaker::FailedBreaker;
 use super::build::{Release, short};
 use super::holders::shell_line;
 use super::remote;
@@ -235,8 +238,10 @@ struct Pending {
     id: pb::RequestId,
     from: pb::BuildInfo,
     to: pb::BuildInfo,
-    /// Migrate was clicked and the machine isn't at `to` yet.
+    /// Migrate was triggered and the machine isn't at `to` yet.
     migrating: bool,
+    /// The last attempt failed or rolled back and is waiting for manual retry.
+    failed: bool,
     /// What a Holders item lists (D373); none for any other.
     detail: Option<Detail>,
 }
@@ -275,6 +280,14 @@ struct Inner {
     names: std::sync::OnceLock<Names>,
     // SEAM (MACHINESCRIPTS D689): told the machine a Migrate finished on.
     migrated: std::sync::OnceLock<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// Anti-thrash circuit breaker persisted at `<state>/upgrade/failed.json`.
+    breaker: FailedBreaker,
+    /// Whether non-destructive migrations trigger automatically on detection.
+    auto_migrate: AtomicBool,
+}
+
+fn auto_migrate_from_env() -> bool {
+    std::env::var("HUMATA2_AUTO_MIGRATE").as_deref() != Ok("0")
 }
 
 /// What a machine is called in text a person reads (D500).
@@ -303,10 +316,28 @@ impl Approver {
 }
 
 impl Migrations {
-    /// The Migrate items of `inbox`, which `carry` carries out. The pending
-    /// ones the Inbox kept across a restart are the ones a second detection
-    /// updates.
+    /// The Migrate items of `inbox`, which `carry` carries out, using an
+    /// in-memory failure circuit breaker. The pending ones the Inbox kept
+    /// across a restart are the ones a second detection updates.
     pub fn new(inbox: Arc<dyn MigrateInboxPort>, carry: Arc<dyn Carry>) -> Self {
+        Self::with_breaker(inbox, carry, FailedBreaker::in_memory())
+    }
+
+    /// As [`Self::new`], persisting the anti-thrash failure circuit breaker at
+    /// `<state>/upgrade/failed.json`.
+    pub fn new_with_state(
+        inbox: Arc<dyn MigrateInboxPort>,
+        carry: Arc<dyn Carry>,
+        state: &Path,
+    ) -> Self {
+        Self::with_breaker(inbox, carry, FailedBreaker::open(state))
+    }
+
+    fn with_breaker(
+        inbox: Arc<dyn MigrateInboxPort>,
+        carry: Arc<dyn Carry>,
+        breaker: FailedBreaker,
+    ) -> Self {
         let pending = inbox.kept_migrates().iter().filter_map(restored).collect();
         let migrations = Self {
             inner: Arc::new(Inner {
@@ -317,12 +348,76 @@ impl Migrations {
                 serial: tokio::sync::Mutex::new(()),
                 names: std::sync::OnceLock::new(),
                 migrated: std::sync::OnceLock::new(),
+                breaker,
+                auto_migrate: AtomicBool::new(auto_migrate_from_env()),
             }),
         };
         inbox.migrating(Approver {
             inner: Arc::downgrade(&migrations.inner),
         });
         migrations
+    }
+
+    /// Whether automatic migration to `to_bundle` on `machine` is currently
+    /// blocked by a previous failure or rollback in `failed.json`.
+    pub fn is_failed(&self, machine: &str, to_bundle: &str) -> bool {
+        self.inner.breaker.is_tripped(machine, to_bundle)
+    }
+
+    /// Whether automatic non-destructive migrations are enabled.
+    pub fn auto_migrate_enabled(&self) -> bool {
+        self.inner.auto_migrate.load(Ordering::SeqCst)
+    }
+
+    /// Enables or disables automatic non-destructive migrations.
+    pub fn set_auto_migrate(&self, enabled: bool) {
+        self.inner.auto_migrate.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Automatically triggers a non-destructive migration for `(thing, machine)`
+    /// to `to_bundle` if auto-migrate is enabled, the item is pending and not
+    /// already migrating, and `(machine, to_bundle)` is not tripped in
+    /// `failed.json`. Returns `true` when migration was started.
+    pub async fn auto_migrate(
+        &self,
+        thing: pb::MigrateThing,
+        machine: &pb::MachineId,
+        to_bundle: &str,
+    ) -> bool {
+        if !matches!(
+            thing,
+            pb::MigrateThing::Daemon
+                | pb::MigrateThing::Cli
+                | pb::MigrateThing::HostTools
+                | pb::MigrateThing::Holders
+        ) {
+            return false;
+        }
+        if !self.auto_migrate_enabled() || to_bundle.is_empty() {
+            return false;
+        }
+        if self.inner.breaker.is_tripped(&machine.value, to_bundle) {
+            return false;
+        }
+        let key = (thing, machine.value.clone());
+        let Some(known) = self.known(&key) else {
+            return false;
+        };
+        if known.migrating || known.to.bundle != to_bundle {
+            return false;
+        }
+        match self.approve_inner(&known.id.value, false).await {
+            Ok(_) => true,
+            Err(error) => {
+                humata2_rpc_kit::log::say!(
+                    "humatad2: warning: auto-migrate of {} on {} failed to start: {}",
+                    thing_name(thing),
+                    machine.value,
+                    status::chain(&error)
+                );
+                false
+            }
+        }
     }
 
     /// Says what the items call a machine. Set once at boot; until then an
@@ -423,7 +518,8 @@ impl Migrations {
                 })?;
             if updated.is_some() {
                 let migrating = known.migrating;
-                self.remember(key, Pending { id: known.id.clone(), from, to, migrating, detail: None });
+                let failed = known.failed && known.to.bundle == to.bundle;
+                self.remember(key, Pending { id: known.id.clone(), from, to, migrating, failed, detail: None });
                 return Ok(known.id);
             }
             // The Inbox no longer holds it pending: it is posted again.
@@ -439,7 +535,7 @@ impl Migrations {
                 machine: machine.value.clone(),
                 source,
             })?;
-        self.remember(key, Pending { id: id.clone(), from, to, migrating: false, detail: None });
+        self.remember(key, Pending { id: id.clone(), from, to, migrating: false, failed: false, detail: None });
         Ok(id)
     }
 
@@ -471,10 +567,10 @@ impl Migrations {
         thing: pb::MigrateThing,
         machine: &pb::MachineId,
     ) -> Result<(), MigrateError> {
-        let migrating = self
+        let keep = self
             .known(&(thing, machine.value.clone()))
-            .is_some_and(|known| known.migrating);
-        if migrating {
+            .is_some_and(|known| known.migrating || known.failed);
+        if keep {
             return Ok(());
         }
         self.resolved_locked(thing, machine).await
@@ -516,6 +612,7 @@ impl Migrations {
                 })?;
         }
         self.forget(&key);
+        self.inner.breaker.clear(&machine.value, &known.to.bundle);
         // SEAM (MACHINESCRIPTS D689): a finished Migrate upgraded the machine;
         // the Desk folders are not the machine.
         if known.migrating
@@ -527,12 +624,16 @@ impl Migrations {
         Ok(())
     }
 
-    /// The user clicked Migrate on item `id`: it becomes Migrating, `Carry`
-    /// takes it from there, and the item as it stands is returned. A
-    /// failure is shown on the item (Failed, still pending), not returned;
-    /// Migrate again retries. A second click while it migrates changes
-    /// nothing.
+    /// The user clicked Migrate on item `id`: clears any tripped circuit
+    /// breaker for `(machine, to_bundle)`, marks it Migrating, hands it to
+    /// `Carry`, and returns the item as it stands. A failure is shown on the
+    /// item (Failed, still pending) and recorded in `failed.json`; clicking
+    /// Migrate again retries. A second click while it migrates changes nothing.
     async fn approve(&self, id: &str) -> Result<pb::InboxRequest, Status> {
+        self.approve_inner(id, true).await
+    }
+
+    async fn approve_inner(&self, id: &str, manual: bool) -> Result<pb::InboxRequest, Status> {
         let begun = Arc::new(Mutex::new(None));
         let begun_slot = begun.clone();
         let carry = self.inner.carry.clone();
@@ -567,7 +668,11 @@ impl Migrations {
             return Ok(item);
         };
         let key = (thing, machine.value.clone());
+        if manual {
+            self.inner.breaker.clear(&machine.value, &to.bundle);
+        }
         self.set_migrating(&key, true);
+        self.set_failed(&key, false);
         if thing == pb::MigrateThing::DeskFolders {
             return self.approve_desk_folders(id, &key, &machine, item).await;
         }
@@ -592,6 +697,10 @@ impl Migrations {
             }
             Err(error) => {
                 self.set_migrating(&key, false);
+                self.set_failed(&key, true);
+                self.inner
+                    .breaker
+                    .trip(&machine.value, &to.bundle, status::chain(&error));
                 let problem = status::status_error_of(&error.status()).unwrap_or_else(|| pb::Error {
                     message: status::chain(&error),
                     ..Default::default()
@@ -688,6 +797,7 @@ impl Migrations {
             return Ok(());
         }
         self.set_migrating(key, false);
+        self.set_failed(key, true);
         let machine = &key.1;
         let problem = pb::Error {
             message: format!(
@@ -701,6 +811,7 @@ impl Migrations {
             retry: None,
             kind: None,
         };
+        self.inner.breaker.trip(machine, bundle, &problem.message);
         self.inner
             .inbox
             .update_migrate(
@@ -732,6 +843,11 @@ impl Migrations {
         detail: Detail,
     ) -> Result<(), MigrateError> {
         let _serial = self.inner.serial.lock().await;
+        if let Some(problem) = &detail.failed {
+            self.inner
+                .breaker
+                .trip(&machine.value, &build.bundle, &problem.message);
+        }
         let key = (pb::MigrateThing::Holders, machine.value.clone());
         if let Some(known) = self.known(&key) {
             if known.from == build && known.detail.as_ref() == Some(&detail) {
@@ -759,7 +875,8 @@ impl Migrations {
                 })?;
             if updated.is_some() {
                 // A failed restart ends the round: Migrate is on offer again.
-                let migrating = known.migrating && detail.failed.is_none();
+                let failed = detail.failed.is_some();
+                let migrating = known.migrating && !failed;
                 self.remember(
                     key,
                     Pending {
@@ -767,6 +884,7 @@ impl Migrations {
                         from: build.clone(),
                         to: build,
                         migrating,
+                        failed,
                         detail: Some(detail),
                     },
                 );
@@ -786,6 +904,7 @@ impl Migrations {
                 machine: machine.value.clone(),
                 source,
             })?;
+        let failed = detail.failed.is_some();
         self.remember(
             key,
             Pending {
@@ -793,6 +912,7 @@ impl Migrations {
                 from: build.clone(),
                 to: build,
                 migrating: false,
+                failed,
                 detail: Some(detail),
             },
         );
@@ -815,6 +935,10 @@ impl Migrations {
             return;
         };
         self.set_migrating(&key, false);
+        self.set_failed(&key, true);
+        self.inner
+            .breaker
+            .trip(&machine.value, &known.to.bundle, &problem.message);
         let shown = self
             .inner
             .inbox
@@ -851,15 +975,20 @@ impl Migrations {
     }
 
     /// The upgrade of this host's own daemon to release `to_bundle` was
-    /// undone: its Migrate item, if it was waiting for that release, shows
-    /// `problem` as Failed and is no longer migrating, so Migrate retries.
+    /// undone: records `(machine, to_bundle)` in `failed.json` so auto-migrate
+    /// does not retry-loop, and if its Migrate item was waiting for that
+    /// release, shows `problem` as Failed so a manual click retries.
     pub async fn failed(&self, machine: &str, to_bundle: &str, problem: pb::Error) {
         let _serial = self.inner.serial.lock().await;
+        self.inner
+            .breaker
+            .trip(machine, to_bundle, &problem.message);
         let key = (pb::MigrateThing::Daemon, machine.to_owned());
         let Some(known) = self.known(&key).filter(|known| known.to.bundle == to_bundle) else {
             return;
         };
         self.set_migrating(&key, false);
+        self.set_failed(&key, true);
         let shown = self
             .inner
             .inbox
@@ -891,11 +1020,24 @@ impl Migrations {
         }
     }
 
+    fn set_failed(&self, key: &(pb::MigrateThing, String), failed: bool) {
+        if let Some(known) = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(key)
+        {
+            known.failed = failed;
+        }
+    }
+
     /// `machine` was removed from Humata (D783): each of its items is
     /// withdrawn as its machine removed and none is kept to update, so a
     /// machine added later under the name starts with none of them.
     pub async fn machine_removed(&self, machine: &str) -> Result<(), MigrateError> {
         let _serial = self.inner.serial.lock().await;
+        self.inner.breaker.clear_machine(machine);
         let keys: Vec<_> = self
             .inner
             .pending
@@ -1021,24 +1163,24 @@ impl Watch {
 
     /// `machine` refused a call the host relays as off its peer list: its
     /// humatad2 is older than this host's (D773). Makes sure its Migrate
-    /// daemon item is pending, as a link-up would have; nothing is done for
-    /// a host with no release (D290 l).
+    /// daemon item is pending and triggers auto-migration unless tripped;
+    /// nothing is done for a host with no release (D290 l).
     pub async fn unsupported(&self, machine: &str) {
         if self.release.bundle().is_empty() {
             return;
         }
         let id = pb::MachineId { value: machine.to_owned() };
-        if matches!(self.migrations.mismatched(&id), Some((pb::MigrateThing::Daemon, ..))) {
-            return;
-        }
         let ours = tools::release_only(&self.release.info());
-        if let Err(error) = self
-            .migrations
-            .observe(pb::MigrateThing::Daemon, &id, pb::BuildInfo::default(), ours)
-            .await
+        if !matches!(self.migrations.mismatched(&id), Some((pb::MigrateThing::Daemon, ..)))
+            && let Err(error) = self
+                .migrations
+                .observe(pb::MigrateThing::Daemon, &id, pb::BuildInfo::default(), ours.clone())
+                .await
         {
             humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
+            return;
         }
+        self.spawn_auto_migrate(pb::MigrateThing::Daemon, id, ours.bundle);
     }
 
     /// The link to `machine` is up and its Hello said `build` (`None` for a
@@ -1061,10 +1203,12 @@ impl Watch {
     /// `machine` reported the holders on it that are on an old holder file
     /// (D378): `report` is the whole list. One Holders item for the machine
     /// lists its agent sessions and shells; with no agent waiting the item
-    /// ends (Approved when it was being migrated). `after_link` is whether
-    /// this is the first report of a link: an item that is being migrated and
-    /// still has agents waiting then asks the machine again over `channel`,
-    /// because a link that dropped may have taken the first ask with it.
+    /// ends (Approved when it was being migrated). Non-destructive holder
+    /// migration triggers automatically unless a previous attempt failed in
+    /// `failed.json`. `after_link` is whether this is the first report of a
+    /// link: an item that is already migrating and still has agents waiting
+    /// asks the machine again over `channel`, because a link that dropped may
+    /// have taken the first ask with it.
     pub async fn holders(
         &self,
         machine: &str,
@@ -1092,6 +1236,7 @@ impl Watch {
             return;
         }
         let build = tools::release_only(&self.release.info());
+        let has_failure = report.failed.is_some();
         let detail = Detail {
             waiting,
             keeps_running: shell_line(shells).into_iter().collect(),
@@ -1103,7 +1248,9 @@ impl Watch {
             humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
             return;
         }
-        if after_link && migrations.is_migrating(pb::MigrateThing::Holders, &id) {
+        if !has_failure && !migrations.is_migrating(pb::MigrateThing::Holders, &id) {
+            self.spawn_auto_migrate(pb::MigrateThing::Holders, id, build.bundle);
+        } else if after_link && migrations.is_migrating(pb::MigrateThing::Holders, &id) {
             remote::ask_holders(channel, machine, &build.bundle).await;
         }
     }
@@ -1111,12 +1258,28 @@ impl Watch {
     /// Posts, updates or withdraws what `theirs` needs: the daemon when it
     /// is another release; otherwise its CLI and host tools that aren't the
     /// ones the release names, by what it says it has installed (D371).
+    /// Non-destructive upgrades trigger automatically unless `theirs` is newer
+    /// than `ours` (`host_older` / `SchemaTooNew`) or `(machine, ours.bundle)`
+    /// is tripped in `failed.json`.
     async fn compare(&self, machine: &pb::MachineId, theirs: pb::BuildInfo) -> Result<(), MigrateError> {
         let ours = tools::release_only(&self.release.info());
         if theirs.bundle != ours.bundle {
+            let host_older = is_host_older(&ours, &theirs);
             self.migrations
-                .observe(pb::MigrateThing::Daemon, machine, theirs, ours)
+                .observe(pb::MigrateThing::Daemon, machine, theirs.clone(), ours.clone())
                 .await?;
+            if host_older {
+                humata2_rpc_kit::log::say!(
+                    "humatad2: skipping auto-migrate on {}: remote ({}, schema {}) is newer than host ({}, schema {})",
+                    machine.value,
+                    shown(&theirs),
+                    theirs.store_schema,
+                    shown(&ours),
+                    ours.store_schema,
+                );
+            } else {
+                self.spawn_auto_migrate(pb::MigrateThing::Daemon, machine.clone(), ours.bundle);
+            }
             return Ok(());
         }
         self.migrations.resolved(pb::MigrateThing::Daemon, machine).await?;
@@ -1126,12 +1289,64 @@ impl Watch {
                 self.migrations
                     .observe_tool(thing, machine, tools::from_installed(&theirs), ours.clone())
                     .await?;
+                self.spawn_auto_migrate(thing, machine.clone(), ours.bundle.clone());
             } else {
                 self.migrations.resolved(thing, machine).await?;
             }
         }
         Ok(())
     }
+
+    /// Triggers auto-migration on a background task after yielding once so the
+    /// peer client finishes publishing `LinkEvent::Up` (registering the peer
+    /// channel) before remote staging/RPC begins.
+    fn spawn_auto_migrate(&self, thing: pb::MigrateThing, machine: pb::MachineId, to_bundle: String) {
+        if !self.migrations.auto_migrate_enabled()
+            || to_bundle.is_empty()
+            || self.migrations.is_failed(&machine.value, &to_bundle)
+        {
+            return;
+        }
+        let migrations = self.migrations.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            migrations.auto_migrate(thing, &machine, &to_bundle).await;
+        });
+    }
+}
+
+/// Whether `theirs` (a remote daemon) is newer than `ours` (this host),
+/// meaning automatic migration must never downgrade it (`host_older` /
+/// `SchemaTooNew`).
+pub fn is_host_older(ours: &pb::BuildInfo, theirs: &pb::BuildInfo) -> bool {
+    if theirs.store_schema != 0 && ours.store_schema != 0 && theirs.store_schema > ours.store_schema {
+        return true;
+    }
+    if let (Some(ours_ver), Some(theirs_ver)) = (parse_semver(&ours.version), parse_semver(&theirs.version))
+        && theirs_ver > ours_ver
+    {
+        return true;
+    }
+    false
+}
+
+/// Parses `major.minor.patch[-prerelease][+build]` into an ordered tuple where
+/// a release without prerelease sorts higher than one with a prerelease.
+fn parse_semver(version: &str) -> Option<(u64, u64, u64, bool, &str)> {
+    let trimmed = version.trim().strip_prefix('v').unwrap_or(version.trim());
+    let without_build = trimmed.split('+').next()?;
+    let (core, pre) = match without_build.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (without_build, None),
+    };
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch, pre.is_none(), pre.unwrap_or("")))
 }
 
 /// The card of a Migrate item, to change.
@@ -1158,6 +1373,7 @@ fn restored(request: &pb::InboxRequest) -> Option<((pb::MigrateThing, String), P
             from: card.from.clone().unwrap_or_default(),
             to: card.to.clone().unwrap_or_default(),
             migrating: card.phase() == pb::MigratePhase::Migrating,
+            failed: card.phase() == pb::MigratePhase::Failed,
             detail: None,
         },
     ))
@@ -1415,7 +1631,7 @@ pub fn refuse_answer(
     let id = request.id.as_ref().map_or("", |id| id.value.as_str());
     match answer {
         Answer::Approve(_) => None,
-        Answer::Deny(_) | Answer::Always(_) | Answer::Reply(_) => Some(status::invalid_field(
+        _ => Some(status::invalid_field(
             "answer",
             Problem::NotAllowedHere,
             format!("request {id} is a Migrate item: it takes Migrate and nothing else"),
@@ -1863,7 +2079,7 @@ mod tests {
         for answer in [
             Answer::Deny(pb::Deny::default()),
             Answer::Always(pb::AlwaysLet::default()),
-            Answer::Reply(pb::Reply { text: "later".to_owned() }),
+            Answer::Reply(pb::Reply { text: "later".to_owned(), ..Default::default() }),
         ] {
             let refused = refuse_answer(&migrate, &answer).expect("refused");
             assert_eq!(refused.code(), tonic::Code::InvalidArgument);
@@ -2383,5 +2599,225 @@ mod tests {
         assert_eq!(card(&item).from.as_ref().map(|from| from.store_schema), Some(current - 1));
         assert_eq!(card(&item).to.as_ref().map(|to| to.store_schema), Some(current));
         assert_eq!(migrations.mismatched(&gpu()).map(|(thing, ..)| thing), Some(pb::MigrateThing::Daemon));
+    }
+
+    #[test]
+    fn is_host_older_detects_newer_store_schema_and_newer_semver() {
+        let host = pb::BuildInfo {
+            version: "2.0.5".to_owned(),
+            store_schema: 10,
+            ..Default::default()
+        };
+        let older_schema = pb::BuildInfo {
+            version: "2.0.5".to_owned(),
+            store_schema: 9,
+            ..Default::default()
+        };
+        let newer_schema = pb::BuildInfo {
+            version: "2.0.5".to_owned(),
+            store_schema: 11,
+            ..Default::default()
+        };
+        let newer_version = pb::BuildInfo {
+            version: "2.0.6".to_owned(),
+            store_schema: 10,
+            ..Default::default()
+        };
+        let older_version = pb::BuildInfo {
+            version: "2.0.4".to_owned(),
+            store_schema: 10,
+            ..Default::default()
+        };
+        let unknown = pb::BuildInfo::default();
+
+        assert!(!is_host_older(&host, &older_schema));
+        assert!(is_host_older(&host, &newer_schema));
+        assert!(is_host_older(&host, &newer_version));
+        assert!(!is_host_older(&host, &older_version));
+        assert!(!is_host_older(&host, &unknown));
+    }
+
+    #[tokio::test]
+    async fn watch_linked_auto_migrates_older_remote_and_never_downgrades_newer_remote() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        let migrations = Migrations::new_with_state(inbox.clone(), fake.clone(), directory.path());
+        let watch = Watch::new(migrations.clone(), host_release(directory.path(), 5));
+
+        // Older remote daemon auto-migrates on link-up.
+        watch.linked("gpu", Some(&elsewhere(4))).await;
+        for _ in 0..20 {
+            if calls(&fake) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls(&fake), 1, "older remote should auto-migrate");
+        let gpu_id = migrations.pending(pb::MigrateThing::Daemon, &gpu()).unwrap();
+        assert_eq!(card(&held(&inbox, &gpu_id).await).phase(), pb::MigratePhase::Migrating);
+
+        // Newer remote daemon (higher store_schema) must NOT auto-downgrade.
+        let newer = pb::BuildInfo {
+            version: "2.0.5".to_owned(),
+            bundle: "cccccccc".to_owned(),
+            store_schema: 6,
+            ..Default::default()
+        };
+        watch.linked("tpu", Some(&newer)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls(&fake), 1, "newer remote must never auto-downgrade");
+        let tpu_id = migrations.pending(pb::MigrateThing::Daemon, &tpu()).unwrap();
+        assert_eq!(card(&held(&inbox, &tpu_id).await).phase(), pb::MigratePhase::Waiting);
+
+        // Newer remote daemon (higher semver version) must NOT auto-downgrade.
+        let newer_ver = pb::BuildInfo {
+            version: "2.1.0".to_owned(),
+            bundle: "dddddddd".to_owned(),
+            store_schema: 5,
+            ..Default::default()
+        };
+        let box3 = pb::MachineId { value: "box3".to_owned() };
+        watch.linked("box3", Some(&newer_ver)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls(&fake), 1, "newer semver remote must never auto-downgrade");
+        let box3_id = migrations.pending(pb::MigrateThing::Daemon, &box3).unwrap();
+        assert_eq!(card(&held(&inbox, &box3_id).await).phase(), pb::MigratePhase::Waiting);
+    }
+
+    #[tokio::test]
+    async fn failed_json_circuit_breaker_stops_retry_loops_until_manual_retry_or_new_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        fake.fails.store(true, Ordering::SeqCst);
+        let migrations = Migrations::new_with_state(inbox.clone(), fake.clone(), &state);
+        let release = host_release(directory.path(), 5);
+        let target_bundle = release.bundle().to_owned();
+        let watch = Watch::new(migrations.clone(), release);
+
+        // First link-up auto-migrates and fails -> trips failed.json.
+        watch.linked("gpu", Some(&elsewhere(4))).await;
+        for _ in 0..20 {
+            if calls(&fake) >= 1 && migrations.is_failed("gpu", &target_bundle) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls(&fake), 1);
+        assert!(migrations.is_failed("gpu", &target_bundle));
+        assert!(state.join("upgrade/failed.json").is_file());
+        let id = migrations.pending(pb::MigrateThing::Daemon, &gpu()).unwrap();
+        assert_eq!(card(&held(&inbox, &id).await).phase(), pb::MigratePhase::Failed);
+
+        // Second link-up at the same host bundle must NOT retry-loop.
+        fake.fails.store(false, Ordering::SeqCst);
+        watch.linked("gpu", Some(&elsewhere(4))).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls(&fake), 1, "circuit breaker must prevent retry loop on same to_bundle");
+
+        // Re-opening Migrations from the same state folder preserves the tripped breaker.
+        let reloaded = Migrations::new_with_state(inbox.clone(), fake.clone(), &state);
+        assert!(reloaded.is_failed("gpu", &target_bundle));
+        assert!(!reloaded.auto_migrate(pb::MigrateThing::Daemon, &gpu(), &target_bundle).await);
+        assert_eq!(calls(&fake), 1);
+
+        // Explicit manual approve/retry clears the breaker and runs migration.
+        let retried = reloaded.approve(&id.value).await.unwrap();
+        assert_eq!(card(&retried).phase(), pb::MigratePhase::Migrating);
+        assert!(!reloaded.is_failed("gpu", &target_bundle));
+        assert_eq!(calls(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn rollback_failure_trips_breaker_and_is_not_withdrawn_when_staged_disappears() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        let migrations = Migrations::new_with_state(inbox.clone(), fake.clone(), &state);
+        let to = build("2.0.5", "bbbbbbbb");
+        let id = migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), build("2.0.4", "aaaaaaaa"), to.clone())
+            .await
+            .unwrap();
+        migrations.approve(&id.value).await.unwrap();
+        assert_eq!(calls(&fake), 1);
+
+        // Simulate 2-boot rollback reported on boot.
+        migrations
+            .failed(
+                "gpu",
+                &to.bundle,
+                pb::Error {
+                    message: "rolled back after 2 boots".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(migrations.is_failed("gpu", &to.bundle));
+        assert_eq!(card(&held(&inbox, &id).await).phase(), pb::MigratePhase::Failed);
+
+        // resolved_if_waiting (e.g. Local::show seeing Staged::Nothing after rollback)
+        // must keep the Failed item visible for the user rather than withdrawing it.
+        migrations.resolved_if_waiting(pb::MigrateThing::Daemon, &gpu()).await.unwrap();
+        assert_eq!(held(&inbox, &id).await.state(), pb::RequestState::Pending);
+        assert_eq!(card(&held(&inbox, &id).await).phase(), pb::MigratePhase::Failed);
+
+        // Auto-migrate on the same to_bundle is blocked until a new bundle arrives.
+        assert!(!migrations.auto_migrate(pb::MigrateThing::Daemon, &gpu(), &to.bundle).await);
+        assert_eq!(calls(&fake), 1);
+
+        // Advancing to a new bundle bypasses the old tripped entry and auto-migrates.
+        let next = build("2.0.6", "cccccccc");
+        migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), build("2.0.4", "aaaaaaaa"), next.clone())
+            .await
+            .unwrap();
+        assert!(migrations.auto_migrate(pb::MigrateThing::Daemon, &gpu(), &next.bundle).await);
+        assert_eq!(calls(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn watch_holders_auto_migrates_and_stops_on_reported_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        let migrations = Migrations::new_with_state(inbox.clone(), fake.clone(), &state);
+        let release = host_release(directory.path(), 5);
+        let bundle = release.bundle().to_owned();
+        let watch = Watch::new(migrations.clone(), release);
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+
+        let report = pb::HoldersReport {
+            holders: vec![row(Some("ss_1"), pb::HolderNote::Moves)],
+            failed: None,
+            moved: None,
+        };
+        watch.holders("gpu", report.clone(), true, &channel).await;
+        for _ in 0..20 {
+            if calls(&fake) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls(&fake), 1, "holders report should auto-migrate");
+
+        // A failure reported by the remote trips the breaker and stops auto-retrying.
+        let failed_report = pb::HoldersReport {
+            holders: vec![row(Some("ss_1"), pb::HolderNote::Moves)],
+            failed: Some(failed_restart()),
+            moved: None,
+        };
+        watch.holders("gpu", failed_report, false, &channel).await;
+        assert!(migrations.is_failed("gpu", &bundle));
+
+        // Even a subsequent clean report will not auto-retry while tripped.
+        watch.holders("gpu", report, false, &channel).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls(&fake), 1, "tripped breaker prevents holders retry loop");
     }
 }

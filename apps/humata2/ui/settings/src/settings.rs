@@ -786,21 +786,37 @@ pub fn page(
                 )
                 .child(dim(
                     look,
-                    "Requests that need you appear in Inbox and beside the session in the sidebar.",
+                    "Requests that need you always appear in the Agent inbox and beside the session in the sidebar.",
                 ))
-                .child(card(look).child(setting(
-                    look,
-                    "Permission request alerts",
-                    "Show brief alerts for new permission requests. Choose where approvals appear in Agents.",
-                    toggle(
-                        ui,
-                        "settings-permission-alerts",
-                        prefs.permission_request_alerts,
-                        A::TogglePermissionRequestAlerts,
-                        look,
-                    )
-                    .into_any_element(),
-                )));
+                .child(
+                    card(look)
+                        .child(setting(
+                            look,
+                            Row::DesktopNotifications.title(),
+                            "Post macOS notifications when an agent needs your answer or fails to resume. Quiet while you are looking at that item.",
+                            toggle(
+                                ui,
+                                "settings-desktop-notifications",
+                                prefs.notify.enabled,
+                                A::ToggleDesktopNotifications,
+                                look,
+                            )
+                            .into_any_element(),
+                        ))
+                        .child(setting(
+                            look,
+                            Row::PermissionRequestAlerts.title(),
+                            "Show brief in-app toasts for new Agent inbox permission requests. Choose where approvals appear in Agents.",
+                            toggle(
+                                ui,
+                                "settings-permission-alerts",
+                                prefs.permission_request_alerts,
+                                A::TogglePermissionRequestAlerts,
+                                look,
+                            )
+                            .into_any_element(),
+                        )),
+                );
         }
         Section::Keyboard => {
             body = body

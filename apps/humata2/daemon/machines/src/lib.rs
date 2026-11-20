@@ -13,7 +13,7 @@ mod error;
 mod hosts;
 mod identity;
 mod install;
-mod known_hosts;
+pub mod known_hosts;
 mod link;
 mod login;
 mod machine_scripts;
@@ -29,7 +29,7 @@ mod stack_config;
 mod system;
 mod takeover;
 
-pub use check::Facts;
+pub use check::{EnrollmentKeyState, Facts};
 pub use error::{
     ConfigError, FieldProblem, HostVariablesError, IdentityError, KnownHostsError, NameError, Problem, ProblemKind, Problems,
     QuoteError, Remedy, RunError, SetupError, TakeoverError, ValuesError,
@@ -49,7 +49,10 @@ pub use manage::{
 };
 pub use name::MachineName;
 pub use platform::{Arch, Os, Platform};
-pub use provider::{parse_status, Action, MachineStatus, Param, Provider, Reach};
+pub use provider::{
+    parse_list, parse_status, parse_status_report, Action, DiscoveredInstance, MachineStatus, Param,
+    Provider, Reach, StatusReport,
+};
 pub use runner::{EnvValue, Exit, Invocation, Output, Purpose, Runner};
 pub use service::ServiceKind;
 pub use stack_config::{StackConfig, StackConfigError};

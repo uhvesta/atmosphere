@@ -183,14 +183,8 @@ impl Mac {
         std::fs::write(&staged, &bundle).expect("the staged bundle is written");
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)).expect("the bundle is readable");
         let to = upgrade::bundle_id(&bundle);
-        pb::daemon_service_client::DaemonServiceClient::new(self.daemon.channel().await)
-            .upgrade(pb::UpgradeRequest {
-                to_bundle: to.clone(),
-                upgrade_id: "up_holders_move".to_owned(),
-                thing: pb::MigrateThing::Unspecified.into(),
-            })
-            .await
-            .expect("the user's upgrade is taken");
+        // Auto-migrate detects `.bundle.json.next`, swaps release b in, and
+        // restarts the daemon in place.
         wait_at_release(&self.daemon, &to).await;
         to
     }
@@ -225,47 +219,34 @@ impl Mac {
             .unwrap_or_else(|| panic!("session {} has an agent holder", session.value))
     }
 
-    /// The pending Holders item for this machine once it has a row for each
-    /// of `sessions` and at least `shells` shell rows.
-    async fn holders_item(&self, sessions: &[&pb::SessionId], shells: usize) -> pb::InboxRequest {
-        upgrade::inbox_until(&self.daemon, "a Holders item listed the terminals", |items| {
-            items
+    /// Waits until `name`'s holder build record matches release `b`'s holder
+    /// sha256 and no pending Holders item remains for this machine.
+    async fn wait_moved(&self, names: &[String]) {
+        let wanted = upgrade::sha256_of(&binary("HUMATA2_HOLDER_FAULTS"));
+        let deadline = Instant::now() + LONG;
+        loop {
+            let all_on_b = names.iter().all(|name| {
+                std::fs::read_to_string(self.record(name))
+                    .ok()
+                    .and_then(|text| text.lines().next().map(|l| l.trim().to_owned()))
+                    .is_some_and(|sha| sha.eq_ignore_ascii_case(&wanted))
+            });
+            if all_on_b {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "holders {names:?} never recorded new build {wanted}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        upgrade::inbox_until(&self.daemon, "Holders item settled", |items| {
+            (!items
                 .iter()
-                .find(|item| {
-                    upgrade::pending_migrate(item, pb::MigrateThing::Holders, &self.machine)
-                        && sessions
-                            .iter()
-                            .all(|session| upgrade::agent_rows(item).contains_key(&session.value))
-                        && upgrade::shell_rows(item).len() >= shells
-                })
-                .cloned()
+                .any(|item| upgrade::pending_migrate(item, pb::MigrateThing::Holders, &self.machine)))
+            .then_some(())
         })
-        .await
-    }
-
-    async fn migrate(&self, id: &pb::RequestId) {
-        self.daemon
-            .inbox_service()
-            .await
-            .answer_request(pb::AnswerRequestRequest {
-                idempotency_key: Some(pb::IdempotencyKey {
-                    value: format!("migrate-{}", id.value),
-                }),
-                id: Some(id.clone()),
-                answer: Some(pb::RequestAnswer {
-                    answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
-                }),
-                ..Default::default()
-            })
-            .await
-            .expect("the user migrates the holders");
-    }
-
-    async fn ended(&self, id: &pb::RequestId) -> pb::InboxRequest {
-        upgrade::request_until(&self.daemon, id, "ended", |request| {
-            request.state() != pb::RequestState::Pending
-        })
-        .await
+        .await;
     }
 
     /// Waits until `session`'s agent runs on another holder than `old`.
@@ -381,26 +362,13 @@ async fn migrate_moves_a_working_agent_and_a_shell_onto_the_current_holder_with_
     let (agent_before, shell_before) = (read_pid(&agent_pid), read_pid(&shell_pid));
     let agent_holder = mac.agent_holder_now(&login);
     let shell_holder_before = shell_holder(&mac.daemon, &shell);
-    // A working agent: a move needs no idle moment.
+    // A working agent: auto-migrate moves both holders in place with no idle
+    // moment and no manual click required.
     mac.turn(&login, "UserPromptSubmit", pb::SessionStatus::Working).await;
     mac.upgrade_to_b().await;
 
-    let item = mac.holders_item(&[&login], 1).await;
-    assert_eq!(
-        upgrade::agent_rows(&item).get(&login.value),
-        Some(&pb::HolderNote::Moves),
-        "an agent whose holder can move is moved: {item:?}"
-    );
-    assert!(
-        upgrade::shell_rows(&item).contains(&pb::HolderNote::Moves),
-        "a shell whose holder can move is moved too: {item:?}"
-    );
-    let id = item.id.clone().expect("an Inbox item has an id");
-
-    mac.migrate(&id).await;
-
-    let done = mac.ended(&id).await;
-    assert_eq!(done.state(), pb::RequestState::Approved, "{done:?}");
+    mac.wait_moved(&[format!("{}.sha", login.value), format!("{}.shell.sha", shell.value)])
+        .await;
     assert_eq!(mac.agent_holder_now(&login), agent_holder, "the agent's holder process is the same");
     assert_eq!(shell_holder(&mac.daemon, &shell), shell_holder_before, "the shell's holder process is the same");
     for tab in stored_tabs(&mac.daemon.state) {
@@ -435,24 +403,15 @@ async fn a_holder_too_old_to_move_is_still_restarted_when_idle_while_one_that_ca
     let billing = mac.agent_session("Fix billing").await;
     // Billing's holder stands for one from before LIVEHOLDER.
     mac.too_old_to_move(&format!("{}.sha", billing.value)).await;
-    mac.upgrade_to_b().await;
-    let item = mac.holders_item(&[&login, &billing], 0).await;
-    let rows = upgrade::agent_rows(&item);
-    assert_eq!(rows.get(&login.value), Some(&pb::HolderNote::Moves), "{item:?}");
-    assert_eq!(
-        rows.get(&billing.value),
-        Some(&pb::HolderNote::RestartsWhenIdle),
-        "a holder too old to move restarts its agent when idle: {item:?}"
-    );
-    let id = item.id.clone().expect("an Inbox item has an id");
     let (login_holder, billing_holder) = (mac.agent_holder_now(&login), mac.agent_holder_now(&billing));
     mac.turn(&billing, "Stop", pb::SessionStatus::Idle).await;
+    mac.upgrade_to_b().await;
 
-    mac.migrate(&id).await;
-
-    let done = mac.ended(&id).await;
-    assert_eq!(done.state(), pb::RequestState::Approved, "{done:?}");
+    // Auto-migrate moves `login` in place and restarts `billing` (too old to
+    // move) once idle, without requiring a manual click.
     mac.restarted(&billing, billing_holder).await;
+    mac.wait_moved(&[format!("{}.sha", login.value), format!("{}.sha", billing.value)])
+        .await;
     mac.agent(&billing).await.wait_for("agent up --resume").await;
     assert_eq!(mac.agent_holder_now(&login), login_holder, "the one that moved kept its holder process");
     let mut agent = mac.agent(&login).await;
@@ -469,14 +428,9 @@ async fn shells_on_holders_that_can_move_hold_the_item_open_until_they_moved() {
     let holder = shell_holder(&mac.daemon, &shell);
     mac.upgrade_to_b().await;
 
-    // Only a shell is on an old holder, and it can move: the item is posted.
-    let item = mac.holders_item(&[], 1).await;
-    let id = item.id.clone().expect("an Inbox item has an id");
-
-    mac.migrate(&id).await;
-
-    let done = mac.ended(&id).await;
-    assert_eq!(done.state(), pb::RequestState::Approved, "{done:?}");
+    // Only a shell is on an old holder, and it can move: auto-migrate moves it
+    // in place and settles the Holders item.
+    mac.wait_moved(&[format!("{}.shell.sha", shell.value)]).await;
     assert_eq!(shell_holder(&mac.daemon, &shell), holder, "the same holder process");
     shell_answers(&mac.daemon, &shell, "moved").await;
     assert!(!hup.exists(), "the shell heard no hangup");

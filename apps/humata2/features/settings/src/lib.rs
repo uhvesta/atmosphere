@@ -23,6 +23,7 @@ use humata2_clients::machines::{
 };
 use humata2_clients::model::Agent;
 use humata2_clients::{Clients, DaemonError, KeychainError};
+pub use humata2_notify::NotifyConfig;
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
@@ -56,6 +57,9 @@ pub struct Preferences {
     pub confirm_destructive: bool,
     /// Show extra app alerts when an agent requests permission.
     pub permission_request_alerts: bool,
+    /// Desktop notification settings (NOTIFY, D889).
+    #[serde(default)]
+    pub notify: NotifyConfig,
     /// A terminal tab that stays hidden for 30 seconds gives its screen
     /// memory back, and shows a fresh copy when opened again.
     pub free_hidden_terminals: bool,
@@ -152,6 +156,7 @@ impl Default for Preferences {
             confirm_destructive: true,
             show_pinned: true,
             permission_request_alerts: false,
+            notify: NotifyConfig::default(),
             free_hidden_terminals: true,
             option_as_alt: false,
             fast_mode: fast_mode_default(std::env::var(FAST_MODE_VAR).ok().as_deref()),
@@ -223,6 +228,8 @@ pub enum Row {
     ConfirmBulkApprovals,
     /// The agent new sessions start with.
     DefaultAgent,
+    /// Desktop notifications for items that need you (NOTIFY, D889).
+    DesktopNotifications,
     /// Extra app alerts for permission requests.
     PermissionRequestAlerts,
     /// Hidden terminals give their screen memory back.
@@ -235,7 +242,7 @@ pub enum Row {
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
@@ -243,6 +250,7 @@ impl Row {
         Self::LongLines,
         Self::ConfirmBulkApprovals,
         Self::DefaultAgent,
+        Self::DesktopNotifications,
         Self::PermissionRequestAlerts,
         Self::FreeHiddenTerminals,
         Self::OptionAsAlt,
@@ -261,6 +269,7 @@ impl Row {
             Self::ConfirmBulkApprovals => "Confirm bulk approvals",
             Self::DefaultAgent => "Default agent",
 
+            Self::DesktopNotifications => "Desktop notifications",
             Self::PermissionRequestAlerts => "Permission request alerts",
             Self::FreeHiddenTerminals => "Free memory of hidden terminals",
             Self::OptionAsAlt => "Option acts as Alt",
@@ -281,7 +290,7 @@ impl Row {
                 Section::General
             }
             Self::DefaultAgent => Section::Agents,
-            Self::PermissionRequestAlerts => Section::Notifications,
+            Self::DesktopNotifications | Self::PermissionRequestAlerts => Section::Notifications,
             Self::OptionAsAlt => Section::Keyboard,
         }
     }
@@ -348,6 +357,8 @@ pub enum SettingsAction {
     ToggleWrap,
     /// Ask before risky bulk answers or not.
     ToggleConfirm,
+    /// Enable or disable desktop notifications (NOTIFY, D889).
+    ToggleDesktopNotifications,
     /// Enable or disable extra permission-request alerts.
     TogglePermissionRequestAlerts,
     /// Free the memory of terminals hidden for 30 seconds, or keep every screen.
@@ -505,6 +516,15 @@ impl Reducer for Settings {
             SettingsAction::ToggleWrap => preferences.wrap_diffs = !preferences.wrap_diffs,
             SettingsAction::ToggleConfirm => {
                 preferences.confirm_destructive = !preferences.confirm_destructive;
+            }
+            SettingsAction::ToggleDesktopNotifications => {
+                preferences.notify.enabled = !preferences.notify.enabled;
+                if preferences.notify.enabled {
+                    let notifier = self.clients.notifier.clone();
+                    return Effect::run(move |_send| async move {
+                        notifier.request_permission();
+                    });
+                }
             }
             SettingsAction::TogglePermissionRequestAlerts => {
                 preferences.permission_request_alerts = !preferences.permission_request_alerts;

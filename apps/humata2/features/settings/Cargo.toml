@@ -12,5 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 humata2-clients = { path = "../../clients" }
+humata2-notify = { path = "../notify" }
 tca-rust = { workspace = true }
 serde = { workspace = true }

@@ -29,6 +29,7 @@ mod fakes {
     pub mod files;
     pub mod keychain;
     pub mod local_daemon;
+    pub mod notifier;
     pub mod reveal;
 }
 pub mod fixture;
@@ -84,6 +85,7 @@ pub use fakes::file_manager::FakeFileManager;
 pub use fakes::files::FakeFileSystem;
 pub use fakes::keychain::FakeKeychain;
 pub use fakes::local_daemon::FakeLocalDaemon;
+pub use fakes::notifier::FakeNotifier;
 pub use fakes::reveal::FakeReveal;
 
 use std::sync::Arc;
@@ -122,6 +124,8 @@ pub struct Fakes {
     pub pull_requests: pull_requests::FakePullRequests,
     /// The review chat.
     pub review_chat: review_chat::FakeReviewChat,
+    /// Desktop notifications.
+    pub notifier: Arc<FakeNotifier>,
     /// Saved app state. Hand the same one to the next launch to restart.
     pub storage: Arc<MemoryStorage>,
 }
@@ -151,6 +155,7 @@ pub fn fake_clients(workspace: Workspace, clock: Arc<dyn Clock>) -> (Clients, Fa
         views,
         pull_requests: pull_requests::FakePullRequests::new(),
         review_chat: review_chat::FakeReviewChat::new(),
+        notifier: Arc::new(FakeNotifier::default()),
         storage: Arc::new(MemoryStorage::new()),
     }, clock)
 }
@@ -178,6 +183,7 @@ pub fn clients_with_fakes(fakes: Fakes, clock: Arc<dyn Clock>) -> (Clients, Fake
         views: Arc::new(fakes.views.clone()),
         pull_requests: Arc::new(fakes.pull_requests.clone()),
         review_chat: Arc::new(fakes.review_chat.clone()),
+        notifier: fakes.notifier.clone(),
         storage: fakes.storage.clone(),
     };
     (clients, fakes)
@@ -215,6 +221,7 @@ pub fn demo_clients(clock: Arc<dyn Clock>, storage: Arc<dyn Storage>) -> (Client
         views: Arc::new(views),
         pull_requests: Arc::new(pull_requests::FakePullRequests::new()),
         review_chat: Arc::new(review_chat::FakeReviewChat::new()),
+        notifier: Arc::new(NoopNotifier),
         storage,
     };
     (clients, daemon)

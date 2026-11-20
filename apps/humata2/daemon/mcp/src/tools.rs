@@ -77,6 +77,18 @@ operations! {
     TodoAdd => "todo_add", "todo.add";
     /// `TodoService.UpdateTodo` with the state Closed.
     TodoClose => "todo_close", "todo.close";
+    /// `InboxService.AskUser` anchored to a To-do item (free-text, single-choice, or multi-choice).
+    TodoAskQuestion => "todo_ask_question", "todo.ask_question";
+    /// `InboxService.AskUser` asking the user to perform an external action (`Done` / `Can't be done`).
+    TodoRequestAction => "todo_request_action", "todo.request_action";
+    /// `InboxService.AskUser` asking the user to review work on a To-do item (`Approved` / `Changes asked`).
+    TodoRequestReview => "todo_request_review", "todo.request_review";
+    /// `TodoService.UpdateTodo` updating checklist steps (markdown context, drop/restore, reorder).
+    TodoStepUpdate => "todo_step_update", "todo.step_update";
+    /// `TodoService.UpdateTodo` setting the stable-state checkpoint (`with_context`, `defined`, `done`).
+    TodoSetCheckpoint => "todo_set_checkpoint", "todo.set_checkpoint";
+    /// `TodoService.AddTodoComment` recording an agent run (tool, model, outcome, cost, links).
+    TodoReportRun => "todo_report_run", "todo.report_run";
     /// `ViewService.PrepareView`.
     ViewPrepare => "view_prepare", "view.prepare";
     /// `ViewService.ReviseView`.
@@ -922,6 +934,170 @@ fn definition(operation: Operation) -> Definition {
                 req("reason", reason()),
                 opt("evidence", array(string().max_length(2_000)).describe("What shows it is done")),
                 opt("expected_revision", expected_revision()),
+            ]),
+        ),
+        Op::TodoAskQuestion => define(
+            "Ask the user a structured question about a To-do item (free-text, single-choice, or multi-choice), optionally anchored to a checklist step with expandable Markdown details, and wait for the reply.",
+            Effect::Create,
+            object(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req("question", string().max_length(2_000)),
+                opt(
+                    "choices",
+                    array(string().max_length(200))
+                        .max_items(4)
+                        .describe("Up to 4 choices; omit for a free-text question"),
+                ),
+                opt(
+                    "multi_select",
+                    boolean().describe("Allow selecting multiple choices; default false"),
+                ),
+                opt(
+                    "step_id",
+                    string()
+                        .max_length(120)
+                        .describe("Optional checklist step id this question is anchored to"),
+                ),
+                opt(
+                    "details",
+                    string()
+                        .max_length(10_000)
+                        .describe("Optional expandable Markdown details"),
+                ),
+                opt("wait_seconds", wait_seconds()),
+            ]),
+        ),
+        Op::TodoRequestAction => define(
+            "Ask the user to perform an external action for a To-do item and wait for Done or Can't be done.",
+            Effect::Create,
+            object(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req(
+                    "action",
+                    string()
+                        .max_length(500)
+                        .describe("The external action needed from the user"),
+                ),
+                opt(
+                    "step_id",
+                    string().max_length(120).describe("Optional checklist step id"),
+                ),
+                opt(
+                    "details",
+                    string()
+                        .max_length(10_000)
+                        .describe("Optional expandable Markdown details"),
+                ),
+                opt("wait_seconds", wait_seconds()),
+            ]),
+        ),
+        Op::TodoRequestReview => define(
+            "Ask the user to review work on a To-do item (distinct from closing it) and wait for Approved or Changes asked.",
+            Effect::Create,
+            object(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req(
+                    "summary",
+                    string()
+                        .max_length(500)
+                        .describe("Short summary of what is ready for review"),
+                ),
+                opt(
+                    "step_id",
+                    string().max_length(120).describe("Optional checklist step id"),
+                ),
+                opt(
+                    "details",
+                    string()
+                        .max_length(10_000)
+                        .describe("Optional expandable Markdown details"),
+                ),
+                opt(
+                    "round",
+                    integer()
+                        .range(1, 100)
+                        .describe("Review round number, starting at 1"),
+                ),
+                opt(
+                    "checkpoint",
+                    one_of_strings(["with_context", "defined", "done"])
+                        .describe("Optional checkpoint this review checks"),
+                ),
+                opt("wait_seconds", wait_seconds()),
+            ]),
+        ),
+        Op::TodoStepUpdate => define(
+            "Update a To-do item's checklist steps: set Markdown context, soft-drop or restore steps, or reorder them.",
+            Effect::Change,
+            asks(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req(
+                    "steps",
+                    array(object(vec![
+                        opt("id", string().max_length(120).describe("Stable step id")),
+                        req("text", string().max_length(500).describe("Step text")),
+                        opt("done", boolean().describe("Whether the step is completed")),
+                        opt(
+                            "markdown_context",
+                            string()
+                                .max_length(10_000)
+                                .describe("Optional Markdown context for this step"),
+                        ),
+                        opt(
+                            "dropped",
+                            boolean().describe("Soft-drop (true) or restore (false) this step"),
+                        ),
+                    ]))
+                    .describe("The full list of steps in their desired order"),
+                ),
+                opt("expected_revision", expected_revision()),
+            ]),
+        ),
+        Op::TodoSetCheckpoint => define(
+            "Set a To-do item's stable-state handoff checkpoint (with_context, defined, or done).",
+            Effect::Change,
+            asks(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req("checkpoint", one_of_strings(["with_context", "defined", "done"])),
+                opt("expected_revision", expected_revision()),
+            ]),
+        ),
+        Op::TodoReportRun => define(
+            "Record an agent run (tool, model, outcome, cost, and links) on a To-do item.",
+            Effect::Create,
+            asks(vec![
+                req("key", string().describe("An item key or id such as PAY-3")),
+                req(
+                    "tool",
+                    string()
+                        .max_length(120)
+                        .describe("Tool or agent name, e.g. claude"),
+                ),
+                opt(
+                    "model",
+                    string()
+                        .max_length(120)
+                        .describe("Model identifier used for the run"),
+                ),
+                req(
+                    "outcome",
+                    string().max_length(500).describe("Short outcome summary"),
+                ),
+                opt(
+                    "cost_micros",
+                    integer()
+                        .at_least(0)
+                        .describe("Run cost in microdollars (1000000 = $1.00)"),
+                ),
+                opt(
+                    "links",
+                    array(object(vec![
+                        req("label", string().max_length(120)),
+                        req("target", string().max_length(1_000)),
+                    ]))
+                    .max_items(20)
+                    .describe("Optional links produced by the run"),
+                ),
             ]),
         ),
         Op::ViewPrepare => define(

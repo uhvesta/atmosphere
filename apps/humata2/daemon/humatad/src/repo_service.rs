@@ -21,7 +21,7 @@
 //! run one `gh api search/repositories`. An answer from GitHub is reused
 //! for a minute for the same query and scope (D477).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,6 +51,9 @@ pub(crate) use on_machine::OnMachine;
 
 /// How long an answer from GitHub is reused (D477).
 const CACHE_FOR: Duration = Duration::from_secs(60);
+/// How long `ListRepoOwners` (`user/orgs`) is reused so repeated picker opens
+/// are instant.
+const OWNERS_CACHE_FOR: Duration = Duration::from_secs(120);
 /// What one GitHub search asks for: the most it gives in a page.
 const SEARCH_PAGE: &str = "per_page=100";
 /// The fields of a found repo, one JSON object per line.
@@ -248,6 +251,41 @@ impl GithubGroup {
     }
 }
 
+/// Short-TTL cache for `ListRepoOwners` (`gh api user/orgs`).
+struct OwnersCache {
+    ttl: Duration,
+    entry: Mutex<Option<(Instant, Vec<String>)>>,
+}
+
+impl OwnersCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entry: Mutex::new(None),
+        }
+    }
+
+    fn get(&self) -> Option<Vec<String>> {
+        self.get_at(Instant::now())
+    }
+
+    fn get_at(&self, now: Instant) -> Option<Vec<String>> {
+        let entry = self.entry.lock().unwrap_or_else(PoisonError::into_inner);
+        entry
+            .as_ref()
+            .filter(|(at, _)| now.saturating_duration_since(*at) < self.ttl)
+            .map(|(_, owners)| owners.clone())
+    }
+
+    fn put(&self, owners: Vec<String>) {
+        self.put_at(owners, Instant::now());
+    }
+
+    fn put_at(&self, owners: Vec<String>, now: Instant) {
+        *self.entry.lock().unwrap_or_else(PoisonError::into_inner) = Some((now, owners));
+    }
+}
+
 /// What the service and its calls share.
 struct Shared {
     /// `<state>/repos.db`.
@@ -258,6 +296,8 @@ struct Shared {
     guard: Arc<Guard>,
     /// GitHub's answers for a minute, by query and scope.
     cache: Mutex<HashMap<String, (Instant, Arc<Fetched>)>>,
+    /// Cached `ListRepoOwners` (`user/orgs`) result with TTL.
+    owners_cache: OwnersCache,
     /// The `gh` login, once known.
     login: Mutex<Option<String>>,
 }
@@ -280,6 +320,7 @@ impl RepoSvc {
                 library: OnceLock::new(),
                 guard,
                 cache: Mutex::new(HashMap::new()),
+                owners_cache: OwnersCache::new(OWNERS_CACHE_FOR),
                 login: Mutex::new(None),
             }),
         }
@@ -339,6 +380,14 @@ impl Shared {
         cache.insert(key, (Instant::now(), Arc::new(fetched)));
     }
 
+    fn fresh_owners(&self) -> Option<Vec<String>> {
+        self.owners_cache.get()
+    }
+
+    fn keep_owners(&self, owners: Vec<String>) {
+        self.owners_cache.put(owners);
+    }
+
     /// The signed-in user's login, from `gh` once and then from memory.
     async fn login(&self) -> Result<String, GhError> {
         if let Some(login) = self
@@ -361,6 +410,11 @@ impl Shared {
     /// The GitHub group of a search of `query` within `scope` (RL-6, RL-9,
     /// RL-10). Never fails: a problem is part of the group.
     async fn github(&self, query: &str, scope: &Scope) -> GithubGroup {
+        if let Scope::Owners { owners, include_me } = scope
+            && query.trim().is_empty()
+        {
+            return self.owners_catalog(query, owners, *include_me).await;
+        }
         let key = format!("{}\u{1f}{scope:?}", query.trim());
         if let Some(fetched) = self.fresh(&key) {
             return GithubGroup::of(&fetched);
@@ -384,16 +438,129 @@ impl Shared {
     /// Your repos: CH-3's cached listing, matched locally.
     async fn listing(&self, query: &str) -> Result<Vec<Hit>, GhError> {
         let repos = gh_repos::listing().await?;
-        Ok(gh_repos::rank(query.trim(), &repos)
-            .into_iter()
-            .filter_map(|repo| {
-                Some(Hit {
-                    repo: RepoName::parse(&format!("{}/{}", repo.owner, repo.name)).ok()?,
-                    description: repo.description.clone(),
-                    is_private: repo.is_private,
-                })
-            })
-            .collect())
+        Ok(ranked_hits(query, &repos))
+    }
+
+    /// Selected owners: per-owner cached catalogs matched locally, so empty or
+    /// 1-char queries return repos immediately without `TooShort`. Falls back
+    /// to `search/repositories` only for huge orgs whose catalog exceeded the
+    /// per-owner cap (when the query is long enough).
+    async fn owners_catalog(
+        &self,
+        query: &str,
+        owners: &[String],
+        include_me: bool,
+    ) -> GithubGroup {
+        if owners.is_empty() && !include_me {
+            return GithubGroup::nothing();
+        }
+        let mut target_owners: Vec<String> = Vec::new();
+        for owner in owners {
+            if !target_owners.iter().any(|o| o.eq_ignore_ascii_case(owner)) {
+                target_owners.push(owner.clone());
+            }
+        }
+        if include_me {
+            match self.login().await {
+                Ok(login) => {
+                    if !target_owners.iter().any(|o| o.eq_ignore_ascii_case(&login)) {
+                        target_owners.push(login);
+                    }
+                }
+                Err(error) => return GithubGroup::problem(problem_of(&error)),
+            }
+        }
+
+        let mut set = tokio::task::JoinSet::new();
+        for owner in target_owners {
+            set.spawn(async move {
+                let res = gh_repos::owner_listing(&owner).await;
+                (owner, res)
+            });
+        }
+
+        let mut all_repos: Vec<gh_repos::Repo> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut unknown_owners: Vec<String> = Vec::new();
+        let mut truncated_owners: Vec<String> = Vec::new();
+        let mut first_error: Option<GhError> = None;
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((owner, Ok(catalog))) => {
+                    if catalog.truncated {
+                        truncated_owners.push(owner);
+                    }
+                    for repo in catalog.repos.iter() {
+                        let key = format!("{}/{}", repo.owner, repo.name).to_ascii_lowercase();
+                        if seen.insert(key) {
+                            all_repos.push(repo.clone());
+                        }
+                    }
+                }
+                Ok((owner, Err(err))) if err.is_not_found() => {
+                    unknown_owners.push(owner);
+                }
+                Ok((_, Err(err))) => {
+                    if first_error.is_none() {
+                        first_error = Some(GhError::from(err));
+                    }
+                }
+                Err(source) => {
+                    if first_error.is_none() {
+                        first_error = Some(GhError::ListingWait { source });
+                    }
+                }
+            }
+        }
+
+        let mut hits = ranked_hits(query, &all_repos);
+
+        if let Some(error) = first_error {
+            return GithubGroup {
+                hits,
+                unknown_owners,
+                problem: Some(problem_of(&error)),
+            };
+        }
+
+        // For huge orgs that exceeded the per-owner catalog cap, augment with
+        // GitHub's search API once the query is at least 2 characters.
+        if !truncated_owners.is_empty() {
+            let truncated_scope = Scope::Owners {
+                owners: truncated_owners,
+                include_me: false,
+            };
+            if matches!(
+                github_query(query, &truncated_scope, None),
+                GitHubQuery::Search(_)
+            ) {
+                let fallback_key = format!("{}\u{1f}{truncated_scope:?}", query.trim());
+                let fallback = if let Some(fetched) = self.fresh(&fallback_key) {
+                    GithubGroup::of(&fetched)
+                } else {
+                    self.search(query, &truncated_scope, fallback_key).await
+                };
+                for hit in fallback.hits {
+                    if !hits.iter().any(|existing| existing.repo == hit.repo) {
+                        hits.push(hit);
+                    }
+                }
+                if fallback.problem.is_some() {
+                    return GithubGroup {
+                        hits,
+                        unknown_owners,
+                        problem: fallback.problem,
+                    };
+                }
+            }
+        }
+
+        GithubGroup {
+            hits,
+            unknown_owners,
+            problem: None,
+        }
     }
 
     /// One repository search within owners or all of GitHub. An owner that
@@ -843,6 +1010,19 @@ fn user_only(caller: &Caller, what: &str) -> Result<(), Status> {
     ))
 }
 
+fn ranked_hits(query: &str, repos: &[gh_repos::Repo]) -> Vec<Hit> {
+    gh_repos::rank(query.trim(), repos)
+        .into_iter()
+        .filter_map(|repo| {
+            Some(Hit {
+                repo: RepoName::parse(&format!("{}/{}", repo.owner, repo.name)).ok()?,
+                description: repo.description.clone(),
+                is_private: repo.is_private,
+            })
+        })
+        .collect()
+}
+
 fn listed(entries: &[Entry], revision: u64) -> pb::ListRepoLibraryResponse {
     pb::ListRepoLibraryResponse {
         repos: entries.iter().map(library_repo).collect(),
@@ -872,8 +1052,14 @@ impl pb::repo_service_server::RepoService for RepoSvc {
         let (entries, _) = blocking(move || shared.list()).await??;
         let group = self.shared.github(&request.query, &scope).await;
         let found = merge(&request.query, &entries, &group.hits);
-        let (start, size, next_page_token) =
-            gh_repos::window(found.github.len(), request.page.as_ref())?;
+        let (start, size, next_page_token) = match scope {
+            Scope::YourRepos | Scope::Owners { .. } => gh_repos::window_with_default(
+                found.github.len(),
+                request.page.as_ref(),
+                gh_repos::CATALOG_DEFAULT_PAGE,
+            )?,
+            Scope::AllOfGitHub => gh_repos::window(found.github.len(), request.page.as_ref())?,
+        };
         Ok(Response::new(pb::SearchReposResponse {
             library: found.library.iter().map(library_repo).collect(),
             github: found
@@ -890,19 +1076,30 @@ impl pb::repo_service_server::RepoService for RepoSvc {
         }))
     }
 
-    /// RL-8: the orgs the host's `gh` user belongs to. A global read. A `gh`
-    /// that cannot list them is a problem in the answer (RL-10).
+    /// RL-8: the orgs the host's `gh` user belongs to. A global read. Cached
+    /// for 120s so repeated picker opens are instant. A `gh` that cannot list
+    /// them is a problem in the answer (RL-10).
     async fn list_repo_owners(
         &self,
         request: Request<pb::ListRepoOwnersRequest>,
     ) -> Result<Response<pb::ListRepoOwnersResponse>, Status> {
         let caller = identity::caller(&request)?;
         self.shared.may_read(&caller)?;
-        let answer = match gh(&["api", "user/orgs", "--paginate", "--jq", ".[].login"]).await {
-            Ok(printed) => pb::ListRepoOwnersResponse {
-                owners: owners_in(&printed),
+        if let Some(owners) = self.shared.fresh_owners() {
+            return Ok(Response::new(pb::ListRepoOwnersResponse {
+                owners,
                 problem: None,
-            },
+            }));
+        }
+        let answer = match gh(&["api", "user/orgs", "--paginate", "--jq", ".[].login"]).await {
+            Ok(printed) => {
+                let owners = owners_in(&printed);
+                self.shared.keep_owners(owners.clone());
+                pb::ListRepoOwnersResponse {
+                    owners,
+                    problem: None,
+                }
+            }
             Err(error) => pb::ListRepoOwnersResponse {
                 owners: Vec::new(),
                 problem: Some(problem_of(&error)),
@@ -1068,5 +1265,25 @@ mod tests {
         assert!(hits[0].is_private);
         assert_eq!(hits[1].description, "");
         assert!(!hits[1].is_private);
+    }
+
+    #[test]
+    fn owners_cache_returns_cached_orgs_within_ttl_and_expires_after() {
+        let cache = OwnersCache::new(OWNERS_CACHE_FOR);
+        let t0 = Instant::now();
+        assert!(cache.get_at(t0).is_none());
+
+        cache.put_at(vec!["acme".to_owned(), "octo".to_owned()], t0);
+        assert_eq!(
+            cache.get_at(t0 + Duration::from_secs(60)),
+            Some(vec!["acme".to_owned(), "octo".to_owned()])
+        );
+        assert!(cache.get_at(t0 + OWNERS_CACHE_FOR).is_none());
+    }
+
+    #[test]
+    fn owners_in_deduplicates_case_insensitively_and_skips_blank_lines() {
+        let printed = "acme\n\nACME\n  octo \n";
+        assert_eq!(owners_in(printed), vec!["acme", "octo"]);
     }
 }

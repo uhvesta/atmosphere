@@ -13,7 +13,7 @@ use humata2_app::{
 use humata2_clients::repos::{
     LibraryRepo, RepoPlace, RepoScope, RepoSearchProblem, RepoSearchProblemKind,
 };
-use humata2_clients::{Clients, Fakes, fixture};
+use humata2_clients::{Fakes, fixture};
 use tca::{TestClock, TestStore};
 
 fn held(repo: &str, last_used_at_ms: i64) -> LibraryRepo {
@@ -310,4 +310,82 @@ fn a_late_answer_for_a_closed_new_channel_sheet_does_not_touch_the_desk_search()
     };
     store.send(A::RepoSearch(RepoPicker::NewChannel, S::Results { seq: 0, result: late }), |_| {});
     assert_eq!(store.state().desk_repos, before);
+}
+
+#[test]
+fn highlight_moves_clamps_and_resets_on_query_owner_and_open() {
+    let (mut store, _, _) = setup();
+    open(&mut store);
+    assert_eq!(search(&store).highlighted, 0);
+    let count = search(&store).rows(&[], 50).0.len();
+    assert!(count >= 3);
+
+    repo_search(&mut store, S::MoveHighlight { delta: 1, count });
+    assert_eq!(search(&store).highlighted, 1);
+    assert_eq!(
+        search(&store).highlighted_repo(&[], 50).as_deref(),
+        Some("acme/api")
+    );
+
+    // Clamps at the bottom and top.
+    repo_search(&mut store, S::MoveHighlight { delta: 100, count });
+    assert_eq!(search(&store).highlighted, count - 1);
+    repo_search(&mut store, S::MoveHighlight { delta: -100, count });
+    assert_eq!(search(&store).highlighted, 0);
+
+    // Resets on QueryChanged.
+    repo_search(&mut store, S::MoveHighlight { delta: 2, count });
+    assert_eq!(search(&store).highlighted, 2);
+    store.send(A::NewChannel(N::Query("octo".into())), |_| {});
+    assert_eq!(search(&store).highlighted, 0);
+
+    // Resets on OwnerAdded.
+    let octo_count = search(&store).rows(&[], 50).0.len();
+    repo_search(&mut store, S::MoveHighlight { delta: 1, count: octo_count });
+    assert_eq!(search(&store).highlighted, 1);
+    repo_search(&mut store, S::OwnerAdded("acme".into()));
+    assert_eq!(search(&store).highlighted, 0);
+
+    // Resets on Open.
+    repo_search(&mut store, S::ScopeReset);
+    store.send(A::NewChannel(N::Query(String::new())), |_| {});
+    store.skip_received();
+    let full_count = search(&store).rows(&[], 50).0.len();
+    assert!(full_count >= 2);
+    repo_search(&mut store, S::MoveHighlight { delta: 1, count: full_count });
+    assert_eq!(search(&store).highlighted, 1);
+    repo_search(&mut store, S::Open);
+    assert_eq!(search(&store).highlighted, 0);
+}
+
+#[test]
+fn open_and_owner_added_load_full_scope_catalog_for_instant_local_filtering() {
+    let (mut store, fakes, clock) = setup();
+    open(&mut store);
+    // Open loads the full scope catalog with an empty query.
+    assert_eq!(
+        fakes.daemon.calls().last().map(String::as_str),
+        Some("search repos \"\"")
+    );
+
+    // Narrow with a query and let the 300 ms pause complete.
+    store.send(A::NewChannel(N::Query("led".into())), |_| {});
+    clock.advance(Duration::from_millis(300));
+    store.receive_matching("the pause ending", the_pause, |_| {});
+    store.skip_received();
+
+    // Changing the query locally still filters the full cached catalog instantaneously
+    // without waiting for another daemon round-trip.
+    let before = searches(&fakes);
+    store.send(A::NewChannel(N::Query("web".into())), |_| {});
+    let (rows, _) = search(&store).rows(&[], 50);
+    assert_eq!(names(&rows, Some(RepoGroup::GitHub)), vec!["acme/web"]);
+    assert_eq!(searches(&fakes), before);
+
+    // OwnerAdded immediately triggers an empty-query catalog load even while a query is typed.
+    repo_search(&mut store, S::OwnerAdded("acme".into()));
+    assert_eq!(
+        fakes.daemon.calls().last().map(String::as_str),
+        Some("search repos \"\"")
+    );
 }

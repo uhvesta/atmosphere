@@ -226,6 +226,7 @@ impl Host {
             storage: Arc::new(MemoryStorage::new()),
             views: Arc::new(humata2_clients_live::LiveViews::new(&views_daemon)),
             local_daemon: Arc::new(humata2_clients::FakeLocalDaemon::default()),
+            notifier: Arc::new(humata2_clients::NoopNotifier),
         };
         (clients, machines)
     }

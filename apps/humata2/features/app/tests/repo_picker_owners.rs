@@ -9,7 +9,7 @@ use humata2_app::{
     RepoSearchState, Route, used_line,
 };
 use humata2_clients::repos::{LibraryRepo, RepoPlace};
-use humata2_clients::{Clients, Fakes, Workspace, fixture};
+use humata2_clients::{Fakes, Workspace, fixture};
 use humata2_desk::{DeskAction as D, NewAction as N};
 use tca::{TestClock, TestStore};
 
@@ -136,6 +136,72 @@ fn with_no_github_orgs_only_the_library_owners_are_suggested() {
     store.send(A::RepoSearch(RepoPicker::NewDeskSession, S::AddOwnerOpened), |_| {});
     store.skip_received();
     assert_eq!(new_desk(&store).owner_suggestions(), vec!["bazelbuild", "acme"]);
+}
+
+#[test]
+fn owner_suggestions_filter_and_rank_as_you_type_and_pick_with_keyboard() {
+    let (mut store, fakes) = setup();
+    fakes.daemon.set_repo_owners(vec![
+        "octo-org".into(),
+        "my-octo".into(),
+        "acme".into(),
+        "bazelbuild".into(),
+    ]);
+    open_new_desk_search(&mut store);
+    store.send(A::RepoSearch(RepoPicker::NewDeskSession, S::AddOwnerOpened), |_| {});
+    store.skip_received();
+
+    // Typing filters & ranks: prefix "octo-org" before word-boundary "my-octo".
+    store.send(
+        A::RepoSearch(RepoPicker::NewDeskSession, S::OwnerTextChanged("@octo".into())),
+        |_| {},
+    );
+    assert_eq!(
+        new_desk(&store).owner_suggestions(),
+        vec!["octo-org", "my-octo"]
+    );
+    assert_eq!(new_desk(&store).highlighted, 0);
+
+    // Move highlight to second suggestion and pick it with CompleteOwner (Tab).
+    store.send(
+        A::RepoSearch(
+            RepoPicker::NewDeskSession,
+            S::MoveHighlight { delta: 1, count: 2 },
+        ),
+        |_| {},
+    );
+    assert_eq!(new_desk(&store).highlighted_owner().as_deref(), Some("my-octo"));
+    store.send(A::RepoSearch(RepoPicker::NewDeskSession, S::CompleteOwner), |_| {});
+    store.skip_received();
+    assert!(new_desk(&store).adding_owner.is_none());
+    assert!(
+        new_desk(&store)
+            .chips()
+            .iter()
+            .any(|chip| chip.label == "my-octo"),
+        "my-octo chip added"
+    );
+
+    // Arbitrary typed org name not in suggestions is still allowed on Enter.
+    store.send(A::RepoSearch(RepoPicker::NewDeskSession, S::AddOwnerOpened), |_| {});
+    store.skip_received();
+    store.send(
+        A::RepoSearch(
+            RepoPicker::NewDeskSession,
+            S::OwnerTextChanged("custom-external-org".into()),
+        ),
+        |_| {},
+    );
+    assert!(new_desk(&store).owner_suggestions().is_empty());
+    store.send(A::RepoSearch(RepoPicker::NewDeskSession, S::OwnerEntered), |_| {});
+    store.skip_received();
+    assert!(
+        new_desk(&store)
+            .chips()
+            .iter()
+            .any(|chip| chip.label == "custom-external-org"),
+        "arbitrary org name added"
+    );
 }
 
 #[test]

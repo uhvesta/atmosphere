@@ -42,7 +42,14 @@ pub(super) fn query_input(
                     RepoSearchAction::QueryChanged(input.read(cx).value().to_string()),
                 ),
                 InputEvent::PressEnter { .. } => {
-                    AppAction::SessionAddRepo(SessionAddRepoAction::Add(None))
+                    let picked = this.ui.read(|state| {
+                        let Some(humata2_app::Overlay::SessionAddRepo(sheet)) = state.overlay()
+                        else {
+                            return None;
+                        };
+                        sheet.search.highlighted_repo(&[], 50)
+                    });
+                    AppAction::SessionAddRepo(SessionAddRepoAction::Add(picked))
                 }
                 InputEvent::Focus | InputEvent::Blur => return,
             };

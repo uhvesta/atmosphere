@@ -351,6 +351,22 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
         P::AccessAhead(ahead) => Preview::Text(ahead.target_label.clone()),
         P::Migrate(migrate) => Preview::Migrate(migrate_card(migrate)),
         P::ProviderImport(import) => Preview::Text(provider_import_text(import)),
+        P::TodoAction(action) => Preview::Text(
+            [action.action.as_str(), action.details.as_str()]
+                .iter()
+                .filter(|part| !part.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        P::TodoReview(review) => Preview::Text(
+            [review.summary.as_str(), review.details.as_str()]
+                .iter()
+                .filter(|part| !part.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     }
 }
 
@@ -475,7 +491,27 @@ fn answer(request: &pb::InboxRequest) -> Option<Answer> {
                 .unwrap_or_default(),
         }),
         Some(A::Reply(reply)) => Some(Answer::Replied {
-            text: reply.text.clone(),
+            text: if !reply.text.is_empty() {
+                reply.text.clone()
+            } else {
+                reply.selected_choices.join(", ")
+            },
+        }),
+        Some(A::TodoAction(action)) => Some(Answer::Replied {
+            text: match (action.done, action.note.is_empty()) {
+                (true, true) => "Done".to_owned(),
+                (false, true) => "Can't be done".to_owned(),
+                (true, false) => format!("Done: {}", action.note),
+                (false, false) => format!("Can't be done: {}", action.note),
+            },
+        }),
+        Some(A::TodoReview(review)) => Some(Answer::Replied {
+            text: match (review.approved, review.note.is_empty()) {
+                (true, true) => "Approved".to_owned(),
+                (false, true) => "Changes asked".to_owned(),
+                (true, false) => format!("Approved: {}", review.note),
+                (false, false) => format!("Changes asked: {}", review.note),
+            },
         }),
         None => None,
     }
@@ -594,7 +630,10 @@ fn request_answer(answer: Answer, always: Option<pb::GrantTarget>) -> pb::Reques
             Answer::Denied { reply } => A::Deny(pb::Deny {
                 note: reply.unwrap_or_default(),
             }),
-            Answer::Replied { text } => A::Reply(pb::Reply { text }),
+            Answer::Replied { text } => A::Reply(pb::Reply {
+                text,
+                selected_choices: Vec::new(),
+            }),
             Answer::Always { .. } => A::Always(pb::AlwaysLet { target: always }),
         }),
     }

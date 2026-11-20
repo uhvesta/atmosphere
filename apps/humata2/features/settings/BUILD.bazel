@@ -15,6 +15,7 @@ rust_library(
     ],
     deps = [
         "//apps/humata2/clients:api",
+        "//apps/humata2/features/notify",
         "//libs/tca-rust:tca",
         "@crates//:serde",
     ],
@@ -28,6 +29,7 @@ rust_library(
         deps = [
             ":settings",
             "//apps/humata2/clients",
+            "//apps/humata2/features/notify",
             "//libs/tca-rust:tca",
             "@crates//:serde_json",
         ],

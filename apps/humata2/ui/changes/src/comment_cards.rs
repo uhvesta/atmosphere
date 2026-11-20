@@ -7,10 +7,11 @@ use gpui_kit::base::{ObservedElement, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, AppState, AskAction};
+use humata2_app::{AppAction, AppState, AskAction, TodoAction};
 use humata2_clients::comments::{Anchor, Author, Comment, CommentId, Destination, Status};
 use humata2_clients::model::SessionId;
 use humata2_review::comments::{CommentsAction, github_target};
+use humata2_todo::SourceAnchor;
 
 use crate::bridge::Ui;
 use crate::theme::Look;
@@ -264,6 +265,88 @@ fn chip(look: Look, label: impl Into<SharedString>) -> Div {
         .text_color(rgb(look.accent))
 }
 
+/// Context for To-do hooks on inline Diff and Markdown review comments:
+/// the linked To-do item (`From: <key>`) and its channel, if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TodoHookContext {
+    /// Key of the linked To-do item (`From: <key>`), if any.
+    pub item_key: Option<String>,
+    /// Channel of the linked To-do item, if any.
+    pub channel: Option<String>,
+}
+
+/// Resolves the To-do hook context for `session` from `state`: prefers the
+/// open drawer item if it belongs to `session`, otherwise the first active
+/// (non-terminal) item linked to `session`, otherwise the first linked item.
+#[must_use]
+pub fn todo_context(state: &AppState, session: &SessionId) -> TodoHookContext {
+    let sid = session.as_str();
+    let linked: Vec<_> = state
+        .todo
+        .items
+        .iter()
+        .map(|e| &e.todo)
+        .filter(|t| t.sessions.iter().any(|s| s == sid))
+        .collect();
+    let picked = state
+        .todo
+        .open
+        .as_deref()
+        .and_then(|open| linked.iter().copied().find(|t| t.key == open))
+        .or_else(|| linked.iter().copied().find(|t| t.state.is_active()))
+        .or_else(|| linked.first().copied());
+    match picked {
+        Some(t) => TodoHookContext {
+            item_key: (!t.key.is_empty()).then(|| t.key.clone()),
+            channel: t.channel.clone(),
+        },
+        None => TodoHookContext::default(),
+    }
+}
+
+/// Converts a review comment's anchor into a To-do [`SourceAnchor`].
+#[must_use]
+pub fn source_anchor_for(comment: &Comment) -> SourceAnchor {
+    SourceAnchor {
+        repo: comment.anchor.repo.clone(),
+        path: comment.anchor.path.clone(),
+        line: comment.anchor.first,
+        end_line: (comment.anchor.last > comment.anchor.first).then_some(comment.anchor.last),
+        comment_id: Some(comment.id.to_string()),
+    }
+}
+
+/// Action for **Add to steps** on an inline Diff or Markdown review comment.
+#[must_use]
+pub fn add_to_steps_action(comment: &Comment, ctx: &TodoHookContext) -> Option<AppAction> {
+    let key = ctx.item_key.as_ref()?;
+    let text = comment.text.trim();
+    if text.is_empty() || comment.anchor.detached {
+        return None;
+    }
+    Some(AppAction::Todo(TodoAction::AddStepFromComment {
+        key: key.clone(),
+        text: text.to_owned(),
+        anchor: source_anchor_for(comment),
+    }))
+}
+
+/// Action for **Spin off To-do** on an inline Diff or Markdown review comment,
+/// attaching `From: <key>` and its `file:line` [`SourceAnchor`].
+#[must_use]
+pub fn spin_off_todo_action(comment: &Comment, ctx: &TodoHookContext) -> Option<AppAction> {
+    let title = comment.text.trim();
+    if title.is_empty() || comment.anchor.detached {
+        return None;
+    }
+    Some(AppAction::Todo(TodoAction::SpinOffFromComment {
+        from_key: ctx.item_key.clone(),
+        title: title.to_owned(),
+        anchor: source_anchor_for(comment),
+        channel: ctx.channel.clone(),
+    }))
+}
+
 /// One comment under its line. `agent` is the command it was sent to, such
 /// as `claude`. A detached comment offers Re-attach and Drop; while it is
 /// being re-attached (`reattaching`) it says to click the line.
@@ -280,13 +363,67 @@ pub fn card(
     reattaching: bool,
     start_reattach: &StartReattach,
 ) -> AnyElement {
+    let todo_ctx = ui.read(|state| todo_context(state, &comment.session));
+    card_with_todo(ui, look, comment, agent, review, reattaching, start_reattach, &todo_ctx)
+}
+
+/// Like [`card`], with a pre-resolved [`TodoHookContext`] so callers that
+/// already hold `AppState` avoid extra store reads.
+#[allow(clippy::too_many_arguments)]
+pub fn card_with_todo(
+    ui: &Rc<Ui>,
+    look: Look,
+    comment: &Comment,
+    agent: &str,
+    review: bool,
+    reattaching: bool,
+    start_reattach: &StartReattach,
+    todo_ctx: &TodoHookContext,
+) -> AnyElement {
     if is_agent_note(comment) && !comment.anchor.detached {
-        return agent_note(ui, look, comment, agent, review).into_any_element();
+        return agent_note(ui, look, comment, agent, review, todo_ctx).into_any_element();
     }
     if is_agent_github_draft(comment) {
-        return agent_github_draft(ui, look, comment).into_any_element();
+        return agent_github_draft(ui, look, comment, todo_ctx).into_any_element();
     }
-    plain_card(ui, look, comment, agent, reattaching, start_reattach).into_any_element()
+    plain_card(ui, look, comment, agent, reattaching, start_reattach, todo_ctx).into_any_element()
+}
+
+fn todo_hook_links(ui: &Rc<Ui>, look: Look, comment: &Comment, todo_ctx: &TodoHookContext) -> Option<Div> {
+    let add_step = add_to_steps_action(comment, todo_ctx);
+    let spin_off = spin_off_todo_action(comment, todo_ctx);
+    if add_step.is_none() && spin_off.is_none() {
+        return None;
+    }
+    let id = &comment.id;
+    Some(
+        row()
+            .gap(px(12.))
+            .mt(px(4.))
+            .text_size(px(11.))
+            .children(add_step.map(|action| {
+                note_action(
+                    ui,
+                    format!("doc-add-step-{id}"),
+                    "Add to steps".to_owned(),
+                    action,
+                    look.secondary,
+                    false,
+                    false,
+                )
+            }))
+            .children(spin_off.map(|action| {
+                note_action(
+                    ui,
+                    format!("doc-spin-off-todo-{id}"),
+                    "Spin off To-do".to_owned(),
+                    action,
+                    look.secondary,
+                    false,
+                    false,
+                )
+            })),
+    )
 }
 
 /// Whether the card is an agent's note, which has its own card.
@@ -307,7 +444,12 @@ fn is_agent_github_draft(comment: &Comment) -> bool {
 /// An agent's draft for GitHub, as the one agent card (D853, Fable): "claude
 /// [Draft] line 140", the text, then Edit and a faded Drop. The footer's
 /// Submit review… is where it goes, so the card names no destination.
-fn agent_github_draft(ui: &Rc<Ui>, look: Look, comment: &Comment) -> impl IntoElement {
+fn agent_github_draft(
+    ui: &Rc<Ui>,
+    look: Look,
+    comment: &Comment,
+    todo_ctx: &TodoHookContext,
+) -> impl IntoElement {
     let id = comment.id.clone();
     let session = comment.session.clone();
     let dark = look.panel < 0x80_80_80;
@@ -371,6 +513,7 @@ fn agent_github_draft(ui: &Rc<Ui>, look: Look, comment: &Comment) -> impl IntoEl
                     true,
                 )),
         )
+        .children(todo_hook_links(ui, look, comment, todo_ctx))
 }
 
 /// The orange of a note (UXSIMPLE 3-4).
@@ -404,7 +547,14 @@ fn note_action(
 
 /// What an agent wrote on a line, as one card (UXSIMPLE 3-4): "copilot
 /// [Note] line 88", the text, then Send to claude, Edit and Drop.
-fn agent_note(ui: &Rc<Ui>, look: Look, comment: &Comment, agent: &str, review: bool) -> impl IntoElement {
+fn agent_note(
+    ui: &Rc<Ui>,
+    look: Look,
+    comment: &Comment,
+    agent: &str,
+    review: bool,
+    todo_ctx: &TodoHookContext,
+) -> impl IntoElement {
     let id = comment.id.clone();
     let session = comment.session.clone();
     let dark = look.panel < 0x80_80_80;
@@ -484,6 +634,7 @@ fn agent_note(ui: &Rc<Ui>, look: Look, comment: &Comment, agent: &str, review: b
                     true,
                 )),
         )
+        .children(todo_hook_links(ui, look, comment, todo_ctx))
 }
 
 fn plain_card(
@@ -493,6 +644,7 @@ fn plain_card(
     agent: &str,
     reattaching: bool,
     start_reattach: &StartReattach,
+    todo_ctx: &TodoHookContext,
 ) -> impl IntoElement {
     let lines = lines_label(&comment.anchor);
     let id = comment.id.clone();
@@ -598,6 +750,7 @@ fn plain_card(
                     )
                 }))
         }))
+        .children(todo_hook_links(ui, look, comment, todo_ctx))
         .children(comment.anchor.detached.then(|| {
             let start = start_reattach.clone();
             let again = id.clone();
@@ -815,5 +968,55 @@ mod tests {
         let mixed = [comment(Status::Addressed), comment(Status::Draft)];
         assert_eq!(all_done(&mixed), None);
         assert_eq!(all_done(&[]), None);
+    }
+
+    #[test]
+    fn add_to_steps_and_spin_off_attach_from_key_and_source_anchor() {
+        let mut c = comment(Status::Draft);
+        c.anchor.first = 12;
+        c.anchor.last = 15;
+        c.text = "Validate token expiry".into();
+        let ctx = TodoHookContext {
+            item_key: Some("PAY-7".into()),
+            channel: Some("payments".into()),
+        };
+
+        let expected_anchor = SourceAnchor {
+            repo: "api".into(),
+            path: "src/a.rs".into(),
+            line: 12,
+            end_line: Some(15),
+            comment_id: Some("s/c-1".into()),
+        };
+        assert_eq!(
+            add_to_steps_action(&c, &ctx),
+            Some(AppAction::Todo(TodoAction::AddStepFromComment {
+                key: "PAY-7".into(),
+                text: "Validate token expiry".into(),
+                anchor: expected_anchor.clone(),
+            }))
+        );
+        assert_eq!(
+            spin_off_todo_action(&c, &ctx),
+            Some(AppAction::Todo(TodoAction::SpinOffFromComment {
+                from_key: Some("PAY-7".into()),
+                title: "Validate token expiry".into(),
+                anchor: expected_anchor,
+                channel: Some("payments".into()),
+            }))
+        );
+
+        // Without a linked To-do, Add to steps is omitted but Spin off To-do still works.
+        let empty = TodoHookContext::default();
+        assert_eq!(add_to_steps_action(&c, &empty), None);
+        assert!(matches!(
+            spin_off_todo_action(&c, &empty),
+            Some(AppAction::Todo(TodoAction::SpinOffFromComment { from_key: None, .. }))
+        ));
+
+        // Detached comments do not offer To-do hooks.
+        c.anchor.detached = true;
+        assert_eq!(add_to_steps_action(&c, &ctx), None);
+        assert_eq!(spin_off_todo_action(&c, &ctx), None);
     }
 }

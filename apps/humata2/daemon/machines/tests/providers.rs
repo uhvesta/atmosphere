@@ -70,7 +70,6 @@ env = ["PATH", "lower", "TOKEN", "TOKEN"]
 
     let kinds: Vec<&ProblemKind> = found.iter().map(|(_, kind)| kind).collect();
     for wanted in [
-        ProblemKind::MissingCreate,
         ProblemKind::MissingLink,
         ProblemKind::CmdOutsideConnect,
         ProblemKind::ReservedParam,
@@ -85,16 +84,21 @@ env = ["PATH", "lower", "TOKEN", "TOKEN"]
 }
 
 #[test]
-fn a_link_must_be_connect_with_cmd_or_identity_but_not_both() {
+fn connect_requires_cmd_and_can_be_paired_with_identity() {
     let without_cmd = problems("[providers.a]\ncreate = \"true\"\nconnect = \"ssh {name}\"\n");
-    let both = problems(
-        "[providers.a]\ncreate = \"true\"\nconnect = \"ssh {name} {cmd}\"\nidentity = \"cat id.json\"\n",
-    );
-
     assert!(without_cmd
         .iter()
         .any(|(field, kind)| field == "connect" && *kind == ProblemKind::ConnectWithoutCmd));
-    assert!(both.iter().any(|(_, kind)| *kind == ProblemKind::BothLinks));
+
+    let both = Provider::parse(
+        "[providers.a]\ncreate = \"true\"\nconnect = \"ssh {name} {cmd}\"\nidentity = \"cat id.json\"\n",
+    )
+    .unwrap();
+    assert_eq!(both.len(), 1);
+    assert_eq!(both[0].reach(), Reach::Connect);
+    assert!(both[0].has_connect());
+    assert!(both[0].has_identity());
+    assert!(both[0].has(Action::Identity));
 }
 
 #[test]

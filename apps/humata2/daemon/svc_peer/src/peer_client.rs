@@ -26,9 +26,9 @@ use humata2_grpc::humata::v1 as pb;
 use hyper_util::rt::TokioIo;
 use pb::peer_service_client::PeerServiceClient;
 use pb::peer_unproven::Reason;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::process::{ChildStdin, ChildStdout};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
@@ -84,9 +84,100 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Duplex for T {}
 
 pub type Pipe = Box<dyn Duplex>;
 
+/// Maximum bytes of child stderr kept for failure classification.
+const STDERR_LIMIT: usize = 16 * 1024;
+/// Grace period to wait for stderr EOF and exit status when classifying a failed dial.
+const DIAG_WAIT: Duration = Duration::from_millis(500);
+
 /// Opens a fresh byte stream to a machine's `serve --stdio`.
 pub trait Dial: Send + Sync {
     fn dial(&self) -> Pin<Box<dyn Future<Output = Result<Pipe, LinkError>> + Send + '_>>;
+
+    /// Inspects captured transport diagnostics (such as bounded SSH stderr or
+    /// process exit status) to turn a generic connect/call failure into a
+    /// specific error such as [`LinkError::HostKeyChanged`] or
+    /// [`LinkError::MissingBinary`].
+    fn classify_failure(
+        &self,
+        error: LinkError,
+    ) -> Pin<Box<dyn Future<Output = LinkError> + Send + '_>> {
+        Box::pin(async move { error })
+    }
+
+    /// Called after a transient connect failure to refresh dynamic reach
+    /// metadata or wake a sleeping machine. Returns `Ok(true)` when the link
+    /// changed or the machine was woken so the supervisor can redial promptly.
+    fn refresh_on_failure(&self) -> Pin<Box<dyn Future<Output = Result<bool, LinkError>> + Send + '_>> {
+        Box::pin(async move { Ok(false) })
+    }
+
+    /// Called when the machine reports `Reason::NotEnrolled` (remote key
+    /// wiped) or exits 127 (missing remote binary) to repair binaries and
+    /// restore a missing enrollment key without overwriting a conflicting key.
+    /// Returns `Ok(true)` when repair succeeded and the supervisor should
+    /// redial.
+    fn repair(&self) -> Pin<Box<dyn Future<Output = Result<bool, LinkError>> + Send + '_>> {
+        Box::pin(async move { Ok(false) })
+    }
+}
+
+/// Bounded stderr and exit status captured from one spawned link command.
+struct ChildDiagnostics {
+    stderr: Mutex<Vec<u8>>,
+    exit_code: Mutex<Option<i32>>,
+    done: watch::Sender<bool>,
+}
+
+impl ChildDiagnostics {
+    fn new() -> (Arc<Self>, watch::Receiver<bool>) {
+        let (done, rx) = watch::channel(false);
+        (
+            Arc::new(Self {
+                stderr: Mutex::new(Vec::new()),
+                exit_code: Mutex::new(None),
+                done,
+            }),
+            rx,
+        )
+    }
+
+    fn stderr_text(&self) -> String {
+        let guard = self.stderr.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&guard).into_owned()
+    }
+
+    fn exit_code(&self) -> Option<i32> {
+        *self.exit_code.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether captured SSH stderr reports a host-key mismatch.
+fn is_host_key_changed(stderr: &str) -> bool {
+    let upper = stderr.to_ascii_uppercase();
+    upper.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+        || upper.contains("HOST KEY VERIFICATION FAILED")
+}
+
+/// Refines a transport failure using captured stderr and exit status.
+fn classify_ssh_failure(
+    machine: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+    fallback: LinkError,
+) -> LinkError {
+    if is_host_key_changed(stderr) {
+        return LinkError::HostKeyChanged {
+            machine: machine.to_owned(),
+            detail: stderr.trim().to_owned(),
+        };
+    }
+    if exit_code == Some(127) {
+        return LinkError::MissingBinary {
+            machine: machine.to_owned(),
+            detail: stderr.trim().to_owned(),
+        };
+    }
+    fallback
 }
 
 /// Dials by running the machine's link command (`Link::peer`): SSH or the
@@ -94,11 +185,16 @@ pub trait Dial: Send + Sync {
 pub struct CommandDial {
     machine: String,
     invocation: humata2_machines::Invocation,
+    last_diag: Mutex<Option<(Arc<ChildDiagnostics>, watch::Receiver<bool>)>>,
 }
 
 impl CommandDial {
     pub fn new(machine: String, invocation: humata2_machines::Invocation) -> Self {
-        Self { machine, invocation }
+        Self {
+            machine,
+            invocation,
+            last_diag: Mutex::new(None),
+        }
     }
 
     fn spawn(&self) -> Result<Pipe, LinkError> {
@@ -112,7 +208,7 @@ impl CommandDial {
             .args(&self.invocation.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         for (name, value) in &self.invocation.env {
             match value {
@@ -140,8 +236,53 @@ impl CommandDial {
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
             return Err(spawn_failed(std::io::Error::other("the link command has no stdin or stdout")));
         };
+        let stderr = child.stderr.take();
+        let (diag, diag_rx) = ChildDiagnostics::new();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+
+        let diag_task = diag.clone();
+        tokio::spawn(async move {
+            let drain_stderr = async {
+                if let Some(mut err) = stderr {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match err.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                let mut stored =
+                                    diag_task.stderr.lock().unwrap_or_else(PoisonError::into_inner);
+                                if stored.len() < STDERR_LIMIT {
+                                    let room = STDERR_LIMIT - stored.len();
+                                    stored.extend_from_slice(&buf[..n.min(room)]);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            let wait_child = async {
+                tokio::select! {
+                    status = child.wait() => {
+                        if let Ok(status) = status {
+                            *diag_task.exit_code.lock().unwrap_or_else(PoisonError::into_inner) = status.code();
+                        }
+                    }
+                    _ = kill_rx => {
+                        let _ = child.kill().await;
+                        if let Ok(status) = child.wait().await {
+                            *diag_task.exit_code.lock().unwrap_or_else(PoisonError::into_inner) = status.code();
+                        }
+                    }
+                }
+            };
+            tokio::join!(drain_stderr, wait_child);
+            let _ = diag_task.done.send(true);
+        });
+
+        *self.last_diag.lock().unwrap_or_else(PoisonError::into_inner) = Some((diag, diag_rx));
+
         Ok(Box::new(ChildPipe {
-            _child: child,
+            _kill: kill_tx,
             io: tokio::io::join(stdout, stdin),
         }))
     }
@@ -151,11 +292,43 @@ impl Dial for CommandDial {
     fn dial(&self) -> Pin<Box<dyn Future<Output = Result<Pipe, LinkError>> + Send + '_>> {
         Box::pin(async move { self.spawn() })
     }
+
+    fn classify_failure(
+        &self,
+        error: LinkError,
+    ) -> Pin<Box<dyn Future<Output = LinkError> + Send + '_>> {
+        Box::pin(async move {
+            let transport_failure = matches!(
+                error,
+                LinkError::Connect { .. }
+                    | LinkError::Call { .. }
+                    | LinkError::Ended { .. }
+                    | LinkError::Lost { .. }
+            );
+            if !transport_failure {
+                return error;
+            }
+            let diag = self
+                .last_diag
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let Some((diag, mut rx)) = diag else {
+                return error;
+            };
+            if !*rx.borrow() {
+                let _ = tokio::time::timeout(DIAG_WAIT, rx.wait_for(|done| *done)).await;
+            }
+            let stderr = diag.stderr_text();
+            let exit_code = diag.exit_code();
+            classify_ssh_failure(&self.machine, &stderr, exit_code, error)
+        })
+    }
 }
 
 /// A link command's stdout and stdin; dropping it kills the command.
 struct ChildPipe {
-    _child: Child,
+    _kill: oneshot::Sender<()>,
     io: tokio::io::Join<ChildStdout, ChildStdin>,
 }
 
@@ -682,9 +855,13 @@ pub async fn supervise(
 ) -> LinkError {
     let (first, most) = retry_waits();
     let mut wait = first;
+    let mut repaired_recently = false;
+    let mut refreshed_fast = false;
     loop {
         let error = match connect(&*dial, &key_file, &machine, host.as_ref()).await {
             Ok(up) => {
+                repaired_recently = false;
+                refreshed_fast = false;
                 if let Some(upgrade) = host.as_ref().and_then(|host| host.upgrade.as_ref()) {
                     upgrade.linked(&machine, up.build()).await;
                 }
@@ -696,9 +873,72 @@ pub async fn supervise(
                 wait = first;
                 up.closed(&sink, host.as_ref()).await
             }
-            Err(error) => error,
+            Err(error) => dial.classify_failure(error).await,
         };
+
+        // Automatically repair wiped remote enrollment keys (NotEnrolled) or
+        // missing remote binaries (exit 127). NEVER repair on HostProofWrong,
+        // MachineProofWrong, or KeyUnsafe, which stay permanent refusals.
+        let needs_repair = matches!(
+            error,
+            LinkError::MachineRefused {
+                reason: Reason::NotEnrolled,
+                ..
+            } | LinkError::MissingBinary { .. }
+        );
+        if needs_repair && !repaired_recently {
+            match dial.repair().await {
+                Ok(true) => {
+                    repaired_recently = true;
+                    wait = first;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(repair_error) => {
+                    let permanent = repair_error.permanent();
+                    report(LinkEvent::Down {
+                        error: &repair_error,
+                        retry_in: (!permanent).then_some(wait),
+                    });
+                    if permanent {
+                        return repair_error;
+                    }
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(most);
+                    continue;
+                }
+            }
+        }
+
         let permanent = error.permanent();
+        if !permanent {
+            match dial.refresh_on_failure().await {
+                Ok(true) if !refreshed_fast => {
+                    refreshed_fast = true;
+                    wait = first;
+                    report(LinkEvent::Down {
+                        error: &error,
+                        retry_in: Some(Duration::ZERO),
+                    });
+                    continue;
+                }
+                Ok(_) => {}
+                Err(refresh_error) => {
+                    let refresh_permanent = refresh_error.permanent();
+                    report(LinkEvent::Down {
+                        error: &refresh_error,
+                        retry_in: (!refresh_permanent).then_some(wait),
+                    });
+                    if refresh_permanent {
+                        return refresh_error;
+                    }
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(most);
+                    continue;
+                }
+            }
+        }
+
         report(LinkEvent::Down {
             error: &error,
             retry_in: (!permanent).then_some(wait),
@@ -796,6 +1036,12 @@ pub enum LinkError {
     #[error("{machine} ended the peer link")]
     Ended { machine: String },
 
+    #[error("{machine}'s SSH host key changed and no longer matches the pinned key")]
+    HostKeyChanged { machine: String, detail: String },
+
+    #[error("{machine} does not have humatad2 installed (command exited 127)")]
+    MissingBinary { machine: String, detail: String },
+
     #[error("the peer link to {machine} was lost")]
     Lost {
         machine: String,
@@ -810,6 +1056,7 @@ impl LinkError {
     pub fn permanent(&self) -> bool {
         match self {
             LinkError::HostKey { .. }
+            | LinkError::HostKeyChanged { .. }
             | LinkError::HostVariable { .. }
             | LinkError::UnreadableHostVariable { .. }
             | LinkError::MachineProofWrong { .. }
@@ -820,6 +1067,7 @@ impl LinkError {
             | LinkError::Connect { .. }
             | LinkError::Call { .. }
             | LinkError::Ended { .. }
+            | LinkError::MissingBinary { .. }
             | LinkError::Lost { .. } => false,
         }
     }
@@ -828,6 +1076,12 @@ impl LinkError {
     pub fn fix(&self) -> &'static str {
         match self {
             LinkError::HostKey { source, .. } => source.fix(),
+            LinkError::HostKeyChanged { .. } => {
+                "if the machine wasn't rebuilt, someone may be intercepting the connection: check the host key on the machine itself before trusting a new one"
+            }
+            LinkError::MissingBinary { .. } => {
+                "humatad2 is missing on the machine; Humata will reinstall it or use Reconnect now"
+            }
             LinkError::Spawn { .. } => "check that ssh is installed and on PATH for humatad2; Humata dials again on its own",
             LinkError::HostVariable { .. } => {
                 "set the variable in Settings › This Mac › Variables, then use Reconnect now"
@@ -1132,6 +1386,222 @@ mod tests {
         let again = tokio::time::timeout(Duration::from_secs(60), events.recv()).await;
         assert_eq!(again, Ok(Some(Seen::Up)));
         assert_eq!(machine.dials(), 2);
+    }
+
+    #[tokio::test]
+    async fn command_dial_surfaces_host_key_changed_from_stderr_as_permanent() {
+        let dir = tempfile::tempdir().unwrap();
+        let invocation = humata2_machines::Invocation {
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "echo 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!' >&2; echo 'Host key verification failed.' >&2; exit 255".to_owned(),
+            ],
+            env: Vec::new(),
+            stdin: None,
+            timeout: None,
+            purpose: humata2_machines::Purpose::Probe,
+        };
+        let (report, mut events) = recorder();
+        let ended = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise(
+                Box::new(CommandDial::new(MACHINE.to_owned(), invocation)),
+                host_key(dir.path(), 0xab),
+                MACHINE.into(),
+                report,
+                Box::new(|_| {}),
+                None,
+            ),
+        )
+        .await
+        .expect("HostKeyChanged ends the supervisor without waiting on backoff");
+        assert!(matches!(ended, LinkError::HostKeyChanged { .. }), "{ended:?}");
+        assert!(ended.permanent());
+        assert_eq!(events.recv().await, Some(Seen::Down { permanent: true }));
+    }
+
+    #[tokio::test]
+    async fn command_dial_classifies_exit_127_as_missing_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let invocation = humata2_machines::Invocation {
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "echo 'sh: humatad2: not found' >&2; exit 127".to_owned(),
+            ],
+            env: Vec::new(),
+            stdin: None,
+            timeout: None,
+            purpose: humata2_machines::Purpose::Probe,
+        };
+        let dial = CommandDial::new(MACHINE.to_owned(), invocation);
+        let key = EnrollmentKey::read(&host_key(dir.path(), 0xab)).unwrap();
+        let pipe = dial.dial().await.unwrap();
+        let err = open(pipe, &key, MACHINE).await.err().unwrap();
+        let classified = dial.classify_failure(err).await;
+        assert!(matches!(classified, LinkError::MissingBinary { .. }), "{classified:?}");
+        assert!(!classified.permanent());
+    }
+
+    struct RepairableDial {
+        machine: Arc<Machine>,
+        key_byte: u8,
+        repairs: Arc<AtomicUsize>,
+        refreshes: Arc<AtomicUsize>,
+        fail_first_with_missing_binary: AtomicBool,
+        fail_first_with_transient: AtomicBool,
+    }
+
+    impl Dial for RepairableDial {
+        fn dial(&self) -> Pin<Box<dyn Future<Output = Result<Pipe, LinkError>> + Send + '_>> {
+            Box::pin(async move {
+                if self.fail_first_with_missing_binary.swap(false, Ordering::SeqCst) {
+                    return Err(LinkError::MissingBinary {
+                        machine: MACHINE.to_owned(),
+                        detail: "exit 127".to_owned(),
+                    });
+                }
+                if self.fail_first_with_transient.swap(false, Ordering::SeqCst) {
+                    return Err(LinkError::Ended {
+                        machine: MACHINE.to_owned(),
+                    });
+                }
+                Ok(self.machine.pipe())
+            })
+        }
+
+        fn refresh_on_failure(&self) -> Pin<Box<dyn Future<Output = Result<bool, LinkError>> + Send + '_>> {
+            Box::pin(async move {
+                self.refreshes.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })
+        }
+
+        fn repair(&self) -> Pin<Box<dyn Future<Output = Result<bool, LinkError>> + Send + '_>> {
+            Box::pin(async move {
+                self.repairs.fetch_add(1, Ordering::SeqCst);
+                write_key(&self.machine.state.join(link_proof::KEY_FILE), self.key_byte);
+                Ok(true)
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervise_repairs_not_enrolled_and_comes_up() {
+        let dir = tempfile::tempdir().unwrap();
+        // Machine starts with no enrollment key (wiped).
+        let machine = Machine::new(dir.path(), None);
+        let repairs = Arc::new(AtomicUsize::new(0));
+        let dial = RepairableDial {
+            machine: machine.clone(),
+            key_byte: 0xab,
+            repairs: repairs.clone(),
+            refreshes: Arc::new(AtomicUsize::new(0)),
+            fail_first_with_missing_binary: AtomicBool::new(false),
+            fail_first_with_transient: AtomicBool::new(false),
+        };
+        let (report, mut events) = recorder();
+        let task = tokio::spawn(supervise(
+            Box::new(dial),
+            host_key(dir.path(), 0xab),
+            MACHINE.into(),
+            report,
+            Box::new(|_| {}),
+            None,
+        ));
+        assert_eq!(events.recv().await, Some(Seen::Up));
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervise_repairs_missing_binary_and_comes_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = Machine::new(dir.path(), Some(0xab));
+        let repairs = Arc::new(AtomicUsize::new(0));
+        let dial = RepairableDial {
+            machine: machine.clone(),
+            key_byte: 0xab,
+            repairs: repairs.clone(),
+            refreshes: Arc::new(AtomicUsize::new(0)),
+            fail_first_with_missing_binary: AtomicBool::new(true),
+            fail_first_with_transient: AtomicBool::new(false),
+        };
+        let (report, mut events) = recorder();
+        let task = tokio::spawn(supervise(
+            Box::new(dial),
+            host_key(dir.path(), 0xab),
+            MACHINE.into(),
+            report,
+            Box::new(|_| {}),
+            None,
+        ));
+        assert_eq!(events.recv().await, Some(Seen::Up));
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervise_never_repairs_on_wrong_machine_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = Machine::new(dir.path(), Some(0xab));
+        let repairs = Arc::new(AtomicUsize::new(0));
+        let dial = RepairableDial {
+            machine: machine.clone(),
+            key_byte: 0xcd,
+            repairs: repairs.clone(),
+            refreshes: Arc::new(AtomicUsize::new(0)),
+            fail_first_with_missing_binary: AtomicBool::new(false),
+            fail_first_with_transient: AtomicBool::new(false),
+        };
+        let (report, mut events) = recorder();
+        let ended = tokio::time::timeout(
+            HOUR,
+            supervise(
+                Box::new(dial),
+                host_key(dir.path(), 0xcd),
+                MACHINE.into(),
+                report,
+                Box::new(|_| {}),
+                None,
+            ),
+        )
+        .await
+        .expect("MachineProofWrong must stay a permanent refusal");
+        assert!(matches!(ended, LinkError::MachineProofWrong { .. }), "{ended:?}");
+        assert_eq!(repairs.load(Ordering::SeqCst), 0, "must never repair on conflicting proof");
+        assert_eq!(events.recv().await, Some(Seen::Down { permanent: true }));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervise_refreshes_on_transient_failure_and_redials_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = Machine::new(dir.path(), Some(0xab));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let dial = RepairableDial {
+            machine: machine.clone(),
+            key_byte: 0xab,
+            repairs: Arc::new(AtomicUsize::new(0)),
+            refreshes: refreshes.clone(),
+            fail_first_with_missing_binary: AtomicBool::new(false),
+            fail_first_with_transient: AtomicBool::new(true),
+        };
+        let (report, mut events) = recorder();
+        let start = Instant::now();
+        let task = tokio::spawn(supervise(
+            Box::new(dial),
+            host_key(dir.path(), 0xab),
+            MACHINE.into(),
+            report,
+            Box::new(|_| {}),
+            None,
+        ));
+        assert_eq!(events.recv().await, Some(Seen::Down { permanent: false }));
+        assert_eq!(events.recv().await, Some(Seen::Up));
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert!(start.elapsed() < RETRY_FIRST, "should redial promptly after refresh");
+        task.abort();
     }
 
     /// `machine` as the next machine event on `live` shows it, waiting at

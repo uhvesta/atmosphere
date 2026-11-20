@@ -411,11 +411,25 @@ fn run() -> Result<(), StartError> {
 fn open_main(
     cx: &mut App,
     handle: &tokio::runtime::Handle,
-    clients: Clients,
+    mut clients: Clients,
     recorder: Recorder,
     old: Option<OldLocalDaemon>,
 ) {
+    let (notifier, notifier_bridge) = live::notifier::LiveNotifier::new();
+    clients.notifier = Arc::new(notifier);
+    let mut notification_clicks = notifier_bridge.attach(cx);
     let ui = Ui::new(handle, clients, recorder);
+    {
+        let ui = ui.clone();
+        cx.spawn(async move |cx| {
+            while let Some(target) = notification_clicks.recv().await {
+                cx.update(|cx| ui.send(AppAction::NotificationClicked(target), cx));
+            }
+        })
+        .detach();
+    }
+    #[cfg(target_os = "macos")]
+    humata2_ui::chrome::set_native_traffic_lights(true);
     let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
     let options = main_window_options(bounds);
     let window = match humata2_ui::open(cx, &ui, options) {
@@ -449,7 +463,9 @@ fn main_window_options(bounds: Bounds<gpui_kit::Pixels>) -> WindowOptions {
         titlebar: Some(gpui_kit::TitlebarOptions {
             title: None,
             appears_transparent: true,
-            traffic_light_position: None,
+            // Align native macOS traffic lights with the 52 pt header's left slot
+            // (20 pt left padding, vertically centered 12 pt buttons).
+            traffic_light_position: Some(gpui_kit::point(px(20.), px(20.))),
         }),
         ..WindowOptions::default()
     }
@@ -493,9 +509,11 @@ mod window_tests {
         let options = main_window_options(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(800.)) });
         assert!(options.is_resizable && options.is_minimizable);
         let titlebar = options.titlebar.expect("titlebar options, so macOS gets the Resizable style");
-        // Today's look: the content runs under a transparent titlebar, no title shown.
+        // Today's look: the content runs under a transparent titlebar, no title shown,
+        // with native traffic lights aligned into the 52 pt sidebar header slot.
         assert!(titlebar.appears_transparent);
         assert!(titlebar.title.is_none());
+        assert_eq!(titlebar.traffic_light_position, Some(point(px(20.), px(20.))));
     }
 }
 

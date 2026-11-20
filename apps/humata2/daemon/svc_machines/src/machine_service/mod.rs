@@ -17,7 +17,7 @@
 //! Each change to a machine as ListMachines shows it goes on the feed
 //! (EventService), after the change is written.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -109,6 +109,9 @@ pub struct Work {
     shown: Mutex<BTreeMap<String, pb::Machine>>,
     /// Each machine's peer link supervisor, while one runs.
     links: Mutex<HashMap<String, AbortHandle>>,
+    /// Machines whose VM the user intentionally stopped via ProviderAction::Stop:
+    /// their peer supervisor stays paused so it never auto-wakes or spams them.
+    user_stopped_vms: Mutex<HashSet<String>>,
     clock: Clock,
     /// Removal plans handed out: token to machine, and when. Delete on a
     /// provider's machine takes one too.
@@ -198,6 +201,7 @@ impl Work {
 
     /// `machine` was removed: its watchers end and its reports go.
     fn forget_peer(&self, machine: &str) {
+        self.clear_user_stopped_vm(machine);
         self.forget_link(machine);
         self.reports.forget(machine);
     }
@@ -270,6 +274,7 @@ impl Work {
             );
         }
         // What it last reported is in the archives now (D783).
+        self.clear_user_stopped_vm(machine);
         self.reports.forget(machine);
     }
 
@@ -371,17 +376,33 @@ impl Work {
         ))
     }
 
+    /// Resolves `entry`'s configured provider (including the built-in `lima`
+    /// fallback when not overridden in `providers.toml`).
+    fn provider_of(&self, entry: &HostEntry) -> Option<Provider> {
+        let record = entry.provider.as_ref()?;
+        let providers = read_providers(self.machines.hosts_file())
+            .map(|(_, providers)| providers)
+            .unwrap_or_default();
+        if let Some(provider) = providers.into_iter().find(|provider| provider.id() == record.id) {
+            return Some(provider);
+        }
+        if record.id == "lima" {
+            return Provider::lima().ok();
+        }
+        None
+    }
+
+    /// Whether `entry` is a provider machine whose provider declares `Action::Delete`.
+    pub fn has_provider_delete(&self, entry: &HostEntry) -> bool {
+        self.provider_of(entry)
+            .is_some_and(|provider| provider.has(Action::Delete))
+    }
+
     /// The provider commands `entry`'s provider defines, as the machine
     /// page lists them (MP-2); none for an SSH machine or a provider no
     /// longer configured.
     fn defined_actions(&self, entry: &HostEntry) -> Vec<i32> {
-        let Some(record) = &entry.provider else {
-            return Vec::new();
-        };
-        let Ok((_, providers)) = read_providers(self.machines.hosts_file()) else {
-            return Vec::new();
-        };
-        let Some(provider) = providers.iter().find(|provider| provider.id() == record.id) else {
+        let Some(provider) = self.provider_of(entry) else {
             return Vec::new();
         };
         [
@@ -411,6 +432,7 @@ impl Work {
             feed,
             shown: Mutex::new(BTreeMap::new()),
             links: Mutex::new(HashMap::new()),
+            user_stopped_vms: Mutex::new(HashSet::new()),
             clock,
             plans: Mutex::new(HashMap::new()),
             skills: OnceLock::new(),
@@ -553,9 +575,30 @@ impl Work {
         }
     }
 
+    /// Marks `machine` as intentionally stopped by the user (`ProviderAction::Stop`),
+    /// pausing its peer supervisor so it never auto-wakes or spams the stopped VM.
+    pub fn mark_user_stopped_vm(&self, machine: &str) {
+        lock(&self.user_stopped_vms).insert(machine.to_owned());
+        self.link_down(machine);
+        self.saw(machine, pb::Reachability::Stopped);
+    }
+
+    /// Clears the user-stopped VM mark so the machine's peer supervisor may run again.
+    pub fn clear_user_stopped_vm(&self, machine: &str) {
+        lock(&self.user_stopped_vms).remove(machine);
+    }
+
+    /// Whether `machine` was intentionally stopped by the user.
+    pub fn is_user_stopped_vm(&self, machine: &str) -> bool {
+        lock(&self.user_stopped_vms).contains(machine)
+    }
+
     /// Keeps `machine`'s link up through its link command, if the host
     /// holds its key (written when the machine was added or reconnected).
     pub fn link_up(self: &Arc<Self>, machine: &str, _runtime: &Handle) {
+        if self.is_user_stopped_vm(machine) {
+            return;
+        }
         if !self.machines.peer_key(machine).exists() {
             return;
         }
@@ -1170,6 +1213,7 @@ impl MachineSvc {
             });
             match &result {
                 Ok(entry) => {
+                    work.clear_user_stopped_vm(&entry.name);
                     work.saw(&entry.name, pb::Reachability::Online);
                     work.link_up(&entry.name, &Handle::current());
                 }
@@ -1823,7 +1867,8 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let who = caller(&request)?;
         let name = machine_of(request.into_inner().id)?;
         self.require(&who, &name, MachineActionKind::Remove)?;
-        self.work
+        let entry = self
+            .work
             .machines
             .get(&name)
             .map_err(|error| status_of(&error))?;
@@ -1835,7 +1880,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             machine: Some(machine_id(&name)),
             sessions: Vec::new(),
             channels: Vec::new(),
-            runs_provider_delete: false,
+            runs_provider_delete: self.work.has_provider_delete(&entry),
             token: Some(pb::PlanToken { value: token }),
         }))
     }
@@ -2433,5 +2478,177 @@ fn login_prompt_kind(kind: humata2_machines::PromptKind) -> pb::LoginPromptKind 
         PromptKind::Code => pb::LoginPromptKind::Code,
         PromptKind::Confirm => pb::LoginPromptKind::Confirm,
         PromptKind::Device => pb::LoginPromptKind::Device,
+    }
+}
+
+#[cfg(test)]
+mod coordination_tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use humata2_machines::{Bundle, MachinesConfig, Platform, ProviderMachine, RetryPolicy};
+    use tokio::sync::{broadcast, watch};
+
+    use super::*;
+    use crate::ports::LinkState;
+
+    struct NoopFeed;
+    impl MachineFeedPort for NoopFeed {
+        fn publish(&self, _: pb::Change, _: pb::event::Payload, _: Option<pb::Actor>) {}
+        fn subscribe(&self) -> broadcast::Receiver<pb::Event> {
+            let (_tx, rx) = broadcast::channel(1);
+            rx
+        }
+    }
+
+    struct NoopLinks;
+    impl MachineLinksPort for NoopLinks {
+        fn channel(&self, machine: &str) -> Result<tonic::transport::Channel, RelayError> {
+            Err(RelayError {
+                machine: machine.to_owned(),
+            })
+        }
+        fn up(&self, _: &str, _: tonic::transport::Channel) {}
+        fn down(&self, _: &str) {}
+        fn forget(&self, _: &str) {}
+        fn watch(&self, _: &str) -> watch::Receiver<LinkState> {
+            let (_tx, rx) = watch::channel(LinkState::Down);
+            rx
+        }
+        fn watch_all(&self) -> watch::Receiver<HashMap<String, LinkState>> {
+            let (_tx, rx) = watch::channel(HashMap::new());
+            rx
+        }
+    }
+
+    struct NoopReports;
+    impl MachinePeerReportsPort for NoopReports {
+        fn link_up(&self, _: &str) {}
+        fn link_down(&self, _: &str, _: SystemTime) {}
+        fn forget(&self, _: &str) {}
+        fn accept(&self, _: &str, _: pb::MachineToHost) {}
+    }
+
+    struct CountingDial(Arc<AtomicUsize>);
+    impl MachinePeerDialPort for CountingDial {
+        fn spawn_supervisor(
+            &self,
+            _entry: HostEntry,
+            _on_event: Arc<dyn Fn(LinkEvent) + Send + Sync>,
+        ) -> AbortHandle {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async { std::future::pending::<()>().await }).abort_handle()
+        }
+    }
+
+    fn make_work(dir: &std::path::Path) -> Arc<Work> {
+        let hosts = dir.join("hosts.json");
+        std::fs::write(
+            &hosts,
+            r#"{"version":1,"machines":[{"name":"vm1","ssh_host":"via custom-del","root":"~/Humata","state":"ready","provider":{"id":"custom-del","params":{}}}]}"#,
+        )
+        .unwrap();
+        let machines = Machines::open(MachinesConfig {
+            hosts_file: hosts,
+            known_hosts: dir.join("known_hosts"),
+            ssh_config: dir.join("ssh_config"),
+            peer_keys: dir.join("peer-keys"),
+            retry: RetryPolicy::default(),
+        });
+        let builds = Box::new(Bundle::beside(dir, Platform::host().unwrap()));
+        let clock: Clock = Arc::new(SystemTime::now);
+        Arc::new(Work::new(
+            machines,
+            builds,
+            Arc::new(NoopFeed),
+            Arc::new(NoopLinks),
+            Arc::new(NoopReports),
+            clock,
+        ))
+    }
+
+    #[test]
+    fn has_provider_delete_reflects_provider_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = make_work(dir.path());
+        std::fs::write(
+            providers_path(work.machines.hosts_file()),
+            r#"
+[providers.custom-del]
+label = "Custom With Delete"
+connect = "echo {cmd}"
+delete = "echo delete"
+
+[providers.custom-nodel]
+label = "Custom Without Delete"
+connect = "echo {cmd}"
+"#,
+        )
+        .unwrap();
+
+        let with_delete = HostEntry {
+            name: "vm1".to_owned(),
+            ssh_host: "via custom-del".to_owned(),
+            root: "~/Humata".to_owned(),
+            state: EntryState::Ready,
+            os: String::new(),
+            arch: String::new(),
+            undo_pending: false,
+            provider: Some(ProviderMachine {
+                id: "custom-del".to_owned(),
+                params: BTreeMap::new(),
+                link: None,
+            }),
+        };
+        let without_delete = HostEntry {
+            provider: Some(ProviderMachine {
+                id: "custom-nodel".to_owned(),
+                params: BTreeMap::new(),
+                link: None,
+            }),
+            ..with_delete.clone()
+        };
+        let plain_ssh = HostEntry {
+            provider: None,
+            ..with_delete.clone()
+        };
+
+        assert!(work.has_provider_delete(&with_delete));
+        assert!(!work.has_provider_delete(&without_delete));
+        assert!(!work.has_provider_delete(&plain_ssh));
+    }
+
+    #[tokio::test]
+    async fn user_stopped_vm_pauses_and_suppresses_peer_supervisor() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = make_work(dir.path());
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let _ = work.peer_dial.set(Arc::new(CountingDial(spawns.clone())));
+
+        let key = work.machines.peer_key("vm1");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "ab".repeat(32)).unwrap();
+
+        let handle = Handle::current();
+        work.link_up("vm1", &handle);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+
+        work.mark_user_stopped_vm("vm1");
+        assert!(work.is_user_stopped_vm("vm1"));
+        assert!(!lock(&work.links).contains_key("vm1"));
+        assert_eq!(
+            lock(&work.seen).get("vm1").map(|s| s.reach),
+            Some(pb::Reachability::Stopped)
+        );
+
+        // link_up is suppressed while user_stopped_vm is set.
+        work.link_up("vm1", &handle);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+
+        // Clearing user_stopped_vm allows link_up to spawn immediately.
+        work.clear_user_stopped_vm("vm1");
+        assert!(!work.is_user_stopped_vm("vm1"));
+        work.link_up("vm1", &handle);
+        assert_eq!(spawns.load(Ordering::SeqCst), 2);
     }
 }

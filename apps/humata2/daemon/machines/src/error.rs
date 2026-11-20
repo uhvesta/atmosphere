@@ -101,14 +101,10 @@ pub enum ProblemKind {
         "the provider name must be lowercase letters, digits and `-`, starting with a letter; rename the table"
     )]
     BadProviderName,
-    #[error("is missing; add the command that makes a machine, such as `create = \"mycloud create {{name}}\"`")]
-    MissingCreate,
     #[error(
-        "is missing; add `connect` (a command that runs `{{cmd}}` on the machine) or `identity` (a command that prints its SSH details as JSON)"
+        "is missing; add `connect` (a command that runs `{{cmd}}` on the machine), `identity` (a command that prints its SSH details as JSON), or `list` (a command that lists existing instances as JSON)"
     )]
     MissingLink,
-    #[error("is set along with `identity`; keep only one of the two")]
-    BothLinks,
     #[error("must contain `{{cmd}}`, where Humata puts the command it runs on the machine")]
     ConnectWithoutCmd,
     #[error("uses `{{cmd}}`, which only `connect` can use; remove it")]
@@ -177,6 +173,8 @@ pub enum FieldProblem {
     Missing,
     #[error("must be a string")]
     NotString,
+    #[error("must be an array")]
+    NotArray,
     #[error("must be an object")]
     NotObject,
     #[error("must be a port number from 1 to 65535")]
@@ -373,6 +371,10 @@ pub enum SetupError {
         exit: Exit,
         printed: bool,
     },
+    #[error(
+        "{machine} already has a different enrollment key in ~/.humata2/state/enrollment-key, so Humata refused to overwrite it. Remove and re-add {machine} if it was rebuilt"
+    )]
+    EnrollmentKeyConflict { machine: MachineName },
     #[error(
         "{machine} won't let {user} keep services running after logout (linger). An admin must run this once on {machine}: `{admin_command}`, then try again. Or start humatad2 without systemd, which won't restart it if it crashes"
     )]

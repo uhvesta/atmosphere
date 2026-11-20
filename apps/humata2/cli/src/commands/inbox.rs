@@ -109,7 +109,15 @@ pub(super) async fn inbox<D: Daemon, C: Console>(
             answer_one(ctx, request, answer).await
         }
         Some(InboxCommand::Reply { request, text }) => {
-            answer_one(ctx, request, Answer::Reply(pb::Reply { text })).await
+            answer_one(
+                ctx,
+                request,
+                Answer::Reply(pb::Reply {
+                    text,
+                    selected_choices: Vec::new(),
+                }),
+            )
+            .await
         }
         Some(InboxCommand::ApproveAll) => {
             answer_all(ctx, scope(ctx, session, with_forks).await?, true).await

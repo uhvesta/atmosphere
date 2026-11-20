@@ -198,6 +198,20 @@ message ItemHistoryEntry {
   string after = 9;
   // The session whose start made this change (SE-3), if any.
   SessionId cause = 10;
+  // Word-level diff spans for text changes (title, description, steps).
+  repeated WordDiffSpan word_diff = 11;
+}
+
+enum WordDiffKind {
+  WORD_DIFF_KIND_UNSPECIFIED = 0;
+  WORD_DIFF_KIND_EQUAL = 1;
+  WORD_DIFF_KIND_ADDED = 2;
+  WORD_DIFF_KIND_REMOVED = 3;
+}
+
+message WordDiffSpan {
+  WordDiffKind kind = 1;
+  string text = 2;
 }
 
 enum HistoryKind {
@@ -208,6 +222,14 @@ enum HistoryKind {
   HISTORY_KIND_DELETED = 4;
   HISTORY_KIND_SESSIONS = 5;
   HISTORY_KIND_DEPENDENCIES = 6;
+  HISTORY_KIND_COMMENTED = 7;
+  HISTORY_KIND_SPLIT = 8;
+  HISTORY_KIND_FOLDED = 9;
+  HISTORY_KIND_STEP_CHANGED = 10;
+  HISTORY_KIND_OWNER_CHANGED = 11;
+  HISTORY_KIND_CHECKPOINT_CHANGED = 12;
+  HISTORY_KIND_PR_SYNCED = 13;
+  HISTORY_KIND_ASK_ANSWERED = 14;
 }
 
 message GetItemHistoryRequest {
@@ -236,6 +258,24 @@ service TodoService {
   // The move from boards: counts, and whether the banner was dismissed.
   rpc GetTodoMigration(GetTodoMigrationRequest) returns (TodoMigration);
   rpc DismissTodoMigration(DismissTodoMigrationRequest) returns (TodoMigration);
+  // Append-only comment on a to-do item or one of its steps.
+  rpc AddTodoComment(AddTodoCommentRequest) returns (AddTodoCommentResponse);
+  // Split one item into multiple items, recording bidirectional From/Became links.
+  rpc SplitTodo(SplitTodoRequest) returns (SplitTodoResponse);
+  // Fold one item into a step on another item, recording From/Became links.
+  rpc FoldTodoIntoStep(FoldTodoIntoStepRequest) returns (FoldTodoIntoStepResponse);
+  // Bulk update multiple items, returning per-item failures without aborting valid items.
+  rpc BatchUpdateTodo(BatchUpdateTodoRequest) returns (BatchUpdateTodoResponse);
+  // List agent runs and total cost recorded against a to-do item.
+  rpc ListTodoRuns(ListTodoRunsRequest) returns (ListTodoRunsResponse);
+  // Item history including word-level diffs.
+  rpc GetTodoHistory(GetTodoHistoryRequest) returns (GetTodoHistoryResponse);
+  // Take back ownership from an agent or retry a stuck agent.
+  rpc ResolveTodoOwnership(ResolveTodoOwnershipRequest) returns (WriteTodoResponse);
+  // Resolve a BlockerGone notice (unblock, close, or rewire dependencies).
+  rpc ResolveBlockerGone(ResolveBlockerGoneRequest) returns (WriteTodoResponse);
+  // Resolve a quiet PR/session lifecycle prompt on a to-do item.
+  rpc ResolveLifecyclePrompt(ResolveLifecyclePromptRequest) returns (WriteTodoResponse);
 }
 
 // An item as the list shows it: the board item it is stored as, with the
@@ -267,6 +307,41 @@ message TodoFields {
   TodoReview review = 12;
   // When it was closed; Reopen is offered for 7 days.
   google.protobuf.Timestamp closed_at = 13;
+  // Need level (Idea / Nice to have / Expected / Critical).
+  TodoNeed need = 14;
+  // Loose/fuzzy due date; never rendered as overdue.
+  TodoFuzzyDue fuzzy_due = 15;
+  // Free-text external blocker reason.
+  ExternalBlock external_block = 16;
+  // Lineage: keys this item was split or spun off from.
+  repeated string from_keys = 17;
+  // Lineage: keys this item became (via split or fold).
+  repeated string became_keys = 18;
+  // Optional diff or markdown source anchor.
+  SourceAnchor source_anchor = 19;
+  // Append-only comments on this item.
+  repeated TodoComment comments = 20;
+  // Explicit current owner (user or agent session).
+  TodoOwner owner = 21;
+  // Stable-state checkpoint handoff progress.
+  TodoCheckpoint checkpoint = 22;
+  // Set when an assigned agent appears stuck.
+  StuckAgentNotice stuck_agent = 23;
+  // Notices when a dependency closed as Won't do or Became.
+  repeated BlockerGoneNotice blocker_gone = 24;
+  // Pull requests or stacks watched by this item.
+  repeated WatchedPr watched_prs = 25;
+  // Compact close-readiness summary.
+  CloseReadiness close_readiness = 26;
+  // Quiet live session signals for In progress rows.
+  repeated SessionSignal session_signals = 27;
+  // Quiet 1-click lifecycle prompts (PR merge, idle session, etc.).
+  repeated LifecyclePrompt lifecycle_prompts = 28;
+  // Summary counts for the folded Runs ledger.
+  uint32 run_count = 29;
+  uint64 total_cost_micros = 30;
+  // Optional reason recorded when state is WONT_DO.
+  string wont_do_reason = 31;
 }
 
 // A calendar day in the user's time zone, without a time.
@@ -276,12 +351,43 @@ message CivilDay {
   uint32 day = 3;
 }
 
-// Three states. Waiting and Hidden until are derived, not states.
+// Item lifecycle states. Waiting and Hidden until are derived, not states.
 enum TodoState {
   TODO_STATE_UNSPECIFIED = 0;
   TODO_STATE_OPEN = 1;
   TODO_STATE_IN_PROGRESS = 2;
   TODO_STATE_CLOSED = 3;
+  TODO_STATE_WONT_DO = 4;
+  TODO_STATE_BECAME = 5;
+  TODO_STATE_WATCHING_PR = 6;
+}
+
+enum TodoNeed {
+  TODO_NEED_UNSPECIFIED = 0;
+  TODO_NEED_IDEA = 1;
+  TODO_NEED_NICE_TO_HAVE = 2;
+  TODO_NEED_EXPECTED = 3;
+  TODO_NEED_CRITICAL = 4;
+}
+
+enum TodoFuzzyDue {
+  TODO_FUZZY_DUE_UNSPECIFIED = 0;
+  TODO_FUZZY_DUE_IN_A_FEW_DAYS = 1;
+  TODO_FUZZY_DUE_NEXT_WEEK = 2;
+  TODO_FUZZY_DUE_NEXT_MONTH = 3;
+}
+
+enum TodoCheckpoint {
+  TODO_CHECKPOINT_UNSPECIFIED = 0;
+  TODO_CHECKPOINT_WITH_CONTEXT = 1;
+  TODO_CHECKPOINT_DEFINED = 2;
+  TODO_CHECKPOINT_DONE = 3;
+}
+
+enum TodoOwnerKind {
+  TODO_OWNER_KIND_UNSPECIFIED = 0;
+  TODO_OWNER_KIND_USER = 1;
+  TODO_OWNER_KIND_AGENT = 2;
 }
 
 enum TodoEffort {
@@ -304,6 +410,106 @@ message TodoStep {
   bool done = 2;
   // The session that ticked it, when an agent did.
   SessionId ticked_by = 3;
+  string id = 4;
+  string markdown_context = 5;
+  bool dropped = 6;
+  string from_key = 7;
+  SourceAnchor source_anchor = 8;
+}
+
+message SourceAnchor {
+  string repo = 1;
+  string path = 2;
+  uint32 line = 3;
+  uint32 end_line = 4;
+  string comment_id = 5;
+}
+
+message ExternalBlock {
+  string reason = 1;
+  google.protobuf.Timestamp since = 2;
+}
+
+message TodoComment {
+  string id = 1;
+  string author = 2;
+  string body = 3;
+  google.protobuf.Timestamp created_at = 4;
+  string step_id = 5;
+}
+
+message TodoOwner {
+  TodoOwnerKind kind = 1;
+  string label = 2;
+  SessionId session = 3;
+}
+
+message StuckAgentNotice {
+  SessionId session = 1;
+  string agent_label = 2;
+  string reason = 3;
+  google.protobuf.Timestamp since = 4;
+}
+
+message BlockerGoneNotice {
+  string blocker_key = 1;
+  TodoState blocker_state = 2;
+  repeated string replacement_keys = 3;
+}
+
+message WatchedPr {
+  PullRequestRef pr = 1;
+  string title = 2;
+  string ci_state = 3;
+  uint32 unresolved_comments = 4;
+  bool has_conflicts = 5;
+  bool upstream_merged = 6;
+  bool merged = 7;
+  bool closed_without_merge = 8;
+  string stack_key = 9;
+}
+
+message CloseReadiness {
+  uint32 steps_done = 1;
+  uint32 steps_total = 2;
+  uint32 unresolved_comments = 3;
+  string ci_status = 4;
+  uint32 commits = 5;
+}
+
+message SessionSignal {
+  SessionId session = 1;
+  string label = 2;
+  string status = 3;
+  uint32 idle_days = 4;
+  bool active_turn = 5;
+}
+
+message LifecyclePrompt {
+  string id = 1;
+  string kind = 2;
+  string title = 3;
+  string detail = 4;
+  repeated string choices = 5;
+  string pr_ref = 6;
+  SessionId session = 7;
+}
+
+message RunLink {
+  string label = 1;
+  string target = 2;
+}
+
+message TodoRun {
+  string id = 1;
+  string tool = 2;
+  string model = 3;
+  string outcome = 4;
+  uint64 cost_micros = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
+  repeated RunLink links = 8;
+  SessionId session = 9;
 }
 
 // Where a migrated item stood. The list keeps this order as its
@@ -364,6 +570,11 @@ message CreateTodoRequest {
   // evidence shown when the user opens it.
   string reason = 12;
   repeated string evidence = 13;
+  TodoNeed need = 14;
+  TodoFuzzyDue fuzzy_due = 15;
+  SourceAnchor source_anchor = 16;
+  repeated string from_keys = 17;
+  ExternalBlock external_block = 18;
 }
 
 message TodoPatch {
@@ -390,6 +601,15 @@ message TodoPatch {
   repeated BoardItemId depends_on_remove = 19;
   // The user said yes to a suggested item.
   bool accept_suggestion = 20;
+  optional TodoNeed need = 21;
+  optional TodoFuzzyDue fuzzy_due = 22;
+  ExternalBlock external_block = 23;
+  bool clear_external_block = 24;
+  TodoOwner owner = 25;
+  bool clear_owner = 26;
+  optional TodoCheckpoint checkpoint = 27;
+  optional string wont_do_reason = 28;
+  repeated WatchedPr watched_prs_add = 29;
 }
 
 message TodoSteps { repeated TodoStep steps = 1; }
@@ -434,4 +654,102 @@ message TodoMigration {
   uint32 closed = 5;
   uint32 boards = 6;
   bool banner_dismissed = 7;
+}
+
+message AddTodoCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  string body = 3;
+  string step_id = 4;
+}
+
+message AddTodoCommentResponse {
+  TodoItem item = 1;
+  TodoComment comment = 2;
+}
+
+message SplitTodoRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  repeated string titles = 3;
+  bool keep_age = 4;
+}
+
+message SplitTodoResponse {
+  TodoItem source = 1;
+  repeated TodoItem created = 2;
+}
+
+message FoldTodoIntoStepRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId source_id = 2;
+  BoardItemId target_id = 3;
+}
+
+message FoldTodoIntoStepResponse {
+  TodoItem source = 1;
+  TodoItem target = 2;
+}
+
+message BatchUpdateTodoEntry {
+  BoardItemId id = 1;
+  TodoPatch patch = 2;
+  Revision expected_revision = 3;
+}
+
+message BatchUpdateTodoFailure {
+  BoardItemId id = 1;
+  string key = 2;
+  string reason = 3;
+}
+
+message BatchUpdateTodoRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated BatchUpdateTodoEntry entries = 2;
+}
+
+message BatchUpdateTodoResponse {
+  repeated TodoItem updated = 1;
+  repeated BatchUpdateTodoFailure failed = 2;
+}
+
+message ListTodoRunsRequest {
+  BoardItemId id = 1;
+}
+
+message ListTodoRunsResponse {
+  repeated TodoRun runs = 1;
+  uint64 total_cost_micros = 2;
+}
+
+message GetTodoHistoryRequest {
+  BoardItemId id = 1;
+  PageRequest page = 2;
+}
+
+message GetTodoHistoryResponse {
+  repeated ItemHistoryEntry entries = 1;
+  PageResponse page = 2;
+}
+
+message ResolveTodoOwnershipRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  bool take_back = 3;
+  bool retry = 4;
+}
+
+message ResolveBlockerGoneRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  string blocker_key = 3;
+  string action = 4;
+  repeated string rewire_to_keys = 5;
+}
+
+message ResolveLifecyclePromptRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  string prompt_id = 3;
+  string choice = 4;
 }

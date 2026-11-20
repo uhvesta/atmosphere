@@ -326,6 +326,8 @@ pub(super) struct CodeRows {
     pub(super) focus_index: Option<usize>,
     /// What a click on a line focuses, outside a review: the code view.
     code_focus: Option<FocusHandle>,
+    /// Linked To-do context for Add to steps / Spin off To-do comment hooks.
+    todo_ctx: comment_cards::TodoHookContext,
 }
 
 impl CodeRows {
@@ -441,6 +443,9 @@ impl CodeRows {
                 .iter()
                 .position(|line| is_code(line) && at(line, side, n))
         });
+        let todo_ctx = session
+            .map(|session| comment_cards::todo_context(state, &session.id))
+            .unwrap_or_default();
         Self {
             ui: ui.clone(),
             metrics,
@@ -464,6 +469,7 @@ impl CodeRows {
             focus,
             focus_index,
             code_focus: (!metrics.review).then(|| documents.diff_code.clone()),
+            todo_ctx,
         }
     }
 
@@ -734,7 +740,7 @@ impl CodeRows {
         }
         for comment in self.cards.get(&index).into_iter().flatten() {
             cards.push(self.fit(
-                comment_cards::card(
+                comment_cards::card_with_todo(
                     &self.ui,
                     look,
                     comment,
@@ -742,6 +748,7 @@ impl CodeRows {
                     self.reviewing,
                     self.reattaching.as_ref() == Some(&comment.id),
                     &self.start,
+                    &self.todo_ctx,
                 )
                 .into_any_element(),
             ));

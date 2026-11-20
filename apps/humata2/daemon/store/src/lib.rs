@@ -45,6 +45,7 @@ mod schema;
 mod script_tokens;
 mod session_snapshot;
 mod store;
+mod todo_runs;
 mod typed_keys;
 mod views;
 
@@ -87,4 +88,5 @@ pub use schema::SCHEMA_VERSION;
 pub use script_tokens::SavedScriptToken;
 pub use session_snapshot::Take;
 pub use store::Store;
+pub use todo_runs::TodoRunRecord;
 pub use typed_keys::TypedKey;

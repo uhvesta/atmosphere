@@ -9,6 +9,19 @@ use crate::link::BIN_DIR;
 use crate::platform::{Arch, Os, Platform};
 use crate::service::{self, ServiceKind};
 
+/// Whether `~/.humata2/state/enrollment-key` exists on the machine, and its
+/// SHA-256 hash when readable (never the key itself).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnrollmentKeyState {
+    /// Not reported by the check output.
+    Unknown,
+    /// The enrollment key file does not exist on the machine.
+    Missing,
+    /// The enrollment key file exists; contains its SHA-256 hex when a
+    /// checksum tool was available.
+    Present(Option<String>),
+}
+
 /// What the check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
@@ -33,6 +46,7 @@ pub struct Facts {
     /// doesn't, or not that way.
     pub running: Option<ServiceKind>,
     installed: BTreeMap<InstalledFile, String>,
+    enrollment_key: EnrollmentKeyState,
 }
 
 impl Facts {
@@ -53,6 +67,10 @@ impl Facts {
         self.installed.get(&file).map(String::as_str)
     }
 
+    /// State of `~/.humata2/state/enrollment-key` on the machine.
+    pub fn enrollment_key(&self) -> &EnrollmentKeyState {
+        &self.enrollment_key
+    }
 }
 
 /// The check script. It changes nothing on the machine.
@@ -83,6 +101,9 @@ fact setsid "$(has setsid)"
 "#,
     );
     script.push_str(&service::running_script());
+    script.push_str(
+        "if [ -f \"$HOME/.humata2/state/enrollment-key\" ]; then fact enrollment_key \"$(sha \"$HOME/.humata2/state/enrollment-key\")\"; else fact enrollment_key none; fi\n",
+    );
     for file in InstalledFile::ALL {
         let name = file.file_name();
         script.push_str(&format!(
@@ -125,6 +146,14 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
             .map_or_else(String::new, |number| (*number).to_owned())
     };
     let installed = shas("sha");
+    let enrollment_key = match facts.get("enrollment_key") {
+        None => EnrollmentKeyState::Unknown,
+        Some(&"none") => EnrollmentKeyState::Missing,
+        Some(sha) if sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            EnrollmentKeyState::Present(Some(sha.to_ascii_lowercase()))
+        }
+        Some(_) => EnrollmentKeyState::Present(None),
+    };
     Some(Facts {
         platform: Platform {
             os: Os::parse(facts.get("os")?)?,
@@ -147,6 +176,7 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
             _ => None,
         },
         installed,
+        enrollment_key,
     })
 }
 

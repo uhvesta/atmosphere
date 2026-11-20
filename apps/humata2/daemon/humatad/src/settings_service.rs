@@ -208,6 +208,7 @@ impl SettingsSvc {
                     .and_then(|saved| sections::parse_retention(&saved.value))
                     .unwrap_or_else(|| self.sections.retention_defaults()),
             ),
+            todo_automation: None,
         })
     }
 }

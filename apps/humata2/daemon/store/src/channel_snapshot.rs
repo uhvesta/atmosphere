@@ -109,6 +109,7 @@ const COPIED: &[Copied] = &[
     copied("board_item_sessions", ITEMS),
     copied("board_item_deps", ITEMS),
     copied("board_history", ITEMS),
+    copied("todo_runs", "item_key IN (SELECT key FROM board_items WHERE channel = ?1)"),
 ];
 
 /// Tables of the machine, not of a channel: they stay where they are. The

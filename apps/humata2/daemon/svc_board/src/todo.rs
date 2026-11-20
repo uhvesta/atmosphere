@@ -18,15 +18,21 @@ use humata2_rpc_kit::{
 };
 use humata2_store::{BoardItemChange, BoardItemRecord, BoardKey, BoardWrite, NewBoardItem};
 use humata2_todo as domain;
-use humata2_todo::{Day, Effort, Impact, OldColumn, State};
+use humata2_todo::{CheckpointState, Day, Effort, FuzzyDue, Impact, Need, OldColumn, OwnerKind, State};
 use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Request, Response, Status};
 
 use super::asks::{change_ask, field_change, new_item_ask, pending_for};
+use super::history::{entry_pb, word_diff_pb};
+use super::ownership;
 use super::ports::{answer_key, caller_of};
+use super::pr_watch;
 use super::scope::{board_for_policy, board_pb, by_of, made_by_session};
-use super::todo_fields::{self as saved, Fields, FieldsError, MigrationRow, StartRow, StepRow};
+use super::todo_fields::{
+    self as saved, BlockerGoneRow, ExternalBlockRow, Fields, FieldsError, MigrationRow,
+    SourceAnchorRow, StartRow, StepRow, TodoCommentRow, TodoHistoryRow, TodoOwnerRow, WatchedPrRow,
+};
 use super::{
     BoardSvc, DEFAULT_COLUMN, ids, item_id, item_ids, keys, merged, no_item, page_of,
     revision_conflict,
@@ -127,9 +133,160 @@ fn state_of(value: i32, field: &str) -> Result<State, Status> {
         Ok(pb::TodoState::Open) => Ok(State::Open),
         Ok(pb::TodoState::InProgress) => Ok(State::InProgress),
         Ok(pb::TodoState::Closed) => Ok(State::Closed),
-        Ok(pb::TodoState::Unspecified) | Err(_) => {
-            Err(unknown(field, "state", "Open, In progress or Closed"))
-        }
+        Ok(pb::TodoState::WontDo) => Ok(State::WontDo),
+        Ok(pb::TodoState::Became) => Ok(State::Became),
+        Ok(pb::TodoState::WatchingPr) => Ok(State::WatchingPr),
+        Ok(pb::TodoState::Unspecified) | Err(_) => Err(unknown(
+            field,
+            "state",
+            "Open, In progress, Closed, Won't do, Became or Watching PR",
+        )),
+    }
+}
+
+fn need_of(value: i32, field: &str) -> Result<Option<Need>, Status> {
+    match pb::TodoNeed::try_from(value) {
+        Ok(pb::TodoNeed::Unspecified) => Ok(None),
+        Ok(pb::TodoNeed::Idea) => Ok(Some(Need::Idea)),
+        Ok(pb::TodoNeed::NiceToHave) => Ok(Some(Need::NiceToHave)),
+        Ok(pb::TodoNeed::Expected) => Ok(Some(Need::Expected)),
+        Ok(pb::TodoNeed::Critical) => Ok(Some(Need::Critical)),
+        Err(_) => Err(unknown(
+            field,
+            "need",
+            "Idea, Nice to have, Expected or Critical",
+        )),
+    }
+}
+
+fn fuzzy_due_of(value: i32, field: &str) -> Result<Option<FuzzyDue>, Status> {
+    match pb::TodoFuzzyDue::try_from(value) {
+        Ok(pb::TodoFuzzyDue::Unspecified) => Ok(None),
+        Ok(pb::TodoFuzzyDue::InAFewDays) => Ok(Some(FuzzyDue::InAFewDays)),
+        Ok(pb::TodoFuzzyDue::NextWeek) => Ok(Some(FuzzyDue::NextWeek)),
+        Ok(pb::TodoFuzzyDue::NextMonth) => Ok(Some(FuzzyDue::NextMonth)),
+        Err(_) => Err(unknown(
+            field,
+            "fuzzy due",
+            "In a few days, Next week or Next month",
+        )),
+    }
+}
+
+fn checkpoint_of(value: i32, field: &str) -> Result<Option<CheckpointState>, Status> {
+    match pb::TodoCheckpoint::try_from(value) {
+        Ok(pb::TodoCheckpoint::Unspecified) => Ok(None),
+        Ok(pb::TodoCheckpoint::WithContext) => Ok(Some(CheckpointState::WithContext)),
+        Ok(pb::TodoCheckpoint::Defined) => Ok(Some(CheckpointState::Defined)),
+        Ok(pb::TodoCheckpoint::Done) => Ok(Some(CheckpointState::Done)),
+        Err(_) => Err(unknown(
+            field,
+            "checkpoint",
+            "With context, Defined or Done",
+        )),
+    }
+}
+
+fn owner_of(owner: &pb::TodoOwner, field: &str) -> Result<TodoOwnerRow, Status> {
+    let kind = match pb::TodoOwnerKind::try_from(owner.kind) {
+        Ok(pb::TodoOwnerKind::User) => OwnerKind::User,
+        Ok(pb::TodoOwnerKind::Agent) => OwnerKind::Agent,
+        _ => return Err(unknown(field, "owner kind", "User or Agent")),
+    };
+    Ok(TodoOwnerRow {
+        kind,
+        label: owner.label.clone(),
+        session: owner
+            .session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .filter(|s| !s.is_empty()),
+    })
+}
+
+fn source_anchor_of(anchor: &pb::SourceAnchor) -> SourceAnchorRow {
+    SourceAnchorRow {
+        repo: anchor.repo.clone(),
+        path: anchor.path.clone(),
+        line: anchor.line,
+        end_line: anchor.end_line,
+        comment_id: anchor.comment_id.clone(),
+    }
+}
+
+fn source_anchor_pb(anchor: &SourceAnchorRow) -> pb::SourceAnchor {
+    pb::SourceAnchor {
+        repo: anchor.repo.clone(),
+        path: anchor.path.clone(),
+        line: anchor.line,
+        end_line: anchor.end_line,
+        comment_id: anchor.comment_id.clone(),
+    }
+}
+
+fn external_block_of(block: &pb::ExternalBlock, now: i64) -> ExternalBlockRow {
+    let since_ms = block.since.as_ref().map_or(now, |t| {
+        t.seconds
+            .saturating_mul(1000)
+            .saturating_add(i64::from(t.nanos / 1_000_000))
+    });
+    ExternalBlockRow {
+        reason: block.reason.trim().to_owned(),
+        since_ms: Some(since_ms),
+    }
+}
+
+fn watched_pr_of(pr: &pb::WatchedPr) -> WatchedPrRow {
+    let (owner, name, number, note) = match pr.pr.as_ref() {
+        Some(p) => (
+            p.repo.as_ref().map_or_else(String::new, |r| r.owner.clone()),
+            p.repo.as_ref().map_or_else(String::new, |r| r.name.clone()),
+            p.number,
+            p.note.clone(),
+        ),
+        None => (String::new(), String::new(), 0, String::new()),
+    };
+    WatchedPrRow {
+        owner,
+        name,
+        number,
+        note,
+        title: pr.title.clone(),
+        ci_state: pr.ci_state.clone(),
+        unresolved_comments: pr.unresolved_comments,
+        has_conflicts: pr.has_conflicts,
+        upstream_merged: pr.upstream_merged,
+        merged: pr.merged,
+        closed_without_merge: pr.closed_without_merge,
+        stack_key: pr.stack_key.clone(),
+    }
+}
+
+fn need_pb(need: Option<Need>) -> pb::TodoNeed {
+    match need {
+        None => pb::TodoNeed::Unspecified,
+        Some(Need::Idea) => pb::TodoNeed::Idea,
+        Some(Need::NiceToHave) => pb::TodoNeed::NiceToHave,
+        Some(Need::Expected) => pb::TodoNeed::Expected,
+        Some(Need::Critical) => pb::TodoNeed::Critical,
+    }
+}
+
+fn fuzzy_due_pb(fd: Option<FuzzyDue>) -> pb::TodoFuzzyDue {
+    match fd {
+        None => pb::TodoFuzzyDue::Unspecified,
+        Some(FuzzyDue::InAFewDays) => pb::TodoFuzzyDue::InAFewDays,
+        Some(FuzzyDue::NextWeek) => pb::TodoFuzzyDue::NextWeek,
+        Some(FuzzyDue::NextMonth) => pb::TodoFuzzyDue::NextMonth,
+    }
+}
+
+fn checkpoint_pb(cp: Option<CheckpointState>) -> pb::TodoCheckpoint {
+    match cp {
+        None => pb::TodoCheckpoint::Unspecified,
+        Some(CheckpointState::WithContext) => pb::TodoCheckpoint::WithContext,
+        Some(CheckpointState::Defined) => pb::TodoCheckpoint::Defined,
+        Some(CheckpointState::Done) => pb::TodoCheckpoint::Done,
     }
 }
 
@@ -165,6 +322,9 @@ fn state_pb(state: State) -> pb::TodoState {
         State::Open => pb::TodoState::Open,
         State::InProgress => pb::TodoState::InProgress,
         State::Closed => pb::TodoState::Closed,
+        State::WontDo => pb::TodoState::WontDo,
+        State::Became => pb::TodoState::Became,
+        State::WatchingPr => pb::TodoState::WatchingPr,
     }
 }
 
@@ -173,6 +333,9 @@ fn state_label(state: State) -> &'static str {
         State::Open => "Open",
         State::InProgress => "In progress",
         State::Closed => "Closed",
+        State::WontDo => "Won't do",
+        State::Became => "Became",
+        State::WatchingPr => "Watching PR",
     }
 }
 
@@ -201,10 +364,21 @@ fn clean_tags(tags: &[String]) -> Vec<String> {
 fn steps_of(steps: &[pb::TodoStep]) -> Vec<StepRow> {
     steps
         .iter()
-        .map(|step| StepRow {
+        .enumerate()
+        .map(|(idx, step)| StepRow {
+            id: if step.id.is_empty() {
+                format!("step-{}", idx + 1)
+            } else {
+                step.id.clone()
+            },
             text: step.text.trim().to_owned(),
             done: step.done,
             ticked_by: step.ticked_by.as_ref().map(|id| id.value.clone()),
+            markdown_context: (!step.markdown_context.is_empty())
+                .then(|| step.markdown_context.clone()),
+            dropped: step.dropped,
+            from_key: (!step.from_key.is_empty()).then(|| step.from_key.clone()),
+            source_anchor: step.source_anchor.as_ref().map(source_anchor_of),
         })
         .collect()
 }
@@ -248,7 +422,7 @@ impl Entry {
     }
 
     fn closed_ms(&self) -> Option<i64> {
-        (self.state() == State::Closed).then(|| {
+        self.state().is_terminal().then(|| {
             self.fields
                 .closed_at_ms
                 .or(self.record.done_unix_ms)
@@ -579,14 +753,123 @@ impl BoardSvc {
             .steps
             .iter()
             .map(|step| domain::Step {
+                id: step.id.clone(),
                 text: step.text.clone(),
                 done: step.done,
+                markdown_context: step.markdown_context.clone(),
+                dropped: step.dropped,
+                from_key: step.from_key.clone(),
+                source_anchor: step.source_anchor.as_ref().map(|a| domain::SourceAnchor {
+                    repo: a.repo.clone(),
+                    path: a.path.clone(),
+                    line: a.line,
+                    end_line: (a.end_line > 0).then_some(a.end_line),
+                    comment_id: (!a.comment_id.is_empty()).then(|| a.comment_id.clone()),
+                }),
             })
             .collect();
         todo.hide_until = fields.hide_until;
         todo.pin = fields.pin_order.checked_sub(1);
         todo.depends_on = record.depends_on.clone();
         todo.suggested = fields.suggested;
+        todo.need = fields.need;
+        todo.fuzzy_due = fields.fuzzy_due;
+        todo.external_block = fields.external_block.as_ref().map(|b| domain::ExternalBlock {
+            reason: b.reason.clone(),
+            since: b.since_ms.and_then(day_of),
+        });
+        todo.from_keys = fields.from_keys.clone();
+        todo.became_keys = fields.became_keys.clone();
+        todo.source_anchor = fields.source_anchor.as_ref().map(|a| domain::SourceAnchor {
+            repo: a.repo.clone(),
+            path: a.path.clone(),
+            line: a.line,
+            end_line: (a.end_line > 0).then_some(a.end_line),
+            comment_id: (!a.comment_id.is_empty()).then(|| a.comment_id.clone()),
+        });
+        todo.comments = fields
+            .comments
+            .iter()
+            .map(|c| domain::TodoComment {
+                id: c.id.clone(),
+                author: c.author.clone(),
+                body: c.body.clone(),
+                created: day_of(c.created_at_ms),
+                step_id: c.step_id.clone(),
+            })
+            .collect();
+        todo.owner = fields.owner.as_ref().map(|o| domain::TodoOwner {
+            kind: o.kind,
+            label: o.label.clone(),
+            session: o.session.clone(),
+        });
+        todo.checkpoint = fields.checkpoint;
+        todo.stuck_agent = fields.stuck_agent.as_ref().map(|s| domain::StuckAgent {
+            session: s.session.clone(),
+            agent_label: s.agent_label.clone(),
+            reason: s.reason.clone(),
+            since_minutes: u32::try_from(now.saturating_sub(s.since_ms).max(0) / 60_000)
+                .unwrap_or(u32::MAX),
+        });
+        todo.blocker_gone = fields
+            .blocker_gone
+            .iter()
+            .map(|b| domain::BlockerGone {
+                blocker_key: b.blocker_key.clone(),
+                blocker_state: b.blocker_state,
+                replacement_keys: b.replacement_keys.clone(),
+            })
+            .collect();
+        todo.watched_prs = fields
+            .watched_prs
+            .iter()
+            .map(|pr| domain::WatchedPr {
+                repo_pr: pr.repo_pr(),
+                title: pr.title.clone(),
+                ci_state: pr.ci_state.clone(),
+                unresolved_comments: pr.unresolved_comments,
+                has_conflicts: pr.has_conflicts,
+                upstream_merged: pr.upstream_merged,
+                merged: pr.merged,
+                closed_without_merge: pr.closed_without_merge,
+                stack_key: (!pr.stack_key.is_empty()).then(|| pr.stack_key.clone()),
+            })
+            .collect();
+        todo.close_readiness = fields
+            .close_readiness
+            .as_ref()
+            .map(|cr| domain::CloseReadiness {
+                steps_done: cr.steps_done,
+                steps_total: cr.steps_total,
+                unresolved_comments: cr.unresolved_comments,
+                ci_status: cr.ci_status.clone(),
+                commits: cr.commits,
+            });
+        todo.session_signals = fields
+            .session_signals
+            .iter()
+            .map(|s| domain::SessionSignal {
+                session: s.session.clone(),
+                label: s.label.clone(),
+                status: s.status.clone(),
+                idle_days: s.idle_days,
+                active_turn: s.active_turn,
+            })
+            .collect();
+        todo.lifecycle_prompts = fields
+            .lifecycle_prompts
+            .iter()
+            .map(|p| domain::LifecyclePrompt {
+                id: p.id.clone(),
+                kind: p.kind.clone(),
+                title: p.title.clone(),
+                detail: p.detail.clone(),
+                choices: p.choices.clone(),
+                pr_ref: (!p.pr_ref.is_empty()).then(|| p.pr_ref.clone()),
+                session: p.session.clone(),
+            })
+            .collect();
+        todo.wont_do_reason = fields.wont_do_reason.clone();
         todo.ask = ask.map(|ask| domain::Ask {
             kind: ask_kind_of(ask.change.as_ref()),
             by: ask_by_of(ask_requester(ask, request)),
@@ -643,6 +926,22 @@ impl BoardSvc {
 
     fn fields_pb(&self, entry: &Entry) -> pb::TodoFields {
         let fields = &entry.fields;
+        let runs = self
+            .store
+            .list_todo_runs(&entry.record.key)
+            .unwrap_or_default();
+        let run_count = u32::try_from(runs.len()).unwrap_or(u32::MAX);
+        let total_cost_micros = runs
+            .iter()
+            .fold(0u64, |acc, r| acc.saturating_add(r.cost_micros));
+        let close_readiness = fields
+            .close_readiness
+            .as_ref()
+            .cloned()
+            .or_else(|| {
+                (!fields.steps.is_empty() || !fields.watched_prs.is_empty())
+                    .then(|| pr_watch::compute_close_readiness(&fields.steps, &fields.watched_prs, 0))
+            });
         pb::TodoFields {
             key: entry.record.key.clone(),
             state: state_pb(entry.state()) as i32,
@@ -654,12 +953,17 @@ impl BoardSvc {
                 .steps
                 .iter()
                 .map(|step| pb::TodoStep {
+                    id: step.id.clone(),
                     text: step.text.clone(),
                     done: step.done,
                     ticked_by: step
                         .ticked_by
                         .as_ref()
                         .map(|id| pb::SessionId { value: id.clone() }),
+                    markdown_context: step.markdown_context.clone().unwrap_or_default(),
+                    dropped: step.dropped,
+                    from_key: step.from_key.clone().unwrap_or_default(),
+                    source_anchor: step.source_anchor.as_ref().map(source_anchor_pb),
                 })
                 .collect(),
             hide_until: fields.hide_until.map(civil_pb),
@@ -691,6 +995,116 @@ impl BoardSvc {
                 requested_at: Some(timestamp_ms(review.requested_unix_ms)),
             }),
             closed_at: entry.closed_ms().map(timestamp_ms),
+            need: need_pb(fields.need) as i32,
+            fuzzy_due: fuzzy_due_pb(fields.fuzzy_due) as i32,
+            external_block: fields.external_block.as_ref().map(|b| pb::ExternalBlock {
+                reason: b.reason.clone(),
+                since: b.since_ms.map(timestamp_ms),
+            }),
+            from_keys: fields.from_keys.clone(),
+            became_keys: fields.became_keys.clone(),
+            source_anchor: fields.source_anchor.as_ref().map(source_anchor_pb),
+            comments: fields
+                .comments
+                .iter()
+                .map(|c| pb::TodoComment {
+                    id: c.id.clone(),
+                    author: c.author.clone(),
+                    body: c.body.clone(),
+                    created_at: Some(timestamp_ms(c.created_at_ms)),
+                    step_id: c.step_id.clone().unwrap_or_default(),
+                })
+                .collect(),
+            owner: fields.owner.as_ref().map(|o| pb::TodoOwner {
+                kind: match o.kind {
+                    OwnerKind::User => pb::TodoOwnerKind::User as i32,
+                    OwnerKind::Agent => pb::TodoOwnerKind::Agent as i32,
+                },
+                label: o.label.clone(),
+                session: o
+                    .session
+                    .as_ref()
+                    .map(|id| pb::SessionId { value: id.clone() }),
+            }),
+            checkpoint: checkpoint_pb(fields.checkpoint) as i32,
+            stuck_agent: fields.stuck_agent.as_ref().map(|s| pb::StuckAgentNotice {
+                session: Some(pb::SessionId {
+                    value: s.session.clone(),
+                }),
+                agent_label: s.agent_label.clone(),
+                reason: s.reason.clone(),
+                since: Some(timestamp_ms(s.since_ms)),
+            }),
+            blocker_gone: fields
+                .blocker_gone
+                .iter()
+                .map(|b| pb::BlockerGoneNotice {
+                    blocker_key: b.blocker_key.clone(),
+                    blocker_state: state_pb(b.blocker_state) as i32,
+                    replacement_keys: b.replacement_keys.clone(),
+                })
+                .collect(),
+            watched_prs: fields
+                .watched_prs
+                .iter()
+                .map(|pr| pb::WatchedPr {
+                    pr: Some(pb::PullRequestRef {
+                        repo: Some(pb::RepoRef {
+                            owner: pr.owner.clone(),
+                            name: pr.name.clone(),
+                        }),
+                        number: pr.number,
+                        note: pr.note.clone(),
+                    }),
+                    title: pr.title.clone(),
+                    ci_state: pr.ci_state.clone(),
+                    unresolved_comments: pr.unresolved_comments,
+                    has_conflicts: pr.has_conflicts,
+                    upstream_merged: pr.upstream_merged,
+                    merged: pr.merged,
+                    closed_without_merge: pr.closed_without_merge,
+                    stack_key: pr.stack_key.clone(),
+                })
+                .collect(),
+            close_readiness: close_readiness.map(|cr| pb::CloseReadiness {
+                steps_done: cr.steps_done,
+                steps_total: cr.steps_total,
+                unresolved_comments: cr.unresolved_comments,
+                ci_status: cr.ci_status,
+                commits: cr.commits,
+            }),
+            session_signals: fields
+                .session_signals
+                .iter()
+                .map(|s| pb::SessionSignal {
+                    session: Some(pb::SessionId {
+                        value: s.session.clone(),
+                    }),
+                    label: s.label.clone(),
+                    status: s.status.clone(),
+                    idle_days: s.idle_days,
+                    active_turn: s.active_turn,
+                })
+                .collect(),
+            lifecycle_prompts: fields
+                .lifecycle_prompts
+                .iter()
+                .map(|p| pb::LifecyclePrompt {
+                    id: p.id.clone(),
+                    kind: p.kind.clone(),
+                    title: p.title.clone(),
+                    detail: p.detail.clone(),
+                    choices: p.choices.clone(),
+                    pr_ref: p.pr_ref.clone(),
+                    session: p
+                        .session
+                        .as_ref()
+                        .map(|id| pb::SessionId { value: id.clone() }),
+                })
+                .collect(),
+            run_count,
+            total_cost_micros,
+            wont_do_reason: fields.wont_do_reason.clone().unwrap_or_default(),
         }
     }
 
@@ -864,6 +1278,68 @@ impl BoardSvc {
         )
     }
 
+    /// Dependency adjacency map across all live board items (key -> depends_on).
+    fn all_dependency_edges(&self) -> Result<BTreeMap<String, Vec<String>>, Status> {
+        let mut records = self
+            .store
+            .all_board_items_but_sessions()
+            .map_err(|error| self.failed(error, "list board items"))?;
+        let boards: Vec<BoardKey> = self
+            .store
+            .sessions()
+            .map_err(|error| self.failed(error, "list the sessions"))?
+            .into_iter()
+            .map(|session| BoardKey::Session(session.id))
+            .collect();
+        records.extend(
+            self.store
+                .board_items(&boards)
+                .map_err(|error| self.failed(error, "list the sessions' board items"))?,
+        );
+        Ok(records
+            .into_iter()
+            .filter(|r| !r.deleted)
+            .map(|r| (r.key, r.depends_on))
+            .collect())
+    }
+
+    /// Records a `BlockerGoneRow` notice on every active item that depends on
+    /// `blocker_key` when `blocker_key` transitions to `WontDo` or `Became`.
+    fn notify_blocker_gone(
+        &self,
+        map: &mut BTreeMap<String, Fields>,
+        blocker_key: &str,
+        blocker_state: State,
+        replacement_keys: &[String],
+    ) -> Result<(), Status> {
+        if !matches!(blocker_state, State::WontDo | State::Became) {
+            return Ok(());
+        }
+        let edges = self.all_dependency_edges()?;
+        for (dep_key, deps) in edges {
+            if dep_key == blocker_key || !deps.iter().any(|k| k == blocker_key) {
+                continue;
+            }
+            let entry = map.entry(dep_key).or_default();
+            if let Some(existing) = entry
+                .blocker_gone
+                .iter_mut()
+                .find(|bg| bg.blocker_key == blocker_key)
+            {
+                existing.blocker_state = blocker_state;
+                existing.replacement_keys = replacement_keys.to_vec();
+            } else {
+                entry.blocker_gone.push(BlockerGoneRow {
+                    blocker_key: blocker_key.to_owned(),
+                    blocker_state,
+                    replacement_keys: replacement_keys.to_vec(),
+                });
+            }
+            entry.extra_revisions += 1;
+        }
+        Ok(())
+    }
+
     pub(super) fn create_todo_in(
         &self,
         caller: &Caller,
@@ -880,6 +1356,14 @@ impl BoardSvc {
         let due = civil(request.due.as_ref(), "due")?;
         let effort = effort_of(request.effort, "effort")?;
         let impact = impact_of(request.impact, "impact")?;
+        let need = need_of(request.need, "need")?;
+        let fuzzy_due = fuzzy_due_of(request.fuzzy_due, "fuzzy_due")?;
+        let source_anchor = request.source_anchor.as_ref().map(source_anchor_of);
+        let from_keys = clean_tags(&request.from_keys);
+        let external_block = request
+            .external_block
+            .as_ref()
+            .map(|b| external_block_of(b, now));
         let (key, channel, channel_name) = match request.channel.as_ref() {
             Some(id) if !id.value.is_empty() => {
                 self.resolve_board(&pb::BoardRef {
@@ -910,6 +1394,12 @@ impl BoardSvc {
             return Ok(TodoApplied::Ask(asked, ask));
         }
         let _write = lock(&self.writes);
+        if !depends_on.is_empty() {
+            let edges = self.all_dependency_edges()?;
+            if let Some(cycle) = ownership::find_cycle("", &depends_on, &edges) {
+                return Err(super::dependency_loop(&cycle));
+            }
+        }
         let owner = match &key {
             BoardKey::Global => keys::GLOBAL_OWNER.to_owned(),
             _ => channel.clone(),
@@ -936,6 +1426,11 @@ impl BoardSvc {
             due,
             effort,
             impact,
+            need,
+            fuzzy_due,
+            external_block,
+            from_keys,
+            source_anchor,
             tags: clean_tags(&request.tags),
             steps: steps_of(&request.steps),
             // What an agent adds waits for the user's yes.
@@ -1045,6 +1540,12 @@ impl BoardSvc {
             return Err(revision_conflict(&fresh.shown_record(), Some(expected)));
         }
         let planned = apply_patch(&fresh, &patch, &parsed, channel, &add, &remove, &deps_add, &deps_remove, now);
+        if let Some(new_deps) = &planned.depends_on {
+            let edges = self.all_dependency_edges()?;
+            if let Some(cycle) = ownership::find_cycle(&id, new_deps, &edges) {
+                return Err(super::dependency_loop(&cycle));
+            }
+        }
         let mut record = fresh.record.clone();
         let store_changes = planned.board_change(&fresh, by_of(caller), now);
         let mut fields = planned.fields.clone();
@@ -1070,8 +1571,14 @@ impl BoardSvc {
         } else if fields != fresh.fields {
             fields.extra_revisions += 1;
         }
-        if fields != fresh.fields {
-            map.insert(id, fields.clone());
+        let new_state = fields.state(record.column);
+        let state_became_blocker_gone =
+            new_state != fresh.state() && matches!(new_state, State::WontDo | State::Became);
+        if fields != fresh.fields || state_became_blocker_gone {
+            map.insert(id.clone(), fields.clone());
+            if state_became_blocker_gone {
+                self.notify_blocker_gone(&mut map, &id, new_state, &fields.became_keys)?;
+            }
             saved::save(&self.store, &map)?;
         }
         let entry = Entry { record, fields };
@@ -1176,6 +1683,10 @@ struct Parsed {
     effort: Option<Option<Effort>>,
     impact: Option<Option<Impact>>,
     state: Option<State>,
+    need: Option<Option<Need>>,
+    fuzzy_due: Option<Option<FuzzyDue>>,
+    owner: Option<TodoOwnerRow>,
+    checkpoint: Option<Option<CheckpointState>>,
 }
 
 impl Parsed {
@@ -1194,6 +1705,23 @@ impl Parsed {
             state: patch
                 .state
                 .map(|value| state_of(value, "patch.state"))
+                .transpose()?,
+            need: patch
+                .need
+                .map(|value| need_of(value, "patch.need"))
+                .transpose()?,
+            fuzzy_due: patch
+                .fuzzy_due
+                .map(|value| fuzzy_due_of(value, "patch.fuzzy_due"))
+                .transpose()?,
+            owner: patch
+                .owner
+                .as_ref()
+                .map(|owner| owner_of(owner, "patch.owner"))
+                .transpose()?,
+            checkpoint: patch
+                .checkpoint
+                .map(|value| checkpoint_of(value, "patch.checkpoint"))
                 .transpose()?,
         })
     }
@@ -1347,6 +1875,59 @@ fn apply_patch(
     if patch.accept_suggestion {
         fields.suggested = false;
     }
+    if let Some(need) = parsed.need {
+        fields.need = need;
+    }
+    if let Some(fuzzy_due) = parsed.fuzzy_due {
+        fields.fuzzy_due = fuzzy_due;
+    }
+    if patch.clear_external_block {
+        fields.external_block = None;
+    } else if let Some(block) = &patch.external_block {
+        fields.external_block = Some(external_block_of(block, now));
+    }
+    if patch.clear_owner {
+        fields.owner = None;
+    } else if let Some(owner) = &parsed.owner {
+        fields.owner = Some(owner.clone());
+    }
+    if let Some(checkpoint) = parsed.checkpoint {
+        fields.checkpoint = checkpoint;
+    }
+    if let Some(reason) = &patch.wont_do_reason {
+        let trimmed = reason.trim();
+        fields.wont_do_reason = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+    }
+    if !patch.watched_prs_add.is_empty() {
+        for pr_pb in &patch.watched_prs_add {
+            let pr = watched_pr_of(pr_pb);
+            let key = pr.repo_pr();
+            if let Some(existing) = fields
+                .watched_prs
+                .iter_mut()
+                .find(|p| p.repo_pr() == key)
+            {
+                *existing = pr.clone();
+            } else {
+                fields.watched_prs.push(pr.clone());
+            }
+            for prompt in pr_watch::evaluate_watched_pr(&pr) {
+                if !fields
+                    .lifecycle_prompts
+                    .iter()
+                    .any(|existing| existing.id == prompt.id)
+                {
+                    fields.lifecycle_prompts.push(prompt);
+                }
+            }
+        }
+        let commits = fields.close_readiness.as_ref().map_or(0, |cr| cr.commits);
+        fields.close_readiness = Some(pr_watch::compute_close_readiness(
+            &fields.steps,
+            &fields.watched_prs,
+            commits,
+        ));
+    }
     let mut column = None;
     if let Some(state) = parsed.state
         && state != from.state()
@@ -1355,7 +1936,7 @@ fn apply_patch(
         column = (target != record.column).then_some(target);
         fields.state = Some(state);
         fields.state_column = Some(target);
-        fields.closed_at_ms = (state == State::Closed).then_some(now);
+        fields.closed_at_ms = state.is_terminal().then_some(now);
     }
     Planned {
         fields,
@@ -1523,6 +2104,828 @@ impl pb::todo_service_server::TodoService for BoardSvc {
         blocking(move || me.dismiss_migration_in(now_ms()))
             .await?
             .map(Response::new)
+    }
+
+    async fn add_todo_comment(
+        &self,
+        request: Request<pb::AddTodoCommentRequest>,
+    ) -> Result<Response<pb::AddTodoCommentResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.add_todo_comment_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn split_todo(
+        &self,
+        request: Request<pb::SplitTodoRequest>,
+    ) -> Result<Response<pb::SplitTodoResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.split_todo_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn fold_todo_into_step(
+        &self,
+        request: Request<pb::FoldTodoIntoStepRequest>,
+    ) -> Result<Response<pb::FoldTodoIntoStepResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.fold_todo_into_step_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn batch_update_todo(
+        &self,
+        request: Request<pb::BatchUpdateTodoRequest>,
+    ) -> Result<Response<pb::BatchUpdateTodoResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.batch_update_todo_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn list_todo_runs(
+        &self,
+        request: Request<pb::ListTodoRunsRequest>,
+    ) -> Result<Response<pb::ListTodoRunsResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.list_todo_runs_in(&caller, &request))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn get_todo_history(
+        &self,
+        request: Request<pb::GetTodoHistoryRequest>,
+    ) -> Result<Response<pb::GetTodoHistoryResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.get_todo_history_in(&caller, &request))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn resolve_todo_ownership(
+        &self,
+        request: Request<pb::ResolveTodoOwnershipRequest>,
+    ) -> Result<Response<pb::WriteTodoResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.resolve_todo_ownership_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn resolve_blocker_gone(
+        &self,
+        request: Request<pb::ResolveBlockerGoneRequest>,
+    ) -> Result<Response<pb::WriteTodoResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.resolve_blocker_gone_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+
+    async fn resolve_lifecycle_prompt(
+        &self,
+        request: Request<pb::ResolveLifecyclePromptRequest>,
+    ) -> Result<Response<pb::WriteTodoResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.resolve_lifecycle_prompt_in(&caller, &request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
+}
+
+impl BoardSvc {
+    pub(super) fn add_todo_comment_in(
+        &self,
+        caller: &Caller,
+        request: &pb::AddTodoCommentRequest,
+        now: i64,
+    ) -> Result<pb::AddTodoCommentResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let id = item_id(request.id.as_ref())?;
+        let body = request.body.trim();
+        if body.is_empty() {
+            return Err(missing("body"));
+        }
+        let _write = lock(&self.writes);
+        let record = self.load(caller, &id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut fields = map.get(&id).cloned().unwrap_or_default();
+        let author = match caller {
+            Caller::User(_) => "You".to_owned(),
+            _ => by_of(caller),
+        };
+        let comment = TodoCommentRow {
+            id: format!("cmt-{}-{}", fields.comments.len() + 1, now),
+            author,
+            body: body.to_owned(),
+            created_at_ms: now,
+            step_id: (!request.step_id.is_empty()).then(|| request.step_id.clone()),
+        };
+        fields.comments.push(comment.clone());
+        fields.extra_revisions += 1;
+        let rev = record.revision + fields.extra_revisions;
+        fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::Commented as i32,
+            field: "comment".to_owned(),
+            before: String::new(),
+            after: comment.body.clone(),
+            change: format!("commented: {}", comment.body),
+            revision: rev,
+        });
+        map.insert(id, fields.clone());
+        saved::save(&self.store, &map)?;
+        let entry = Entry { record, fields };
+        let archived = self.archived()?;
+        self.tell(caller, pb::Change::Updated, &entry.shown_record(), &archived);
+        Ok(pb::AddTodoCommentResponse {
+            item: Some(self.todo_item(caller, &entry, &[], &archived)),
+            comment: Some(pb::TodoComment {
+                id: comment.id,
+                author: comment.author,
+                body: comment.body,
+                created_at: Some(timestamp_ms(comment.created_at_ms)),
+                step_id: comment.step_id.unwrap_or_default(),
+            }),
+        })
+    }
+
+    pub(super) fn split_todo_in(
+        &self,
+        caller: &Caller,
+        request: &pb::SplitTodoRequest,
+        now: i64,
+    ) -> Result<pb::SplitTodoResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let id = item_id(request.id.as_ref())?;
+        let titles: Vec<String> = request
+            .titles
+            .iter()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if titles.is_empty() {
+            return Err(missing("titles"));
+        }
+        let _write = lock(&self.writes);
+        let source_record = self.load(caller, &id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut source_fields = map.get(&id).cloned().unwrap_or_default();
+        let created_at = if request.keep_age {
+            source_record.created_unix_ms
+        } else {
+            now
+        };
+        let channel = source_fields
+            .channel
+            .clone()
+            .unwrap_or_else(|| source_record.channel.clone());
+        let board = if channel.is_empty() {
+            BoardKey::Global
+        } else {
+            BoardKey::Channel(channel.clone())
+        };
+        let owner = match &board {
+            BoardKey::Global => keys::GLOBAL_OWNER.to_owned(),
+            _ => channel.clone(),
+        };
+        keys::prefix_of(&self.store, &owner, &channel)
+            .map_err(|error| self.failed(error, "choose the item's key prefix"))?;
+
+        let mut created_entries = Vec::with_capacity(titles.len());
+        let mut created_keys = Vec::with_capacity(titles.len());
+        for title in titles {
+            let rank = self.rank_in(&board, DEFAULT_COLUMN, "", None)?;
+            let rec = self
+                .store
+                .create_board_item(&NewBoardItem {
+                    board: board.clone(),
+                    channel: channel.clone(),
+                    title,
+                    description: String::new(),
+                    column: DEFAULT_COLUMN,
+                    rank,
+                    created_by: by_of(caller),
+                    at_unix_ms: created_at,
+                    sessions: Vec::new(),
+                    depends_on: Vec::new(),
+                })
+                .map_err(|error| self.failed(error, "make the split item"))?;
+            let child_fields = Fields {
+                from_keys: vec![id.clone()],
+                need: source_fields.need,
+                tags: source_fields.tags.clone(),
+                channel: source_fields.channel.clone(),
+                ..Fields::default()
+            };
+            created_keys.push(rec.key.clone());
+            map.insert(rec.key.clone(), child_fields.clone());
+            created_entries.push(Entry {
+                record: rec,
+                fields: child_fields,
+            });
+        }
+
+        let target_col = saved::column_for(State::Became, source_record.column);
+        let updated_source = if target_col != source_record.column {
+            let rank = self.rank_in(&source_record.board, target_col, &id, None)?;
+            match self
+                .store
+                .change_board_item(&BoardItemChange {
+                    key: id.clone(),
+                    expected_revision: None,
+                    by: by_of(caller),
+                    at_unix_ms: now,
+                    title: None,
+                    description: None,
+                    column: Some(target_col),
+                    rank: Some(rank),
+                    sessions: None,
+                    depends_on: None,
+                    delete: false,
+                    cause: String::new(),
+                })
+                .map_err(|error| self.failed(error, "update split source item"))?
+            {
+                BoardWrite::Applied(item) => item,
+                _ => source_record.clone(),
+            }
+        } else {
+            source_record.clone()
+        };
+        source_fields.state = Some(State::Became);
+        source_fields.state_column = Some(target_col);
+        source_fields.closed_at_ms = Some(now);
+        source_fields.became_keys = merged(&source_fields.became_keys, &created_keys, &[]);
+        source_fields.extra_revisions += 1;
+        let rev = updated_source.revision + source_fields.extra_revisions;
+        source_fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::Split as i32,
+            field: "became_keys".to_owned(),
+            before: String::new(),
+            after: created_keys.join(", "),
+            change: format!("split into {}", created_keys.join(", ")),
+            revision: rev,
+        });
+        map.insert(id.clone(), source_fields.clone());
+        self.notify_blocker_gone(&mut map, &id, State::Became, &created_keys)?;
+        saved::save(&self.store, &map)?;
+
+        let archived = self.archived()?;
+        let source_entry = Entry {
+            record: updated_source,
+            fields: source_fields,
+        };
+        self.tell(
+            caller,
+            pb::Change::Updated,
+            &source_entry.shown_record(),
+            &archived,
+        );
+        for child in &created_entries {
+            self.tell(caller, pb::Change::Created, &child.shown_record(), &archived);
+        }
+        Ok(pb::SplitTodoResponse {
+            source: Some(self.todo_item(caller, &source_entry, &[], &archived)),
+            created: created_entries
+                .iter()
+                .map(|e| self.todo_item(caller, e, &[], &archived))
+                .collect(),
+        })
+    }
+
+    pub(super) fn fold_todo_into_step_in(
+        &self,
+        caller: &Caller,
+        request: &pb::FoldTodoIntoStepRequest,
+        now: i64,
+    ) -> Result<pb::FoldTodoIntoStepResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let source_id = item_id(request.source_id.as_ref())?;
+        let target_id = item_id(request.target_id.as_ref())?;
+        if source_id == target_id {
+            return Err(invalid_field(
+                "target_id",
+                Problem::NotAllowedHere,
+                "cannot fold an item into itself",
+                "choose a different target item",
+            ));
+        }
+        let _write = lock(&self.writes);
+        let source_record = self.load(caller, &source_id, false)?;
+        let target_record = self.load(caller, &target_id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut source_fields = map.get(&source_id).cloned().unwrap_or_default();
+        let mut target_fields = map.get(&target_id).cloned().unwrap_or_default();
+
+        let step = StepRow {
+            id: format!("step-fold-{}-{}", target_fields.steps.len() + 1, now),
+            text: source_record.title.clone(),
+            done: false,
+            ticked_by: None,
+            markdown_context: (!source_record.description.is_empty())
+                .then(|| source_record.description.clone()),
+            dropped: false,
+            from_key: Some(source_id.clone()),
+            source_anchor: source_fields.source_anchor.clone(),
+        };
+        target_fields.steps.push(step);
+        target_fields.from_keys = merged(&target_fields.from_keys, &[source_id.clone()], &[]);
+        target_fields.extra_revisions += 1;
+        let target_rev = target_record.revision + target_fields.extra_revisions;
+        target_fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::Folded as i32,
+            field: "steps".to_owned(),
+            before: String::new(),
+            after: source_record.title.clone(),
+            change: format!("folded {source_id} into step"),
+            revision: target_rev,
+        });
+
+        let target_col = saved::column_for(State::Became, source_record.column);
+        let updated_source = if target_col != source_record.column {
+            let rank = self.rank_in(&source_record.board, target_col, &source_id, None)?;
+            match self
+                .store
+                .change_board_item(&BoardItemChange {
+                    key: source_id.clone(),
+                    expected_revision: None,
+                    by: by_of(caller),
+                    at_unix_ms: now,
+                    title: None,
+                    description: None,
+                    column: Some(target_col),
+                    rank: Some(rank),
+                    sessions: None,
+                    depends_on: None,
+                    delete: false,
+                    cause: String::new(),
+                })
+                .map_err(|error| self.failed(error, "update folded source item"))?
+            {
+                BoardWrite::Applied(item) => item,
+                _ => source_record.clone(),
+            }
+        } else {
+            source_record.clone()
+        };
+        source_fields.state = Some(State::Became);
+        source_fields.state_column = Some(target_col);
+        source_fields.closed_at_ms = Some(now);
+        source_fields.became_keys = merged(&source_fields.became_keys, &[target_id.clone()], &[]);
+        source_fields.extra_revisions += 1;
+        let source_rev = updated_source.revision + source_fields.extra_revisions;
+        source_fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::Folded as i32,
+            field: "became_keys".to_owned(),
+            before: String::new(),
+            after: target_id.clone(),
+            change: format!("folded into {target_id}"),
+            revision: source_rev,
+        });
+
+        map.insert(source_id.clone(), source_fields.clone());
+        map.insert(target_id.clone(), target_fields.clone());
+        self.notify_blocker_gone(&mut map, &source_id, State::Became, &[target_id.clone()])?;
+        saved::save(&self.store, &map)?;
+
+        let archived = self.archived()?;
+        let source_entry = Entry {
+            record: updated_source,
+            fields: source_fields,
+        };
+        let target_entry = Entry {
+            record: target_record,
+            fields: target_fields,
+        };
+        self.tell(
+            caller,
+            pb::Change::Updated,
+            &source_entry.shown_record(),
+            &archived,
+        );
+        self.tell(
+            caller,
+            pb::Change::Updated,
+            &target_entry.shown_record(),
+            &archived,
+        );
+        Ok(pb::FoldTodoIntoStepResponse {
+            source: Some(self.todo_item(caller, &source_entry, &[], &archived)),
+            target: Some(self.todo_item(caller, &target_entry, &[], &archived)),
+        })
+    }
+
+    pub(super) fn batch_update_todo_in(
+        &self,
+        caller: &Caller,
+        request: &pb::BatchUpdateTodoRequest,
+        now: i64,
+    ) -> Result<pb::BatchUpdateTodoResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let mut updated = Vec::new();
+        let mut failed = Vec::new();
+        for entry in &request.entries {
+            let key = entry
+                .id
+                .as_ref()
+                .map(|id| id.value.clone())
+                .unwrap_or_default();
+            let update_req = pb::UpdateTodoRequest {
+                idempotency_key: None,
+                id: entry.id.clone(),
+                patch: entry.patch.clone(),
+                expected_revision: entry.expected_revision,
+                reason: String::new(),
+                evidence: Vec::new(),
+            };
+            match self.update_todo_in(caller, &update_req, false, now) {
+                Ok(TodoApplied::Done(resp)) => {
+                    if let Some(item) = resp.item {
+                        updated.push(item);
+                    }
+                }
+                Ok(TodoApplied::Ask(..)) => {
+                    failed.push(pb::BatchUpdateTodoFailure {
+                        id: entry.id.clone(),
+                        key,
+                        reason: "requires approval".to_owned(),
+                    });
+                }
+                Err(status) => {
+                    failed.push(pb::BatchUpdateTodoFailure {
+                        id: entry.id.clone(),
+                        key,
+                        reason: status.message().to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(pb::BatchUpdateTodoResponse { updated, failed })
+    }
+
+    pub(super) fn list_todo_runs_in(
+        &self,
+        caller: &Caller,
+        request: &pb::ListTodoRunsRequest,
+    ) -> Result<pb::ListTodoRunsResponse, Status> {
+        Self::refuse_peer(caller)?;
+        let id = item_id(request.id.as_ref())?;
+        let _record = self.load(caller, &id, true)?;
+        let records = self
+            .store
+            .list_todo_runs(&id)
+            .map_err(|error| self.failed(error, "list to-do runs"))?;
+        let mut total_cost_micros = 0u64;
+        let runs = records
+            .into_iter()
+            .map(|r| {
+                total_cost_micros = total_cost_micros.saturating_add(r.cost_micros);
+                let links: Vec<domain::RunLink> =
+                    serde_json::from_str(&r.links_json).unwrap_or_default();
+                pb::TodoRun {
+                    id: r.id,
+                    tool: r.tool,
+                    model: r.model,
+                    outcome: r.outcome,
+                    cost_micros: r.cost_micros,
+                    started_at: (r.started_unix_ms > 0).then(|| timestamp_ms(r.started_unix_ms)),
+                    finished_at: (r.finished_unix_ms > 0).then(|| timestamp_ms(r.finished_unix_ms)),
+                    links: links
+                        .into_iter()
+                        .map(|l| pb::RunLink {
+                            label: l.label,
+                            target: l.target,
+                        })
+                        .collect(),
+                    session: (!r.session.is_empty()).then(|| pb::SessionId { value: r.session }),
+                }
+            })
+            .collect();
+        Ok(pb::ListTodoRunsResponse {
+            runs,
+            total_cost_micros,
+        })
+    }
+
+    pub(super) fn get_todo_history_in(
+        &self,
+        caller: &Caller,
+        request: &pb::GetTodoHistoryRequest,
+    ) -> Result<pb::GetTodoHistoryResponse, Status> {
+        Self::refuse_peer(caller)?;
+        let id = item_id(request.id.as_ref())?;
+        let _record = self.load(caller, &id, true)?;
+        let (size, start) = page_of(request.page.as_ref())?;
+        let store_rows = self
+            .store
+            .board_item_history(&id, 0, usize::MAX / 2)
+            .map_err(|error| self.failed(error, "read item history"))?;
+        let fields = saved::load(&self.store)?
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut all: Vec<(i64, pb::ItemHistoryEntry)> = store_rows
+            .iter()
+            .map(|row| (row.at_unix_ms, entry_pb(row, self.actor_of(&row.by))))
+            .collect();
+        for extra in &fields.extra_history {
+            let diff = word_diff_pb(&extra.before, &extra.after);
+            all.push((
+                extra.at_unix_ms,
+                pb::ItemHistoryEntry {
+                    at: Some(pb::Timestamped {
+                        at: Some(timestamp_ms(extra.at_unix_ms)),
+                        by: Some(self.actor_of(&extra.by)),
+                    }),
+                    change: extra.change.clone(),
+                    lost_conflict: false,
+                    journal: None,
+                    revision: Some(pb::Revision {
+                        value: extra.revision,
+                    }),
+                    kind: extra.kind,
+                    field: extra.field.clone(),
+                    before: extra.before.clone(),
+                    after: extra.after.clone(),
+                    cause: None,
+                    word_diff: diff,
+                },
+            ));
+        }
+        all.sort_by_key(|(at, _)| *at);
+        let total = all.len();
+        let page_entries: Vec<pb::ItemHistoryEntry> = all
+            .into_iter()
+            .skip(start)
+            .take(size)
+            .map(|(_, e)| e)
+            .collect();
+        let next_page_token = if start + page_entries.len() < total {
+            (start + page_entries.len()).to_string()
+        } else {
+            String::new()
+        };
+        Ok(pb::GetTodoHistoryResponse {
+            entries: page_entries,
+            page: Some(pb::PageResponse { next_page_token }),
+        })
+    }
+
+    pub(super) fn resolve_todo_ownership_in(
+        &self,
+        caller: &Caller,
+        request: &pb::ResolveTodoOwnershipRequest,
+        now: i64,
+    ) -> Result<pb::WriteTodoResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let id = item_id(request.id.as_ref())?;
+        let _write = lock(&self.writes);
+        let record = self.load(caller, &id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut fields = map.get(&id).cloned().unwrap_or_default();
+        let change_desc = if request.take_back {
+            ownership::take_back_ownership(&mut fields, "You");
+            "took back ownership".to_owned()
+        } else if request.retry {
+            ownership::retry_stuck_agent(&mut fields);
+            "retried stuck agent".to_owned()
+        } else {
+            return Err(missing("take_back or retry"));
+        };
+        fields.extra_revisions += 1;
+        let rev = record.revision + fields.extra_revisions;
+        fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::OwnerChanged as i32,
+            field: "owner".to_owned(),
+            before: String::new(),
+            after: change_desc.clone(),
+            change: change_desc,
+            revision: rev,
+        });
+        map.insert(id, fields.clone());
+        saved::save(&self.store, &map)?;
+        let entry = Entry { record, fields };
+        let archived = self.archived()?;
+        self.tell(caller, pb::Change::Updated, &entry.shown_record(), &archived);
+        Ok(pb::WriteTodoResponse {
+            delivery: pb::Delivery::Applied as i32,
+            item: Some(self.todo_item(caller, &entry, &[], &archived)),
+            journal: None,
+            provisional_id: None,
+        })
+    }
+
+    pub(super) fn resolve_blocker_gone_in(
+        &self,
+        caller: &Caller,
+        request: &pb::ResolveBlockerGoneRequest,
+        now: i64,
+    ) -> Result<pb::WriteTodoResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let id = item_id(request.id.as_ref())?;
+        let blocker_key = request.blocker_key.trim();
+        if blocker_key.is_empty() {
+            return Err(missing("blocker_key"));
+        }
+        let _write = lock(&self.writes);
+        let mut record = self.load(caller, &id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut fields = map.get(&id).cloned().unwrap_or_default();
+        fields
+            .blocker_gone
+            .retain(|bg| bg.blocker_key != blocker_key);
+
+        let action = request.action.trim().to_lowercase();
+        let mut new_deps = record.depends_on.clone();
+        new_deps.retain(|k| k != blocker_key);
+        let mut new_col = None;
+        match action.as_str() {
+            "rewire" => {
+                let rewire = clean_tags(&request.rewire_to_keys);
+                new_deps = merged(&new_deps, &rewire, &[]);
+                let edges = self.all_dependency_edges()?;
+                if let Some(cycle) = ownership::find_cycle(&id, &new_deps, &edges) {
+                    return Err(super::dependency_loop(&cycle));
+                }
+            }
+            "close" => {
+                let target_col = saved::column_for(State::Closed, record.column);
+                new_col = (target_col != record.column).then_some(target_col);
+                fields.state = Some(State::Closed);
+                fields.state_column = Some(target_col);
+                fields.closed_at_ms = Some(now);
+            }
+            "wont_do" => {
+                let target_col = saved::column_for(State::WontDo, record.column);
+                new_col = (target_col != record.column).then_some(target_col);
+                fields.state = Some(State::WontDo);
+                fields.state_column = Some(target_col);
+                fields.closed_at_ms = Some(now);
+            }
+            _ => {}
+        }
+
+        if new_deps != record.depends_on || new_col.is_some() {
+            let rank = match new_col {
+                Some(col) => Some(self.rank_in(&record.board, col, &id, None)?),
+                None => None,
+            };
+            let write = self
+                .store
+                .change_board_item(&BoardItemChange {
+                    key: id.clone(),
+                    expected_revision: None,
+                    by: by_of(caller),
+                    at_unix_ms: now,
+                    title: None,
+                    description: None,
+                    column: new_col,
+                    rank,
+                    sessions: None,
+                    depends_on: (new_deps != record.depends_on).then_some(new_deps),
+                    delete: false,
+                    cause: String::new(),
+                })
+                .map_err(|error| self.failed(error, "resolve blocker gone"))?;
+            if let BoardWrite::Applied(item) = write {
+                record = item;
+            }
+        }
+        fields.extra_revisions += 1;
+        map.insert(id, fields.clone());
+        saved::save(&self.store, &map)?;
+        let entry = Entry { record, fields };
+        let archived = self.archived()?;
+        self.tell(caller, pb::Change::Updated, &entry.shown_record(), &archived);
+        Ok(pb::WriteTodoResponse {
+            delivery: pb::Delivery::Applied as i32,
+            item: Some(self.todo_item(caller, &entry, &[], &archived)),
+            journal: None,
+            provisional_id: None,
+        })
+    }
+
+    pub(super) fn resolve_lifecycle_prompt_in(
+        &self,
+        caller: &Caller,
+        request: &pb::ResolveLifecyclePromptRequest,
+        now: i64,
+    ) -> Result<pb::WriteTodoResponse, Status> {
+        Self::refuse_peer(caller)?;
+        self.ensure_migrated(now)?;
+        let id = item_id(request.id.as_ref())?;
+        let prompt_id = request.prompt_id.trim();
+        if prompt_id.is_empty() {
+            return Err(missing("prompt_id"));
+        }
+        let _write = lock(&self.writes);
+        let mut record = self.load(caller, &id, false)?;
+        let mut map = saved::load(&self.store)?;
+        let mut fields = map.get(&id).cloned().unwrap_or_default();
+        fields.lifecycle_prompts.retain(|p| p.id != prompt_id);
+
+        let choice = request.choice.trim();
+        let next_state = match choice.to_lowercase().as_str() {
+            "close" => Some(State::Closed),
+            "won't do" | "wont_do" => Some(State::WontDo),
+            "return to open" | "pause" | "open" => Some(State::Open),
+            "resume" | "in progress" => Some(State::InProgress),
+            _ => None,
+        };
+        if let Some(state) = next_state {
+            let target_col = saved::column_for(state, record.column);
+            if target_col != record.column {
+                let rank = self.rank_in(&record.board, target_col, &id, None)?;
+                if let BoardWrite::Applied(item) = self
+                    .store
+                    .change_board_item(&BoardItemChange {
+                        key: id.clone(),
+                        expected_revision: None,
+                        by: by_of(caller),
+                        at_unix_ms: now,
+                        title: None,
+                        description: None,
+                        column: Some(target_col),
+                        rank: Some(rank),
+                        sessions: None,
+                        depends_on: None,
+                        delete: false,
+                        cause: String::new(),
+                    })
+                    .map_err(|error| self.failed(error, "resolve lifecycle prompt"))?
+                {
+                    record = item;
+                }
+            }
+            fields.state = Some(state);
+            fields.state_column = Some(target_col);
+            fields.closed_at_ms = state.is_terminal().then_some(now);
+            if matches!(state, State::WontDo | State::Became) {
+                self.notify_blocker_gone(&mut map, &id, state, &fields.became_keys)?;
+            }
+        }
+        fields.extra_revisions += 1;
+        let rev = record.revision + fields.extra_revisions;
+        fields.extra_history.push(TodoHistoryRow {
+            at_unix_ms: now,
+            by: by_of(caller),
+            kind: pb::HistoryKind::PrSynced as i32,
+            field: "lifecycle_prompt".to_owned(),
+            before: prompt_id.to_owned(),
+            after: choice.to_owned(),
+            change: format!("resolved prompt {prompt_id}: {choice}"),
+            revision: rev,
+        });
+        map.insert(id, fields.clone());
+        saved::save(&self.store, &map)?;
+        let entry = Entry { record, fields };
+        let archived = self.archived()?;
+        self.tell(caller, pb::Change::Updated, &entry.shown_record(), &archived);
+        Ok(pb::WriteTodoResponse {
+            delivery: pb::Delivery::Applied as i32,
+            item: Some(self.todo_item(caller, &entry, &[], &archived)),
+            journal: None,
+            provisional_id: None,
+        })
     }
 }
 
@@ -2109,6 +3512,7 @@ mod tests {
                         text: "one".to_owned(),
                         done: true,
                         ticked_by: None,
+                        ..Default::default()
                     }],
                 }),
                 ..Default::default()
@@ -2643,5 +4047,362 @@ mod tests {
             at,
         );
         assert!(!live.ask_detail.session_ended);
+    }
+
+    #[test]
+    fn todo2_extended_fields_watched_pr_and_lifecycle_prompt_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        let created = add(&svc, "Ship PR watcher", None, |req| {
+            req.need = pb::TodoNeed::Critical as i32;
+            req.fuzzy_due = pb::TodoFuzzyDue::NextWeek as i32;
+            req.external_block = Some(pb::ExternalBlock {
+                reason: "Waiting on design".into(),
+                since: None,
+            });
+            req.from_keys = vec!["OLD-1".into()];
+            req.source_anchor = Some(pb::SourceAnchor {
+                repo: "acme/api".into(),
+                path: "src/lib.rs".into(),
+                line: 42,
+                end_line: 45,
+                comment_id: "c1".into(),
+            });
+        });
+        let fields = created.fields.as_ref().unwrap();
+        assert_eq!(fields.need, pb::TodoNeed::Critical as i32);
+        assert_eq!(fields.fuzzy_due, pb::TodoFuzzyDue::NextWeek as i32);
+        assert_eq!(
+            fields.external_block.as_ref().unwrap().reason,
+            "Waiting on design"
+        );
+        assert_eq!(fields.from_keys, vec!["OLD-1"]);
+        assert_eq!(fields.source_anchor.as_ref().unwrap().line, 42);
+
+        let key = key_of(&created);
+        let updated = done(
+            svc.update_todo_in(
+                &user(),
+                &pb::UpdateTodoRequest {
+                    id: Some(pb::BoardItemId { value: key.clone() }),
+                    patch: Some(pb::TodoPatch {
+                        state: Some(pb::TodoState::WatchingPr as i32),
+                        checkpoint: Some(pb::TodoCheckpoint::Defined as i32),
+                        clear_external_block: true,
+                        watched_prs_add: vec![pb::WatchedPr {
+                            pr: Some(pb::PullRequestRef {
+                                repo: Some(pb::RepoRef {
+                                    owner: "acme".into(),
+                                    name: "api".into(),
+                                }),
+                                number: 99,
+                                note: String::new(),
+                            }),
+                            title: "Add watcher".into(),
+                            ci_state: "passing".into(),
+                            merged: true,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                false,
+                now(),
+            )
+            .unwrap(),
+        );
+        let uf = updated.fields.as_ref().unwrap();
+        assert_eq!(uf.state, pb::TodoState::WatchingPr as i32);
+        assert_eq!(uf.checkpoint, pb::TodoCheckpoint::Defined as i32);
+        assert!(uf.external_block.is_none());
+        assert_eq!(uf.lifecycle_prompts.len(), 1);
+        let prompt_id = uf.lifecycle_prompts[0].id.clone();
+
+        let resolved = svc
+            .resolve_lifecycle_prompt_in(
+                &user(),
+                &pb::ResolveLifecyclePromptRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId { value: key }),
+                    prompt_id,
+                    choice: "Close".into(),
+                },
+                now(),
+            )
+            .unwrap();
+        let rf = resolved.item.unwrap().fields.unwrap();
+        assert_eq!(rf.state, pb::TodoState::Closed as i32);
+        assert!(rf.lifecycle_prompts.is_empty());
+    }
+
+    #[test]
+    fn todo2_cycle_detection_and_blocker_gone_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        let a = add(&svc, "Task A", None, |_| {});
+        let key_a = key_of(&a);
+        let b = add(&svc, "Task B", None, |req| {
+            req.depends_on = vec![pb::BoardItemId {
+                value: key_a.clone(),
+            }];
+        });
+        let key_b = key_of(&b);
+
+        // Adding A depends_on B closes a cycle A -> B -> A and must be rejected.
+        let err = svc
+            .update_todo_in(
+                &user(),
+                &pb::UpdateTodoRequest {
+                    id: Some(pb::BoardItemId {
+                        value: key_a.clone(),
+                    }),
+                    patch: Some(pb::TodoPatch {
+                        depends_on_add: vec![pb::BoardItemId {
+                            value: key_b.clone(),
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                false,
+                now(),
+            )
+            .err()
+            .expect("expected dependency cycle error");
+        assert_eq!(err.code(), Code::FailedPrecondition);
+
+        // Marking A as Won't do triggers BlockerGone on B.
+        svc.update_todo_in(
+            &user(),
+            &pb::UpdateTodoRequest {
+                id: Some(pb::BoardItemId {
+                    value: key_a.clone(),
+                }),
+                patch: Some(pb::TodoPatch {
+                    state: Some(pb::TodoState::WontDo as i32),
+                    wont_do_reason: Some("Out of scope".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            false,
+            now(),
+        )
+        .unwrap();
+
+        let list = svc
+            .list_todo_in(&user(), &pb::ListTodoRequest::default(), &[], now())
+            .unwrap();
+        let b_item = list
+            .items
+            .iter()
+            .find(|i| key_of(i) == key_b)
+            .unwrap();
+        assert_eq!(b_item.fields.as_ref().unwrap().blocker_gone.len(), 1);
+        assert_eq!(
+            b_item.fields.as_ref().unwrap().blocker_gone[0].blocker_key,
+            key_a
+        );
+
+        // Resolving BlockerGone with "unblock" removes the notice and dependency.
+        let resolved = svc
+            .resolve_blocker_gone_in(
+                &user(),
+                &pb::ResolveBlockerGoneRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId { value: key_b }),
+                    blocker_key: key_a,
+                    action: "unblock".into(),
+                    rewire_to_keys: Vec::new(),
+                },
+                now(),
+            )
+            .unwrap();
+        let item = resolved.item.unwrap();
+        assert!(item.fields.unwrap().blocker_gone.is_empty());
+        assert!(item.item.unwrap().depends_on.is_empty());
+    }
+
+    #[test]
+    fn todo2_split_fold_comments_batch_runs_history_and_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        let parent = add(&svc, "Big epic", None, |_| {});
+        let parent_key = key_of(&parent);
+
+        // Comment + title edit -> GetTodoHistory includes word_diff and comment.
+        let cmt = svc
+            .add_todo_comment_in(
+                &user(),
+                &pb::AddTodoCommentRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId {
+                        value: parent_key.clone(),
+                    }),
+                    body: "Looks good".into(),
+                    step_id: String::new(),
+                },
+                now(),
+            )
+            .unwrap();
+        assert_eq!(cmt.comment.unwrap().body, "Looks good");
+        svc.update_todo_in(
+            &user(),
+            &pb::UpdateTodoRequest {
+                id: Some(pb::BoardItemId {
+                    value: parent_key.clone(),
+                }),
+                patch: Some(pb::TodoPatch {
+                    title: Some("Big auth epic".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            false,
+            now() + 10,
+        )
+        .unwrap();
+        let hist = svc
+            .get_todo_history_in(
+                &user(),
+                &pb::GetTodoHistoryRequest {
+                    id: Some(pb::BoardItemId {
+                        value: parent_key.clone(),
+                    }),
+                    page: None,
+                },
+            )
+            .unwrap();
+        assert!(hist.entries.iter().any(|e| !e.word_diff.is_empty()));
+        assert!(
+            hist.entries
+                .iter()
+                .any(|e| e.kind == pb::HistoryKind::Commented as i32)
+        );
+
+        // SplitTodo
+        let split = svc
+            .split_todo_in(
+                &user(),
+                &pb::SplitTodoRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId {
+                        value: parent_key.clone(),
+                    }),
+                    titles: vec!["Part 1".into(), "Part 2".into()],
+                    keep_age: true,
+                },
+                now() + 20,
+            )
+            .unwrap();
+        assert_eq!(split.created.len(), 2);
+        let k1 = key_of(&split.created[0]);
+        let k2 = key_of(&split.created[1]);
+        let sf = split.source.unwrap().fields.unwrap();
+        assert_eq!(sf.state, pb::TodoState::Became as i32);
+        assert_eq!(sf.became_keys, vec![k1.clone(), k2.clone()]);
+        assert_eq!(
+            split.created[0].fields.as_ref().unwrap().from_keys,
+            vec![parent_key]
+        );
+
+        // FoldTodoIntoStep
+        let folded = svc
+            .fold_todo_into_step_in(
+                &user(),
+                &pb::FoldTodoIntoStepRequest {
+                    idempotency_key: None,
+                    source_id: Some(pb::BoardItemId { value: k2.clone() }),
+                    target_id: Some(pb::BoardItemId { value: k1.clone() }),
+                },
+                now() + 30,
+            )
+            .unwrap();
+        assert_eq!(
+            folded.source.unwrap().fields.unwrap().state,
+            pb::TodoState::Became as i32
+        );
+        let tf = folded.target.unwrap().fields.unwrap();
+        assert_eq!(tf.steps.len(), 1);
+        assert_eq!(tf.steps[0].from_key, k2);
+
+        // BatchUpdateTodo partial failure isolation
+        let batch = svc
+            .batch_update_todo_in(
+                &user(),
+                &pb::BatchUpdateTodoRequest {
+                    idempotency_key: None,
+                    entries: vec![
+                        pb::BatchUpdateTodoEntry {
+                            id: Some(pb::BoardItemId { value: k1.clone() }),
+                            patch: Some(pb::TodoPatch {
+                                need: Some(pb::TodoNeed::Expected as i32),
+                                ..Default::default()
+                            }),
+                            expected_revision: None,
+                        },
+                        pb::BatchUpdateTodoEntry {
+                            id: Some(pb::BoardItemId {
+                                value: "MISSING-999".into(),
+                            }),
+                            patch: Some(pb::TodoPatch {
+                                need: Some(pb::TodoNeed::Critical as i32),
+                                ..Default::default()
+                            }),
+                            expected_revision: None,
+                        },
+                    ],
+                },
+                now() + 40,
+            )
+            .unwrap();
+        assert_eq!(batch.updated.len(), 1);
+        assert_eq!(batch.failed.len(), 1);
+        assert_eq!(batch.failed[0].key, "MISSING-999");
+
+        // ListTodoRuns
+        svc.store
+            .record_todo_run(&humata2_store::TodoRunRecord {
+                id: "run_a".into(),
+                item_key: k1.clone(),
+                tool: "claude".into(),
+                model: "sonnet".into(),
+                outcome: "done".into(),
+                cost_micros: 250_000,
+                started_unix_ms: 100,
+                finished_unix_ms: 200,
+                links_json: "[]".into(),
+                session: "se_1".into(),
+            })
+            .unwrap();
+        let runs = svc
+            .list_todo_runs_in(
+                &user(),
+                &pb::ListTodoRunsRequest {
+                    id: Some(pb::BoardItemId { value: k1.clone() }),
+                },
+            )
+            .unwrap();
+        assert_eq!(runs.runs.len(), 1);
+        assert_eq!(runs.total_cost_micros, 250_000);
+
+        // ResolveTodoOwnership
+        let owned = svc
+            .resolve_todo_ownership_in(
+                &user(),
+                &pb::ResolveTodoOwnershipRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId { value: k1 }),
+                    take_back: true,
+                    retry: false,
+                },
+                now() + 50,
+            )
+            .unwrap();
+        assert_eq!(
+            owned.item.unwrap().fields.unwrap().owner.unwrap().kind,
+            pb::TodoOwnerKind::User as i32
+        );
     }
 }

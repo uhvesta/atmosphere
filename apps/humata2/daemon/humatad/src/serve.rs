@@ -685,9 +685,10 @@ pub async fn run(
         Arc::new(crate::upgrade::holders::Split::new(&machine, Arc::new(upgrade.clone()), holders_slot.clone())),
         Arc::new(crate::upgrade::remote::Remote::of_host(host_slot.clone())),
     );
-    let migrations = crate::upgrade::items::Migrations::new(
+    let migrations = crate::upgrade::items::Migrations::new_with_state(
         crate::wire_upgrade::migrate_inbox(inbox.clone()),
         Arc::new(carry),
+        &state,
     );
     migrations.set_names(names.clone());
     // UP-1, D370, D371: a release the app staged beside this host's daemon,

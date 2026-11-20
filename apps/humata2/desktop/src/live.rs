@@ -2,6 +2,9 @@
 //! carries are, which backend to run on, installing the tools, and waiting
 //! for the daemon's socket.
 
+#[path = "notifier.rs"]
+pub(crate) mod notifier;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -305,6 +308,7 @@ async fn start_with<R: Send + 'static>(
         .map_err(|source| LiveStartError::Connect { source })?;
     let file_manager = humata2_clients_live::LiveFileManager::new(&daemon);
     let facts = daemon.facts().clone();
+    let (notifier, _notifier_bridge) = notifier::LiveNotifier::new();
     let clients = Clients {
         daemon: Arc::new(daemon.clone()),
         desk: Arc::new(daemon.clone()),
@@ -325,6 +329,7 @@ async fn start_with<R: Send + 'static>(
         file_manager: Arc::new(file_manager),
         keychain: Arc::new(FakeKeychain::default()),
         local_daemon,
+        notifier: Arc::new(notifier),
         storage,
     };
     Ok((clients, installed, facts))

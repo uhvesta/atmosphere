@@ -3,8 +3,10 @@
 //! never reads or logs a token. A listing is reused for a minute, so
 //! typing in the search box doesn't ask GitHub again on every key.
 
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use humata2_grpc::humata::v1 as pb;
@@ -15,9 +17,16 @@ use humata2_rpc_kit::failed;
 
 /// Repos kept from one listing, in `gh`'s order (most recently pushed first).
 const MAX_REPOS: usize = 1000;
+/// Repos kept per owner (org or user) in the per-owner catalog cache.
+const MAX_OWNER_REPOS: usize = 500;
 /// How long a listing is reused before `gh` is asked again.
 const CACHE_FOR: Duration = Duration::from_secs(60);
+/// How long a per-owner repo catalog is reused before `gh` is asked again.
+const OWNER_CACHE_FOR: Duration = Duration::from_secs(120);
 const DEFAULT_PAGE: usize = 50;
+/// Default page size for cached catalogs (`YourRepos` / `Owners`) so clients
+/// can filter locally without extra round-trips.
+pub const CATALOG_DEFAULT_PAGE: usize = 200;
 const MAX_PAGE: usize = 1000;
 const LIST_PATH: &str =
     "user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
@@ -59,6 +68,16 @@ pub enum GhReposError {
 }
 
 impl GhReposError {
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Self::Failed { stderr, .. } => {
+                let lower = stderr.to_ascii_lowercase();
+                lower.contains("404") || lower.contains("not found")
+            }
+            _ => false,
+        }
+    }
+
     fn code(&self) -> Code {
         match self {
             Self::Spawn { .. } | Self::Failed { .. } => Code::FailedPrecondition,
@@ -106,7 +125,7 @@ fn gh_failure(program: String, status: String, stderr: String) -> GhReposError {
 }
 
 /// One repo as `gh` listed it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Repo {
     pub owner: String,
     pub name: String,
@@ -119,6 +138,10 @@ pub struct Repo {
 impl Repo {
     fn full_name(&self) -> String {
         format!("{}/{}", self.owner, self.name)
+    }
+
+    fn pushed_at_key(&self) -> Option<(i64, i32)> {
+        self.pushed_at.as_ref().map(|ts| (ts.seconds, ts.nanos))
     }
 
     fn to_pb(&self) -> pb::GitHubRepo {
@@ -135,9 +158,65 @@ impl Repo {
     }
 }
 
+/// Cached repo catalog for a single GitHub owner (org or user).
+#[derive(Debug, Clone)]
+pub struct OwnerCatalog {
+    pub repos: Arc<Vec<Repo>>,
+    /// True when the owner has more repos than `MAX_OWNER_REPOS`, so a local
+    /// filter may miss repos and `search/repositories` should be consulted
+    /// for non-short queries.
+    pub truncated: bool,
+}
+
+/// Per-owner repo catalog cache with TTL eviction.
+#[derive(Debug)]
+pub struct OwnerCache {
+    ttl: Duration,
+    entries: Mutex<HashMap<String, (Instant, OwnerCatalog)>>,
+}
+
+impl OwnerCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn get(&self, owner: &str) -> Option<OwnerCatalog> {
+        self.get_at(owner, Instant::now())
+    }
+
+    pub fn put(&self, owner: &str, catalog: OwnerCatalog) {
+        self.put_at(owner, catalog, Instant::now());
+    }
+
+    fn get_at(&self, owner: &str, now: Instant) -> Option<OwnerCatalog> {
+        let key = owner.to_ascii_lowercase();
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries
+            .get(&key)
+            .filter(|(at, _)| now.saturating_duration_since(*at) < self.ttl)
+            .map(|(_, catalog)| catalog.clone())
+    }
+
+    fn put_at(&self, owner: &str, catalog: OwnerCatalog, now: Instant) {
+        let key = owner.to_ascii_lowercase();
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.retain(|_, (at, _)| now.saturating_duration_since(*at) < self.ttl);
+        entries.insert(key, (now, catalog));
+    }
+}
+
 /// The last full listing and when it was read. Only a successful listing
 /// is kept.
 static LISTING: Mutex<Option<(Instant, Arc<Vec<Repo>>)>> = Mutex::new(None);
+/// Per-owner repo catalogs cached for `OWNER_CACHE_FOR`.
+static OWNER_CACHE: OnceLock<OwnerCache> = OnceLock::new();
+
+fn owner_cache() -> &'static OwnerCache {
+    OWNER_CACHE.get_or_init(|| OwnerCache::new(OWNER_CACHE_FOR))
+}
 
 /// Answers SearchGitHubRepos: the repos matching `request`'s query, one page
 /// of them, most recently pushed first among equal matches.
@@ -148,7 +227,13 @@ pub async fn search(
         .await
         .map_err(|error| failed(error.code(), &error, error.fix(), None))?;
     let ranked = rank(&request.query, &repos);
-    let (start, size, next_page_token) = window(ranked.len(), request.page.as_ref())?;
+    let default_page = if request.query.trim().is_empty() {
+        CATALOG_DEFAULT_PAGE
+    } else {
+        DEFAULT_PAGE
+    };
+    let (start, size, next_page_token) =
+        window_with_default(ranked.len(), request.page.as_ref(), default_page)?;
     let repos = ranked
         .iter()
         .skip(start)
@@ -174,6 +259,21 @@ pub async fn listing() -> Result<Arc<Vec<Repo>>, GhReposError> {
     *LISTING.lock().unwrap_or_else(PoisonError::into_inner) =
         Some((Instant::now(), Arc::clone(&repos)));
     Ok(repos)
+}
+
+/// The repo catalog for one GitHub owner (org or user): cached for 120s,
+/// fetched via `orgs/{owner}/repos?per_page=100&sort=pushed` with fallback
+/// to `users/{owner}/repos?per_page=100&sort=pushed`.
+pub async fn owner_listing(owner: &str) -> Result<OwnerCatalog, GhReposError> {
+    if let Some(catalog) = owner_cache().get(owner) {
+        return Ok(catalog);
+    }
+    let owner_owned = owner.to_owned();
+    let catalog = tokio::task::spawn_blocking(move || list_owner_with_gh(&owner_owned))
+        .await
+        .map_err(|source| GhReposError::Join { source })??;
+    owner_cache().put(owner, catalog.clone());
+    Ok(catalog)
 }
 
 fn cached() -> Option<Arc<Vec<Repo>>> {
@@ -216,6 +316,106 @@ fn list_with_gh() -> Result<Vec<Repo>, GhReposError> {
         .collect()
 }
 
+/// Lists one owner's repos via `orgs/{owner}/repos`, falling back to
+/// `users/{owner}/repos` on 404 (user account rather than org).
+fn list_owner_with_gh(owner: &str) -> Result<OwnerCatalog, GhReposError> {
+    let org_path = format!("orgs/{owner}/repos?per_page=100&sort=pushed");
+    match list_path_with_gh(&org_path, MAX_OWNER_REPOS) {
+        Ok(catalog) => Ok(catalog),
+        Err(err) if err.is_not_found() => {
+            let user_path = format!("users/{owner}/repos?per_page=100&sort=pushed");
+            list_path_with_gh(&user_path, MAX_OWNER_REPOS)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Runs `gh api --paginate <path> --jq <LIST_JQ>` and reads up to `max_repos`
+/// repos. If `gh` emits more than `max_repos` lines, stops reading early and
+/// marks `truncated = true` so huge orgs don't stall pagination.
+fn list_path_with_gh(path: &str, max_repos: usize) -> Result<OwnerCatalog, GhReposError> {
+    let program = gh_program();
+    let name = program.to_string_lossy().into_owned();
+    let mut child = Command::new(&program)
+        .args(["api", "--paginate", path, "--jq", LIST_JQ])
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| GhReposError::Spawn {
+            program: name.clone(),
+            source,
+        })?;
+
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut buf);
+        buf
+    });
+
+    let mut repos = Vec::new();
+    let mut truncated = false;
+    let mut parse_err = None;
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if repos.len() >= max_repos {
+            truncated = true;
+            break;
+        }
+        match parse_line(&line) {
+            Ok(repo) => repos.push(repo),
+            Err(err) => {
+                parse_err = Some(err);
+                break;
+            }
+        }
+    }
+
+    if let Some(err) = parse_err {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_thread.join();
+        return Err(err);
+    }
+
+    if truncated {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_thread.join();
+        return Ok(OwnerCatalog {
+            repos: Arc::new(repos),
+            truncated: true,
+        });
+    }
+
+    let status = child.wait().map_err(|source| GhReposError::Spawn {
+        program: name.clone(),
+        source,
+    })?;
+    let stderr_text = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        return Err(gh_failure(
+            name,
+            status.to_string(),
+            stderr_text.trim().to_owned(),
+        ));
+    }
+
+    Ok(OwnerCatalog {
+        repos: Arc::new(repos),
+        truncated: false,
+    })
+}
+
 /// One line of `gh`'s output: a JSON object with the repo's full name,
 /// description, visibility, default branch and last push.
 fn parse_line(line: &str) -> Result<Repo, GhReposError> {
@@ -250,24 +450,86 @@ fn parse_line(line: &str) -> Result<Repo, GhReposError> {
     })
 }
 
-/// The repos `query` matches, whole matches first. A repo is a whole match
-/// when the lowercased query is a substring of its lowercased "owner/name",
-/// and a scattered match when the query's letters appear in it in order.
-/// Both tiers keep `repos`' order. An empty query matches everything.
+/// Match quality tier for [`rank`], ordered from best (lowest) to worst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchTier {
+    /// Exact match on `name` or `owner/name`.
+    Exact,
+    /// Prefix match on `name`.
+    RepoPrefix,
+    /// Prefix match on `owner/name`.
+    FullNamePrefix,
+    /// Match starting immediately after `-`, `_`, or `/`.
+    WordBoundary,
+    /// Contiguous substring match anywhere in `owner/name`.
+    Substring,
+    /// Fuzzy subsequence (all characters appear in order).
+    FuzzySubsequence,
+}
+
+/// The repos `query` matches, ranked by:
+/// exact match > repo-name prefix > `owner/name` prefix > word-boundary match
+/// (`-`/`_`/`/`) > substring > fuzzy subsequence, tie-breaking by `pushed_at`
+/// descending and then original order. An empty query matches everything.
 pub fn rank<'a>(query: &str, repos: &'a [Repo]) -> Vec<&'a Repo> {
-    let query = query.to_lowercase();
-    let mut whole = Vec::new();
-    let mut scattered = Vec::new();
-    for repo in repos {
-        let name = repo.full_name().to_lowercase();
-        if name.contains(query.as_str()) {
-            whole.push(repo);
-        } else if in_order(&query, &name) {
-            scattered.push(repo);
+    let query = query.trim().to_lowercase();
+    let mut scored: Vec<(MatchTier, usize, &'a Repo)> = if query.is_empty() {
+        repos
+            .iter()
+            .enumerate()
+            .map(|(idx, repo)| (MatchTier::Exact, idx, repo))
+            .collect()
+    } else {
+        repos
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, repo)| {
+                let tier = match_tier(&query, repo)?;
+                Some((tier, idx, repo))
+            })
+            .collect()
+    };
+    scored.sort_by(|(tier_a, idx_a, repo_a), (tier_b, idx_b, repo_b)| {
+        tier_a
+            .cmp(tier_b)
+            .then_with(|| repo_b.pushed_at_key().cmp(&repo_a.pushed_at_key()))
+            .then_with(|| idx_a.cmp(idx_b))
+    });
+    scored.into_iter().map(|(_, _, repo)| repo).collect()
+}
+
+fn match_tier(query: &str, repo: &Repo) -> Option<MatchTier> {
+    let name = repo.name.to_lowercase();
+    let full = repo.full_name().to_lowercase();
+    if name == query || full == query {
+        Some(MatchTier::Exact)
+    } else if name.starts_with(query) {
+        Some(MatchTier::RepoPrefix)
+    } else if full.starts_with(query) {
+        Some(MatchTier::FullNamePrefix)
+    } else if has_word_boundary_match(&full, query) {
+        Some(MatchTier::WordBoundary)
+    } else if full.contains(query) {
+        Some(MatchTier::Substring)
+    } else if in_order(query, &full) {
+        Some(MatchTier::FuzzySubsequence)
+    } else {
+        None
+    }
+}
+
+/// Whether `query` appears in `text` immediately after a `-`, `_`, or `/`
+/// word boundary separator.
+fn has_word_boundary_match(text: &str, query: &str) -> bool {
+    for (idx, ch) in text.char_indices() {
+        if matches!(ch, '-' | '_' | '/') {
+            let next = idx + ch.len_utf8();
+            if text[next..].starts_with(query) {
+                return true;
+            }
         }
     }
-    whole.extend(scattered);
-    whole
+    false
 }
 
 /// Whether every character of `query` appears in `text`, in order.
@@ -283,9 +545,19 @@ pub fn window(
     total: usize,
     page: Option<&pb::PageRequest>,
 ) -> Result<(usize, usize, String), Status> {
+    window_with_default(total, page, DEFAULT_PAGE)
+}
+
+/// Like [`window`], but uses `default_page` when `page` is absent or has
+/// `page_size == 0`. Requested sizes are honored up to `MAX_PAGE`.
+pub fn window_with_default(
+    total: usize,
+    page: Option<&pb::PageRequest>,
+    default_page: usize,
+) -> Result<(usize, usize, String), Status> {
     let (asked, token) = page.map_or((0, ""), |page| (page.page_size, page.page_token.as_str()));
     let size = match asked {
-        0 => DEFAULT_PAGE,
+        0 => default_page.min(MAX_PAGE),
         n => usize::try_from(n).unwrap_or(MAX_PAGE).min(MAX_PAGE),
     };
     let start = if token.is_empty() {
@@ -417,5 +689,120 @@ mod tests {
         let signed_out = gh_ended("To get started with GitHub CLI, please run:  gh auth login");
         assert_eq!(signed_out.code(), Code::FailedPrecondition);
         assert!(signed_out.fix().contains("auth login"), "{}", signed_out.fix());
+    }
+
+    fn repo_pushed(full_name: &str, seconds: i64) -> Repo {
+        let mut r = repo(full_name);
+        r.pushed_at = Some(humata2_grpc::Timestamp { seconds, nanos: 0 });
+        r
+    }
+
+    #[test]
+    fn rank_prioritizes_exact_repo_prefix_full_prefix_word_boundary_substring_fuzzy() {
+        let repos = [
+            repo("org/a-p-i-tools"),   // fuzzy subsequence ("api")
+            repo("org/rapid"),         // substring ("api")
+            repo("org/my-api-server"), // word boundary after '-' ("api")
+            repo("org/my_api_client"), // word boundary after '_' ("api")
+            repo("api-team/docs"),     // owner/name prefix ("api")
+            repo("other/api-gateway"), // repo-name prefix ("api")
+            repo("z/api"),             // exact repo-name match ("api")
+        ];
+        assert_eq!(
+            names(&rank("api", &repos)),
+            [
+                "z/api",
+                "other/api-gateway",
+                "api-team/docs",
+                "org/my-api-server",
+                "org/my_api_client",
+                "org/rapid",
+                "org/a-p-i-tools",
+            ]
+        );
+    }
+
+    #[test]
+    fn rank_exact_full_name_beats_full_name_prefix() {
+        let repos = [repo("acme/api-v2"), repo("acme/api")];
+        assert_eq!(names(&rank("acme/api", &repos)), ["acme/api", "acme/api-v2"]);
+    }
+
+    #[test]
+    fn rank_tie_breaks_by_pushed_at_descending_then_original_order() {
+        let repos = [
+            repo_pushed("acme/api-old", 1_000),
+            repo_pushed("acme/api-new", 3_000),
+            repo_pushed("acme/api-mid-a", 2_000),
+            repo_pushed("acme/api-mid-b", 2_000),
+            repo("acme/api-none"),
+        ];
+        assert_eq!(
+            names(&rank("api", &repos)),
+            [
+                "acme/api-new",
+                "acme/api-mid-a",
+                "acme/api-mid-b",
+                "acme/api-old",
+                "acme/api-none",
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_cache_is_case_insensitive_and_respects_ttl_and_truncated_flag() {
+        let cache = OwnerCache::new(Duration::from_secs(120));
+        let t0 = Instant::now();
+        let catalog = OwnerCatalog {
+            repos: Arc::new(vec![repo("Acme/ledger"), repo("Acme/api")]),
+            truncated: true,
+        };
+        cache.put_at("Acme", catalog, t0);
+
+        let hit = cache
+            .get_at("acme", t0 + Duration::from_secs(60))
+            .expect("fresh entry hits case-insensitively");
+        assert_eq!(hit.repos.len(), 2);
+        assert!(hit.truncated);
+
+        assert!(
+            cache.get_at("acme", t0 + Duration::from_secs(120)).is_none(),
+            "entry expires at TTL"
+        );
+
+        // Inserting a new entry evicts expired ones.
+        cache.put_at(
+            "octo",
+            OwnerCatalog {
+                repos: Arc::new(vec![repo("octo/notes")]),
+                truncated: false,
+            },
+            t0 + Duration::from_secs(121),
+        );
+        assert!(cache.get_at("acme", t0 + Duration::from_secs(121)).is_none());
+        let octo = cache
+            .get_at("OCTO", t0 + Duration::from_secs(121))
+            .expect("new entry is fresh");
+        assert!(!octo.truncated);
+        assert_eq!(octo.repos.len(), 1);
+    }
+
+    #[test]
+    fn not_found_error_is_detected_for_org_to_user_fallback() {
+        assert!(gh_ended("gh: Not Found (HTTP 404)").is_not_found());
+        assert!(!gh_ended("gh: API rate limit exceeded (HTTP 403)").is_not_found());
+        assert!(!gh_ended("To get started with GitHub CLI, please run:  gh auth login").is_not_found());
+    }
+
+    #[test]
+    fn window_with_default_uses_catalog_default_and_honors_large_page_size() {
+        assert_eq!(
+            window_with_default(500, None, CATALOG_DEFAULT_PAGE).ok(),
+            Some((0, 200, "200".to_owned()))
+        );
+        assert_eq!(
+            window_with_default(600, Some(&page(500, "")), CATALOG_DEFAULT_PAGE).ok(),
+            Some((0, 500, "500".to_owned()))
+        );
     }
 }

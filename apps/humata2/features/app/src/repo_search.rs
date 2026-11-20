@@ -52,6 +52,33 @@ impl RepoPicker {
                 .then_some(Self::DeskAddRepo),
         }
     }
+
+    /// The search state for this picker, when it is open.
+    #[must_use]
+    pub fn search(self, state: &AppState) -> Option<&RepoSearchState> {
+        match self {
+            Self::NewChannel => state.overlays.iter().rev().find_map(|overlay| match overlay {
+                Overlay::NewChannel(sheet) => Some(&sheet.search),
+                _ => None,
+            }),
+            Self::SessionAddRepo => state.overlays.iter().rev().find_map(|overlay| match overlay {
+                Overlay::SessionAddRepo(sheet) => Some(&sheet.search),
+                _ => None,
+            }),
+            Self::ChannelAddRepo => state.overlays.iter().rev().find_map(|overlay| match overlay {
+                Overlay::ChannelAddRepo(sheet) => Some(&sheet.search),
+                _ => None,
+            }),
+            Self::NewDeskSession => state
+                .desk
+                .new
+                .as_ref()
+                .is_some_and(|form| form.adding_repo)
+                .then_some(&state.new_desk_repos),
+            Self::DeskAddRepo => matches!(&state.desk.menu, Some(humata2_desk::Menu::AddRepo(_)))
+                .then_some(&state.desk_repos),
+        }
+    }
 }
 
 /// A chip in the scope row (RL-8).
@@ -133,6 +160,11 @@ pub struct RepoSearchState {
     /// The time the daemon gave when this search last answered, in
     /// milliseconds since the epoch; "used ... ago" is worked out from it.
     pub now_ms: i64,
+    /// The highlighted autocomplete row (or org suggestion when **+ Org** is open).
+    pub highlighted: usize,
+    /// The full scope catalog returned by the last empty-query search, kept
+    /// so local keystroke filtering stays instant even after a narrowed search.
+    catalog: Vec<FoundRepo>,
     owners_asked: bool,
     seq: u64,
     asked: String,
@@ -149,6 +181,13 @@ pub enum RepoSearchAction {
     QueryChanged(String),
     /// The pause after typing `0` ended.
     Paused(u64),
+    /// Move the highlighted autocomplete row by `delta` within `count` rows.
+    MoveHighlight {
+        /// Signed step (+1 down, -1 up).
+        delta: isize,
+        /// Number of visible items in the active list.
+        count: usize,
+    },
     /// A chip's ✕: the search narrows (RL-8).
     ScopeChipRemoved(RepoChip),
     /// **+ Org** opened its field.
@@ -159,7 +198,9 @@ pub enum RepoSearchAction {
     AddOwnerClosed,
     /// The owner being typed changed.
     OwnerTextChanged(String),
-    /// Return in the owner field: add what was typed.
+    /// Tab in the owner field: pick the highlighted filtered org suggestion.
+    CompleteOwner,
+    /// Return in the owner field: pick the highlighted suggestion or add what was typed.
     OwnerEntered,
     /// An owner joins this search's scope.
     OwnerAdded(String),
@@ -272,15 +313,46 @@ impl RepoSearchState {
         }
     }
 
-    /// Owners worth suggesting after **+ Org**: the library's owners that
-    /// the scope does not list yet (RL-8).
+    /// Owners worth suggesting after **+ Org**: the library's owners and the
+    /// user's GitHub orgs that the scope does not list yet (RL-8), filtered
+    /// and ranked against what is currently typed in **+ Org**.
     #[must_use]
     pub fn owner_suggestions(&self) -> Vec<String> {
         let listed: &[String] = match self.scope() {
             RepoScope::Owners { owners, .. } => owners,
             _ => &[],
         };
-        humata2_clients::repos::suggest_owners(&self.library, &self.github_owners, listed)
+        let all = humata2_clients::repos::suggest_owners(&self.library, &self.github_owners, listed);
+        match self
+            .adding_owner
+            .as_deref()
+            .map(|text| text.trim().trim_start_matches('@'))
+        {
+            Some(query) if !query.is_empty() => matching(query, &all),
+            _ => all,
+        }
+    }
+
+    /// The clamped highlight index within a list of `len` items, or `None` when empty.
+    #[must_use]
+    pub fn highlighted_index(&self, len: usize) -> Option<usize> {
+        (len > 0).then(|| self.highlighted.min(len - 1))
+    }
+
+    /// The currently highlighted org suggestion while **+ Org** is open.
+    #[must_use]
+    pub fn highlighted_owner(&self) -> Option<String> {
+        let suggestions = self.owner_suggestions();
+        let index = self.highlighted_index(suggestions.len())?;
+        suggestions.into_iter().nth(index)
+    }
+
+    /// The currently highlighted repo in `rows(ticked, limit)`.
+    #[must_use]
+    pub fn highlighted_repo(&self, ticked: &[String], limit: usize) -> Option<String> {
+        let (rows, _) = self.rows(ticked, limit);
+        let index = self.highlighted_index(rows.len())?;
+        rows.into_iter().nth(index).map(|row| row.repo)
     }
 
     /// Why GitHub's group is missing, when it is and it is a failure to
@@ -320,15 +392,28 @@ impl RepoSearchState {
             .iter()
             .filter_map(|name| self.library.iter().find(|repo| &repo.repo == name))
             .collect();
-        let found: &[FoundRepo] = self
+        let has_problem = self
             .result
             .as_ref()
-            .map(|result| result.github.as_slice())
-            .unwrap_or_default();
+            .is_some_and(|result| result.problem.is_some());
+        let mut found: Vec<&FoundRepo> = Vec::new();
+        if !has_problem {
+            if let Some(result) = &self.result {
+                found.extend(result.github.iter());
+            }
+            for repo in &self.catalog {
+                if !found
+                    .iter()
+                    .any(|seen| seen.repo.eq_ignore_ascii_case(&repo.repo))
+                {
+                    found.push(repo);
+                }
+            }
+        }
         let found_names: Vec<String> = found.iter().map(|repo| repo.repo.clone()).collect();
         let github: Vec<&FoundRepo> = matching(&self.query, &found_names)
             .iter()
-            .filter_map(|name| found.iter().find(|repo| &repo.repo == name))
+            .filter_map(|name| found.iter().copied().find(|repo| &repo.repo == name))
             .filter(|repo| {
                 !self
                     .library
@@ -342,7 +427,7 @@ impl RepoSearchState {
             .iter()
             .map(|repo| {
                 let held = self.library.iter().find(|held| &held.repo == repo);
-                let seen = found.iter().find(|seen| &seen.repo == repo);
+                let seen = found.iter().copied().find(|seen| &seen.repo == repo);
                 PickRow {
                     repo: repo.clone(),
                     group: None,
@@ -389,20 +474,25 @@ impl RepoSearchState {
                             .iter()
                             .flat_map(|result| result.github.iter().map(|found| found.repo.as_str())),
                     )
+                    .chain(self.catalog.iter().map(|found| found.repo.as_str()))
                     .find(|name| *name == row.repo)
             })
             .collect()
     }
 
-    /// Sends the query to the daemon now; an older search still out is
-    /// dropped.
-    fn search(&mut self, clients: &Clients, key: &str) -> Effect<RepoSearchAction> {
+    /// Sends `query` to the daemon now; an older search still out is dropped.
+    fn search_with(
+        &mut self,
+        query: &str,
+        clients: &Clients,
+        key: &str,
+    ) -> Effect<RepoSearchAction> {
         self.seq += 1;
         self.loading = true;
-        self.asked = self.query.clone();
+        self.asked = query.to_owned();
         let seq = self.seq;
         let daemon = clients.daemon.clone();
-        let query = self.query.clone();
+        let query = query.to_owned();
         let scope = self.scope.clone();
         Effect::future(async move {
             match daemon.search_repos(&query, scope).await {
@@ -413,12 +503,37 @@ impl RepoSearchState {
         .cancellable(format!("repo-search-{key}"), true)
     }
 
+    /// Sends the current query to the daemon now; an older search still out is
+    /// dropped.
+    fn search(&mut self, clients: &Clients, key: &str) -> Effect<RepoSearchAction> {
+        let query = self.query.clone();
+        self.search_with(&query, clients, key)
+    }
+
     /// Changes the scope of this search and searches again at once.
     fn rescope(&mut self, scope: RepoScope, clients: &Clients, key: &str) -> Effect<RepoSearchAction> {
         self.scope = (scope != self.saved).then_some(scope);
         self.adding_owner = None;
         self.save_error = None;
+        self.highlighted = 0;
+        self.catalog.clear();
         self.search(clients, key)
+    }
+
+    /// Changes the scope and loads the full scope catalog (`""`) immediately so
+    /// subsequent keystrokes filter locally without waiting for a round-trip.
+    fn rescope_catalog(
+        &mut self,
+        scope: RepoScope,
+        clients: &Clients,
+        key: &str,
+    ) -> Effect<RepoSearchAction> {
+        self.scope = (scope != self.saved).then_some(scope);
+        self.adding_owner = None;
+        self.save_error = None;
+        self.highlighted = 0;
+        self.catalog.clear();
+        self.search_with("", clients, key)
     }
 }
 
@@ -435,7 +550,7 @@ pub(crate) fn reduce(
         A::Open => {
             *state = RepoSearchState::default();
             state.now_ms = clients.daemon.now_ms();
-            state.search(clients, key)
+            state.search_with("", clients, key)
         }
         A::Retry => {
             state.failed = None;
@@ -446,6 +561,7 @@ pub(crate) fn reduce(
                 return Effect::none();
             }
             state.query = query;
+            state.highlighted = 0;
             state.seq += 1;
             state.loading = true;
             if state.query.trim().is_empty() {
@@ -466,6 +582,19 @@ pub(crate) fn reduce(
             } else {
                 Effect::none()
             }
+        }
+        A::MoveHighlight { delta, count } => {
+            if count == 0 {
+                state.highlighted = 0;
+            } else {
+                let current = state.highlighted.min(count - 1);
+                state.highlighted = if delta >= 0 {
+                    current.saturating_add(delta.unsigned_abs()).min(count - 1)
+                } else {
+                    current.saturating_sub(delta.unsigned_abs())
+                };
+            }
+            Effect::none()
         }
         A::ScopeChipRemoved(chip) => {
             let narrowed = match (state.scope().clone(), chip) {
@@ -488,6 +617,7 @@ pub(crate) fn reduce(
         }
         A::AddOwnerOpened => {
             state.adding_owner = Some(String::new());
+            state.highlighted = 0;
             if state.owners_asked {
                 return Effect::none();
             }
@@ -506,20 +636,32 @@ pub(crate) fn reduce(
         }
         A::AddOwnerClosed => {
             state.adding_owner = None;
+            state.highlighted = 0;
             Effect::none()
         }
         A::OwnerTextChanged(text) => {
             if state.adding_owner.is_some() {
                 state.adding_owner = Some(text);
+                state.highlighted = 0;
             }
             Effect::none()
         }
+        A::CompleteOwner => {
+            if let Some(owner) = state.highlighted_owner() {
+                reduce(clients, state, A::OwnerAdded(owner), key)
+            } else {
+                Effect::none()
+            }
+        }
         A::OwnerEntered => {
-            let typed = state.adding_owner.clone().unwrap_or_default();
-            reduce(clients, state, A::OwnerAdded(typed), key)
+            let chosen = state
+                .highlighted_owner()
+                .unwrap_or_else(|| state.adding_owner.clone().unwrap_or_default());
+            reduce(clients, state, A::OwnerAdded(chosen), key)
         }
         A::OwnerAdded(owner) => {
             let owner = owner.trim().trim_start_matches('@').to_owned();
+            state.highlighted = 0;
             if owner.is_empty() {
                 state.adding_owner = None;
                 return Effect::none();
@@ -536,13 +678,15 @@ pub(crate) fn reduce(
                     RepoScope::Owners { owners, include_me }
                 }
             };
-            state.rescope(widened, clients, key)
+            state.rescope_catalog(widened, clients, key)
         }
         A::AllOfGitHubPicked => state.rescope(RepoScope::AllOfGitHub, clients, key),
         A::ScopeReset => {
             state.scope = None;
             state.adding_owner = None;
             state.save_error = None;
+            state.highlighted = 0;
+            state.catalog.clear();
             state.search(clients, key)
         }
         A::SaveScopeAsDefault => {
@@ -577,6 +721,13 @@ pub(crate) fn reduce(
             state.now_ms = clients.daemon.now_ms();
             if state.asked.trim().is_empty() {
                 state.library = result.library.clone();
+                if result.problem.is_none() {
+                    state.catalog = result.github.clone();
+                } else {
+                    state.catalog.clear();
+                }
+            } else if result.problem.is_some() {
+                state.catalog.clear();
             }
             if state.scope.is_none() {
                 state.saved = result.scope.clone();

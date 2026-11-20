@@ -2,7 +2,7 @@
 //! the alias `humata2.<machine>`, whatever address reaches it. Humata never
 //! reads or writes `~/.ssh/known_hosts`.
 
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
@@ -14,19 +14,29 @@ use crate::name::MachineName;
 
 /// The name a machine's host key is kept under, so the pin holds whatever
 /// address or alias reaches it.
-pub(crate) fn alias(machine: &MachineName) -> String {
+pub fn alias(machine: &MachineName) -> String {
     format!("humata2.{machine}")
 }
 
 /// The key pinned for `machine`; none when there is none or the file
 /// doesn't exist yet.
-pub(crate) fn pinned(path: &Path, machine: &MachineName) -> Result<Option<HostKey>, KnownHostsError> {
-    Ok(keys_for(&read(path)?, machine).into_iter().next())
+pub fn pinned(path: &Path, machine: &MachineName) -> Result<Option<HostKey>, KnownHostsError> {
+    pinned_alias(path, &alias(machine))
+}
+
+/// The key pinned for `alias`; none when there is none or the file
+/// doesn't exist yet.
+pub fn pinned_alias(path: &Path, alias: &str) -> Result<Option<HostKey>, KnownHostsError> {
+    Ok(keys_for_alias(&read(path)?, alias).into_iter().next())
 }
 
 /// The keys `text`, in `known_hosts` form, holds for `machine`.
 pub(crate) fn keys_for(text: &str, machine: &MachineName) -> Vec<HostKey> {
-    let alias = alias(machine);
+    keys_for_alias(text, &alias(machine))
+}
+
+/// The keys `text`, in `known_hosts` form, holds for `alias`.
+pub(crate) fn keys_for_alias(text: &str, alias: &str) -> Vec<HostKey> {
     text.lines()
         .filter_map(|line| {
             let (host, key) = line.trim().split_once(char::is_whitespace)?;
@@ -38,29 +48,37 @@ pub(crate) fn keys_for(text: &str, machine: &MachineName) -> Vec<HostKey> {
         .collect()
 }
 
+/// Atomically replaces the pinned host key for `alias` in `path` with
+/// `host_key`, leaving all other entries intact. Used when `identity`
+/// attests a refreshed key or the user explicitly trusts a new key.
+/// The file (0600) is replaced whole (temp file, fsync, rename, folder fsync),
+/// so ssh never reads half of it.
+pub fn replace(path: &Path, alias: &str, host_key: &HostKey) -> Result<(), KnownHostsError> {
+    replace_entry(path, alias, Some(host_key))
+}
+
 /// Pins `key` as `machine`'s only host key, replacing any key pinned for
 /// it before. The file (0600) is replaced whole, so ssh never reads half
 /// of it. Two pins at once may lose one; the daemon runs them one at a
 /// time.
-pub(crate) fn pin(path: &Path, machine: &MachineName, key: &HostKey) -> Result<(), KnownHostsError> {
-    replace(path, machine, Some(key))
+pub fn pin(path: &Path, machine: &MachineName, key: &HostKey) -> Result<(), KnownHostsError> {
+    replace(path, &alias(machine), key)
 }
 
 /// Forgets `machine`'s host key, when a machine is removed or adding it is
 /// undone. Nothing to forget is fine.
-pub(crate) fn unpin(path: &Path, machine: &MachineName) -> Result<(), KnownHostsError> {
+pub fn unpin(path: &Path, machine: &MachineName) -> Result<(), KnownHostsError> {
     if pinned(path, machine)?.is_none() {
         return Ok(());
     }
-    replace(path, machine, None)
+    replace_entry(path, &alias(machine), None)
 }
 
-fn replace(path: &Path, machine: &MachineName, key: Option<&HostKey>) -> Result<(), KnownHostsError> {
-    let alias = alias(machine);
+fn replace_entry(path: &Path, alias: &str, key: Option<&HostKey>) -> Result<(), KnownHostsError> {
     let old = read(path)?;
     let mut text: String = old
         .lines()
-        .filter(|line| line.split_whitespace().next() != Some(alias.as_str()))
+        .filter(|line| line.split_whitespace().next() != Some(alias))
         .flat_map(|line| [line, "\n"])
         .collect();
     if let Some(key) = key {
@@ -71,13 +89,15 @@ fn replace(path: &Path, machine: &MachineName, key: Option<&HostKey>) -> Result<
         path: path.to_owned(),
         source,
     };
-    if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(folder)
-            .map_err(write_failed)?;
-    }
+    let folder = path
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)
+        .map_err(write_failed)?;
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(".{}.new", install::nonce()));
     let result = OpenOptions::new()
@@ -89,7 +109,8 @@ fn replace(path: &Path, machine: &MachineName, key: Option<&HostKey>) -> Result<
             file.write_all(text.as_bytes())?;
             file.sync_all()
         })
-        .and_then(|()| fs::rename(&temporary, path));
+        .and_then(|()| fs::rename(&temporary, path))
+        .and_then(|()| File::open(folder)?.sync_all());
     if let Err(source) = result {
         let _ = fs::remove_file(&temporary);
         return Err(write_failed(source));

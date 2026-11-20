@@ -620,6 +620,10 @@ impl GrpcDaemon {
             question: text(&call.arguments, "question"),
             choices,
             wait_seconds: 0,
+            todo_item: None,
+            step_id: String::new(),
+            multi_select: false,
+            details: String::new(),
         })?;
         let response = self
             .inbox()
@@ -1343,6 +1347,12 @@ impl Daemon for GrpcDaemon {
             Operation::TodoNext |
             Operation::TodoAdd |
             Operation::TodoClose |
+            Operation::TodoAskQuestion |
+            Operation::TodoRequestAction |
+            Operation::TodoRequestReview |
+            Operation::TodoStepUpdate |
+            Operation::TodoSetCheckpoint |
+            Operation::TodoReportRun |
             Operation::SessionsSearch |
             Operation::RepoSearch | // REPOS
             Operation::RepoLibrary |
@@ -1418,6 +1428,12 @@ impl Daemon for GrpcDaemon {
             Operation::TodoNext => self.todo_next(call).await,
             Operation::TodoAdd => self.todo_add(call).await,
             Operation::TodoClose => self.todo_close(call).await,
+            Operation::TodoAskQuestion => self.todo_ask_question(call).await,
+            Operation::TodoRequestAction => self.todo_request_action(call).await,
+            Operation::TodoRequestReview => self.todo_request_review(call).await,
+            Operation::TodoStepUpdate => self.todo_step_update(call).await,
+            Operation::TodoSetCheckpoint => self.todo_set_checkpoint(call).await,
+            Operation::TodoReportRun => self.todo_report_run(call).await,
             Operation::SessionsSearch => self.sessions_search(call).await,
             Operation::RepoSearch => self.repo_search(call).await, // REPOS
             Operation::RepoLibrary => self.repo_library().await,
@@ -1547,7 +1563,24 @@ fn outcome(response: pb::WaitResponse) -> Result<Reply, ToolError> {
         Ok(pb::RequestState::Pending) => Ok(Reply::Pending { request: id }),
         Ok(pb::RequestState::Answered | pb::RequestState::Approved) => {
             let result = match response.answer.and_then(|answer| answer.answer) {
-                Some(pb::request_answer::Answer::Reply(reply)) => json!({ "reply": reply.text }),
+                Some(pb::request_answer::Answer::Reply(reply)) => {
+                    if reply.selected_choices.is_empty() {
+                        json!({ "reply": reply.text })
+                    } else {
+                        json!({
+                            "reply": reply.text,
+                            "selected_choices": reply.selected_choices,
+                        })
+                    }
+                }
+                Some(pb::request_answer::Answer::TodoAction(action)) => json!({
+                    "done": action.done,
+                    "note": action.note,
+                }),
+                Some(pb::request_answer::Answer::TodoReview(review)) => json!({
+                    "approved": review.approved,
+                    "note": review.note,
+                }),
                 Some(_) => approved_result(&response.result_type, &response.result),
                 None => json!({}),
             };
@@ -2880,5 +2913,59 @@ mod inbox_hook_tests {
     fn a_pending_wait_carries_the_hint_only_when_the_user_asked_why() {
         assert!(matches!(outcome(pending(true)), Ok(Reply::PendingAskedWhy { .. })));
         assert!(matches!(outcome(pending(false)), Ok(Reply::Pending { .. })));
+    }
+
+    #[test]
+    fn structured_todo_answers_return_typed_json_payloads() {
+        let multi = outcome(pb::WaitResponse {
+            id: Some(pb::RequestId { value: "r1".to_owned() }),
+            state: pb::RequestState::Answered as i32,
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Reply(pb::Reply {
+                    text: String::new(),
+                    selected_choices: vec!["mac".to_owned(), "linux".to_owned()],
+                })),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let Reply::Applied { result, .. } = multi else {
+            panic!("expected applied");
+        };
+        assert_eq!(result["selected_choices"], json!(["mac", "linux"]));
+
+        let action = outcome(pb::WaitResponse {
+            id: Some(pb::RequestId { value: "r2".to_owned() }),
+            state: pb::RequestState::Answered as i32,
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::TodoAction(pb::TodoActionAnswer {
+                    done: false,
+                    note: "need prod creds".to_owned(),
+                })),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let Reply::Applied { result, .. } = action else {
+            panic!("expected applied");
+        };
+        assert_eq!(result, json!({ "done": false, "note": "need prod creds" }));
+
+        let review = outcome(pb::WaitResponse {
+            id: Some(pb::RequestId { value: "r3".to_owned() }),
+            state: pb::RequestState::Answered as i32,
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::TodoReview(pb::TodoReviewAnswer {
+                    approved: true,
+                    note: "looks good".to_owned(),
+                })),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let Reply::Applied { result, .. } = review else {
+            panic!("expected applied");
+        };
+        assert_eq!(result, json!({ "approved": true, "note": "looks good" }));
     }
 }

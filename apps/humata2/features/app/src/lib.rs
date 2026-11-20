@@ -197,6 +197,10 @@ pub struct AppState {
     pub machine_page: humata2_hosts::MachinePageState,
     /// Select mode and the delete-many-sessions sheet (MASSDELETE, D875).
     pub mass_delete: MassDeleteState,
+    /// Whether the app window is currently active/frontmost (NOTIFY, D889).
+    pub window_active: bool,
+    /// Desktop notification deduplication and burst-collapsing state (NOTIFY, D889).
+    pub notify_burst: humata2_notify::BurstState,
     next_toast: u64,
     /// Sessions whose file list was asked for, once, when the palette first
     /// opened with them; events keep those lists current.
@@ -304,6 +308,8 @@ impl AppState {
             add_machine: humata2_hosts::AddMachineState::default(),
             machine_page: humata2_hosts::MachinePageState::default(),
             mass_delete: MassDeleteState::default(),
+            window_active: true,
+            notify_burst: humata2_notify::BurstState::default(),
             next_toast: 0,
             files_asked: std::collections::BTreeSet::new(),
             last_saved: saved.clone(),
@@ -541,6 +547,10 @@ pub enum AppAction {
     MachinePage(humata2_hosts::MachinePageAction),
     /// Select mode and deleting many sessions (MASSDELETE, D875).
     MassDelete(MassDeleteAction),
+    /// Whether the app window is currently active/frontmost (NOTIFY, D889).
+    WindowActive(bool),
+    /// A desktop notification was clicked (NOTIFY, D889).
+    NotificationClicked(humata2_clients::NotifyTarget),
 }
 
 /// Today in UTC, for ranking by due date.
@@ -741,7 +751,17 @@ impl App {
                     let leave = if state.route == gone {
                         self.leave(state, &gone, Route::Home)
                     } else {
-                        Effect::none()
+                        state.trail.retain(|route| route != &gone);
+                        if let Route::Machine(machine) = state.route.clone() {
+                            self.machine_page(
+                                state,
+                                humata2_hosts::MachinePageAction::Running(
+                                    humata2_hosts::RunningAction::Load(machine),
+                                ),
+                            )
+                        } else {
+                            Effect::none()
+                        }
                     };
                     Effect::merge([notice, leave])
                 }
@@ -756,7 +776,17 @@ impl App {
                     let leave = if state.route == gone {
                         self.leave(state, &gone, Route::Home)
                     } else {
-                        Effect::none()
+                        state.trail.retain(|route| route != &gone);
+                        if let Route::Machine(machine) = state.route.clone() {
+                            self.machine_page(
+                                state,
+                                humata2_hosts::MachinePageAction::Running(
+                                    humata2_hosts::RunningAction::Load(machine),
+                                ),
+                            )
+                        } else {
+                            Effect::none()
+                        }
                     };
                     Effect::merge([notice, leave])
                 }
@@ -855,6 +885,9 @@ impl App {
             },
             AppAction::Files(FilesAction::Delegate(F::Toast(text))) => {
                 state.toast(text.clone(), &clock)
+            }
+            AppAction::Files(FilesAction::Delegate(F::ArchiveSession(session))) => {
+                self.archive_session(state, session.clone())
             }
             // PL-10: Open terminal here shows the session whose machine it is
             // on, with a new shell tab started in the folder.
@@ -1115,9 +1148,71 @@ impl App {
                 let pinned = self.child(state, AppAction::Pinned(PinnedAction::Start));
                 Effect::merge([self.load(), self.follow(), pinned])
             }
-            AppAction::Navigate(route) => self.navigate(state, route),
-            AppAction::Switch(route) => self.switch(state, route),
-            AppAction::Back => self.go_back(state),
+            AppAction::Navigate(route) => {
+                let nav = self.navigate(state, route);
+                let cleared = self.clear_visible_notices(state);
+                Effect::merge([nav, cleared])
+            }
+            AppAction::Switch(route) => {
+                let nav = self.switch(state, route);
+                let cleared = self.clear_visible_notices(state);
+                Effect::merge([nav, cleared])
+            }
+            AppAction::Back => {
+                let nav = self.go_back(state);
+                let cleared = self.clear_visible_notices(state);
+                Effect::merge([nav, cleared])
+            }
+            AppAction::WindowActive(active) => {
+                state.window_active = active;
+                if active {
+                    self.clear_visible_notices(state)
+                } else {
+                    Effect::none()
+                }
+            }
+            AppAction::NotificationClicked(target) => {
+                state.window_active = true;
+                state.navigation_overlay = false;
+                let nav = match target {
+                    humata2_clients::NotifyTarget::Request { session, request } => {
+                        if state
+                            .workspace
+                            .session(&session)
+                            .is_some_and(|s| !s.archived)
+                        {
+                            let go = self.navigate(state, Route::Session(session));
+                            let select = self
+                                .child(state, AppAction::Inbox(InboxAction::Select(request)));
+                            let panel = self.handle(
+                                state,
+                                AppAction::Session(SessionAction::SetPanel(Some(Panel::Inbox))),
+                            );
+                            Effect::merge([go, select, panel])
+                        } else {
+                            let go = self.navigate(state, Route::Inbox);
+                            let select = self
+                                .child(state, AppAction::Inbox(InboxAction::Select(request)));
+                            Effect::merge([go, select])
+                        }
+                    }
+                    humata2_clients::NotifyTarget::Session(session) => {
+                        if state
+                            .workspace
+                            .session(&session)
+                            .is_some_and(|s| !s.archived)
+                        {
+                            self.navigate(state, Route::Session(session))
+                        } else {
+                            self.navigate(state, Route::Home)
+                        }
+                    }
+                    humata2_clients::NotifyTarget::Inbox => self.navigate(state, Route::Inbox),
+                    humata2_clients::NotifyTarget::Home => self.navigate(state, Route::Home),
+                };
+                let cleared = self.clear_visible_notices(state);
+                Effect::merge([nav, cleared])
+            }
             AppAction::Escape => self.escape(state),
             AppAction::OpenPalette => self.open_palette(state),
             AppAction::SessionFiles { session, result } => {
@@ -1222,12 +1317,16 @@ impl App {
                 let view = state.channel_pages.entry(id.clone()).or_default();
                 view.change(action, &state.workspace, &id);
                 match view.tab {
-                    channel::Tab::Inbox => self.child(
-                        state,
-                        AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
-                            id,
-                        ))),
-                    ),
+                    channel::Tab::Inbox => {
+                        let filter = self.child(
+                            state,
+                            AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
+                                id,
+                            ))),
+                        );
+                        let cleared = self.clear_visible_notices(state);
+                        Effect::merge([filter, cleared])
+                    }
                     channel::Tab::Board => Effect::merge(self.channel_todo(state, id)),
                     _ => Effect::none(),
                 }
@@ -1396,6 +1495,7 @@ impl App {
                         }
                         effect.and(self.ask_files(state, id))
                     }
+                    (Panel::Inbox, Some(_)) => effect.and(self.clear_visible_notices(state)),
                     _ => effect,
                 }
             }

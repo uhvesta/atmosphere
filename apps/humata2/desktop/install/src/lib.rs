@@ -6,11 +6,12 @@
 //! them, registers a launchd login item for the daemon (PER-20) and links
 //! `humata` into `~/.local/bin` (D51).
 //!
-//! Once a daemon is installed, a launch never swaps it: a bundle that
+//! Once a daemon is installed, a launch never swaps it directly: a bundle that
 //! differs from the installed one is staged as verified `.<name>.next` files
-//! and `.bundle.json.next` (UP-1, D281 f), the app posts its "Migrate the
-//! daemon" item, and the daemon's Upgrade call swaps them in. The same
-//! bundle changes nothing.
+//! and `.bundle.json.next` (UP-1, D281 f). The running daemon watches its bin
+//! folder and automatically verifies, swaps, and restarts into the staged
+//! release with two-boot rollback protection (or `migrate_old_daemon` moves
+//! daemons too old to watch `.next` themselves). The same bundle changes nothing.
 
 mod error;
 mod launchd;

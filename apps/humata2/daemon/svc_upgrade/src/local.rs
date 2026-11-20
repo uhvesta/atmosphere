@@ -201,9 +201,13 @@ impl Local {
         match looked.staged {
             Staged::Release(to) => {
                 // The daemon item says what differs among the tools too.
+                let to_bundle = to.bundle.clone();
                 migrations
                     .observe(pb::MigrateThing::Daemon, machine, own, to)
                     .await?;
+                migrations
+                    .auto_migrate(pb::MigrateThing::Daemon, machine, &to_bundle)
+                    .await;
                 return Ok(());
             }
             Staged::Nothing => {
@@ -216,13 +220,181 @@ impl Local {
         let differing = tools::differing(&own.files, &own.installed);
         for thing in tools::THINGS {
             if tools::wants(&differing, thing) {
+                let target = tools::release_only(&own);
                 migrations
-                    .observe_tool(thing, machine, tools::from_installed(&own), tools::release_only(&own))
+                    .observe_tool(thing, machine, tools::from_installed(&own), target.clone())
                     .await?;
+                migrations.auto_migrate(thing, machine, &target.bundle).await;
             } else {
                 migrations.resolved(thing, machine).await?;
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use humata2_machines::Platform;
+    use sha2::{Digest, Sha256};
+    use tonic::Status;
+
+    use super::*;
+    use crate::items::{Approver, Carry, Progress};
+    use crate::ports::{MigrateEdit, MigrateInboxPort};
+    use crate::run::{RunError, hex};
+
+    struct FakeInbox {
+        requests: Mutex<HashMap<String, pb::InboxRequest>>,
+    }
+
+    impl FakeInbox {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                requests: Mutex::new(HashMap::new()),
+            })
+        }
+    }
+
+    #[tonic::async_trait]
+    impl MigrateInboxPort for FakeInbox {
+        fn kept_migrates(&self) -> Vec<pb::InboxRequest> {
+            Vec::new()
+        }
+        fn migrating(&self, _approver: Approver) {}
+        async fn post_migrate(&self, request: pb::InboxRequest) -> Result<(), Status> {
+            let id = request.id.as_ref().map(|i| i.value.clone()).unwrap_or_default();
+            self.requests.lock().unwrap().insert(id, request);
+            Ok(())
+        }
+        async fn update_migrate(
+            &self,
+            id: &str,
+            change: MigrateEdit,
+        ) -> Result<Option<pb::InboxRequest>, Status> {
+            let mut map = self.requests.lock().unwrap();
+            let Some(req) = map.get_mut(id) else {
+                return Ok(None);
+            };
+            change(req);
+            Ok(Some(req.clone()))
+        }
+        async fn settle_migrate(&self, id: &str, _done: String) -> Result<bool, Status> {
+            Ok(self.requests.lock().unwrap().remove(id).is_some())
+        }
+        async fn withdraw_migrate(
+            &self,
+            id: &str,
+            _reason: pb::WithdrawReason,
+        ) -> Result<bool, Status> {
+            Ok(self.requests.lock().unwrap().remove(id).is_some())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingCarry {
+        calls: AtomicUsize,
+    }
+
+    #[tonic::async_trait]
+    impl Carry for CountingCarry {
+        async fn migrate(
+            &self,
+            _thing: pb::MigrateThing,
+            _machine: &pb::MachineId,
+            _to: &pb::BuildInfo,
+            _progress: &Progress,
+        ) -> Result<(), RunError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn manifest(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let entries: serde_json::Map<String, serde_json::Value> = files
+            .iter()
+            .map(|(name, bytes)| {
+                (
+                    (*name).to_owned(),
+                    serde_json::json!({"path": name, "sha256": hex(Sha256::digest(bytes).as_slice())}),
+                )
+            })
+            .collect();
+        let platform = Platform::host().unwrap().bundle_name();
+        serde_json::to_vec(&serde_json::json!({"platforms": {platform: entries}})).unwrap()
+    }
+
+    fn write_release(bin: &Path, suffix: &str, files: &[(&str, &[u8])]) -> String {
+        for (name, bytes) in files {
+            let file_name = if suffix.is_empty() {
+                (*name).to_owned()
+            } else {
+                format!(".{name}{suffix}")
+            };
+            std::fs::write(bin.join(file_name), bytes).unwrap();
+        }
+        let bundle = manifest(files);
+        let manifest_name = if suffix.is_empty() {
+            "bundle.json".to_owned()
+        } else {
+            format!(".bundle.json{suffix}")
+        };
+        std::fs::write(bin.join(manifest_name), &bundle).unwrap();
+        hex(Sha256::digest(&bundle).as_slice())
+    }
+
+    #[tokio::test]
+    async fn local_show_auto_migrates_staged_next_and_respects_failed_breaker() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&bin).unwrap();
+        let old_files: [(&str, &[u8]); 4] = [
+            ("humatad2", b"daemon v1"),
+            ("humata2_holder", b"holder v1"),
+            ("humata", b"cli v1"),
+            ("stack", b"stack v1"),
+        ];
+        let new_files: [(&str, &[u8]); 4] = [
+            ("humatad2", b"daemon v2"),
+            ("humata2_holder", b"holder v2"),
+            ("humata", b"cli v2"),
+            ("stack", b"stack v2"),
+        ];
+        write_release(&bin, "", &old_files);
+        let to_bundle = write_release(&bin, ".next", &new_files);
+
+        let release = Release::read(&bin, &bin.join("humatad2"), "2.0.4", 3);
+        let carry = Arc::new(CountingCarry::default());
+        let migrations = Migrations::new_with_state(FakeInbox::new(), carry.clone(), &state);
+        let local = Local::new(migrations.clone(), release.clone(), "ma_host", bin.clone());
+
+        // First look sees .next and auto-migrates!
+        local.check().await;
+        assert_eq!(carry.calls.load(Ordering::SeqCst), 1, "staged .next should auto-migrate");
+
+        // Simulate rollback -> trips failed.json for (ma_host, to_bundle).
+        migrations
+            .failed(
+                "ma_host",
+                &to_bundle,
+                pb::Error {
+                    message: "rolled back".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        // A second look at the same staged .next must NOT retry-loop!
+        local.check().await;
+        assert_eq!(
+            carry.calls.load(Ordering::SeqCst),
+            1,
+            "tripped failed.json must block local auto-migrate retry loop"
+        );
     }
 }

@@ -31,7 +31,11 @@ use std::sync::{Arc, Mutex};
 
 use humata2_access::{AccessRequest, Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_machines::{Action, ConfigError, MachineStatus, OpStep, Provider, Reach, StepEvent, parse_status};
+use humata2_machines::{
+    Action, ConfigError, LoginError, LoginEvent, LoginSession, LoginTerminal, MachineName, MachineStatus,
+    ManageError, Observed, OpStep, Plan, Provider, Reach, SetupError, StepEvent, SystemRunner, TakeoverError,
+    detect_prompt, existing_link, parse_status, provider_link, register,
+};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio_stream::wrappers::ReceiverStream;
@@ -325,20 +329,40 @@ impl ProviderSvc {
         let work = self.work.clone();
         if action == Action::Delete {
             work.link_down(&name);
+        } else if action == Action::Stop {
+            // Pause the machine's peer supervisor immediately so `supervise`
+            // never auto-wakes or spams an intentionally stopped VM.
+            work.mark_user_stopped_vm(&name);
         }
         let job: Job = Arc::new(move |machines, drive| {
             if action == Action::Delete {
                 machines.delete_machine(&provider, &name, drive)?;
                 return Ok(None);
             }
+            if action == Action::Stop {
+                match machines.run_action(&provider, &name, action, drive) {
+                    Ok(_) => {
+                        work.saw(&name, pb::Reachability::Stopped);
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        work.clear_user_stopped_vm(&name);
+                        work.link_up(&name, &Handle::current());
+                        return Err(error);
+                    }
+                }
+            }
             let output = machines.run_action(&provider, &name, action, drive)?;
-            let stopped = match action {
-                Action::Stop => true,
-                Action::Status => parse_status(&output.stdout) == MachineStatus::Stopped,
-                _ => false,
-            };
-            if stopped {
-                work.saw(&name, pb::Reachability::Stopped);
+            match action {
+                Action::Start | Action::Wake => {
+                    post_start_or_wake(&work, &provider, &name);
+                }
+                Action::Status => {
+                    if parse_status(&output.stdout) == MachineStatus::Stopped {
+                        work.saw(&name, pb::Reachability::Stopped);
+                    }
+                }
+                _ => {}
             }
             Ok(None)
         });
@@ -1113,12 +1137,15 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
 
     type InteractiveLoginStream = ReceiverStream<Result<pb::LoginServerMessage, Status>>;
 
-    /// Built by the interactive login task, here.
+    /// Runs an interactive login or interactive provider `refresh`/`wake`
+    /// command in a real PTY. For providers with `interactive = true` that
+    /// declare `refresh` (or `wake` without `connect`), the PTY stays open
+    /// until the command itself exits (supporting browser/URL auth flows).
     async fn interactive_login(
         &self,
         request: Request<tonic::Streaming<pb::LoginClientMessage>>,
     ) -> Result<Response<Self::InteractiveLoginStream>, Status> {
-        self.login.interactive_login(request).await
+        self.run_interactive_login(request).await
     }
 
     /// Built by the interactive login task, here.
@@ -1127,5 +1154,901 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         request: Request<pb::MakeUnattendedRequest>,
     ) -> Result<Response<pb::Machine>, Status> {
         self.login.make_unattended(request).await
+    }
+}
+
+/// Runs after `ProviderAction::Start` or `Wake` finishes: clears the
+/// `UserStoppedVm` mark, refreshes dynamic reach metadata, repairs missing
+/// binaries / missing enrollment keys (never overwriting conflicting keys),
+/// and kicks `link_up` immediately so `PeerUplink` comes online without
+/// waiting for backoff.
+fn post_start_or_wake(work: &Arc<Work>, provider: &Provider, name: &str) {
+    work.clear_user_stopped_vm(name);
+    let runner = SystemRunner::new(&crate::host_vars::Installed);
+    if !provider.interactive() {
+        match work.machines.refresh_reach(provider, name, &runner) {
+            Ok(_) => {}
+            Err(ManageError::HostKeyMismatch { .. })
+            | Err(ManageError::Step {
+                source: SetupError::HostKeyChanged { .. },
+                ..
+            }) => {
+                work.saw(name, pb::Reachability::HostKeyChanged);
+                return;
+            }
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: refreshing reach for {name} after start/wake failed: {}",
+                    status::chain(&error)
+                );
+            }
+        }
+        let mut ignore = |_: StepEvent| {};
+        let mut drive = humata2_machines::Drive {
+            runner: &runner,
+            builds: &*work.builds,
+            wait: &std::thread::sleep,
+            events: &mut ignore,
+            cancelled: &|| false,
+        };
+        match work.machines.reconnect(name, &mut drive) {
+            Ok(_) => {
+                work.saw(name, pb::Reachability::Online);
+            }
+            Err(ManageError::HostKeyMismatch { .. })
+            | Err(ManageError::Step {
+                source: SetupError::HostKeyChanged { .. },
+                ..
+            }) => {
+                work.saw(name, pb::Reachability::HostKeyChanged);
+                return;
+            }
+            Err(ManageError::Step {
+                source: SetupError::EnrollmentKeyConflict { .. },
+                ..
+            }) => {
+                work.saw(name, pb::Reachability::IdentityMismatch);
+                return;
+            }
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: ensuring {name} ready after start/wake failed: {}",
+                    status::chain(&error)
+                );
+            }
+        }
+    }
+    work.link_up(name, &Handle::current());
+}
+
+/// Interactive PTY execution for provider `refresh` / `wake` commands and
+/// shell-takeover interactive logins.
+static PROVIDER_ONE_SHOTS: std::sync::LazyLock<Mutex<BTreeMap<String, crate::peer_client::Pipe>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// Hands out a one-shot peer pipe created by [`ProviderSvc::interactive_login`].
+pub(crate) fn one_shot(machine: &str) -> Option<Box<dyn crate::peer_client::Dial>> {
+    let pipe = lock(&PROVIDER_ONE_SHOTS).remove(machine)?;
+    Some(Box::new(ProviderOneShot {
+        machine: machine.to_owned(),
+        pipe: Mutex::new(Some(pipe)),
+    }))
+}
+
+struct ProviderOneShot {
+    machine: String,
+    pipe: Mutex<Option<crate::peer_client::Pipe>>,
+}
+
+impl crate::peer_client::Dial for ProviderOneShot {
+    fn dial(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::peer_client::Pipe, crate::peer_client::LinkError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            lock(&self.pipe).take().ok_or_else(|| crate::peer_client::LinkError::Ended {
+                machine: self.machine.clone(),
+            })
+        })
+    }
+}
+
+fn pty_size(value: u32, default: u16) -> u16 {
+    u16::try_from(value).ok().filter(|size| *size > 0).unwrap_or(default)
+}
+
+fn prompt_kind_pb(kind: humata2_machines::PromptKind) -> pb::LoginPromptKind {
+    use humata2_machines::PromptKind;
+    match kind {
+        PromptKind::Password => pb::LoginPromptKind::Password,
+        PromptKind::Passphrase => pb::LoginPromptKind::Passphrase,
+        PromptKind::Code => pb::LoginPromptKind::Code,
+        PromptKind::Confirm => pb::LoginPromptKind::Confirm,
+        PromptKind::Device => pb::LoginPromptKind::Device,
+    }
+}
+
+/// Selects the interactive provider command (`refresh`, or `wake` when there
+/// is no `connect` command) to execute in a PTY until it exits.
+fn interactive_provider_action(provider: &Provider) -> Option<Action> {
+    if !provider.interactive() {
+        return None;
+    }
+    if provider.has(Action::Refresh) {
+        Some(Action::Refresh)
+    } else if !provider.has_connect() && provider.has(Action::Wake) {
+        Some(Action::Wake)
+    } else {
+        None
+    }
+}
+
+impl ProviderSvc {
+    fn require_login(&self, caller: &Caller, machine: &str) -> Result<(), Status> {
+        let action = MachineActionKind::Reconnect;
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::refused(&Refusal::UserOnly {
+                capability: Some(action.capability()),
+            }));
+        }
+        self.require_machine(caller, machine, action)?;
+        self.require_present(caller, action.capability())
+    }
+
+    async fn run_interactive_login(
+        &self,
+        request: Request<tonic::Streaming<pb::LoginClientMessage>>,
+    ) -> Result<Response<ReceiverStream<Result<pb::LoginServerMessage, Status>>>, Status> {
+        use pb::login_client_message::Message;
+        let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::UserOnly {
+                capability: Some(Capability::MachineProvision),
+            }));
+        }
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::user_only_call(
+                Capability::MachineProvision,
+                "logging in to a machine by hand",
+                "ask the user with inbox_ask to log in from the app (Hosts › the machine › Log in), then retry what you wanted",
+            ));
+        }
+        let mut inbound = request.into_inner();
+        let open = match inbound.message().await?.and_then(|message| message.message) {
+            Some(Message::Open(open)) => open,
+            _ => return Err(status::missing("open")),
+        };
+        let cols = pty_size(open.cols, 80);
+        let rows = pty_size(open.rows, 24);
+
+        // If targeting an existing machine whose interactive provider declares
+        // `refresh` (or `wake` without `connect`), run that command in a real
+        // PTY and keep the terminal open until the command itself exits.
+        if let Some(pb::login_open::Target::Machine(ref id)) = open.target {
+            let name = machine_of(Some(id.clone()))?;
+            self.require_login(&caller, &name)?;
+            if let Ok(entry) = self.work.machines.get(&name)
+                && let Some(record) = entry.provider
+                && let Some(provider) = crate::wire_machines::find_provider(self.work.machines.hosts_file(), &record.id)
+                && let Some(action) = interactive_provider_action(&provider)
+            {
+                let machine_name = MachineName::new(&name).map_err(|source| {
+                    status::invalid_field(
+                        "machine",
+                        pb::invalid_field::Problem::BadFormat,
+                        format!("{name:?} isn't a machine name: {source}"),
+                        "list the machines to see their names",
+                    )
+                })?;
+                let invocation = provider
+                    .invocation(action, &machine_name, &record.params)
+                    .map_err(|source| status_of(&ManageError::Params { source }))?
+                    .ok_or_else(|| {
+                        status_of(&ManageError::ActionUndefined {
+                            provider: provider.id().to_owned(),
+                            action,
+                        })
+                    })?;
+                return self
+                    .spawn_interactive_pty_command(name, provider, action, invocation, cols, rows, inbound)
+                    .await;
+            }
+        }
+
+        // Otherwise, run the interactive shell-takeover login flow.
+        self.spawn_interactive_shell_login(&caller, open, cols, rows, inbound)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_interactive_pty_command(
+        &self,
+        name: String,
+        provider: Provider,
+        action: Action,
+        invocation: humata2_machines::Invocation,
+        cols: u16,
+        rows: u16,
+        mut inbound: tonic::Streaming<pb::LoginClientMessage>,
+    ) -> Result<Response<ReceiverStream<Result<pb::LoginServerMessage, Status>>>, Status> {
+        use pb::login_client_message::Message;
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let terminal = LoginTerminal::spawn(
+            &invocation,
+            &crate::host_vars::Installed,
+            cols,
+            rows,
+            events_tx.clone(),
+        )
+        .map_err(|error| login_error_status(&error, Some(provider.id())))?;
+
+        let (out, receiver) = tokio::sync::mpsc::channel(64);
+        let runtime = Handle::current();
+
+        // Forward client input, resize, and cancel to the PTY; keep the PTY
+        // open until the command itself exits (LoginDone is ignored).
+        tokio::spawn(async move {
+            loop {
+                let message = match inbound.message().await {
+                    Ok(Some(message)) => message.message,
+                    _ => {
+                        let _ = events_tx.send(LoginEvent::Cancel);
+                        return;
+                    }
+                };
+                let alive = match message {
+                    Some(Message::Input(bytes)) => events_tx.send(LoginEvent::Input(bytes.to_vec())).is_ok(),
+                    Some(Message::Resize(resize)) => events_tx
+                        .send(LoginEvent::Resize {
+                            cols: pty_size(resize.cols, 80),
+                            rows: pty_size(resize.rows, 24),
+                        })
+                        .is_ok(),
+                    Some(Message::Cancel(_)) => {
+                        let _ = events_tx.send(LoginEvent::Cancel);
+                        return;
+                    }
+                    Some(Message::Done(_)) | Some(Message::Open(_)) | None => true,
+                };
+                if !alive {
+                    return;
+                }
+            }
+        });
+
+        let work = self.work.clone();
+        std::thread::spawn(move || {
+            run_interactive_pty_command(terminal, events_rx, &name, &provider, action, &work, &out, &runtime);
+        });
+        Ok(Response::new(ReceiverStream::new(receiver)))
+    }
+
+    async fn spawn_interactive_shell_login(
+        &self,
+        caller: &Caller,
+        open: pb::LoginOpen,
+        cols: u16,
+        rows: u16,
+        mut inbound: tonic::Streaming<pb::LoginClientMessage>,
+    ) -> Result<Response<ReceiverStream<Result<pb::LoginServerMessage, Status>>>, Status> {
+        use pb::login_client_message::Message;
+        let bad_name = |machine: &str, source: humata2_machines::NameError| {
+            status::invalid_field(
+                "machine",
+                pb::invalid_field::Problem::BadFormat,
+                format!("{machine:?} isn't a machine name: {source}"),
+                "list the machines to see their names",
+            )
+        };
+        let (machine, link, made, operation) = match &open.target {
+            Some(pb::login_open::Target::Machine(id)) => {
+                let name = machine_of(Some(id.clone()))?;
+                self.require_login(caller, &name)?;
+                let machine = MachineName::new(&name).map_err(|source| bad_name(&name, source))?;
+                let link = existing_link(&self.work.machines, &name)
+                    .map_err(|error| login_error_status(&error, None))?;
+                (machine, link, None, None)
+            }
+            Some(pb::login_open::Target::Operation(id)) => {
+                let operation = id.value.clone();
+                let left_made = lock(&self.left)
+                    .get(&operation)
+                    .filter(|made| made.ended)
+                    .map(|made| (made.provider.clone(), made.machine.clone(), made.values.clone()))
+                    .ok_or_else(|| {
+                        status::not_found(
+                            pb::EntityKind::Operation,
+                            &operation,
+                            format!("operation {operation} left no machine waiting for a login"),
+                            "start Create machine again; a login is offered when its connect step asks for one",
+                        )
+                    })?;
+                self.require_login(caller, &left_made.1)?;
+                let provider = self.provider(&left_made.0)?;
+                let machine = MachineName::new(&left_made.1).map_err(|source| bad_name(&left_made.1, source))?;
+                if self.work.machines.get(&left_made.1).is_ok() {
+                    return Err(status::failure(
+                        Code::FailedPrecondition,
+                        status::error(
+                            format!("{} is already listed, so the create it came from can't be finished", left_made.1),
+                            "log in from the machine's own page instead",
+                            pb::error::Kind::NameTaken(pb::NameTaken {
+                                kind: pb::EntityKind::Machine as i32,
+                                name: left_made.1.clone(),
+                                suggestion: format!("{}-2", left_made.1),
+                            }),
+                        ),
+                    ));
+                }
+                let link = provider_link(&provider, &machine, &left_made.2)
+                    .map_err(|error| login_error_status(&error, Some(&left_made.0)))?;
+                (machine, link, Some((provider, left_made.2)), Some(operation))
+            }
+            None => return Err(status::missing("target")),
+        };
+        let progress = match &operation {
+            Some(id) => Some(self.operations.progress_of(caller, id)?),
+            None => None,
+        };
+        let invocation = link
+            .interactive()
+            .map_err(|source| login_error_status(&LoginError::Quote(source), None))?;
+        let provider_id = made.as_ref().map(|(provider, _)| provider.id().to_owned());
+        let (session, handle) = LoginSession::open(
+            machine.clone(),
+            &invocation,
+            &crate::host_vars::Installed,
+            cols,
+            rows,
+        )
+        .map_err(|error| login_error_status(&error, provider_id.as_deref()))?;
+
+        let (out, receiver) = tokio::sync::mpsc::channel(64);
+        let runtime = Handle::current();
+
+        tokio::spawn(async move {
+            loop {
+                let message = match inbound.message().await {
+                    Ok(Some(message)) => message.message,
+                    _ => {
+                        handle.cancel();
+                        return;
+                    }
+                };
+                let alive = match message {
+                    Some(Message::Input(bytes)) => handle.input(bytes.to_vec()),
+                    Some(Message::Resize(resize)) => {
+                        handle.resize(pty_size(resize.cols, 80), pty_size(resize.rows, 24))
+                    }
+                    Some(Message::Done(_)) => handle.done(),
+                    Some(Message::Cancel(_)) => {
+                        handle.cancel();
+                        return;
+                    }
+                    Some(Message::Open(_)) | None => true,
+                };
+                if !alive {
+                    return;
+                }
+            }
+        });
+
+        let work = self.work.clone();
+        let left = self.left.clone();
+        std::thread::spawn(move || {
+            run_shell_login(session, machine, link, made, progress, provider_id, &work, &left, &out, &runtime);
+        });
+        Ok(Response::new(ReceiverStream::new(receiver)))
+    }
+}
+
+/// Drives an interactive provider command (`refresh` or `wake`) in a PTY until
+/// the command itself exits. Streams output and prompt detections to `out`,
+/// and on exit 0 clears `user_stopped_vm`, kicks `link_up`, and emits `Ready`.
+#[allow(clippy::too_many_arguments)]
+fn run_interactive_pty_command(
+    mut terminal: LoginTerminal,
+    events: std::sync::mpsc::Receiver<LoginEvent>,
+    name: &str,
+    provider: &Provider,
+    action: Action,
+    work: &Arc<Work>,
+    out: &tokio::sync::mpsc::Sender<Result<pb::LoginServerMessage, Status>>,
+    runtime: &Handle,
+) {
+    use pb::login_server_message::Message;
+    let send = |message: Message| {
+        out.blocking_send(Ok(pb::LoginServerMessage {
+            message: Some(message),
+            ..Default::default()
+        }))
+        .is_ok()
+    };
+    let mut kept: Vec<u8> = Vec::new();
+    let mut last_prompt: Option<String> = None;
+    let mut exit_result: Option<humata2_machines::Exit> = None;
+    while let Ok(event) = events.recv() {
+        match event {
+            LoginEvent::Output(bytes) => {
+                kept.extend_from_slice(&bytes);
+                if kept.len() > 4096 {
+                    let drop_n = kept.len() - 4096;
+                    kept.drain(..drop_n);
+                }
+                if !send(Message::Output(bytes.into())) {
+                    return;
+                }
+                if let Some(prompt) = detect_prompt(&kept)
+                    && last_prompt.as_deref() != Some(&prompt.line)
+                {
+                    last_prompt = Some(prompt.line.clone());
+                    if out
+                        .blocking_send(Ok(pb::LoginServerMessage {
+                            message: Some(Message::PromptSeen(prompt.line)),
+                            prompt_kind: prompt_kind_pb(prompt.kind) as i32,
+                        }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            LoginEvent::Input(bytes) => {
+                let _ = terminal.write(&bytes);
+            }
+            LoginEvent::Resize { cols, rows } => {
+                let _ = terminal.resize(cols, rows);
+            }
+            LoginEvent::Done => {
+                // Keep the terminal open until the command itself exits.
+            }
+            LoginEvent::Cancel => {
+                drop(terminal);
+                return;
+            }
+            LoginEvent::Exited(exit) => {
+                exit_result = Some(exit);
+                // Drain any final output that arrived just before exit.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+                while let Some(rem) = deadline.checked_duration_since(std::time::Instant::now()) {
+                    match events.recv_timeout(rem) {
+                        Ok(LoginEvent::Output(bytes)) => {
+                            kept.extend_from_slice(&bytes);
+                            if kept.len() > 4096 {
+                                let drop_n = kept.len() - 4096;
+                                kept.drain(..drop_n);
+                            }
+                            let _ = send(Message::Output(bytes.into()));
+                        }
+                        Ok(LoginEvent::Eof) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+                break;
+            }
+            LoginEvent::Eof => {}
+        }
+    }
+    drop(terminal);
+    match exit_result {
+        Some(exit) if exit.success() => {
+            work.clear_user_stopped_vm(name);
+            // If `wake` ran interactively, refresh reach metadata before
+            // kicking `link_up`; if `refresh` ran interactively, avoid
+            // re-running `refresh` non-interactively and kick `link_up`.
+            if action == Action::Wake && !provider.has(Action::Refresh) {
+                let runner = SystemRunner::new(&crate::host_vars::Installed);
+                let _ = work.machines.refresh_reach(provider, name, &runner);
+            }
+            work.link_up(name, runtime);
+            work.publish_machines();
+            let _ = send(Message::Ready(pb::LoginReady {
+                machine: Some(machine_id(name)),
+                can_make_unattended: false,
+            }));
+        }
+        other => {
+            let exit_code = match other {
+                Some(humata2_machines::Exit::Code(code)) => code,
+                _ => -1,
+            };
+            let output_tail = String::from_utf8_lossy(&kept).trim().to_owned();
+            let _ = send(Message::Failed(pb::Error {
+                message: format!(
+                    "the provider's `{action}` command for {name} exited with status {exit_code}"
+                ),
+                fix: "check the terminal output above and try again".to_owned(),
+                retry: None,
+                kind: Some(pb::error::Kind::ProviderStepFailed(pb::ProviderStepFailed {
+                    provider: Some(pb::ProviderId {
+                        value: provider.id().to_owned(),
+                    }),
+                    step: pb::provider_step_failed::Step::Connect as i32,
+                    exit_code,
+                    output_tail,
+                })),
+            }));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_shell_login(
+    session: LoginSession,
+    machine: MachineName,
+    link: humata2_machines::Link,
+    made: Option<(Provider, BTreeMap<String, String>)>,
+    progress: Option<crate::operations::Progress>,
+    provider_id: Option<String>,
+    work: &Arc<Work>,
+    left: &Arc<Mutex<HashMap<String, Left>>>,
+    out: &tokio::sync::mpsc::Sender<Result<pb::LoginServerMessage, Status>>,
+    runtime: &Handle,
+) {
+    use pb::login_server_message::Message;
+    let send = |message: Message| {
+        out.blocking_send(Ok(pb::LoginServerMessage {
+            message: Some(message),
+            ..Default::default()
+        }))
+        .is_ok()
+    };
+    let name = machine.as_str().to_owned();
+    let keys = work.machines.peer_key(&name);
+    let enroll_into: Option<std::path::PathBuf> = (!keys.exists())
+        .then(|| keys.parent().map(std::path::Path::to_path_buf))
+        .flatten();
+    let builds: &(dyn humata2_machines::Builds + Send + Sync) = &*work.builds;
+    let plan = Plan {
+        builds,
+        enroll_into: enroll_into.as_deref(),
+        shell_timeout: None,
+        sync_timeout: None,
+    };
+    let result = session.run(&plan, &mut |observed| match observed {
+        Observed::Output(bytes) => send(Message::Output(bytes.into())),
+        Observed::Prompt(prompt) => out
+            .blocking_send(Ok(pb::LoginServerMessage {
+                message: Some(Message::PromptSeen(prompt.line)),
+                prompt_kind: prompt_kind_pb(prompt.kind) as i32,
+            }))
+            .is_ok(),
+    });
+    let active_link = match result {
+        Ok(active) => active,
+        Err(LoginError::Cancelled { .. }) => return,
+        Err(error) => {
+            send(Message::Failed(login_error_pb(&error, provider_id.as_deref())));
+            return;
+        }
+    };
+    let platform = active_link.platform();
+    let enrolled = active_link.enrolled();
+    let made_ref = made.as_ref().map(|(provider, values)| (provider, values));
+    if let Err(error) = register(&work.machines, &machine, made_ref, &link, platform) {
+        drop(active_link);
+        if made.is_some() {
+            let _ = humata2_machines::unregister(&work.machines, &machine, enrolled);
+        }
+        send(Message::Failed(login_error_pb(&error, provider_id.as_deref())));
+        return;
+    }
+    let (reader, writer) = active_link.split();
+    let pipe = bridge_login_pipe(reader, writer, runtime);
+    if enroll_into.is_some() {
+        work.forget_journal_now(&name);
+    }
+    work.clear_user_stopped_vm(&name);
+    lock(&PROVIDER_ONE_SHOTS).insert(name.clone(), pipe);
+    work.link_up(&name, runtime);
+    work.publish_machines();
+    if let Some(progress) = progress {
+        for step in [OpStep::Connect, OpStep::Check, OpStep::Install, OpStep::Start] {
+            progress.step(&StepEvent::Done(step));
+        }
+        progress.step(&StepEvent::Skipped(OpStep::FindAgents));
+        let operation = progress.operation().id.map(|id| id.value).unwrap_or_default();
+        progress.succeed(Some(pb::operation::Result::Machine(machine_id(&name))));
+        lock(left).remove(&operation);
+    }
+    send(Message::Ready(pb::LoginReady {
+        machine: Some(machine_id(&name)),
+        can_make_unattended: true,
+    }));
+}
+
+fn bridge_login_pipe(
+    mut reader: humata2_machines::LinkReader,
+    mut writer: humata2_machines::LinkWriter,
+    runtime: &Handle,
+) -> crate::peer_client::Pipe {
+    use std::io::Read as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (near, far) = tokio::io::duplex(64 * 1024);
+    let (mut from_host, mut to_host) = tokio::io::split(far);
+    let machine_to_host = runtime.clone();
+    std::thread::spawn(move || {
+        let mut buffer = vec![0_u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if machine_to_host.block_on(to_host.write_all(&buffer[..n])).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = machine_to_host.block_on(to_host.shutdown());
+    });
+    let host_to_machine = runtime.clone();
+    std::thread::spawn(move || {
+        let mut buffer = vec![0_u8; 16 * 1024];
+        loop {
+            match host_to_machine.block_on(from_host.read(&mut buffer)) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if writer.write_all(&buffer[..n]).and_then(|()| writer.flush()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        writer.close();
+    });
+    Box::new(near)
+}
+
+fn login_error_pb(error: &LoginError, provider: Option<&str>) -> pb::Error {
+    let message = status::chain(error);
+    let (fix, exit_code, output_tail) = match error {
+        LoginError::Takeover(TakeoverError::NoShell { output_tail, .. }) => (
+            "this login ends in a menu or a program, not a shell (MP-18): give the provider an `identity` command that prints SSH details instead, or point `connect` at a wrapper script that ends in a POSIX shell; then log in again",
+            -1,
+            output_tail.clone(),
+        ),
+        LoginError::Takeover(
+            TakeoverError::SyncTimedOut { output_tail, .. }
+            | TakeoverError::TerminalEnded { output_tail, .. },
+        ) => (
+            "check that humatad2 starts on the machine (the output says what it printed), then log in again",
+            -1,
+            output_tail.clone(),
+        ),
+        LoginError::Takeover(
+            TakeoverError::Install { output_tail, .. } | TakeoverError::Bundle { output_tail, .. },
+        ) => (
+            "check that ~/.humata2 on the machine is writable and has room (the output says what the install printed), then log in again",
+            -1,
+            output_tail.clone(),
+        ),
+        LoginError::Takeover(_) => (
+            "log in again; press Done only when you see the machine's shell prompt",
+            -1,
+            String::new(),
+        ),
+        LoginError::Ended { exit, output_tail, .. } => (
+            "log in again and press Done only when you see a shell prompt",
+            match exit {
+                Some(humata2_machines::Exit::Code(code)) => *code,
+                _ => -1,
+            },
+            output_tail.clone(),
+        ),
+        LoginError::Enrollment { output_tail, .. } => (
+            "make sure the machine's home folder is writable, then log in again",
+            -1,
+            output_tail.clone(),
+        ),
+        LoginError::Stalled { output_tail, .. } => (
+            "log in again and press Done only when you see a POSIX shell prompt (sh, bash, zsh); a shell that doesn't read typed commands can't be taken over",
+            -1,
+            output_tail.clone(),
+        ),
+        LoginError::StillNeedsLogin { output_tail, .. } | LoginError::Authorize { output_tail, .. } => (
+            "log in again if the connect asks for one, then make the machine unattended again; the machine was left as it was",
+            -1,
+            output_tail.clone(),
+        ),
+        _ => (
+            "fix what the message names, then try again; nothing was changed",
+            -1,
+            String::new(),
+        ),
+    };
+    pb::Error {
+        message,
+        fix: fix.to_owned(),
+        retry: None,
+        kind: Some(pb::error::Kind::ProviderStepFailed(pb::ProviderStepFailed {
+            provider: provider.map(|id| pb::ProviderId { value: id.to_owned() }),
+            step: pb::provider_step_failed::Step::Connect as i32,
+            exit_code,
+            output_tail,
+        })),
+    }
+}
+
+fn login_error_status(error: &LoginError, provider: Option<&str>) -> Status {
+    if let LoginError::Manage { source, .. } = error {
+        return status_of(source);
+    }
+    let code = match error {
+        LoginError::NotInteractive { .. }
+        | LoginError::NoSshAddress { .. }
+        | LoginError::HostKeyNotPinned { .. }
+        | LoginError::IdentityProvider { .. }
+        | LoginError::NoLink { .. } => Code::FailedPrecondition,
+        _ => Code::Aborted,
+    };
+    status::failure(code, login_error_pb(error, provider))
+}
+
+#[cfg(test)]
+mod interactive_pty_tests {
+    use super::*;
+
+    #[test]
+    fn interactive_provider_action_prefers_refresh_then_wake_without_connect() {
+        let with_refresh = Provider::parse(
+            r#"
+[providers.authbox]
+label = "Auth Box"
+interactive = true
+identity = "echo '{}'"
+refresh = "echo refresh"
+wake = "echo wake"
+"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(interactive_provider_action(&with_refresh), Some(Action::Refresh));
+
+        let wake_only = Provider::parse(
+            r#"
+[providers.wakebox]
+label = "Wake Box"
+interactive = true
+identity = "echo '{}'"
+wake = "echo wake"
+"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(interactive_provider_action(&wake_only), Some(Action::Wake));
+
+        let non_interactive = Provider::parse(
+            r#"
+[providers.autobox]
+label = "Auto Box"
+interactive = false
+identity = "echo '{}'"
+refresh = "echo refresh"
+"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(interactive_provider_action(&non_interactive), None);
+
+        let connect_only = Provider::parse(
+            r#"
+[providers.shellbox]
+label = "Shell Box"
+interactive = true
+connect = "echo {cmd}"
+"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(interactive_provider_action(&connect_only), None);
+    }
+
+    #[tokio::test]
+    async fn interactive_pty_command_stays_open_until_exit_and_clears_user_stopped_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = dir.path().join("hosts.json");
+        std::fs::write(
+            &hosts,
+            r#"{"version":1,"machines":[{"name":"vm1","ssh_host":"via authbox","root":"~/Humata","state":"ready","provider":{"id":"authbox","params":{}}}]}"#,
+        )
+        .unwrap();
+        let machines = humata2_machines::Machines::open(humata2_machines::MachinesConfig {
+            hosts_file: hosts,
+            known_hosts: dir.path().join("known_hosts"),
+            ssh_config: dir.path().join("ssh_config"),
+            peer_keys: dir.path().join("peer-keys"),
+            retry: humata2_machines::RetryPolicy::default(),
+        });
+        let builds = Box::new(humata2_machines::Bundle::beside(
+            dir.path(),
+            humata2_machines::Platform::host().unwrap(),
+        ));
+        let work = crate::wire_machines::new_work(
+            machines,
+            builds,
+            Arc::new(crate::events::Feed::default()),
+            crate::host_relay::Links::default(),
+            crate::peer_reports::PeerReports::default(),
+            Arc::new(std::time::SystemTime::now),
+        );
+        work.mark_user_stopped_vm("vm1");
+        assert!(work.is_user_stopped_vm("vm1"));
+
+        let provider = Provider::parse(
+            r#"
+[providers.authbox]
+label = "Auth Box"
+interactive = true
+identity = "echo '{}'"
+refresh = "echo 'Open https://example.invalid/auth'; sleep 0.05; echo 'auth ok'"
+"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        let machine = MachineName::new("vm1").unwrap();
+        let invocation = provider
+            .invocation(Action::Refresh, &machine, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let terminal = LoginTerminal::spawn(
+            &invocation,
+            &crate::host_vars::Installed,
+            80,
+            24,
+            events_tx.clone(),
+        )
+        .unwrap();
+        // Sending LoginDone must NOT cut short the command; it stays open until exit.
+        events_tx.send(LoginEvent::Done).unwrap();
+
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(64);
+        let runtime = Handle::current();
+        let work_for_thread = work.clone();
+        std::thread::spawn(move || {
+            run_interactive_pty_command(
+                terminal,
+                events_rx,
+                "vm1",
+                &provider,
+                Action::Refresh,
+                &work_for_thread,
+                &out_tx,
+                &runtime,
+            );
+        });
+
+        let mut saw_output = String::new();
+        let mut saw_ready = false;
+        while let Some(msg) = out_rx.recv().await {
+            let msg = msg.unwrap();
+            match msg.message {
+                Some(pb::login_server_message::Message::Output(bytes)) => {
+                    saw_output.push_str(&String::from_utf8_lossy(&bytes));
+                }
+                Some(pb::login_server_message::Message::Ready(ready)) => {
+                    assert_eq!(ready.machine.map(|m| m.value), Some("vm1".to_owned()));
+                    saw_ready = true;
+                }
+                Some(pb::login_server_message::Message::Failed(err)) => {
+                    panic!("unexpected failure: {err:?}");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_output.contains("auth ok"), "output was: {saw_output:?}");
+        assert!(saw_ready, "expected Ready after exit 0");
+        assert!(!work.is_user_stopped_vm("vm1"), "user_stopped_vm should be cleared");
     }
 }

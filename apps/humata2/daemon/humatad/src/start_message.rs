@@ -267,6 +267,7 @@ mod tests {
                 answer: Some(pb::RequestAnswer {
                     answer: Some(pb::request_answer::Answer::Reply(pb::Reply {
                         text: super::SEND.to_owned(),
+                        selected_choices: Vec::new(),
                     })),
                 }),
                 ..Default::default()

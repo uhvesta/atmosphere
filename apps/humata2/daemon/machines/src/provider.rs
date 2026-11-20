@@ -6,9 +6,11 @@ use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::Value;
 use toml::Spanned;
 
-use crate::error::{ConfigError, Problem, ProblemKind, Problems, ValuesError};
+use crate::error::{ConfigError, FieldProblem, IdentityError, Problem, ProblemKind, Problems, ValuesError};
+use crate::identity::{self, SshTarget};
 use crate::link::Link;
 use crate::name::{self, MachineName};
 use crate::quote::{self, CMD};
@@ -22,8 +24,12 @@ pub(crate) const LIMA_TOML: &str = include_str!("../providers/lima.toml");
 pub enum Action {
     Create,
     Identity,
+    List,
     Start,
     Stop,
+    Wake,
+    Refresh,
+    Ssh,
     Delete,
     Status,
 }
@@ -34,8 +40,12 @@ impl Action {
         match self {
             Self::Create => "create",
             Self::Identity => "identity",
+            Self::List => "list",
             Self::Start => "start",
             Self::Stop => "stop",
+            Self::Wake => "wake",
+            Self::Refresh => "refresh",
+            Self::Ssh => "ssh",
             Self::Delete => "delete",
             Self::Status => "status",
         }
@@ -45,8 +55,12 @@ impl Action {
         match self {
             Self::Create => Purpose::Create,
             Self::Identity => Purpose::Identity,
+            Self::List => Purpose::List,
             Self::Start => Purpose::Start,
             Self::Stop => Purpose::Stop,
+            Self::Wake => Purpose::Wake,
+            Self::Refresh => Purpose::Refresh,
+            Self::Ssh => Purpose::Ssh,
             Self::Delete => Purpose::Delete,
             Self::Status => Purpose::Status,
         }
@@ -56,8 +70,8 @@ impl Action {
     fn timeout(self) -> Duration {
         Duration::from_secs(match self {
             Self::Create => 30 * 60,
-            Self::Identity | Self::Status => 2 * 60,
-            Self::Start | Self::Delete => 10 * 60,
+            Self::Identity | Self::List | Self::Refresh | Self::Status | Self::Ssh => 2 * 60,
+            Self::Start | Self::Wake | Self::Delete => 10 * 60,
             Self::Stop => 5 * 60,
         })
     }
@@ -90,10 +104,35 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineStatus {
     Running,
+    /// Sleeping, suspended, or paused; can be woken on demand.
+    Sleeping,
     /// Shown as offline with Start.
     Stopped,
+    /// Booting, provisioning, or waking up.
+    Starting,
+    /// No longer exists on the provider side.
+    Missing,
     /// Anything else, as the provider printed it.
     Other(String),
+}
+
+/// Structured output from a provider's `status` command: JSON
+/// `{ state, instance_id?, ssh? }` or plain-text state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusReport {
+    pub state: MachineStatus,
+    pub instance_id: Option<String>,
+    pub ssh: Option<SshTarget>,
+}
+
+/// One existing instance discovered by a provider's `list` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredInstance {
+    pub name: String,
+    pub state: MachineStatus,
+    pub params: BTreeMap<String, String>,
+    pub ssh: Option<SshTarget>,
+    pub instance_id: Option<String>,
 }
 
 /// One provider, checked.
@@ -101,13 +140,18 @@ pub enum MachineStatus {
 pub struct Provider {
     id: String,
     label: String,
-    create: String,
-    reach: Reach,
-    reach_template: String,
+    create: Option<String>,
+    connect: Option<String>,
+    identity: Option<String>,
+    list: Option<String>,
     start: Option<String>,
     stop: Option<String>,
+    wake: Option<String>,
+    refresh: Option<String>,
+    ssh: Option<String>,
     delete: Option<String>,
     status: Option<String>,
+    wake_on_demand: bool,
     params: Vec<Param>,
     env: Vec<String>,
     interactive: bool,
@@ -147,9 +191,9 @@ impl Provider {
             }
             None => Err(ConfigError::Problems(Problems(vec![Problem {
                 provider: "lima".to_owned(),
-                field: "create".to_owned(),
+                field: "connect".to_owned(),
                 line: None,
-                kind: ProblemKind::MissingCreate,
+                kind: ProblemKind::MissingLink,
             }]))),
         }
     }
@@ -162,8 +206,29 @@ impl Provider {
         &self.label
     }
 
+    /// Primary transport kind: `Connect` when `connect` is declared (even if
+    /// `identity` is also declared to refresh SSH metadata/state), else
+    /// `Identity`.
     pub fn reach(&self) -> Reach {
-        self.reach
+        if self.connect.is_some() {
+            Reach::Connect
+        } else {
+            Reach::Identity
+        }
+    }
+
+    pub fn has_connect(&self) -> bool {
+        self.connect.is_some()
+    }
+
+    pub fn has_identity(&self) -> bool {
+        self.identity.is_some()
+    }
+
+    /// Whether a sleeping or stopped machine can be woken on demand. Defaults
+    /// to `true` when `wake` or `start` is declared.
+    pub fn wake_on_demand(&self) -> bool {
+        self.wake_on_demand
     }
 
     pub fn interactive(&self) -> bool {
@@ -196,14 +261,17 @@ impl Provider {
     /// Every command the provider will run, by field, for the import
     /// confirmation (MP-23).
     pub fn commands(&self) -> Vec<(&'static str, &str)> {
-        let mut commands = vec![("create", self.create.as_str())];
-        commands.push(match self.reach {
-            Reach::Connect => ("connect", self.reach_template.as_str()),
-            Reach::Identity => ("identity", self.reach_template.as_str()),
-        });
+        let mut commands = Vec::new();
         for (field, command) in [
+            ("create", &self.create),
+            ("connect", &self.connect),
+            ("identity", &self.identity),
+            ("list", &self.list),
             ("start", &self.start),
             ("stop", &self.stop),
+            ("wake", &self.wake),
+            ("refresh", &self.refresh),
+            ("ssh", &self.ssh),
             ("delete", &self.delete),
             ("status", &self.status),
         ] {
@@ -283,33 +351,78 @@ impl Provider {
         }))
     }
 
-    /// The link to `machine` through `connect`; none for an identity
-    /// provider, whose link comes from the identity output.
+    /// The provider-level `list` command for discovering existing instances;
+    /// none when the provider doesn't declare `list`.
+    pub fn list_invocation(&self) -> Option<Invocation> {
+        let template = self.list.as_deref()?;
+        let env = self
+            .env
+            .iter()
+            .map(|name| (name.clone(), EnvValue::HostVariable(name.clone())))
+            .collect();
+        Some(Invocation {
+            program: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), template.to_owned()],
+            env,
+            stdin: None,
+            timeout: Some(Action::List.timeout()),
+            purpose: Purpose::List,
+        })
+    }
+
+    /// The link to `machine` through `connect`; none when `connect` is not
+    /// declared (an identity-only provider's link comes from `identity`).
     pub fn link(
         &self,
         machine: &MachineName,
         values: &BTreeMap<String, String>,
     ) -> Result<Option<Link>, ValuesError> {
-        if self.reach != Reach::Connect {
+        let Some(template) = &self.connect else {
             return Ok(None);
-        }
+        };
         Ok(Some(Link::connect(
             machine.clone(),
-            self.reach_template.clone(),
+            template.clone(),
             self.environment(machine, values)?,
         )))
     }
 
     fn template(&self, action: Action) -> Option<&str> {
         match action {
-            Action::Create => Some(&self.create),
-            Action::Identity => (self.reach == Reach::Identity).then_some(&self.reach_template),
-            Action::Start => self.start.as_ref(),
-            Action::Stop => self.stop.as_ref(),
-            Action::Delete => self.delete.as_ref(),
-            Action::Status => self.status.as_ref(),
+            Action::Create => self.create.as_deref(),
+            Action::Identity => self.identity.as_deref(),
+            Action::List => self.list.as_deref(),
+            Action::Start => self.start.as_deref(),
+            Action::Stop => self.stop.as_deref(),
+            Action::Wake => self
+                .wake
+                .as_deref()
+                .or_else(|| self.wake_on_demand.then_some(self.start.as_deref()).flatten()),
+            Action::Refresh => self.refresh.as_deref(),
+            Action::Ssh => self.ssh.as_deref(),
+            Action::Delete => self.delete.as_deref(),
+            Action::Status => self.status.as_deref(),
         }
-        .map(String::as_str)
+    }
+}
+
+/// Maps a single status word (from plain text or JSON `state`) to [`MachineStatus`].
+pub(crate) fn parse_status_word(word: &str) -> MachineStatus {
+    let trimmed = word.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "running" | "active" | "started" | "up" | "ready" => MachineStatus::Running,
+        "sleeping" | "suspended" | "paused" | "hibernated" | "idle" | "asleep" => {
+            MachineStatus::Sleeping
+        }
+        "stopped" | "off" | "terminated" | "shutoff" | "shut off" | "halted" | "exited"
+        | "down" | "poweroff" | "deallocated" => MachineStatus::Stopped,
+        "starting" | "booting" | "pending" | "provisioning" | "waking" | "resuming" => {
+            MachineStatus::Starting
+        }
+        "missing" | "not_found" | "not found" | "deleted" | "destroyed" | "gone" => {
+            MachineStatus::Missing
+        }
+        _ => MachineStatus::Other(trimmed.chars().take(64).collect()),
     }
 }
 
@@ -319,19 +432,202 @@ pub fn parse_status(stdout: &[u8]) -> MachineStatus {
     let text = String::from_utf8_lossy(stdout);
     let text = text.trim();
     let word = if text.starts_with('{') {
-        serde_json::from_str::<serde_json::Value>(text)
+        serde_json::from_str::<Value>(text)
             .ok()
             .and_then(|value| value.get("state")?.as_str().map(str::to_owned))
             .unwrap_or_default()
     } else {
         text.lines().last().unwrap_or_default().trim().to_owned()
     };
-    match word.to_ascii_lowercase().as_str() {
-        "running" | "active" | "started" | "up" | "ready" => MachineStatus::Running,
-        "stopped" | "off" | "terminated" | "shutoff" | "shut off" | "halted" | "exited"
-        | "down" | "poweroff" | "deallocated" => MachineStatus::Stopped,
-        _ => MachineStatus::Other(word.chars().take(64).collect()),
+    parse_status_word(&word)
+}
+
+/// Reads structured JSON (`{ state, instance_id?, ssh? }`) or plain-text
+/// output from a provider's `status` command. Refuses output containing key
+/// material.
+pub fn parse_status_report(stdout: &[u8]) -> Result<StatusReport, IdentityError> {
+    if identity::has_key_material(stdout) {
+        return Err(IdentityError::KeyMaterial);
     }
+    let text = String::from_utf8_lossy(stdout);
+    let trimmed = text.trim();
+    if !trimmed.starts_with('{') {
+        let word = trimmed.lines().last().unwrap_or_default().trim();
+        return Ok(StatusReport {
+            state: parse_status_word(word),
+            instance_id: None,
+            ssh: None,
+        });
+    }
+    let value: Value =
+        serde_json::from_str(trimmed).map_err(|source| IdentityError::NotJson { source })?;
+    let Value::Object(map) = value else {
+        return Err(IdentityError::Field {
+            field: "output".to_owned(),
+            problem: FieldProblem::NotObject,
+        });
+    };
+    let state_word = match map.get("state") {
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => {
+            return Err(IdentityError::Field {
+                field: "state".to_owned(),
+                problem: FieldProblem::NotString,
+            });
+        }
+        None => {
+            return Err(IdentityError::Field {
+                field: "state".to_owned(),
+                problem: FieldProblem::Missing,
+            });
+        }
+    };
+    let instance_id = match map.get("instance_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => (!s.trim().is_empty()).then(|| s.clone()),
+        Some(_) => {
+            return Err(IdentityError::Field {
+                field: "instance_id".to_owned(),
+                problem: FieldProblem::NotString,
+            });
+        }
+    };
+    let ssh = match map.get("ssh") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(obj)) => Some(identity::parse_ssh_object(obj, "ssh.")?),
+        Some(_) => {
+            return Err(IdentityError::Field {
+                field: "ssh".to_owned(),
+                problem: FieldProblem::NotObject,
+            });
+        }
+    };
+    Ok(StatusReport {
+        state: parse_status_word(state_word),
+        instance_id,
+        ssh,
+    })
+}
+
+/// Parses the JSON array printed by a provider's `list` command:
+/// `[{ name, state, params?, ssh?, instance_id? }]`.
+pub fn parse_list(stdout: &[u8]) -> Result<Vec<DiscoveredInstance>, IdentityError> {
+    if identity::has_key_material(stdout) {
+        return Err(IdentityError::KeyMaterial);
+    }
+    let value: Value =
+        serde_json::from_slice(stdout).map_err(|source| IdentityError::NotJson { source })?;
+    let Value::Array(items) = value else {
+        return Err(IdentityError::Field {
+            field: "output".to_owned(),
+            problem: FieldProblem::NotArray,
+        });
+    };
+    let mut instances = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        let prefix = format!("[{index}].");
+        let Value::Object(map) = item else {
+            return Err(IdentityError::Field {
+                field: format!("[{index}]"),
+                problem: FieldProblem::NotObject,
+            });
+        };
+        let name = match map.get("name") {
+            Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
+            Some(Value::String(_)) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}name"),
+                    problem: FieldProblem::Empty,
+                });
+            }
+            Some(_) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}name"),
+                    problem: FieldProblem::NotString,
+                });
+            }
+            None => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}name"),
+                    problem: FieldProblem::Missing,
+                });
+            }
+        };
+        let state = match map.get("state") {
+            Some(Value::String(s)) => parse_status_word(s),
+            Some(_) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}state"),
+                    problem: FieldProblem::NotString,
+                });
+            }
+            None => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}state"),
+                    problem: FieldProblem::Missing,
+                });
+            }
+        };
+        let mut params = BTreeMap::new();
+        match map.get("params") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(obj)) => {
+                for (k, v) in obj {
+                    match v {
+                        Value::String(s) => {
+                            params.insert(k.clone(), s.clone());
+                        }
+                        Value::Number(n) => {
+                            params.insert(k.clone(), n.to_string());
+                        }
+                        Value::Bool(b) => {
+                            params.insert(k.clone(), b.to_string());
+                        }
+                        _ => {
+                            return Err(IdentityError::Field {
+                                field: format!("{prefix}params.{k}"),
+                                problem: FieldProblem::NotString,
+                            });
+                        }
+                    }
+                }
+            }
+            Some(_) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}params"),
+                    problem: FieldProblem::NotObject,
+                });
+            }
+        }
+        let ssh = match map.get("ssh") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(obj)) => Some(identity::parse_ssh_object(obj, &format!("{prefix}ssh."))?),
+            Some(_) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}ssh"),
+                    problem: FieldProblem::NotObject,
+                });
+            }
+        };
+        let instance_id = match map.get("instance_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => (!s.trim().is_empty()).then(|| s.clone()),
+            Some(_) => {
+                return Err(IdentityError::Field {
+                    field: format!("{prefix}instance_id"),
+                    problem: FieldProblem::NotString,
+                });
+            }
+        };
+        instances.push(DiscoveredInstance {
+            name,
+            state,
+            params,
+            ssh,
+            instance_id,
+        });
+    }
+    Ok(instances)
 }
 
 #[derive(Deserialize)]
@@ -348,10 +644,15 @@ struct RawProvider {
     create: Option<Spanned<String>>,
     connect: Option<Spanned<String>>,
     identity: Option<Spanned<String>>,
+    list: Option<Spanned<String>>,
     start: Option<Spanned<String>>,
     stop: Option<Spanned<String>>,
+    wake: Option<Spanned<String>>,
+    refresh: Option<Spanned<String>>,
+    ssh: Option<Spanned<String>>,
     delete: Option<Spanned<String>>,
     status: Option<Spanned<String>>,
+    wake_on_demand: Option<bool>,
     #[serde(default)]
     params: Vec<RawParam>,
     #[serde(default)]
@@ -394,8 +695,12 @@ fn check(text: &str, id: String, raw: RawProvider, problems: &mut Vec<Problem>) 
         ("create", &raw.create),
         ("connect", &raw.connect),
         ("identity", &raw.identity),
+        ("list", &raw.list),
         ("start", &raw.start),
         ("stop", &raw.stop),
+        ("wake", &raw.wake),
+        ("refresh", &raw.refresh),
+        ("ssh", &raw.ssh),
         ("delete", &raw.delete),
         ("status", &raw.status),
     ] {
@@ -409,16 +714,13 @@ fn check(text: &str, id: String, raw: RawProvider, problems: &mut Vec<Problem>) 
             problem(field, line(command), ProblemKind::CmdOutsideConnect);
         }
     }
-    if raw.create.is_none() {
-        problem("create", None, ProblemKind::MissingCreate);
+    if raw.connect.is_none() && raw.identity.is_none() && raw.list.is_none() {
+        problem("connect", None, ProblemKind::MissingLink);
     }
-    match (&raw.connect, &raw.identity) {
-        (None, None) => problem("connect", None, ProblemKind::MissingLink),
-        (Some(connect), Some(_)) => problem("connect", line(connect), ProblemKind::BothLinks),
-        (Some(connect), None) if !connect.get_ref().contains(CMD) => {
+    if let Some(connect) = &raw.connect {
+        if !connect.get_ref().contains(CMD) {
             problem("connect", line(connect), ProblemKind::ConnectWithoutCmd);
         }
-        _ => {}
     }
     let mut seen = BTreeSet::new();
     for (index, param) in raw.params.iter().enumerate() {
@@ -448,25 +750,27 @@ fn check(text: &str, id: String, raw: RawProvider, problems: &mut Vec<Problem>) 
         return None;
     }
 
-    let create = raw.create?.into_inner();
-    let (reach, reach_template) = match (raw.connect, raw.identity) {
-        (Some(connect), _) => (Reach::Connect, connect.into_inner()),
-        (None, Some(identity)) => (Reach::Identity, identity.into_inner()),
-        (None, None) => return None,
-    };
+    let wake_on_demand = raw
+        .wake_on_demand
+        .unwrap_or_else(|| raw.wake.is_some() || raw.start.is_some());
     Some(Provider {
         label: raw
             .label
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| id.clone()),
         id,
-        create,
-        reach,
-        reach_template,
+        create: raw.create.map(Spanned::into_inner),
+        connect: raw.connect.map(Spanned::into_inner),
+        identity: raw.identity.map(Spanned::into_inner),
+        list: raw.list.map(Spanned::into_inner),
         start: raw.start.map(Spanned::into_inner),
         stop: raw.stop.map(Spanned::into_inner),
+        wake: raw.wake.map(Spanned::into_inner),
+        refresh: raw.refresh.map(Spanned::into_inner),
+        ssh: raw.ssh.map(Spanned::into_inner),
         delete: raw.delete.map(Spanned::into_inner),
         status: raw.status.map(Spanned::into_inner),
+        wake_on_demand,
         params: raw
             .params
             .into_iter()

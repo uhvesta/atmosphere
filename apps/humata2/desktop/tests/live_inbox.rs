@@ -486,6 +486,7 @@ impl World {
             keychain: Arc::new(humata2_clients::FakeKeychain::default()),
             local_daemon: Arc::new(humata2_clients::FakeLocalDaemon::default()),
             machines: Arc::new(humata2_clients::machines::FakeMachines::new()),
+            notifier: Arc::new(humata2_clients::NoopNotifier),
             storage: Arc::new(MemoryStorage::new()),
         })
     }

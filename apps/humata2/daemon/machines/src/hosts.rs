@@ -195,6 +195,31 @@ impl Hosts {
         Ok(found)
     }
 
+    /// Atomically updates the stored provider link for `name`; returns false
+    /// when no machine with `name` exists or it is not a provider machine.
+    pub(crate) fn update_provider_link(
+        &self,
+        name: &str,
+        link: StoredLink,
+    ) -> Result<bool, HostsError> {
+        let mut updated = false;
+        self.change(|machines| {
+            let Some(entry) = machines.iter_mut().find(|entry| entry.name == name) else {
+                return false;
+            };
+            let Some(provider) = &mut entry.provider else {
+                return false;
+            };
+            updated = true;
+            if provider.link.as_ref() == Some(&link) {
+                return false;
+            }
+            provider.link = Some(link);
+            true
+        })?;
+        Ok(updated)
+    }
+
     /// Adds `entry` unless a machine has its name; false when one has.
     pub(crate) fn insert_new(&self, entry: HostEntry) -> Result<bool, HostsError> {
         let mut added = false;

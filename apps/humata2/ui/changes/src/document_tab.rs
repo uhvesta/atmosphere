@@ -1026,6 +1026,7 @@ impl Documents {
         });
 
         let fold_key = format!("{repo}/{path}");
+        let todo_ctx = comment_cards::todo_context(state, &session.id);
         let fold_count = comment_cards::all_done(by_line.values().flatten().copied()).filter(|_| read.is_none());
         let folded = fold_count.is_some() && !self.unfolded.borrow().contains(&fold_key);
         let fold_at = by_line.keys().next().copied().map(|n| n.min(total));
@@ -1137,7 +1138,7 @@ impl Documents {
                 children.push(if read.is_some() {
                     crate::doc_history::recorded_card(look, comment).into_any_element()
                 } else {
-                    comment_cards::card(
+                    comment_cards::card_with_todo(
                         ui,
                         look,
                         comment,
@@ -1145,6 +1146,7 @@ impl Documents {
                         session.pull_request_review,
                         reattaching.as_ref() == Some(&comment.id),
                         &start,
+                        &todo_ctx,
                     )
                     .into_any_element()
                 });

@@ -255,7 +255,7 @@ async fn the_providers_file_is_validated_and_saved_against_its_revision() {
     // A file with problems saves nothing and names the field.
     let refused = host.save("[providers.broken]\nstart = \"true\"\n").await;
     assert!(!refused.problems.is_empty());
-    assert!(refused.problems.iter().any(|problem| problem.field == "create"));
+    assert!(refused.problems.iter().any(|problem| problem.field == "connect"));
     assert_eq!(host.config().await, empty);
 
     let text = identity_toml(&host);

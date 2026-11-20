@@ -408,6 +408,7 @@ pub(super) async fn live_clients(socket: PathBuf, live_machines: bool) -> Result
         keychain: Arc::new(humata2_clients::FakeKeychain::default()),
         local_daemon: Arc::new(humata2_clients::FakeLocalDaemon::default()),
         machines,
+        notifier: Arc::new(humata2_clients::NoopNotifier),
         storage: Arc::new(MemoryStorage::new()),
     })
 }

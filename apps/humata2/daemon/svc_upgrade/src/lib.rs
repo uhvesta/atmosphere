@@ -10,6 +10,7 @@
 //! each session's holder was spawned from, and the item for the agents still
 //! on an old one (`holders`).
 
+pub mod breaker;
 pub mod build;
 pub mod gate;
 pub mod holders;

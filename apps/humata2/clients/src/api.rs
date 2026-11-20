@@ -33,6 +33,7 @@ pub mod progress;
 pub mod repos;
 pub mod machines;
 pub mod machine_names;
+mod notifier;
 mod reveal;
 pub mod views;
 pub mod pull_requests;
@@ -56,6 +57,7 @@ pub use file_manager::{
 pub use files::{FileError, FileSystem};
 pub use keychain::{Keychain, KeychainError};
 pub use local_daemon::LocalDaemon;
+pub use notifier::{DesktopNotice, NoopNotifier, Notifier, NotifyTarget};
 pub use reveal::{FinderReveal, Reveal, RevealError, is_this_mac};
 pub use tca::{Clock, MemoryStorage, Storage};
 pub use workspace::Workspace;
@@ -101,6 +103,8 @@ pub struct Clients {
     pub pull_requests: Arc<dyn pull_requests::PullRequestsClient>,
     /// The review chat: what the agent sees and changes in a review's view (PR-22 to PR-26).
     pub review_chat: Arc<dyn review_chat::ReviewChatClient>,
+    /// Desktop notifications (NOTIFY, D889).
+    pub notifier: Arc<dyn Notifier>,
     /// Where the app's own state is saved between launches.
     pub storage: Arc<dyn Storage>,
 }

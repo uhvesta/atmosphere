@@ -111,18 +111,28 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
         );
     }
 
+    let owner_suggestions = search.owner_suggestions();
+    let owner_count = owner_suggestions.len();
+    let highlighted_owner = search.highlighted_index(owner_count);
     let mut owner_row = None;
     if search.adding_owner.is_some() {
         let mut suggestions = row().flex_wrap().gap(px(6.));
-        for name in search.owner_suggestions() {
-            suggestions = suggestions.child(action_pill(
+        for (idx, name) in owner_suggestions.iter().enumerate() {
+            let selected = highlighted_owner == Some(idx);
+            let pill = action_pill(
                 ui,
                 look,
                 format!("{id}-suggest-{name}"),
-                &name,
+                name,
                 &format!("Add {name} to this search"),
                 send(S::OwnerAdded(name.clone())),
-            ));
+            )
+            .when(selected, |x| {
+                x.bg(rgb(look.fill))
+                    .border_color(rgb(look.accent))
+                    .text_color(rgb(look.text))
+            });
+            suggestions = suggestions.child(pill);
         }
         owner_row = Some(
             col()
@@ -143,10 +153,15 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
         );
     }
 
+    let highlighted_row = search
+        .adding_owner
+        .is_none()
+        .then(|| search.highlighted_index(rows.len()))
+        .flatten();
     let mut list = col().id(SharedString::from(format!("{id}-repo-list"))).gap(px(7.));
     let mut shown_group: Option<RepoGroup> = None;
     let now_ms = search.now_ms;
-    for pick_row in rows {
+    for (idx, pick_row) in rows.iter().enumerate() {
         if let Some(group) = pick_row.group
             && shown_group != Some(group)
         {
@@ -159,7 +174,17 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
                 },
             ));
         }
-        list = list.child(repo_row(ui, look, id, pick_row, checkable, pick(&pick_row.repo), now_ms, workspace));
+        list = list.child(repo_row(
+            ui,
+            look,
+            id,
+            pick_row,
+            checkable,
+            highlighted_row == Some(idx),
+            pick(&pick_row.repo),
+            now_ms,
+            workspace,
+        ));
     }
     let problem = search.problem().map(str::to_owned);
     if problem.is_some() && shown_group != Some(RepoGroup::GitHub) {
@@ -202,8 +227,124 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
         .overflow_hidden()
         .child(list.max_h(px(8. * 21. + 7. * 7.)).overflow_y_scroll());
 
+    let row_actions: Vec<AppAction> = rows.iter().map(|row| pick(&row.repo)).collect();
+    let ui_keys = ui.clone();
+
     col()
         .gap(px(7.))
+        .capture_key_down(move |event, _, cx| {
+            let modifiers = &event.keystroke.modifiers;
+            // macOS marks arrow keys with the function flag, so it doesn't count here.
+            if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+                return;
+            }
+            let key = event.keystroke.key.as_str();
+            if !matches!(key, "down" | "up" | "tab" | "enter") {
+                return;
+            }
+            let adding_owner = ui_keys.read(|state| {
+                picker
+                    .search(state)
+                    .is_some_and(|search| search.adding_owner.is_some())
+            });
+            if adding_owner {
+                match key {
+                    "down" if owner_count > 0 => {
+                        cx.stop_propagation();
+                        ui_keys.send(
+                            AppAction::RepoSearch(
+                                picker,
+                                S::MoveHighlight {
+                                    delta: 1,
+                                    count: owner_count,
+                                },
+                            ),
+                            cx,
+                        );
+                    }
+                    "up" if owner_count > 0 => {
+                        cx.stop_propagation();
+                        ui_keys.send(
+                            AppAction::RepoSearch(
+                                picker,
+                                S::MoveHighlight {
+                                    delta: -1,
+                                    count: owner_count,
+                                },
+                            ),
+                            cx,
+                        );
+                    }
+                    "tab" if owner_count > 0 => {
+                        cx.stop_propagation();
+                        ui_keys.send(AppAction::RepoSearch(picker, S::CompleteOwner), cx);
+                    }
+                    "enter" => {
+                        cx.stop_propagation();
+                        ui_keys.send(AppAction::RepoSearch(picker, S::OwnerEntered), cx);
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            if row_actions.is_empty() {
+                return;
+            }
+            match key {
+                "down" => {
+                    cx.stop_propagation();
+                    ui_keys.send(
+                        AppAction::RepoSearch(
+                            picker,
+                            S::MoveHighlight {
+                                delta: 1,
+                                count: row_actions.len(),
+                            },
+                        ),
+                        cx,
+                    );
+                }
+                "up" => {
+                    cx.stop_propagation();
+                    ui_keys.send(
+                        AppAction::RepoSearch(
+                            picker,
+                            S::MoveHighlight {
+                                delta: -1,
+                                count: row_actions.len(),
+                            },
+                        ),
+                        cx,
+                    );
+                }
+                "tab" => {
+                    let (idx, can_tab_pick) = ui_keys.read(|state| {
+                        let Some(search) = picker.search(state) else {
+                            return (0, !checkable);
+                        };
+                        let idx = search.highlighted_index(row_actions.len()).unwrap_or(0);
+                        let can_pick =
+                            !checkable || !search.query.trim().is_empty() || search.highlighted > 0;
+                        (idx, can_pick)
+                    });
+                    if can_tab_pick {
+                        cx.stop_propagation();
+                        ui_keys.send(row_actions[idx].clone(), cx);
+                    }
+                }
+                "enter" => {
+                    let idx = ui_keys.read(|state| {
+                        picker
+                            .search(state)
+                            .and_then(|search| search.highlighted_index(row_actions.len()))
+                            .unwrap_or(0)
+                    });
+                    cx.stop_propagation();
+                    ui_keys.send(row_actions[idx].clone(), cx);
+                }
+                _ => {}
+            }
+        })
         .child(chips)
         .children(owner_row)
         .children(search.save_error.clone().map(|error| {
@@ -311,6 +452,7 @@ fn repo_row(
     id: &str,
     pick_row: &PickRow,
     checkable: bool,
+    highlighted: bool,
     action: AppAction,
     now_ms: i64,
     workspace: &Workspace,
@@ -327,6 +469,10 @@ fn repo_row(
         .aria_label(pick_row.repo.clone())
         .aria_selected(on)
         .test_support()
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(6.))
+        .when(highlighted, |x| x.bg(rgb(look.fill)))
         .gap(px(8.))
         .when(checkable, |x| {
             x.child(

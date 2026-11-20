@@ -345,3 +345,42 @@ fn everything_survives_reopening() {
     assert_eq!(again.board_item_history(&key, 0, 10).unwrap(), history);
     assert_eq!(make(&again, "c"), "PAY-2");
 }
+
+#[test]
+fn todo_runs_record_and_list_ordered_across_reopen() {
+    let (dir, store) = open();
+    let key = make(&store, "run-item");
+    let r2 = humata2_store::TodoRunRecord {
+        id: "run_2".into(),
+        item_key: key.clone(),
+        tool: "claude".into(),
+        model: "sonnet".into(),
+        outcome: "passed".into(),
+        cost_micros: 120_000,
+        started_unix_ms: 2000,
+        finished_unix_ms: 2500,
+        links_json: r#"[{"label":"PR #1","target":"https://example.test/1"}]"#.into(),
+        session: "se_1".into(),
+    };
+    let r1 = humata2_store::TodoRunRecord {
+        id: "run_1".into(),
+        item_key: key.clone(),
+        tool: "codex".into(),
+        model: "o3".into(),
+        outcome: "failed".into(),
+        cost_micros: 50_000,
+        started_unix_ms: 1000,
+        finished_unix_ms: 1500,
+        links_json: "[]".into(),
+        session: "se_1".into(),
+    };
+    store.record_todo_run(&r2).unwrap();
+    store.record_todo_run(&r1).unwrap();
+
+    let runs = store.list_todo_runs(&key).unwrap();
+    assert_eq!(runs, vec![r1.clone(), r2.clone()]);
+
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.list_todo_runs(&key).unwrap(), vec![r1, r2]);
+}

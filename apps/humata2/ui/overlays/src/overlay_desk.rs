@@ -109,8 +109,27 @@ impl Inputs {
                     // session's Add repo sheet; it is emptied when either
                     // next opens.
                     let action = match this.ui.read(|state| adding_repo_to(&state.desk)) {
-                        Some(session) => DeskAction::AddRepo(session, text),
-                        None => DeskAction::New(NewAction::AddRepo(text)),
+                        Some(session) => {
+                            let picked = this
+                                .ui
+                                .read(|state| state.desk_repos.highlighted_repo(&[], 50));
+                            DeskAction::AddRepo(session, picked.unwrap_or(text))
+                        }
+                        None => {
+                            let picked = this.ui.read(|state| {
+                                let ticked = state
+                                    .desk
+                                    .new
+                                    .as_ref()
+                                    .map(|form| form.repos.as_slice())
+                                    .unwrap_or_default();
+                                state.new_desk_repos.highlighted_repo(ticked, 50)
+                            });
+                            match picked {
+                                Some(repo) => DeskAction::New(NewAction::ToggleRepo(repo)),
+                                None => DeskAction::New(NewAction::AddRepo(text)),
+                            }
+                        }
                     };
                     this.ui.send(AppAction::Desk(action), cx);
                 }

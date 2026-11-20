@@ -11,11 +11,17 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
+
 use crate::install;
 use crate::name::MachineName;
 
 /// How many random bytes a key has (the machine needs at least 32).
 const KEY_BYTES: usize = 32;
+
+/// Exit code from [`restore_if_missing_script`] when `~/.humata2/state/enrollment-key`
+/// already exists with a different key and must not be overwritten.
+pub(crate) const CONFLICT_EXIT: i32 = 69;
 
 /// A fresh key, as the hex both files hold.
 #[derive(Clone)]
@@ -28,9 +34,18 @@ impl Key {
         Self(Arc::from(install::hex(&bytes).into_bytes()))
     }
 
+    pub(crate) fn from_bytes(bytes: Arc<[u8]>) -> Self {
+        Self(bytes)
+    }
+
     /// The hex, for the machine's stdin.
     pub(crate) fn bytes(&self) -> Arc<[u8]> {
         Arc::clone(&self.0)
+    }
+
+    /// SHA-256 hex digest of the key file's bytes, matching `sha256sum`.
+    pub(crate) fn sha256(&self) -> String {
+        install::hex(&Sha256::digest(&self.0))
     }
 }
 
@@ -54,9 +69,41 @@ exit 1"#
         .to_owned()
 }
 
+/// Restores `~/.humata2/state/enrollment-key` from stdin ONLY when missing.
+/// If a file already exists, verifies its SHA-256 matches `expected_sha`:
+/// exits 0 if it matches, or [`CONFLICT_EXIT`] without touching it if it differs.
+pub(crate) fn restore_if_missing_script(expected_sha: &str) -> String {
+    format!(
+        r#"umask 077
+d="$HOME/.humata2/state"
+f="$d/enrollment-key"
+mkdir -p "$d" || exit 1
+if [ -e "$f" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$f" | cut -d ' ' -f 1)
+  elif command -v shasum >/dev/null 2>&1; then s=$(shasum -a 256 "$f" | cut -d ' ' -f 1)
+  else exit {CONFLICT_EXIT}; fi
+  [ "$s" = {expected_sha} ] && exit 0
+  exit {CONFLICT_EXIT}
+fi
+t="$d/.enrollment-key.$$.new"
+if cat > "$t" && mv -f "$t" "$f"; then exit 0; fi
+rm -f "$t"
+exit 1"#
+    )
+}
+
 /// Where the host keeps its copy of `machine`'s key.
 pub(crate) fn host_path(dir: &Path, machine: &str) -> PathBuf {
     dir.join(machine)
+}
+
+/// Reads the host's copy of `machine`'s key; none when the file doesn't exist.
+pub(crate) fn read_host(dir: &Path, machine: &str) -> io::Result<Option<Key>> {
+    match fs::read(host_path(dir, machine)) {
+        Ok(bytes) => Ok(Some(Key::from_bytes(Arc::from(bytes)))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Writes the host's copy: a 0600 temp file in a 0700 folder, synced, then

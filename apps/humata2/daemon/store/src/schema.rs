@@ -642,6 +642,22 @@ const MIGRATIONS: &[&str] = &[
         pwd TEXT NOT NULL DEFAULT ''
     ) STRICT;
 ",
+    "
+    -- Step 33 (TODO2). Agent runs and cost recorded against a to-do item.
+    CREATE TABLE todo_runs (
+        id TEXT PRIMARY KEY,
+        item_key TEXT NOT NULL,
+        tool TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        cost_micros INTEGER NOT NULL DEFAULT 0,
+        started_unix_ms INTEGER NOT NULL DEFAULT 0,
+        finished_unix_ms INTEGER NOT NULL DEFAULT 0,
+        links_json TEXT NOT NULL DEFAULT '[]',
+        session TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX todo_runs_by_item ON todo_runs (item_key, started_unix_ms, id);
+",
 ];
 
 /// The schema this build writes and reads.

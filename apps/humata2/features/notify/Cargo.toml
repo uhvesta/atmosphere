@@ -1,0 +1,18 @@
+[package]
+name = "humata2-notify"
+description = "Pure desktop notification rules: event filtering, frontmost suppression, and burst collapsing."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_notify"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

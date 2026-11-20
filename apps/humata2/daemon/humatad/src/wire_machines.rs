@@ -956,39 +956,255 @@ fn identity_wrong(error: &crate::peer_client::LinkError) -> bool {
     )
 }
 
+/// Resolves a provider by id from `providers.toml` beside `hosts_file`,
+/// falling back to the built-in `lima` provider when not overridden.
+pub(crate) fn find_provider(hosts_file: &Path, id: &str) -> Option<humata2_machines::Provider> {
+    let providers = crate::machine_service::read_providers(hosts_file)
+        .map(|(_, providers)| providers)
+        .unwrap_or_default();
+    if let Some(provider) = providers.into_iter().find(|provider| provider.id() == id) {
+        return Some(provider);
+    }
+    if id == "lima" {
+        return humata2_machines::Provider::lima().ok();
+    }
+    None
+}
+
+/// Maps a `ManageError` from `refresh_reach` or `reconnect` to a permanent
+/// `LinkError` when the failure is a host-key mismatch or enrollment-key
+/// conflict.
+fn map_manage_permanent(machine: &str, error: &humata2_machines::ManageError) -> Option<crate::peer_client::LinkError> {
+    use crate::peer_client::LinkError;
+    use humata2_machines::{ManageError, SetupError};
+    match error {
+        ManageError::HostKeyMismatch { .. }
+        | ManageError::Step {
+            source: SetupError::HostKeyChanged { .. },
+            ..
+        } => Some(LinkError::HostKeyChanged {
+            machine: machine.to_owned(),
+            detail: crate::status::chain(error),
+        }),
+        ManageError::Step {
+            source: SetupError::EnrollmentKeyConflict { .. },
+            ..
+        } => Some(LinkError::MachineProofWrong {
+            machine: machine.to_owned(),
+        }),
+        _ => None,
+    }
+}
+
+/// Dials a machine by rebuilding its link invocation dynamically on every dial,
+/// refreshing dynamic provider reach/wake state on connect failures, and
+/// auto-repairing missing binaries or wiped remote enrollment keys.
+struct RefreshableDial {
+    machine: String,
+    work: std::sync::Weak<Work>,
+    inner: Mutex<Option<Arc<crate::peer_client::CommandDial>>>,
+}
+
+impl RefreshableDial {
+    fn new(machine: String, work: std::sync::Weak<Work>) -> Self {
+        Self {
+            machine,
+            work,
+            inner: Mutex::new(None),
+        }
+    }
+}
+
+impl crate::peer_client::Dial for RefreshableDial {
+    fn dial(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::peer_client::Pipe, crate::peer_client::LinkError>> + Send + '_>,
+    > {
+        use crate::peer_client::{CommandDial, LinkError};
+        Box::pin(async move {
+            let Some(work) = self.work.upgrade() else {
+                return Err(LinkError::Ended {
+                    machine: self.machine.clone(),
+                });
+            };
+            if work.is_user_stopped_vm(&self.machine) {
+                return Err(LinkError::Ended {
+                    machine: self.machine.clone(),
+                });
+            }
+            let invocation = work.machines.peer_link(&self.machine).map_err(|error| {
+                LinkError::Spawn {
+                    machine: self.machine.clone(),
+                    program: "peer_link".to_owned(),
+                    source: std::io::Error::other(crate::status::chain(&error)),
+                }
+            })?;
+            let cmd = Arc::new(CommandDial::new(self.machine.clone(), invocation));
+            *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = Some(cmd.clone());
+            cmd.dial().await
+        })
+    }
+
+    fn classify_failure(
+        &self,
+        error: crate::peer_client::LinkError,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::peer_client::LinkError> + Send + '_>> {
+        Box::pin(async move {
+            let cmd = self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match cmd {
+                Some(cmd) => cmd.classify_failure(error).await,
+                None => error,
+            }
+        })
+    }
+
+    fn refresh_on_failure(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, crate::peer_client::LinkError>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(work) = self.work.upgrade() else {
+                return Ok(false);
+            };
+            if work.is_user_stopped_vm(&self.machine) {
+                return Ok(false);
+            }
+            let machine = self.machine.clone();
+            tokio::task::spawn_blocking(move || {
+                let Ok(entry) = work.machines.get(&machine) else {
+                    return Ok(false);
+                };
+                let Some(record) = entry.provider else {
+                    return Ok(false);
+                };
+                let Some(provider) = find_provider(work.machines.hosts_file(), &record.id) else {
+                    return Ok(false);
+                };
+                // Never run interactive provider commands non-interactively in
+                // the background; interactive machines show NeedsLogin instead.
+                if provider.interactive() {
+                    return Ok(false);
+                }
+                let before = record.link;
+                let runner = humata2_machines::SystemRunner::new(&crate::host_vars::Installed);
+                match work.machines.refresh_reach(&provider, &machine, &runner) {
+                    Ok(_) => {
+                        let after = work
+                            .machines
+                            .get(&machine)
+                            .ok()
+                            .and_then(|entry| entry.provider)
+                            .and_then(|record| record.link);
+                        let changed = before != after;
+                        Ok(changed || provider.has(humata2_machines::Action::Wake))
+                    }
+                    Err(humata2_machines::ManageError::Busy { .. }) => Ok(false),
+                    Err(error) => {
+                        if let Some(permanent) = map_manage_permanent(&machine, &error) {
+                            return Err(permanent);
+                        }
+                        crate::log::say!(
+                            "humatad2: refreshing reach for {machine} failed: {}",
+                            crate::status::chain(&error)
+                        );
+                        Ok(false)
+                    }
+                }
+            })
+            .await
+            .unwrap_or(Ok(false))
+        })
+    }
+
+    fn repair(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, crate::peer_client::LinkError>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(work) = self.work.upgrade() else {
+                return Ok(false);
+            };
+            if work.is_user_stopped_vm(&self.machine) {
+                return Ok(false);
+            }
+            let machine = self.machine.clone();
+            tokio::task::spawn_blocking(move || {
+                let runner = humata2_machines::SystemRunner::new(&crate::host_vars::Installed);
+                if let Ok(entry) = work.machines.get(&machine)
+                    && let Some(record) = entry.provider
+                    && let Some(provider) = find_provider(work.machines.hosts_file(), &record.id)
+                    && !provider.interactive()
+                {
+                    if let Err(error) = work.machines.refresh_reach(&provider, &machine, &runner) {
+                        if let Some(permanent) = map_manage_permanent(&machine, &error) {
+                            return Err(permanent);
+                        }
+                    }
+                }
+                let mut ignore = |_: StepEvent| {};
+                let mut drive = humata2_machines::Drive {
+                    runner: &runner,
+                    builds: &*work.builds,
+                    wait: &std::thread::sleep,
+                    events: &mut ignore,
+                    cancelled: &|| false,
+                };
+                match work.machines.reconnect(&machine, &mut drive) {
+                    Ok(_) => {
+                        work.publish_machines();
+                        Ok(true)
+                    }
+                    Err(humata2_machines::ManageError::Busy { .. }) => Ok(false),
+                    Err(error) => {
+                        if let Some(permanent) = map_manage_permanent(&machine, &error) {
+                            return Err(permanent);
+                        }
+                        crate::log::say!(
+                            "humatad2: automatic repair for {machine} failed: {}",
+                            crate::status::chain(&error)
+                        );
+                        Ok(false)
+                    }
+                }
+            })
+            .await
+            .unwrap_or(Ok(false))
+        })
+    }
+}
+
 impl humata2_svc_machines::ports::MachinePeerDialPort for PeerDialAdapter {
     fn spawn_supervisor(
         &self,
         entry: humata2_machines::HostEntry,
         on_event: Arc<dyn Fn(humata2_svc_machines::ports::LinkEvent) + Send + Sync>,
     ) -> tokio::task::AbortHandle {
-        use crate::peer_client::{CommandDial, LinkEvent as Event};
+        use crate::peer_client::{LinkError, LinkEvent as Event};
         use humata2_svc_machines::ports::LinkEvent as Told;
         let name = entry.name;
         let Some(work) = self.work.upgrade() else {
             return self.runtime.spawn(async {}).abort_handle();
         };
         // A login that just finished hands over its terminal; otherwise the
-        // link dials its command.
-        let dial: Box<dyn crate::peer_client::Dial> = match crate::login_service::one_shot(&name) {
-            Some(dial) => dial,
-            None => match work.machines.peer_link(&name) {
-                Ok(invocation) => Box::new(CommandDial::new(name.clone(), invocation)),
-                Err(error) => {
-                    crate::log::say!(
-                        "humatad2: couldn't make the peer link command for {name}: {}",
-                        crate::status::chain(&error)
-                    );
-                    return self.runtime.spawn(async {}).abort_handle();
-                }
-            },
-        };
+        // link dials dynamically through RefreshableDial so updated provider
+        // reach metadata and wake-on-demand take effect without respawning.
+        let dial: Box<dyn crate::peer_client::Dial> = crate::provider_service::one_shot(&name)
+            .or_else(|| crate::login_service::one_shot(&name))
+            .unwrap_or_else(|| Box::new(RefreshableDial::new(name.clone(), self.work.clone())));
         let key_file = work.machines.peer_key(&name);
         let sink: crate::peer_client::Sink = {
             let (reports, name) = (self.reports.clone(), name.clone());
             Box::new(move |message| reports.accept(&name, message))
         };
+        let work_for_report = self.work.clone();
+        let name_for_report = name.clone();
         let report: crate::peer_client::Report = Box::new(move |event: Event<'_>| {
+            let host_key_changed = matches!(
+                event,
+                Event::Down {
+                    error: LinkError::HostKeyChanged { .. },
+                    ..
+                }
+            );
             on_event(match event {
                 Event::Up {
                     daemon_version,
@@ -1011,6 +1227,9 @@ impl humata2_svc_machines::ports::MachinePeerDialPort for PeerDialAdapter {
                     }
                 }
             });
+            if host_key_changed && let Some(work) = work_for_report.upgrade() {
+                work.saw(&name_for_report, pb::Reachability::HostKeyChanged);
+            }
         });
         self.runtime
             .spawn(crate::peer_client::supervise(

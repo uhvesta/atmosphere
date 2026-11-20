@@ -12,10 +12,32 @@ use humata2_clients::model::{Agent, Release, RepoDiff, SessionId, Status};
 use humata2_session::{Panel, SessionAction};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const GREEN: u32 = 0x30d158;
 pub const ORANGE: u32 = 0xff9f0a;
 pub const RED: u32 = 0xff453a;
+
+/// Width of the 3 macOS traffic light buttons (3 × 12 pt + 2 × 8 pt gaps).
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 52.;
+/// Height of the macOS traffic light buttons.
+pub const TRAFFIC_LIGHTS_HEIGHT: f32 = 12.;
+
+static NATIVE_TRAFFIC_LIGHTS: AtomicBool = AtomicBool::new(false);
+
+/// Tells [`lights`] that the host window draws real native macOS traffic
+/// lights, so headers leave an empty spacer instead of drawing duplicate
+/// synthetic colored circles. Headless tests keep the default (`false`) so
+/// golden captures continue to draw the synthetic dots.
+pub fn set_native_traffic_lights(native: bool) {
+    NATIVE_TRAFFIC_LIGHTS.store(native, Ordering::Relaxed);
+}
+
+/// Whether the host window draws real native macOS traffic lights.
+#[must_use]
+pub fn native_traffic_lights() -> bool {
+    NATIVE_TRAFFIC_LIGHTS.load(Ordering::Relaxed)
+}
 
 pub fn icon(name: IconName, color: u32, size: f32) -> Icon {
     Icon::new(name).size(px(size)).text_color(rgb(color))
@@ -86,6 +108,12 @@ pub fn stopped() -> Div {
         )
 }
 pub fn lights() -> Div {
+    if native_traffic_lights() {
+        return div()
+            .w(px(TRAFFIC_LIGHTS_WIDTH))
+            .h(px(TRAFFIC_LIGHTS_HEIGHT))
+            .flex_shrink_0();
+    }
     div().flex().gap(px(8.)).flex_shrink_0().children(
         [
             ("window-close", "Close window", 0xff5f57),

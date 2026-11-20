@@ -31,7 +31,13 @@ pub(crate) fn open_key(state: &TodoState, session: &str) -> Option<String> {
     {
         return Some(key.to_owned());
     }
-    let mut asking = mine.iter().filter(|e| e.ask_id.is_some() && !e.todo.suggested);
+    let mut asking = mine.iter().filter(|e| {
+        !e.todo.suggested
+            && (e.ask_id.is_some()
+                || e.todo.stuck_agent.is_some()
+                || !e.todo.blocker_gone.is_empty()
+                || !e.todo.lifecycle_prompts.is_empty())
+    });
     match (asking.next(), asking.next()) {
         (Some(only), None) => Some(only.todo.key.clone()),
         _ => None,
@@ -43,10 +49,10 @@ pub(crate) fn ranked_keys(state: &TodoState, session: &str) -> Vec<Row> {
     let items: Vec<Todo> = session_entries(state, session)
         .into_iter()
         .map(|e| e.todo.clone())
-        .filter(|t| t.state != State::Closed)
+        .filter(|t| t.state.is_active())
         .collect();
-    let ranked = humata2_todo::rank(&items, state.today);
-    [ranked.needs_attention, ranked.in_progress, ranked.next]
+    let ranked = humata2_todo::rank_with(&items, state.sort, state.today);
+    [ranked.needs_attention, ranked.in_progress, ranked.watching_pr, ranked.next]
         .into_iter()
         .flatten()
         .collect()
@@ -261,5 +267,23 @@ mod tests {
             assert!(e.todo.sessions.contains(&session));
             assert_ne!(e.todo.state, State::Closed);
         }
+    }
+
+    #[test]
+    fn watching_pr_stays_in_panel_list_and_wont_do_is_excluded() {
+        let mut s = state();
+        let session = "sess-pr".to_owned();
+        let mut watch = Todo::new("PR-1", "Watch PR #42", s.today);
+        watch.state = State::WatchingPr;
+        watch.sessions = vec![session.clone()];
+        let mut wont = Todo::new("PR-2", "Drop me", s.today);
+        wont.state = State::WontDo;
+        wont.sessions = vec![session.clone()];
+        s.items.push(Entry { todo: watch, revision: 1, ask_id: None });
+        s.items.push(Entry { todo: wont, revision: 1, ask_id: None });
+
+        let keys: Vec<_> = ranked_keys(&s, &session).into_iter().map(|r| r.key).collect();
+        assert!(keys.contains(&"PR-1".to_owned()));
+        assert!(!keys.contains(&"PR-2".to_owned()));
     }
 }
