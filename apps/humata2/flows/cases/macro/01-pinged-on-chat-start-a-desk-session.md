@@ -84,7 +84,7 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 - **I do:** start it with a folder that exists and sits outside Humata, through the CLI or the API.
 - **I see:** the session runs in that folder. The folder bar shows it with no "scratch" chip.
 - **Expected outcome:** the folder is used where it is. A path that is missing, relative, a file, inside Humata's channels, or the channels root is refused with an invalid-argument error, and nothing starts.
-- **Status:** Works (real daemon). `daemon/humatad/tests/desk.rs::a_picked_folder_is_used_where_it_is` and `daemon/humatad/tests/desk.rs::a_picked_folder_must_exist_and_sit_outside_humata`. A picked folder is never deleted: `daemon/humatad/tests/desk.rs::a_picked_folder_is_never_deleted` (Works (real daemon)). The dialog also Works (real daemon): `desktop/tests/live_flows/desk.rs::a_picked_folder_is_used_where_it_is_and_survives_close_and_clean_up`.
+- **Status:** Works (real daemon) through the daemon/CLI: `daemon/humatad/tests/desk.rs::a_picked_folder_is_used_where_it_is` and `daemon/humatad/tests/desk.rs::a_picked_folder_must_exist_and_sit_outside_humata`. A picked folder is never deleted: `daemon/humatad/tests/desk.rs::a_picked_folder_is_never_deleted` (Works (real daemon)). The UI dialog no longer offers picked folders (removed in D451; close/keep/reopen/clean-up on scratch Desk sessions are covered by `desktop/tests/live_flows/desk.rs::closing_keeping_reopening_and_cleaning_up_from_the_desk_page`).
 
 ### Another machine is refused for a Desk session
 

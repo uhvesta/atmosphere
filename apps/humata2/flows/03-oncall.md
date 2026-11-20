@@ -23,7 +23,7 @@ How to read this file, and what the tags mean: [README](README.md).
 
 2. **Do:** click the **Desk · 0** tab, after Sessions.
    **See:** an empty state with **New desk session**.
-   **Status: Not built: ROAM** (CD-2, frame 91). There's no tab and no session kind. Today's stand-in is the global Desk (flow 1), whose agent can't read `#oncall`'s clones and isn't tied to the channel.
+   **Status: Works.** `desktop/tests/live_flows/channel_desk.rs::a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away` opens the channel's Desk tab on a real daemon. Fake-client versions: `desktop/tests/native/channel_desk.rs::a_channel_with_no_desk_session_shows_the_empty_state_with_its_button` and `desktop/tests/native/channel_desk_target.rs::clicking_the_desk_row_opens_the_desk_tab_and_marks_the_cursor`.
 
 3. **Do:** click **New desk session**. Title it "Checkout 5xx alert", leave the target as the channel and the machine as devbox-1, and leave the switches as they are. Click **Start**.
    **See:** the switches **Read its files** and **Send notes and questions** are on. **Type into its terminal**, **Start and fork sessions**, **Stop and archive sessions** and **Change anyone's items on the channel board** are off.
@@ -32,7 +32,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - The agent can read the channel's main clones and `shared/`, read-only.
    - The tab reads **Desk · 1**, and the sidebar shows a Desk row under `#oncall`.
    - Event: Session created.
-   **Status: Not built: ROAM** (CD-1, CD-3, CD-6, frame 92).
+   **Status: Works.** `desktop/tests/live_flows/channel_desk.rs::a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away` starts a channel Desk session from the tab against a real daemon. Fake-client versions: `desktop/tests/native/channel_desk.rs::the_desk_tab_lists_the_sessions_and_the_sidebar_has_its_row` and `::new_desk_session_offers_the_switches_and_marks_a_blocked_one`. (Starting on a remote machine like devbox-1 is still single-machine in the live app rig.)
 
 4. **Do:** click into the agent's terminal and press ⌘V, then Return. Then paste a screenshot of the error graph.
    **See:** the multi-line paste asks first. The agent reads the alert and starts looking through the clones. The image arrives as a path the agent can open.
@@ -52,12 +52,12 @@ How to read this file, and what the tags mean: [README](README.md).
    - Event: Session created, then updated (Working).
    **Status: Works.** `desktop/tests/live_flows.rs::a_session_started_from_new_session_runs_and_answers_its_first_message` (real daemon and holder, scripted agent). Having the Desk agent start it (with **Start and fork sessions** on) is **Not built: ROAM** (CD-3).
 
-6. **Do:** the fix session's agent wants to run a migration script. Open the Inbox and click **Allow** on its ask.
+6. **Do:** the fix session's agent wants to run a migration script. Open **Agent inbox** (renamed from Inbox in D845/D871) and click **Allow** on its ask.
    **See:** the card names the command and the session.
    **Expect:**
    - The agent's permission hook gets "allow", and the agent goes on.
    - Event: InboxRequest created (Pending), then updated (Approved).
-   **Status: Works.** `desktop/tests/live_inbox.rs::an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook` and `::a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call`.
+   **Status: Works.** `desktop/tests/live_inbox.rs::an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook` and `::a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call`. See also `desktop/tests/design/agent_inbox.rs` and `desktop/tests/design/agent_inbox_more.rs`.
 
 7. **Do:** on the next ask for the same target, tick **Always allow …** before clicking Allow. Then on the channel's **Agent access** tab, set **Start or fork sessions (same machine)** to Allow.
    **See:** the grant is listed and can be removed. The rule's radio shows Allow.
@@ -83,7 +83,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - `#oncall/shared/handoff.md` exists.
    - The scratch folder is in the trash right away, with no 7-day wait.
    - The tab reads **Desk · 0**.
-   **Status: Not built: ROAM** (CD-4, frame 94). The global Desk's **Copy to a channel…** works (`daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder`).
+   **Status: Works.** Closing a channel Desk session works live (`desktop/tests/live_flows/channel_desk.rs::a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away`), with native coverage in `desktop/tests/native/channel_desk.rs` and `desktop/tests/native/channel_desk_reopen.rs`. Copying markdown to `shared/` works (`daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder`).
 
 10. **Do:** the next person on call opens `#oncall` › **Sessions**.
     **See:** "Retry budget for checkout" with its state (Working, Needs input or Idle) and whether it has an unread turn.
@@ -97,7 +97,7 @@ The alert was triaged in a short-lived channel Desk session that's now in the tr
 
 ## Gaps this flow shows
 
-- The channel's Desk is the heart of this flow, and none of it is built (ROAM CD-1–CD-6). Without it, triage happens either in the global Desk, which can't see the channel, or in a full session with a branch I don't need.
+- Channel Desk now works in the app (`desktop/tests/live_flows/channel_desk.rs`, `desktop/tests/native/channel_desk*.rs`); starting one on a remote machine like devbox-1 isn't driven in the single-machine live app rig.
 - Pasting text into a session tab has no app test. Pasting an image has no app wiring at all.
 - Pin, VIP and mark-read go through two clients. Both work live; mark-read on the older daemon client isn't covered by a test.
 - There's no team hand-off. That's by design, but on call is where it will be felt.

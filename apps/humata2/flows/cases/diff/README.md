@@ -13,7 +13,7 @@ Each case follows [`briefs/_GUIDE.md`](../briefs/_GUIDE.md) and adds `## Reprodu
 | 01 | [A changed file opens beside the terminal and the code gets the room](01-open-a-file-beside-the-terminal.md) | DS-1–4, DS-30 |
 | 02 | [Each repo is one row I can fold, and the footer only offers what I can do](02-repo-rows-and-the-footer.md) | DS-5, 6, 10, 11, 74, 77, 78; Add repo… |
 | 03 | [A file row reads its name first, and marks added, deleted, renamed, binary and mode-only files](03-file-rows-read-name-first.md) | DS-7, 8, 24, 36, 47, 48, 82 |
-| 04 | [Full screen opens three ways and Show the terminal puts me back exactly where I was, with the terminal still running](04-full-screen-and-back.md) | DS-12–18, 69–71, 83 |
+| 04 | [Full screen opens three ways and Exit full screen puts me back exactly where I was, with the terminal still running](04-full-screen-and-back.md) | DS-12–18, 69–71, 83 |
 | 05 | [However long the names get, Full screen and Close stay on screen and the names shorten instead](05-full-screen-never-disappears.md) | DS-45, 46, 49, 50, 79, 80 |
 | 06 | [Changed code reads cleanly: numbers, a sign, the code, quiet tints and no @@ noise](06-code-reads-like-the-page.md) | DS-19–23, 81 |
 | 07 | [A 40,000-line file opens at once and scrolls smoothly, with its header pinned and a way to step between changes](07-a-big-file-stays-smooth.md) | DS-25–28; P-1–4, P-9 |
@@ -39,7 +39,7 @@ Cases 01 to 14 were re-audited against the code on 2026-11-19 (after DV-5, DV-10
 
 ## The rig
 
-- **Headless UI:** `//apps/humata2/desktop:native_test`, files `desktop/tests/native/{diff_view,diff_big,review,pr_session,pr_review,push,document}.rs`. These run the real UI on fake clients and write `.new.png` and `.view.txt` when a frame differs. No window opens.
+- **Headless UI:** `//apps/humata2/desktop:native_test`, files `desktop/tests/native/{diff_view,diff_big,diff_full_screen,diff_keys,review,review_ui,pr_session,pr_review,push,document,stack}.rs`. These run the real UI on fake clients and write `.new.png` and `.view.txt` when a frame differs. No window opens.
 - **Real daemon:** `//apps/humata2/daemon/humatad:pr_diff_stress_test`, `:review_file_trees_test`; `//apps/humata2/daemon/review_diff:{vanished,modes,stack,stack_chat}_test`; `//apps/humata2/desktop:live_flows_test` with `desktop/tests/live_flows/pr_review.rs` (five tests on a real `humatad2` with a fake `gh`).
 - **A big PR by hand:** `testing/pr_demo/pr_demo.sh` opens acme/demo#1 (300 files) in an isolated home with a fake `gh`, offline.
 - **The 4-repo stress rig** (large, many, medium, small) from [DIFFVIEW-report.md](../../../workflow/milestones/DIFFVIEW-report.md) is what DV-14 and REVIEWUI RV-8 rerun for the budgets.
@@ -61,7 +61,7 @@ Cases 01 to 14 were re-audited against the code on 2026-11-19 (after DV-5, DV-10
 
 - **DIFFVIEW:** the file bar and stepping (DV-15); one row per repo, name-first rows, ellipsis on paths, repos and branches (DV-10); status letters, notes, loading lines and per-file errors (DV-11, DV-12); the hunk look and the Wrap switch (DV-17); ⌥⌘↩, Esc, double-click, tooltips, one header and the full-screen footer (DV-18); Compare with… and per-repo errors (DV-19); the PR review's own box for big files (DV-5 step 5).
 - **REVIEWUI:** Submit review in the footer and the agent-draft outline (RV-1); a pinned file head and Scroll in a review (RV-2); per-session scroll and no refetch on panel toggles (RV-3); tooltips (RV-4); ⌥Z, the ⌘/ sheet (⇧⌘↩ is bound at `ui/src/keys.rs:223` but not listed) (RV-5); Filter files (RV-6); the base menu anchor (RV-7).
-- **STACKVIEW:** the whole stack UI (T4, T6, T7, T8; `ui/src/panel_stack.rs` does not exist). The engine works: `daemon/review_diff/tests/stack.rs`, `stack_chat.rs`. `drift_blocking` (`daemon/review_diff/src/stack.rs:582`) has no caller yet.
+- **STACKVIEW:** built in `ui/changes/src/panel_stack.rs` with native tests in `desktop/tests/native/stack.rs` (and engine tests in `daemon/review_diff/tests/stack.rs`, `stack_chat.rs`). Full-screen diff controls (**Exit full screen** + **Close**, ⌃⌘↩, double-click, Esc) are built and tested in `desktop/tests/native/diff_full_screen.rs`.
 
 ### Proof gaps (tests, not features)
 

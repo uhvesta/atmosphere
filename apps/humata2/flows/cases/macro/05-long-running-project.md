@@ -13,15 +13,15 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 
 ## Steps
 
-1. **I do:** Open the `payments` board. Press `New item`, type "Add retry to the uploader", choose the To do column and press Return.
-   **I see:** A card at the top of To do with the key `PAY-2`. The card shows the channel's name.
-   **State and events:** The item is stored on the channel's board, not on a session. Its key uses the channel prefix and the next free number. New items go to the top of their column.
-   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` creates the item through the live client. The `New item` button and its form Work (real daemon): `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker`. Fake-client version: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope`.
+1. **I do:** Open the `payments` To-do tab (formerly Board). Add "Add retry to the uploader".
+   **I see:** An item in the ranked To-do list with the key `PAY-2`.
+   **State and events:** The item is stored on the channel's board, not on a session. Its key uses the channel prefix and the next free number.
+   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` creates the item through the live client. To-do UI coverage (replacing the old Board UI in BOARDSIMPLE, D830–D874): `features/todo/tests/todo.rs`, `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`, and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`.
 
-2. **I do:** Start a session for `PAY-1` on This Mac with the button "Start a session for this item". Nothing else.
-   **I see:** A session tab opens. `PAY-1` moves from To do to In progress, and the drawer lists the session under Sessions.
-   **State and events:** The item gets the session id. Its status changes from To do to In progress.
-   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress`. The start button Works (real daemon): `desktop/tests/live_boards.rs::starting_a_session_for_a_to_do_item_opens_it_and_moves_the_item_in_progress`. Fake-client version: `features/app/tests/board_start.rs::starting_a_session_for_a_to_do_item_adds_it_and_starts_the_item`.
+2. **I do:** Start a session for `PAY-1` on This Mac with the button "Start a session on this". Nothing else.
+   **I see:** A session tab opens. `PAY-1` moves to `In progress`, and the drawer lists the session.
+   **State and events:** The item gets the session id. Its status changes from Open to In progress.
+   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress` and `desktop/tests/live_flows/todo_asks.rs::starting_a_session_from_the_todo_drawer_opens_it_and_moves_the_item_in_progress`. Fake-client version: `desktop/tests/native/todo_asks.rs::starting_a_session_from_the_todo_drawer_opens_the_prefilled_new_session_dialog`.
 
 3. **I do:** The agent in the session makes an item on its own session board: "Check the cache key format". It does this through the `humata` board tools.
    **I see:** The item appears in the session's panel, under the session's own items.
@@ -33,10 +33,10 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
    **State and events:** A pending request is recorded against the item. The agent's call does not return until I answer.
    **Status:** Works (real daemon). `daemon/humatad/tests/board_tools.rs::creating_on_the_global_board_waits_for_the_user` and `daemon/humatad/tests/boards.rs::an_agents_write_on_the_global_board_waits_in_the_inbox_until_approved`.
 
-5. **I do:** Open `PAY-2` in the drawer. Under Depends on, press Add dependency and pick `PAY-1 Write the cache spec`.
-   **I see:** `PAY-1 Write the cache spec` appears as a row under Depends on. `PAY-2` itself and any item that would close a loop are not offered in the picker.
-   **State and events:** An edge is recorded from `PAY-2` to `PAY-1`. The edge does not change either item's status. When `PAY-1` is Done, its row shows a tick.
-   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_dependency_is_listed_refuses_a_loop_and_can_be_removed` adds and removes an edge through the live client. The picker Works (real daemon), including leaving out the item itself and one that would close a loop: `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker`. Fake-client version of the filtering: `features/board/tests/drawer.rs::the_dependency_picker_leaves_out_itself_existing_edges_and_loops`.
+5. **I do:** Open `PAY-2` in the drawer. Under Waits on (Depends on), add `PAY-1 Write the cache spec`.
+   **I see:** `PAY-1 Write the cache spec` appears under Waits on. `PAY-2` itself and any item that would close a loop are not offered in the picker.
+   **State and events:** An edge is recorded from `PAY-2` to `PAY-1`. The edge folds waiting items in To-do until `PAY-1` closes.
+   **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_dependency_is_listed_refuses_a_loop_and_can_be_removed` adds and removes an edge through the live client. To-do UI coverage: `features/todo/tests/todo.rs` and `desktop/tests/design/todo_more.rs`.
 
 6. **I do:** Look for a graph of the dependencies, the way a project's milestones might be drawn as a graph.
    **I see:** There is no graph view. Dependencies are a list in each item's drawer. Each row is one item, with its title and column.
@@ -53,10 +53,10 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
    **State and events:** Each item change is pushed to the app as an item change event.
    **Status:** Works (real daemon). `clients/live/tests/boards.rs::a_move_after_subscribing_is_pushed_as_an_item_change`.
 
-9. **I do:** Open the `payments` dashboard and press the figure for In progress.
-   **I see:** A list of exactly the items the figure counts. Each item is one the dashboard counted, and no other.
-   **State and events:** The dashboard reads the same items the list reads.
-   **Status:** Works (real daemon). `desktop/tests/live_boards.rs::the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_counts` shows the same items in Board, Table and Dashboard and opens exactly the items a figure counts. Fake-client version: `features/board/tests/presentation.rs::dashboard_drills_show_exactly_the_counted_items`.
+9. **I do:** Filter `payments` To-do items by state or channel (the old Dashboard view was replaced by the ranked To-do list and filters in BOARDSIMPLE, D830–D874).
+   **I see:** The matching items in priority order.
+   **State and events:** The filter reads the same items the list reads.
+   **Status:** Fakes only (To-do UI): `features/todo/tests/todo.rs`, `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`, and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`.
 
 10. **I do:** Open the session panel for the session on `PAY-1` and look at its board.
     **I see:** The panel shows the channel's board, with this session's own items first, then the rest of the channel's items.
@@ -125,15 +125,15 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **I do:** Save an edit to `PAY-1`'s title after the agent has already changed its status.
 - **I see:** My save is refused as a conflict. Only the fields that changed since my revision are named. The drawer refreshes and keeps the picker open.
 - **Expected outcome:** The write is refused. The other fields are not overwritten. A repeated save after a refresh works.
-- **Status:** Works (real daemon). `daemon/humatad/tests/boards.rs::a_change_made_against_an_old_revision_conflicts_only_on_fields_changed_since` and `daemon/humatad/tests/board_tools.rs::a_stale_revision_conflicts_only_on_a_field_that_changed`. The drawer's refresh after a refusal Works: `desktop/tests/live_flows/board_conflict.rs::a_drawer_edit_refused_after_the_item_changed_on_the_daemon_refreshes_and_keeps_the_picker` (an edge added on the daemon behind the open drawer; the drawer's pick is refused, it refreshes and keeps the picker, and the next pick saves). A move from the drawer after an agent moved the same item is refused by its revision, the drawer refreshes to the agent's column and stays open, and the next move lands: `desktop/tests/live_flows/board_revision.rs::a_drawer_move_after_an_agents_move_is_refused_refreshes_and_then_lands` (D383) and `clients/live/tests/boards.rs::a_move_from_an_old_copy_is_refused_as_a_conflict_until_the_item_is_read_again`. A title save is Not built: the drawer has no title edit (D383; a board-edit milestone). Fake-client versions: `features/board/tests/drawer.rs::a_refused_edit_shows_why_refreshes_and_keeps_the_picker` and `::a_move_from_an_old_copy_shows_why_refreshes_and_keeps_the_drawer`.
+- **Status:** Works (real daemon). `daemon/humatad/tests/boards.rs::a_change_made_against_an_old_revision_conflicts_only_on_fields_changed_since`, `daemon/humatad/tests/board_tools.rs::a_stale_revision_conflicts_only_on_a_field_that_changed`, and `clients/live/tests/boards.rs::a_move_from_an_old_copy_is_refused_as_a_conflict_until_the_item_is_read_again`. The old Board drawer conflict tests were replaced when the Board UI moved to **To-do** (BOARDSIMPLE, D830–D874; see `features/todo/tests/todo.rs` and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`).
 
 ### The agent's move on the global board is denied
 
-- **When:** the agent asks to move an item on the global board, and I decide against it.
-- **I do:** Press Keep in progress on the request card in the drawer.
-- **I see:** The agent's call returns a failure. The request leaves the Inbox. The item stays In progress.
+- **When:** the agent asks to close or move an item, and I decide against it.
+- **I do:** Press **No** on the ask card in the To-do drawer (under **Needs attention**).
+- **I see:** The agent's call returns a failure. The request leaves Agent inbox. The item stays open.
 - **Expected outcome:** The denial moves nothing. A fresh load shows the same status.
-- **Status:** Works (real daemon). `desktop/tests/live_boards.rs::denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress`. The approval case is `desktop/tests/live_boards.rs::approving_an_agents_move_from_the_items_drawer_moves_it_and_returns_the_call`.
+- **Status:** Works (real daemon). `desktop/tests/live_flows/todo_asks.rs::denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call`. The approval case is `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call` (native: `desktop/tests/native/todo_asks.rs::approving_an_items_ask_answers_it_and_leaves_the_other_asks`).
 
 ### This Mac reboots in the middle of a move
 
@@ -178,7 +178,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 | 6. Graph view of dependencies | Not built (no milestone) | SPEC BD-14 (a list) |
 | 7. Loop refused with its names | Works (real daemon) | `daemon/humatad/tests/boards.rs::a_dependency_that_closes_a_loop_is_refused_with_the_loop` |
 | 8. Board updates as items move | Works (real daemon) | `clients/live/tests/boards.rs::a_move_after_subscribing_is_pushed_as_an_item_change` |
-| 9. Dashboard figures open their items | Works (real daemon) | `desktop/tests/live_boards.rs::the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_counts`; fakes: `features/board/tests/presentation.rs::dashboard_drills_show_exactly_the_counted_items` |
+| 9. To-do list and channel/state filters | Fakes only (To-do UI) | `features/todo/tests/todo.rs`; `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`; `desktop/tests/design/todo.rs` & `todo_more.rs` |
 | 10. Session panel shows the channel board | Fakes only (D874: now the To-do panel) | `desktop/tests/panels.rs::board_lists_the_channels_items_and_expands_without_losing_the_session` |
 | 11. Move two sessions to box-1 | Works (real daemon) | `daemon/humatad/tests/move_session.rs::moving_from_this_mac_frees_its_folder_only_after_it_runs_on_box_1` |
 | 11a. The ⌥⌘M key press | Works (real daemon) | `desktop/tests/live_flows/keys.rs::the_move_key_asks_for_a_machine_in_a_session_and_says_why_nothing_moves_outside_one` |
@@ -191,7 +191,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 | Branch: box-2 cannot be added | Works (real daemon) | `clients/live/tests/machines.rs::a_failed_add_names_its_step_and_trying_again_follows_the_same_operation` |
 | Branch: dependency not done | Code, no test | `daemon/humatad/src/board_service.rs` |
 | Branch: two agents edit one item | Works (real daemon) | `daemon/humatad/tests/boards.rs::a_change_made_against_an_old_revision_conflicts_only_on_fields_changed_since` |
-| Branch: global move denied | Works (real daemon) | `desktop/tests/live_boards.rs::denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress` |
+| Branch: global move denied | Works (real daemon) | `desktop/tests/live_flows/todo_asks.rs::denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call` |
 | Branch: reboot during a move | Works (real daemon) | `daemon/humatad/tests/power_cut_host.rs::a_move_with_the_hosts_power_cut_loses_nothing_part_1` |
 | Branch: host closed, box asks me | Works (real daemon) | `daemon/humatad/tests/away_inbox.rs::a_request_answered_on_the_machine_while_away_reaches_the_host_in_order` |
 
@@ -203,6 +203,6 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **Not built (MACH T10):** `TrustNewHostKey`, `daemon/humatad/src/machine_service.rs:1400`. Adding box-2 does not need it, because the add flow trusts a new key itself. It matters only for a machine whose key has changed (see macro-08).
 - **Not built (MACH T10):** host variables, `daemon/humatad/src/machine_service.rs:1379` to `:1393`. Not needed here.
 - **Likely bug:** none found in this case's path.
-- **Correction to the brief:** `desktop/tests/live_boards.rs` has 2 real-daemon tests, not 32. They are the approve and deny cases at lines 729 and 758.
+- **Note (BOARDSIMPLE, D830–D874):** The Board UI was simplified to **To-do**, and the live ask/session-start tests now live in `desktop/tests/live_flows/todo_asks.rs` (3 live tests), with native/design tests in `desktop/tests/native/todo_asks.rs`, `features/todo/tests/todo.rs`, `desktop/tests/design/todo.rs`, and `desktop/tests/design/todo_more.rs`.
 - **Correction to the brief:** adding box-2 does not depend on the four `not_built` calls the brief lists. The add flow works (`daemon/humatad/tests/machines.rs`). The four not built are `ChangeRoot`, `SetVmTier`, host variables and `TrustNewHostKey`, and only the last touches a machine's key.
 - **Correction to the brief:** there is no graph view to check, so step 6 is a gap.

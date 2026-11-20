@@ -23,33 +23,35 @@ How to read this file, and what the tags mean: [README](README.md).
 
 ### The milestones
 
-2. **Do:** open the channel's **Board** tab. Click **New item** in To do five times, for "Schema", "Write path", "Read path", "Backfill" and "Cut over". In Backfill's drawer, set **Depends on** to Write path. In Cut over's, set it to the other four.
-   **See:** five cards in To do. Each drawer lists what the item depends on.
+> **UI update (BOARDSIMPLE, D830–D874):** The Board (kanban/table/dashboard) was simplified to **To-do**: a single ranked list with channel/session filters, three states (`Open`, `In progress`, `Closed`), `Waits on` dependencies, and a **Needs attention** group for agent asks answered **Yes** / **No**.
+
+2. **Do:** open the channel's **To-do** tab (formerly Board). Add five items: "Schema", "Write path", "Read path", "Backfill" and "Cut over". In Backfill's drawer, set **Waits on** (Depends on) to Write path. In Cut over's, set it to the other four.
+   **See:** five items in the ranked To-do list (waiting items fold into the Waiting group). Each drawer lists what the item waits on.
    **Expect:**
    - Each item gets the channel's key (for example LV-1).
    - A dependency that would make a loop is refused.
    - Events: BoardItem created ×5; BoardItem updated per dependency.
-   **Status: Works** in the client: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`. The clicks **Work** against a real daemon: `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker` (New item makes items with the channel's key, and the drawer's picker sets a dependency and leaves out the item itself and one that would make a loop). Fake-client versions: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope` and `features/board/tests/drawer.rs`.
+   **Status: Works** in the client and To-do UI: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`; `features/todo/tests/todo.rs`, `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`, and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`.
 
-3. **Do (instead of 2):** in a session, ask the agent: "Read `shared/spec.md` and put the milestones on the board."
+3. **Do (instead of 2):** in a session, ask the agent: "Read `shared/spec.md` and put the milestones on To-do."
    **Expect:**
    - The agent makes the items through Humata's tools, with no ask, because the channel board rule is Allow.
    - On the global board it would wait for me.
    - Events: BoardItem created, by the agent.
    **Status: Works** in the daemon: `daemon/humatad/tests/board_tools.rs::an_agent_works_its_session_board_from_making_an_item_to_deleting_it` and `::creating_on_the_global_board_waits_for_the_user`.
 
-4. **Do:** switch between **Board**, **Table** and **Dashboard**, and set the scope to **By channel**.
-   **See:** the same items in each view.
-   **Status: Works.** `desktop/tests/live_boards.rs::the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_counts` shows the same items in Board, Table and Dashboard for the channel's scope, and a dashboard figure opens what it counts. Fake-client versions: `desktop/tests/native/board.rs::board_reference_images` and `features/board/tests/scope.rs`. A graph of the dependency edges is **Not built, no milestone**: they show only as the drawer's Depends on list.
+4. **Do:** filter the ranked **To-do** list by channel, session, or saved filter (replacing the old Board / Table / Dashboard switcher).
+   **See:** the matching items in priority order, with channel/session narrowing.
+   **Status: Works.** `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`, `features/todo/tests/todo.rs`, and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`. A graph of the dependency edges is **Not built, no milestone**: waiting items fold under Waiting and show in the drawer's `Waits on` list.
 
 ### Working the milestones
 
-5. **Do:** on "Schema", click **Start a session for this item** and start it from the filled-in sheet.
-   **See:** the session page. On the board, Schema is in In progress, with the session under **Worked on by**.
+5. **Do:** on "Schema", click **Start a session on this** and start it from the filled-in sheet.
+   **See:** the session page. On To-do, Schema is `In progress`, with the session linked.
    **Expect:**
    - The session is linked to the item, and the agent is told what the item is.
    - Events: Session created; BoardItem updated (In progress, a session added).
-   **Status: Works** in the client: `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress` and `::a_session_set_on_an_item_is_listed_until_it_is_taken_off`. The button **Works** against a real daemon: `desktop/tests/live_boards.rs::starting_a_session_for_a_to_do_item_opens_it_and_moves_the_item_in_progress` (the filled-in sheet opens the session and the item is In progress with the session listed). Fake-client version: `features/app/tests/board_start.rs::starting_a_session_for_a_to_do_item_adds_it_and_starts_the_item`.
+   **Status: Works** in the client and live app: `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress`, `::a_session_set_on_an_item_is_listed_until_it_is_taken_off`, and `desktop/tests/live_flows/todo_asks.rs::starting_a_session_from_the_todo_drawer_opens_it_and_moves_the_item_in_progress`. Fake-client version: `desktop/tests/native/todo_asks.rs::starting_a_session_from_the_todo_drawer_opens_the_prefilled_new_session_dialog`.
 
 6. **Do:** while the agent works, type two more asks.
    **See:** they wait under **Waiting to send**, each with **Send now** and **Remove**.
@@ -62,13 +64,13 @@ How to read this file, and what the tags mean: [README](README.md).
    - Typing an ask into the queue: **Not built** (D381). No control in `ui/src` sends `SessionAction::Draft` or `Submit`; keys go to the terminal. The tests add the two asks as app actions.
    - Knowing the turn ended: **Works** in the daemon, from the agent's hooks: `daemon/humatad/tests/turns.rs::the_hooks_move_a_session_between_idle_working_and_needing_input`. An agent with no hooks shows "Probably idle": `::an_agent_with_no_hook_that_goes_quiet_is_probably_idle_until_it_writes_again`.
 
-7. **Do:** the agent asks to move Schema to Done. Open the item's drawer, review it, and click **Move to Done**.
-   **See:** "Claude Code asks to move this to Done", with **Move to Done** and **Keep in progress**.
+7. **Do:** the agent asks to close Schema. Open the item's drawer (under **Needs attention**), review it, and click **Yes** (or **No** to keep it open).
+   **See:** an ask card in **Needs attention** with **Yes** and **No**.
    **Expect:**
-   - The item is in Done, and the agent's waiting `humata board move` returns.
-   - Keep in progress returns it as denied.
-   - Events: InboxRequest created, then Approved; BoardItem updated (Done).
-   **Status: Works.** `desktop/tests/live_boards.rs::approving_an_agents_move_from_the_items_drawer_moves_it_and_returns_the_call` and `::denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress`. The agent runs the real `humata` command against a real daemon.
+   - The item moves to `Closed`, and the agent's waiting call returns.
+   - **No** returns it as denied and keeps the item open.
+   - Events: InboxRequest created, then Approved; BoardItem updated (Closed).
+   **Status: Works.** `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call` and `::denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call` (native: `desktop/tests/native/todo_asks.rs::approving_an_items_ask_answers_it_and_leaves_the_other_asks`). The agent runs the real `humata` command against a real daemon.
 
 8. **Do:** on "Write path", click **Fork**. In "Fork “Write path”" (frame 62), pick **Code + context** and **Fork from** **Now**, then click **Fork**.
    **See:** a second session under the first in the tree, on its own branch.
@@ -142,11 +144,11 @@ How to read this file, and what the tags mean: [README](README.md).
 
 15. **Do:** a month later, the work moves to a new team channel. On the main session, pick **Continue in another channel…**.
     **Expect:** a session in the new channel that carries the conversation.
-    **Status: Not built: ROAM** (CV-8).
+    **Status: Works.** `desktop/tests/live_flows/continue_in.rs::a_claude_session_continues_in_another_channel_from_before_turn_2`.
 
 ## Expected outcome
 
-`#ledger-v2` has five items in Done. Each was worked by its own session, linked on the board. Sessions ran on This Mac, devbox-1 and a Lima VM. Every move, fork and reconnect kept its conversation. Finished sessions are archived, with nothing unpushed.
+`#ledger-v2` has five items closed on To-do. Each was worked by its own session, linked on To-do. Sessions ran on This Mac, devbox-1 and a Lima VM. Every move, fork and reconnect kept its conversation. Finished sessions are archived, with nothing unpushed.
 
 ## Gaps this flow shows
 
@@ -156,5 +158,5 @@ How to read this file, and what the tags mean: [README](README.md).
 - **Reconnect now** fails against a real daemon, and nothing tells me when a machine is back.
 - Codex and Copilot appear under **Runs**, but a real daemon refuses them without an agents file (ROAM batch 3).
 - Machines are only ever reached through a fake `ssh` in daemon tests. Real SSH and a real VM are LINUX, which is blocked.
-- The board knows the order between milestones but does nothing with it, and there's no graph view.
-- The waiting-message queue, the main way to iterate without watching, is proven only on fakes.
+- To-do hides waiting items until their `Waits on` items close, and there's no graph view.
+- The waiting-message queue is tested live via app actions (`desktop/tests/live_flows/queue.rs`), though typing an ask directly into the queue from the terminal UI is still not wired (step 6, D381).

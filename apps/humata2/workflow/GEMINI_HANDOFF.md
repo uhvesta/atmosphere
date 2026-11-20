@@ -81,7 +81,7 @@ Owner, 2026-11-19: "Delegate as much of the rest of the work as possible to gemi
    - Subject style: `Humata 2 (minion X + Y): <user-visible outcome sentence> (Dnnn–Dmmm)`.
    - Also update `GAPS_REVIEW.md` and `OVERVIEW.md` as the lanes did.
 5. **Push:** `GH_TOKEN=$(gh auth token --user uhvesta) git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -q origin HEAD:main`. The token lives only in the environment: never write it to a file. Never change the global git config or the gh account.
-6. **Release** (next patch is 0.3.10; then follow `RESUME.md`'s order up to 0.4.0 full suite, 0.4.1 AGY, 0.5.0 NORMALREL, 0.6.0 FASTREL, 0.6.1 NOTIFY last):
+6. **Release** (next patch is 0.3.10; then follow `RESUME.md`'s order up to 0.4.0 full suite, 0.4.1 AGY, 0.5.0 merged fast-mode-default release per D887, 0.5.1 NOTIFY last):
    - `release.sh` needs a clean tracked tree. Set the two foreign files aside with a tagged stash: `git stash push -m relNNN-foreign -- <the two files>`.
    - Record the SHA from `git stash list --format='%H %gs'`.
    - Run `export GH_TOKEN=$(gh auth token --user uhvesta); apps/humata2/tools/release/release.sh <ver>`.

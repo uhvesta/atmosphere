@@ -75,7 +75,7 @@ How to read this file, and what the tags mean: [README](README.md).
 
 10. **Do:** when the agent says it's done, open **Diff**.
     **See:** changes grouped by repo, then by file.
-    **Status: Works.** `desktop/tests/live_flows/review.rs::a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed` (real daemon, real git clones, steps sent as app actions rather than clicks). The clicks **Work** too: `desktop/tests/live_flows/review.rs::the_diff_panel_base_menu_line_comments_and_push_work_by_clicking` clicks the base menu's choices and **Mark reviewed**. Fake-client version: `desktop/tests/native/review.rs::the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over`.
+    **Status: Works.** `desktop/tests/live_flows/review.rs::a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed` (real daemon, real git clones, steps sent as app actions rather than clicks). The clicks **Work** too: `desktop/tests/live_flows/review.rs::the_diff_panel_base_menu_line_comments_and_push_work_by_clicking` clicks the base menu's choices and **Looks good**. Fake-client version: `desktop/tests/native/review.rs::the_base_menu_picks_what_the_diff_is_against_and_looks_good_starts_it_over` (see also `desktop/tests/native/looks_good.rs`).
 
 11. **Do:** click a line and type "round half to even here". Add two more comments, then click **Send 3 comments**.
     **See:** each comment as a draft under its line, then sent.
@@ -84,7 +84,7 @@ How to read this file, and what the tags mean: [README](README.md).
     - Events: Comment created (Draft), then updated (Sent).
     **Status: Works.** Same live test. The clicks **Work** too: `desktop/tests/live_flows/review.rs::the_diff_panel_base_menu_line_comments_and_push_work_by_clicking` clicks two lines' gutters, types each comment and clicks **Send 2 comments**. Fake-client version: `desktop/tests/native/review.rs::clicking_a_diff_line_opens_the_box_under_it_and_comment_types_it_at_once` and `::drafted_comments_show_in_the_panel_and_send_together`.
 
-12. **Do:** click **Mark reviewed**.
+12. **Do:** click **Looks good**.
     **See:** the diff is empty until the agent changes something. Then only the new change shows.
     **Expect:** the review base is now "since last reviewed".
     **Status: Works.** Same live test.

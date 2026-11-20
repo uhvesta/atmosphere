@@ -1,8 +1,8 @@
 # NOTIFY: I can turn on desktop notifications for what needs me
 
 - **Status:** queued (owner, 2026-11-19: "One more milestone on top might be optional desktop notifications? Do this literally at the very very end")
-- **Order:** last. Opens only after FASTREL (0.6.0) has shipped; releases as 0.6.1.
-- **Depends on:** FASTREL.
+- **Order:** last. Opens only after 0.5.0 (merged fast-mode-default release per D887) has shipped; releases as 0.5.1.
+- **Depends on:** 0.5.0 (D887).
 - **Unblocks:** nothing.
 
 ## Outcome

@@ -122,17 +122,17 @@ impl DeskRows {
     }
 }
 
-/// Fast mode's compiled-in default: off.
-const FAST_MODE: bool = false;
+/// Fast mode's compiled-in default: on (D887).
+const FAST_MODE: bool = true;
 
 /// The environment variable that sets fast mode's default, so a test run
-/// can have it on (`--test_env=HUMATA2_FAST_MODE=1`) or off. A saved
+/// can have it off (`--test_env=HUMATA2_FAST_MODE=0`) or on. A saved
 /// setting wins over it.
 pub const FAST_MODE_VAR: &str = "HUMATA2_FAST_MODE";
 
 /// Fast mode's default given `HUMATA2_FAST_MODE`'s value: `1`, `true` or
 /// `on` turn it on, `0`, `false` or `off` turn it off, and anything else,
-/// or no value, keeps the compiled-in default.
+/// or no value, keeps the compiled-in default (on, D887).
 #[must_use]
 pub fn fast_mode_default(var: Option<&str>) -> bool {
     match var.map(|value| value.trim().to_ascii_lowercase()).as_deref() {

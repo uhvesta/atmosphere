@@ -22,7 +22,7 @@ Scope note: the Files page is one app-wide page with two panes. It is not per se
 2. **I do:** after dropping, watch the transfers tray until the upload ends.
    **I see:** a tray row for the upload, then Done. Progress is shown in the tray (FM-7).
    **State and events:** the tray holds one row per transfer. The row goes from running to Done. The test waits for every row to reach Done and for at least one row to exist.
-   **Status:** Works (real daemon). The row and the Done state are asserted in `desktop/tests/live_flows/files.rs::files_dropped_from_finder_upload_into_the_pane` (through `wait_transfers_done`, lines 143-156). The progress figure (bytes or percent) is not asserted by any live test. The row's display is covered only by `desktop/tests/files_page.rs::copying_shows_a_tray_row_and_the_name_arrives_when_it_is_done` (Fakes only).
+   **Status:** Works (real daemon). The row and the Done state are asserted in `desktop/tests/live_flows/files.rs::files_dropped_from_finder_upload_into_the_pane` (through `wait_transfers_done`, lines 143-156). The progress figure (bytes or percent) is not asserted by any live test. The row's display is covered only by `desktop/tests/files_page.rs::copy_to_a_machine_lands_by_rule_and_the_name_arrives_when_it_is_done` (Fakes only).
 
 3. **I do:** drag a file from Finder onto a shell tab in the session, expecting its path to be typed in, quoted.
    **I see (expected):** the quoted path appears at the shell prompt.

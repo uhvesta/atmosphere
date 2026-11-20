@@ -1,8 +1,9 @@
-//! FAST (D787): the fast mode switch is off unless `HUMATA2_FAST_MODE`
-//! says otherwise, toggles, and is found by the palette in General.
-use humata2_clients::{Clients, fixture};
+//! FAST (D787, D887): the fast mode switch is on by default unless
+//! `HUMATA2_FAST_MODE` turns it off, toggles, and is found by the palette
+//! in General.
+use humata2_clients::fixture;
 use humata2_settings::{
-    Row, Section, Settings, SettingsAction as A, SettingsState, fast_mode_default,
+    Preferences, Row, Section, Settings, SettingsAction as A, SettingsState, fast_mode_default,
 };
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
@@ -13,16 +14,26 @@ fn store() -> TestStore<Settings> {
 }
 
 #[test]
-fn it_is_off_unless_the_environment_turns_it_on() {
-    assert!(!fast_mode_default(None));
-    assert!(!fast_mode_default(Some("")));
-    assert!(!fast_mode_default(Some("maybe")));
+fn it_is_on_unless_the_environment_turns_it_off() {
+    assert!(fast_mode_default(None));
+    assert!(fast_mode_default(Some("")));
+    assert!(fast_mode_default(Some("maybe")));
     for on in ["1", "true", "ON", " on "] {
-        assert!(fast_mode_default(Some(on)), "{on:?} turns it on");
+        assert!(fast_mode_default(Some(on)), "{on:?} keeps it on");
     }
     for off in ["0", "false", "off"] {
-        assert!(!fast_mode_default(Some(off)), "{off:?} keeps it off");
+        assert!(!fast_mode_default(Some(off)), "{off:?} turns it off");
     }
+}
+
+#[test]
+fn deserialized_preferences_default_fast_mode_to_true_and_preserve_false() {
+    let omitted: Preferences = serde_json::from_str(r#"{"font_size":14}"#).unwrap();
+    assert_eq!(omitted.font_size, 14);
+    assert!(omitted.fast_mode);
+
+    let explicit_false: Preferences = serde_json::from_str(r#"{"fast_mode":false}"#).unwrap();
+    assert!(!explicit_false.fast_mode);
 }
 
 #[test]

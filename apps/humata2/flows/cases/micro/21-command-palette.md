@@ -17,7 +17,7 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
    **I see:** the command palette opens over the session. Its search box has focus and is empty.
    **State and events:** the palette opens with the session as its context. Its overlay is on top of the stack. The key press does not reach the shell.
    **Status:** Fakes only
-   Evidence: `desktop/tests/native/terminal.rs::an_unfocused_terminal_does_not_receive_palette_keystrokes` opens the palette with `AppAction::OpenPalette`, not with the key. The key binding is `ui/src/keys.rs:94` (`cmd-k`). A ⌘ key is passed on to the app by `terminal/view/src/keys.rs:65`. Unproven live: a real ⌘K press while the terminal is focused. The live test `desktop/tests/live_flows/find.rs::from_the_palette_...` presses `secondary-k` on the session page, without focusing the terminal.
+   Evidence: `desktop/tests/native/terminal.rs::an_unfocused_terminal_does_not_receive_palette_keystrokes` opens the palette with `AppAction::OpenPalette`, not with the key. The key binding is `ui/src/keys.rs:94` (`cmd-k`). A ⌘ key is passed on to the app by `terminal/view/src/keys.rs:65`. Unproven live: a real ⌘K press while the terminal is focused. The live test `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` presses `secondary-k` on the session page, without focusing the terminal.
 
 2. **I do:** type `mov`.
    **I see:** the search box shows `mov`. The shell prompt does not change, and no text appears in the terminal.
@@ -35,7 +35,7 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
    **I see:** the palette stays open and its list now holds only machines. Each machine is online, is in the channel, and is not where the session runs. In this fixture that is `this-mac` and `gpu-box`. `devbox-1` and the offline `cloud-vm-3` are not listed. The query is cleared.
    **State and events:** `PaletteState.asking` is `Ask::MoveSession` for this session. `Run` does not close the palette, and nothing is sent to the app.
    **Status:** Works (real daemon)
-   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_...` waits for `asking` to be set, and checks that every offered command is `MoveTo` and not the current machine. The exact online and channel filter is checked only by fixtures: `features/palette/tests/act.rs::running_move_asks_inline_for_another_online_machine_of_the_channel`.
+   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` waits for `asking` to be set, and checks that every offered command is `MoveTo` and not the current machine. The exact online and channel filter is checked only by fixtures: `features/palette/tests/act.rs::running_move_asks_inline_for_another_online_machine_of_the_channel`.
 
 5. **I do:** type `gpu`, then press Enter.
    **I see:** the list narrows to `gpu-box`. After Enter the palette closes, and the session's Move starts to `gpu-box`. The session shows that it is moving.
@@ -47,25 +47,25 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
    **I see:** the palette is still open. The list is back to the `mov` results, and `Move session to another machine…` is first again. The search box shows `move`.
    **State and events:** `asking` is cleared and the query is restored (`features/palette/src/lib.rs:337-341`). Nothing is run.
    **Status:** Works (real daemon)
-   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_...` presses Escape while asking. It checks that `asking` is none, that the palette is open, and that the query is `move`. The live test does not check the restored list beyond the first row. Its first row check is `MoveSession` first.
+   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` presses Escape while asking. It checks that `asking` is none, that the palette is open, and that the query is `move`. The live test does not check the restored list beyond the first row. Its first row check is `MoveSession` first.
 
 7. **I do:** press Escape again.
    **I see:** the palette closes. The session page is still in front.
    **State and events:** the palette delegates `Closed`. The route stays `Session(rate)`.
    **Status:** Works (real daemon)
-   Evidence: `desktop/tests/live_flows/find.rs::close_palette` sends Escape and waits for the palette to close. The route check is in `from_the_palette_...` after the first close. Fixture: `features/palette/tests/act.rs::escape_while_asking_steps_back_without_running_anything`.
+   Evidence: `desktop/tests/live_flows/find.rs::close_palette` sends Escape and waits for the palette to close. The route check is in `from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` after the first close. Fixture: `features/palette/tests/act.rs::escape_while_asking_steps_back_without_running_anything`.
 
 8. **I do:** paste the URL of a pull request that a session here reviews, for example `https://github.com/acme/api/pull/123`.
    **I see:** the first row is `Review this PR`, with the hint `acme/api #123`.
    **State and events:** the palette offers `Command::ReviewPull`, and Enter hands it to the app. A pull request that no session here reviews is not offered as `Review this PR`. Only `Open pull request #123` is offered for the number. This is the rule in D197 (`features/palette/src/lib.rs`, `command_entries`, around line 503).
    **Status:** Fakes only
-   Evidence: `features/palette/tests/review_pull_gate.rs::a_pull_request_a_session_reviews_is_offered_first`, and `features/palette/tests/act.rs::a_pasted_pull_request_url_offers_review_this_pr_first` (both URL and `owner/repo#n` forms). The live test `from_the_palette_...` checks the negative case only: an unreviewed PR offers no `ReviewPull`. Unproven live: a reviewed PR, and a real paste. The live test notes that ⌘V does not reach the palette input in the headless window, so it types the URL.
+   Evidence: `features/palette/tests/review_pull_gate.rs::a_pull_request_a_session_reviews_is_offered_first`, and `features/palette/tests/act.rs::a_pasted_pull_request_url_offers_review_this_pr_first` (both URL and `owner/repo#n` forms). The live test `from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` checks the negative case only: an unreviewed PR offers no `ReviewPull`. Unproven live: a reviewed PR, and a real paste. The live test notes that ⌘V does not reach the palette input in the headless window, so it types the URL.
 
 9. **I do:** clear the search and type `long`, then press Enter on `Settings › Long lines`.
    **I see:** Settings opens. Long lines is the revealed row.
    **State and events:** the route is `Settings` and `settings.revealed` is `LongLines`. The palette is closed.
    **Status:** Works (real daemon)
-   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_...` (step 4 of that test) types `long` and clicks the row, then waits for `Route::Settings` and `Some(LongLines)`. The Enter path is the same `Run` action as the fixture test `features/palette/tests/act.rs::typing_long_opens_settings_at_long_lines`, which picks by index. Enter itself is not tested live.
+   Evidence: `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` (step 4 of that test) types `long` and clicks the row, then waits for `Route::Settings` and `Some(LongLines)`. The Enter path is the same `Run` action as the fixture test `features/palette/tests/act.rs::typing_long_opens_settings_at_long_lines`, which picks by index. Enter itself is not tested live.
 
 10. **I do:** type `client.rs`, then press Enter on the file row `acme/api/src/client.rs`.
     **I see:** the session opens with its file view showing `src/client.rs`. The row's hint is the session's title.
@@ -142,12 +142,12 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
 | 1. ⌘K opens the palette with the terminal focused | Fakes only | `desktop/tests/native/terminal.rs::an_unfocused_terminal_does_not_receive_palette_keystrokes` (sends the action, not the key); `ui/src/keys.rs:94` |
 | 2. Typed keys go to the palette, not the shell | Fakes only | `desktop/tests/native/terminal.rs::an_unfocused_terminal_does_not_receive_palette_keystrokes` |
 | 3. `mov` ranks Move first with its hint | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` (types `move`) |
-| 4. Enter on Move asks for an online machine of the channel | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_...`; exact filter in `features/palette/tests/act.rs::running_move_asks_inline_for_another_online_machine_of_the_channel` |
+| 4. Enter on Move asks for an online machine of the channel | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`; exact filter in `features/palette/tests/act.rs::running_move_asks_inline_for_another_online_machine_of_the_channel` |
 | 5. A machine is picked and the move starts | Fakes only | `features/palette/tests/act.rs::picking_gpu_box_hands_the_move_to_the_app`; `features/app/tests/move_from_palette.rs::moving_a_channel_session_from_the_palette_asks_the_daemon` |
-| 6. Escape steps back one level | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_...` |
+| 6. Escape steps back one level | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` |
 | 7. Escape closes the palette | Works (real daemon) | `desktop/tests/live_flows/find.rs::close_palette` |
 | 8. A pasted reviewed PR offers Review this PR | Fakes only | `features/palette/tests/review_pull_gate.rs::a_pull_request_a_session_reviews_is_offered_first`; `features/palette/tests/act.rs::a_pasted_pull_request_url_offers_review_this_pr_first` |
-| 9. `long` opens Settings at Long lines | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_...` (clicks the row) |
+| 9. `long` opens Settings at Long lines | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds` (clicks the row) |
 | 10. A file result opens in the session's clone | Fakes only | `desktop/tests/native/overlays.rs::palette_file_results_open_the_current_sessions_clone` |
 | Branch: no other machine online for Move | Fakes only (fixed) | `features/palette/tests/act.rs::move_with_no_other_machine_online_says_none_can_take_it`; `ui/src/overlay_palette.rs` |
 | Branch: gibberish matches nothing | Code, no test | `ui/src/overlay_palette.rs:182-191` |

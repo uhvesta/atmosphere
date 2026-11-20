@@ -1,6 +1,8 @@
-# Full screen opens three ways and Show the terminal puts me back exactly where I was, with the terminal still running
+# Full screen opens three ways and Exit full screen puts me back exactly where I was, with the terminal still running
 
 Layer: Diff and review. Platforms: macOS desktop.
+
+> **Shipped status:** Full-screen diff controls (**Exit full screen** + **Close**, ⌃⌘↩, header double-click, Esc, and single-header layout) are built and covered by `desktop/tests/native/diff_full_screen.rs` (see also `ui/changes/src/panel_stack.rs` and `desktop/tests/native/stack.rs` for stack full screen).
 
 ## Starting state
 
@@ -29,9 +31,9 @@ Layer: Diff and review. Platforms: macOS desktop.
    **Status:** Fakes only. DS-12 is Built: the button (`targets.rs::full_screen_draws_each_repository_base_too` clicks `expand-panel`), ⌃⌘↩ and a double-click (steps 7 and 8). Nothing else sends `ToggleWiden` (DS-18, no test).
 
 2. **I do:** look at the title bar, which is 52 pt tall.
-   **I see:** the window lights, a panel icon, "# payments › Refunds" (ellipsized if long), "Diff" beside it in larger text, and "Show the terminal" at the right.
-   **State and events:** `ui/src/panels.rs:250-360`, the `when(full)` branch: a 52 pt row (`:255-262`), the names in a column that shrinks and ellipsizes, and `show-terminal` (`:343-350`).
-   **Status:** Fakes only. Built (DV-18, D860): `diff_full_screen.rs::full_screen_draws_one_header` (one 52 pt bar, the base chip inside it). The button reads "Exit full screen" now (D848), not Show the terminal.
+   **I see:** the window lights, a panel icon, "# payments › Refunds" (ellipsized if long), "Diff" beside it in larger text, and **Exit full screen** + **Close** at the right.
+   **State and events:** `ui/core/src/chrome.rs::panel_header_actions` draws the 52 pt row with ellipsizing names, the base chip, `show-terminal` (**Exit full screen**, D848), and **Close** (D860).
+   **Status:** Fakes only. Built (DV-18, D848, D860): `desktop/tests/native/diff_full_screen.rs::full_screen_draws_one_header` (one 52 pt bar, the base chip inside it, **Exit full screen** and **Close**).
 
 3. **I do:** look below the title bar.
    **I see:** a second "Diff" header row, with its own "Diff" text, its own base chip "Against main", and its own "Show the terminal" button and "Close panel" button, right under the title bar. So there are two "Diff" titles and two "Show the terminal" buttons on one screen.
@@ -73,10 +75,10 @@ Layer: Diff and review. Platforms: macOS desktop.
     **State and events:** `features/app/src/overlay.rs:56-100` does not leave full screen. `ui/src/shell.rs:823` `escape_closes_something` does not check full screen. The spec wants Esc to leave full screen once nothing else is open (DS-13).
     **Status:** Fakes only. Built (DV-18): `diff_full_screen.rs::escape_leaves_full_screen_but_not_while_the_base_menu_is_open`, `::escape_closes_the_new_agent_tab_menu_first`.
 
-11. **I do:** click "Show the terminal" in the title bar.
+11. **I do:** click **Exit full screen** in the title bar.
     **I see:** the panel goes back beside the terminal. The same file is open ("api · src/client.rs"), the list is 220 pt tall above the code, and the terminal is back.
     **State and events:** `ToggleFullScreen(Panel)` runs again and removes the session's entry in `full_screens` (`features/app/src/lib.rs:1153-1180`). The toggle sends no fetch (it returns `Effect::none()`). `saved.selected` is unchanged.
-    **Status:** Fakes only. `diff_full_screen.rs::show_the_terminal_keeps_the_selected_file_and_its_scroll` clicks `show-terminal` (the Exit full screen button) and checks the file; `pr_session.rs::show_the_terminal_returns_the_review_beside_the_terminal` checks the saved file; `shell.rs::terminal_and_panel_full_screen_return_to_the_same_columns` checks the layout.
+    **Status:** Fakes only. `desktop/tests/native/diff_full_screen.rs::show_the_terminal_keeps_the_selected_file_and_its_scroll` clicks `show-terminal` (**Exit full screen**) and checks the file; `pr_session.rs::show_the_terminal_returns_the_review_beside_the_terminal` checks the saved file; `shell.rs::terminal_and_panel_full_screen_return_to_the_same_columns` checks the layout.
 
 12. **I do:** look at where the code was, and at my comment box and draft.
     **I see:** the code is scrolled to about line 120, line 140 is still focused, Wrap is still off, the comment box on line 43 is still open, and the draft is still there (DS-69).
@@ -98,9 +100,9 @@ Layer: Diff and review. Platforms: macOS desktop.
     **State and events:** `SessionAction::SetPanel(None)` clears `widened` (`features/session/src/lib.rs:1260-1270`), and `AppState::full_screen()` returns `None` when no panel is open (`features/app/src/lib.rs:356-366`).
     **Status:** Fakes only. `diff_full_screen.rs::close_in_full_screen_closes_the_panel`; `features/app/tests/presentation.rs::closing_the_full_screen_panel_returns_to_the_terminal`.
 
-16. **I do:** click "Show the terminal" and then type.
+16. **I do:** click **Exit full screen** and then type.
     **I see:** the focus should go back to where it was before full screen: the terminal, or the diff (DS-83).
-    **State and events:** `ToggleFullScreen` sets no focus. The focus is not restored.
+    **State and events:** `ToggleFullScreen` restores terminal focus.
     **Status:** Fakes only for the terminal: `review_ui.rs::show_the_terminal_returns_focus_to_the_terminal`. Returning to the diff when it had focus is not tested (DS-83).
 
 ## Branches
@@ -143,14 +145,14 @@ I see nothing changes (the reducer returns `Effect::none()` when the panel is no
 
 ## Expected outcomes
 
-- [ ] ⤢ on the Diff header, ⌥⌘↩, and a double-click on the header each open full screen (DS-12). Only ⤢ does today.
-- [ ] The title bar is 52 pt, with "# channel › session", "Diff" and the base chip or PR line, then Show the terminal (DS-14).
+- [ ] ⤢ on the Diff header, ⌃⌘↩, and a double-click on the header each open full screen (DS-12).
+- [ ] The title bar is 52 pt, with "# channel › session", "Diff" and the base chip or PR line, then **Exit full screen** and **Close** (DS-14, D848, D860).
 - [ ] Full screen draws one title bar, and no second Diff header (DS-14).
 - [ ] The list is 300 pt wide at the left, and the code fills the rest with the content colour (DS-15).
 - [ ] The footer is the narrow footer, with the same actions, including Submit review in a PR review (DS-16).
-- [ ] The ⤢ button reads "Full screen" with a tooltip "Full screen ⌥⌘↩" (DS-17).
-- [ ] Show the terminal, ⌥⌘↩ again, or Esc (with nothing open) leave full screen (DS-13).
-- [ ] Show the terminal keeps the open file, the layer, the focused line, the scroll, Wrap, any comment box and every draft (DS-69).
+- [ ] The ⤢ button reads "Full screen" with a tooltip "Full screen  ⌃⌘↩" (DS-17).
+- [ ] **Exit full screen**, ⌃⌘↩ again, or Esc (with nothing open) leave full screen (DS-13).
+- [ ] **Exit full screen** keeps the open file, the layer, the focused line, the scroll, Wrap, any comment box and every draft (DS-69).
 - [ ] The terminal keeps running underneath, and nothing is reloaded (DS-69).
 - [ ] Full screen is remembered per session, and coming back restores it (DS-70).
 - [ ] Closing the panel ends full screen (DS-71).

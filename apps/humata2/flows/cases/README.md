@@ -136,6 +136,7 @@ What the counts say:
 | 18 | [A script with its own token sees and does only what the token lists](agents/18-scripts-with-a-token.md) |
 | 19 | [An agent keeps its tab, its Inbox and its conversation across a daemon restart and a Mac reboot](agents/19-an-agent-across-a-restart.md) |
 | 20 | [An agent on a box keeps working while the host is away, and each call says what happens](agents/20-an-agent-on-a-box-while-the-host-is-away.md) |
+| 21 | [Antigravity (`agy`) as a supported agent](agents/21-antigravity-agy-agent.md) |
 
 ### Real: the real app, the SSH VM and real agent CLIs
 
@@ -158,9 +159,9 @@ What the counts say:
 | 13 | [After the VM powers off and after this Mac reboots, each session resumes on its exact conversation, and a restart report names each outcome](real/13-the-vm-and-this-mac-reboot.md) |
 | 14 | [Every agent kind forks on this Mac and onto the VM, by code and context, code only, context only and from an earlier turn, and the fork resumes in the real CLI while the parent stays as it was](real/14-forking-every-agent-kind.md) |
 
-### Board: a person and agents plan and track work
+### To-do (formerly Board): a person and agents plan and track work
 
-[`board/README.md`](board/README.md) holds this layer's shared rig and its findings. The cases go with flow [10](../10-the-board.md).
+[`board/README.md`](board/README.md) holds this layer's shared rig and its findings (updated for **To-do**, BOARDSIMPLE D830–D874). The cases go with flow [10](../10-the-board.md).
 
 | # | Case |
 |---|---|
@@ -214,7 +215,7 @@ What the counts say:
 | 01 | [A changed file opens beside the terminal and the code gets the room](diff/01-open-a-file-beside-the-terminal.md) |
 | 02 | [Each repo is one row I can fold, and the footer only offers what I can do](diff/02-repo-rows-and-the-footer.md) |
 | 03 | [A file row reads its name first, and marks added, deleted, renamed, binary and mode-only files](diff/03-file-rows-read-name-first.md) |
-| 04 | [Full screen opens three ways and Show the terminal puts me back exactly where I was, with the terminal still running](diff/04-full-screen-and-back.md) |
+| 04 | [Full screen opens three ways and Exit full screen puts me back exactly where I was, with the terminal still running](diff/04-full-screen-and-back.md) |
 | 05 | [However long the names get, Full screen and Close stay on screen and the names shorten instead](diff/05-full-screen-never-disappears.md) |
 | 06 | [Changed code reads cleanly: numbers, a sign, the code, quiet tints and no @@ noise](diff/06-code-reads-like-the-page.md) |
 | 07 | [A 40,000-line file opens at once and scrolls smoothly, with its header pinned and a way to step between changes](diff/07-a-big-file-stays-smooth.md) |
@@ -314,7 +315,7 @@ ones to decide on.
 | 54 | The Storage page has no Empty trash, and deleted sessions and channels have no restore screen. | no milestone | macro-16 |
 | 55 | A session cannot be handed to another person. | no milestone | macro-03 |
 
-### Inbox and permissions
+### Agent inbox and permissions
 
 | # | Gap | Milestone or ID | Cases |
 |---|---|---|---|
@@ -323,7 +324,7 @@ ones to decide on.
 | 58 | A CLI command that needs presence gets no Allow or Don't Allow card in the app. | no milestone | agents-14 |
 | 59 | An agent cannot ask ahead to write into a folder. Writes into another session's clone are refused (`policy.rs:728-729`). | no milestone | agents-04 |
 
-### Review, views and the board
+### Review, views and To-do
 
 | # | Gap | Milestone or ID | Cases |
 |---|---|---|---|
@@ -421,7 +422,7 @@ confirm it. Items marked **(coach-checked)** were re-read by the coach.
 37. **The changed-key message says "trust the new key", but the Add dialog shows no card for it.** `daemon/machines/src/error.rs:275` vs `machine_service.rs:971-990`. And the Confirm card cannot show a different pinned key, so Confirm replaces it (`ui/src/overlay_add_machine.rs:582`, `known_hosts.rs:45`). — macro-08
 38. **A rate-limited `gh` is told to run `gh auth login`.** Every `Failed` gets that fix (`channel_service/gh_repos.rs:71-73`). It should say to wait. (coach-checked) — macro-02
 
-### Inbox, review, files and the board
+### Agent inbox, review, files and To-do
 
 39. **The Reply box on an Inbox card cannot be typed into.** Reply… opens it, but the draft is drawn as text and nothing sends `ReplyText` (`ui/src/request_card.rs:339-350`), so Send reply denies with an empty note. (coach-checked) — macro-03, agents-04
 40. **A comment with no destination is told "CreateComment for a pull request is not built".** `daemon/humatad/src/review.rs:849-855`. The PR path is built. (coach-checked) — macro-06
@@ -486,13 +487,13 @@ All coach-checked. Details and the files to change are in [`diff/README.md`](dif
 
 ## Proof gaps (tests, not features)
 
-- No terminal key, paste or mouse behaviour is proven in the app against a real shell. The lab tests use the standalone client, and they are manual.
+- App-level real-shell tests now cover IME composition/paste/typing (`desktop/tests/live_flows/ime.rs`) and shell screen/scroll/mouse/paste/Edit-menu (`desktop/tests/live_flows/shell_screen.rs`); deeper interactive lab tests in `terminal/lab/tests/` remain manual.
 - No live test covers ⌃Z and fg, less, htop, a mouse wheel, or quitting Neovim with `:wq`.
 - `terminal/lab/tests/interactive.rs:476` expects at least 12,000 rows, while the default history is 10,000 lines (`terminal/wire/src/lib.rs:42`). The lab's own settings may differ. Run it to see which is true.
 - The peer link between machines has never run over real SSH. Only `terminal/host/src/roaming_tests.rs` and the lab use real SSH.
 - `gh`, agents and boxes are fakes in every daemon test. Real GitHub and real agents are unproven.
 - The power-cut suite (SAFE T5) is written but not gated. STOP T4 to T7 are written but not gated.
-- No live PR review test exists (`desktop/tests/live_flows/pr_review.rs`, PR E1).
+- Live PR review and prepared-view flows now run in `desktop/tests/live_flows/pr_review.rs`, `desktop/tests/live_flows/views.rs`, and `desktop/tests/live_flows/views_remote.rs`.
 - No live test covers a session's tab row, the side panel toggle, or a palette move with a machine picked.
 - After a Mac reboot a tab gets a fresh token (`daemon/humatad/src/restart.rs:340-400`); no test covers it. No test covers a restart while a hook holds a card, or that an interrupted turn is not repeated.
 - No test covers a script's machine stop, or a script token used across two daemons.

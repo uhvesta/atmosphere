@@ -57,8 +57,12 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 | 12 | Fix every failure + power-cut trim | **0.4.0** (released `c2d2267a`) | full suite + launch check |
 | 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
 | 14 | Fast mode as default + walk every flow, audit, fix (NORMALREL + FASTREL merged, D887) | **0.5.0** | full suite + launch check |
-| 15 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end" of pre-FUSEFS) | 0.5.1 | patch + launch check |
-| 16 | Unified cross-machine filesystem + native config sync (FUSEFS: Gate `T1` spike, then Build `T2`–`T5` `//libs/fusefs/*` + `T6`–`T12` Humata integration) | **0.6.0** | full suite + launch check |
+| 15 | Optional desktop notifications (NOTIFY; owner 2026-11-19) | 0.5.1 | patch + launch check |
+| 16 | Remote machine & provider fundamentals: auto-migrate (local + remote), full provider lifecycle + declarative `refresh`, interactive PTY for provider flows, sleep/wake recovery (REMOTEFUNDAMENTALS) | 0.5.2 | patch + launch check |
+| 17 | Repo autocomplete when adding an org or picking repos (REPOAUTO) | 0.5.3 | patch |
+| 18 | Smarter To-do ranking, fast triage, structured agent collaboration, and two-way PR/session sync (TODO2) | 0.5.4 | patch + launch check |
+| 19 | Fix unexpected screen/route jumps on archive/session events (bug report `2026-11-20-snapshot`) | 0.5.5 | patch |
+| 20 | Unified cross-machine filesystem + native config sync (FUSEFS: Gate `T1` spike, then Build `T2`–`T5` `//libs/fusefs/*` + `T6`–`T12` Humata integration) | **0.6.0** | full suite + launch check |
 
 ## 1. Finish the open feature lanes
 

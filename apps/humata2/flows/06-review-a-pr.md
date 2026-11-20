@@ -6,7 +6,7 @@ The PR changes refund rounding in `acme/api`, and a linked PR changes `acme/ledg
 
 How to read this file, and what the tags mean: [README](README.md).
 
-Most of this flow is built and tested in the daemon only. The app has no PR review client, feature or dialog yet. All of that is the PR milestone, which is open with nothing gated.
+This flow is shipped in both the daemon and the desktop app (`features/pr_review/`, `desktop/tests/live_flows/pr_review.rs`, `desktop/tests/live_flows/views.rs`, `desktop/tests/live_flows/views_remote.rs`, `desktop/tests/native/pr_review.rs`, `desktop/tests/native/pr_session.rs`, `desktop/tests/native/pr_ask.rs`, and `desktop/tests/native/views.rs`).
 
 ## Starting state
 
@@ -21,9 +21,7 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
 1. **Do:** press ⌘K and paste `https://github.com/acme/api/pull/482`.
    **See:** **Review this PR** is the first entry.
    **Status:**
-   - Parsing the URL works. But today Review this PR is offered only when a session already reviews that PR (D197). With none, nothing is offered.
-   - **Works** for that rule: `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`, step 3. Fakes: `features/palette/tests/review_pull_gate.rs::a_pull_request_no_session_reviews_offers_no_review`.
-   - Offering it for every pasted PR: **Not built: PR** (C5, which reverses D197).
+   - **Works** in the app and daemon (`features/pr_review/`, `desktop/tests/live_flows/pr_review.rs::starting_a_review_of_two_pull_requests_clones_both_heads_and_tells_the_agent`). Pasting a PR URL in the palette also offers **Review this PR** (`desktop/tests/native/pr_review.rs`; see also `desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`).
 
 2. **Do:** press Return.
    **See:** **Review a pull request** "in # pr-reviews" (frame 67), with:
@@ -34,8 +32,8 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
 
    **Expect:** a PR that can't be fetched says why and what to do. A rate limit says to wait until it resets.
    **Status:**
-   - Looking the PR up **Works** in the daemon, with a scripted `gh`: `daemon/humatad/tests/pr_review.rs::a_pull_request_resolves_from_its_url_and_from_owner_repo_number`, `::a_pull_request_that_cant_be_fetched_says_why_and_what_to_do` and `::a_rate_limited_lookup_says_to_wait_until_the_limit_resets`.
-   - The dialog: **Not built: PR** (B1 client, C1 feature, D1 frame 67).
+   - **Works** in the daemon, with a scripted `gh`: `daemon/humatad/tests/pr_review.rs::a_pull_request_resolves_from_its_url_and_from_owner_repo_number`, `::a_pull_request_that_cant_be_fetched_says_why_and_what_to_do` and `::a_rate_limited_lookup_says_to_wait_until_the_limit_resets`.
+   - The dialog **Works** in the app (`features/pr_review/`, `desktop/tests/native/pr_review.rs`, `desktop/tests/native/pr_ask.rs`, and live in `desktop/tests/live_flows/pr_review.rs::starting_a_review_of_two_pull_requests_clones_both_heads_and_tells_the_agent`).
 
 3. **Do:** type "Focus on rounding at the boundaries" in **Context** and click **Start the review**.
    **See:** the review session (frame 68): "Claude Code · This Mac", the channel "# pr-reviews", tabs "claude" and "zsh", and **Submit review** in the header.
@@ -48,9 +46,8 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - Events: Channel created (the first time); Session created (bound to the PRs).
    **Status:**
    - **Works** in the daemon: `pr_review.rs::starting_a_review_makes_the_pr_reviews_channel_and_one_session_on_every_prs_head`, `::a_second_review_reuses_the_channel_and_clones_a_fork_pr_from_its_pull_ref`, `::the_review_chat_is_told_each_pr_and_the_users_context`, `::a_review_session_cant_push_until_the_user_lets_it` and `::a_review_stays_bound_to_its_prs_across_a_restart`.
-   - Starting on another machine: **Not built: PR** (A7).
+   - **Works** in the app, including starting on another machine: `desktop/tests/live_flows/pr_review.rs::starting_a_review_of_two_pull_requests_clones_both_heads_and_tells_the_agent` and `::a_review_started_on_devbox_1_runs_there_and_posts_through_the_hosts_gh`, plus native tests in `desktop/tests/native/pr_session.rs`.
    - Known daemon gap: a crash during start re-clones from main, not from the PR head.
-   - The app side: **Not built: PR** (C1, E1).
 
 ### Walk the change
 
@@ -61,7 +58,7 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - A plan from the agent orders the files and leaves its notes.
    **Status:**
    - **Works** in the daemon, on a plain session: `daemon/humatad/tests/review.rs::the_review_chat_moves_the_view_and_the_user_can_undo_or_turn_it_off`, `::a_plan_in_an_open_review_chat_orders_the_review_and_leaves_its_notes` and `::undo_and_a_repeated_key_act_the_same_after_a_restart`. Highlights are never checked.
-   - The app applying the agent's view changes, and the Undo strip: **Not built: PR** (B2, C2, D2).
+   - **Works** in the app: `desktop/tests/live_flows/pr_review.rs::the_agents_focus_and_note_reach_the_view_when_the_person_is_still_and_undo_puts_it_back`, plus `desktop/tests/native/pr_session.rs`.
 
 5. **Do:** the agent offers a prepared view, "PR review: refunds". Click **Open it** on the offer bar.
    **See:**
@@ -71,16 +68,15 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - **Later** brings the offer back on my next visit. **Not now** never does.
    - Events: PreparedView created (draft, the agent's), then updated (offered), then updated (opened).
    **Status:**
-   - The daemon side **Works**: `review.rs::a_draft_view_is_the_agents_until_offered_then_the_users_and_a_restart_keeps_it` and `::the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only`.
-   - The offer bar is **Fakes only**: `desktop/tests/native/session.rs::prepared_views_wait_for_open_and_later_returns_on_the_next_visit` and `features/views/tests/offers.rs::returning_shows_a_deferred_offer_but_never_a_dismissed_one`. The live views client exists but nothing uses it, and offers are matched by title. Left to the VIEWS lane.
-   - The view tab, its steps and the Showing bar: **Not built: VIEWS** (D2, E2).
+   - **Works** in the daemon: `review.rs::a_draft_view_is_the_agents_until_offered_then_the_users_and_a_restart_keeps_it` and `::the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only`.
+   - **Works** in the app (local and remote): `desktop/tests/live_flows/views.rs::a_view_the_agent_marks_ready_is_offered_and_its_draft_is_not`, `::a_restarted_app_has_the_answered_view_in_the_journal_and_the_other_still_offered`, and `desktop/tests/live_flows/views_remote.rs::a_view_a_box_agent_marks_ready_reaches_the_app_over_the_host`. Fake-client versions: `desktop/tests/native/views.rs`, `desktop/tests/native/session.rs::prepared_views_wait_for_open_and_later_returns_on_the_next_visit`, and `features/views/tests/offers.rs::returning_shows_a_deferred_offer_but_never_a_dismissed_one`.
 
 6. **Do:** step through with **Next ›**, add a comment on step 3, then click **Revert**.
    **Expect:**
    - The panel and terminal tab are exactly as they were before I opened the view.
    - My comment stays queued.
    - The Journal shows the view as Reverted, and I can open it again.
-   **Status: Not built: VIEWS** (D3, E2). The Revert action today only clears an "accepted" flag.
+   **Status: Works.** `desktop/tests/live_flows/views.rs::reverting_an_opened_walkthrough_puts_the_page_back_and_keeps_the_comment`, `::keep_leaves_the_view_open_and_the_journal_says_kept`, and `desktop/tests/live_flows/views_remote.rs::reverting_an_opened_box_walkthrough_puts_the_page_back` / `::keeping_a_box_view_is_recorded_on_the_host`. Native: `desktop/tests/native/views.rs::a_review_plans_groups_are_drawn_in_the_diff_panel_until_revert`.
 
 ### Draft and submit
 
@@ -92,8 +88,8 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - Events: Comment created (Draft) for each, by the agent or by me.
    **Status:**
    - **Works** in the daemon: `pr_review.rs::a_note_of_the_review_chat_becomes_a_draft_in_place`, `::the_agent_drafts_edits_and_drops_comments_without_reaching_github`, `::the_user_drafts_for_github_beside_the_agents_drafts` and `::a_draft_for_a_pr_outside_the_review_is_refused`.
+   - **Works** in the app: `desktop/tests/live_flows/pr_review.rs::a_note_made_a_draft_and_the_persons_own_draft_post_in_one_review_per_pull_request`, plus `desktop/tests/native/pr_session.rs`.
    - Known daemon gap: dropping a draft made from a note brings the note back.
-   - The app: **Not built: PR** (B3, C6). Today's drafts in the app are terminal comments only.
 
 8. **Do:** the author pushes 2 more commits. Click **Update the clone** on the notice.
    **See:** "2 new commits on the PR branch" with **Update the clone**. Changed lines with my drafts show as outdated.
@@ -104,8 +100,8 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - Event: PullRequestHeadsChanged, then Session updated.
    **Status:**
    - **Works** in the daemon: `pr_review.rs::new_commits_on_a_prs_head_are_counted`, `::a_force_push_is_reported_as_one`, `::updating_the_clone_fetches_the_head_tells_the_agent_and_outdates_changed_lines` and `::the_daemon_notices_a_moved_head_on_its_own_and_says_so_on_the_feed`; `daemon/humatad/tests/pr_refresh.rs::refreshing_now_finds_new_commits_before_the_next_poll`.
+   - **Works** in the app: `desktop/tests/live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive`, plus `desktop/tests/native/pr_session.rs`.
    - Known daemon gap: an opened review keeps polling every minute.
-   - The app: **Not built: PR** (C4, C4b).
 
 9. **Do:** click **Submit review**. Under each PR, pick a **Verdict** (**Comment**, **Approve** or **Request changes**), edit the summary Claude drafted, and click **Submit 2 reviews**.
    **See:** "Submit review", "2 pull requests" (frame 69). A section per PR with its drafts. "Posts one review per PR with This Mac's gh".
@@ -117,14 +113,12 @@ Most of this flow is built and tested in the daemon only. The app has no PR revi
    - Events: Operation Running, then Succeeded; Comment updated (Posted).
    **Status:**
    - **Works** in the daemon: `pr_review.rs::the_submit_plan_lists_drafts_per_pr_and_sets_apart_those_outside_the_diff`, `::submitting_posts_one_review_per_pr_at_the_reviewed_head_with_its_drafts`, `::a_submit_plan_posts_only_once`, `::a_failed_post_keeps_that_prs_drafts_and_says_which_pr_failed` and `::a_review_posted_just_before_a_crash_is_found_on_github_not_posted_again`.
-   - Posting from another machine: **Not built: PR** (A7).
-   - The dialog: **Not built: PR** (C3, D3).
+   - **Works** in the app (including posting from a review started on another machine): `desktop/tests/live_flows/pr_review.rs::a_note_made_a_draft_and_the_persons_own_draft_post_in_one_review_per_pull_request`, `::a_review_started_on_devbox_1_runs_there_and_posts_through_the_hosts_gh`, and `desktop/tests/native/pr_review.rs`.
 
 10. **Do:** the PR merges. Click **Archive** on the notice.
     **See:** the session says the PR merged and offers **Archive**. The archive dialog lists any drafts I never submitted.
     **Status:**
-    - **Not built: PR** (A6, C4). The daemon only reports the PR as merged (`pr_review.rs::a_merged_pr_shows_as_merged`).
-    - There's no frame for the merged notice yet.
+    - **Works** in the app and daemon: `desktop/tests/live_flows/pr_review.rs::new_commits_update_the_clone_and_a_merged_pull_request_offers_archive` and `daemon/humatad/tests/pr_review.rs::a_merged_pr_shows_as_merged` (see also `flows/cases/verify/19-merged-pr-offers-archive.md`).
 
 ## Expected outcome
 
@@ -132,7 +126,5 @@ Two reviews are posted, one on `acme/api#482` and one on `acme/ledger#91`, each 
 
 ## Gaps this flow shows
 
-- None of this flow is in the app. The daemon is far along; the app needs the PR client, feature and dialogs (PR B1–B3, C1–C6, D1–D3). The whole flow live is PR E1, `desktop/tests/live_flows/pr_review.rs`, which doesn't exist yet.
-- Prepared views stop at the offer bar. The view tab, steps, Revert and Keep are VIEWS.
-- Review on another machine is unproven (PR A7).
+- End-to-end PR review and prepared views now run live in the app (`features/pr_review/`, `desktop/tests/live_flows/pr_review.rs`, `desktop/tests/live_flows/views.rs`, `desktop/tests/live_flows/views_remote.rs`, `desktop/tests/native/pr_*.rs`, `desktop/tests/native/views.rs`).
 - Known daemon gaps: a crash during start re-clones from main, a dropped draft brings its note back, and an opened review polls forever.

@@ -17,7 +17,7 @@ These branch points recur through the map:
   says it is offline. Input is refused, not silently dropped.
 - **Wrong choice**: the user picks the wrong thing. They can step back with
   Esc or Undo, or the choice is refused before it does harm.
-- **Permission**: the step needs the user. An Inbox request appears, and the
+- **Permission**: the step needs the user. An Agent inbox request appears, and the
   caller waits for the answer or is refused.
 - **Concurrent**: two writers or two answers arrive at once. The first one
   wins, and the second hears about it.
@@ -41,7 +41,7 @@ These branch points recur through the map:
 | 10 | Scrollback and find | **Branch points:** wheel, ⇧/⌘ PgUp and Home, the view holding while output streams, ⌘F, ⌘G/⇧⌘G, "No matches", a bad regex, and ⌘K, which opens the palette instead of clearing. |
 | 11 | Select and copy | **Branch points:** drag, double- and triple-click, ⌥-drag block selection, a selection across a wrapped line, ⌘C versus ⌃C, Ctrl+Shift+C on Linux, a program writing the clipboard (OSC 52), and copy over SSH. |
 | 12 | Open links | **Branch points:** ⌘-click a URL, OSC 8 links, a plain click that must not open, double-click to copy a path, and a link to a file on a remote machine. |
-| 13 | IME, emoji, wide and RTL text | **Branch points:** an IME preedit and commit, emoji and wide-character width, combining marks, and Persian or Arabic text. **Note:** IME is untested in a real window. |
+| 13 | IME, emoji, wide and RTL text | **Branch points:** an IME preedit and commit, emoji and wide-character width, combining marks, and Persian or Arabic text. **Note:** IME composition, paste, and typing are tested against a real shell in `desktop/tests/live_flows/ime.rs` (and real shell screen/scroll/mouse/paste in `desktop/tests/live_flows/shell_screen.rs`). |
 | 14 | Mouse in full-screen programs | **Branch points:** a TUI takes the mouse, ⇧ overrides it, the wheel sends arrows on the alternate screen, and focus is reported to the program. |
 | 15 | vim and less | **Branch points:** open, edit, resize in vim, suspend vim with ⌃Z, colors, and quitting, which restores the shell screen. |
 | 16 | Typing over a slow or dropped SSH link | **Branch points:** lag, the link dropping mid-word, input refused while disconnected, Reconnect, and an echo that arrives late. |
@@ -70,7 +70,7 @@ These branch points recur through the map:
 | 08 | First run and adding a machine | **Branch points:** the installer, the first channel, Add machine over SSH, a host key, a box that can't be reached, and missing host tools. |
 | 09 | End of day: stop everything, start next morning | **Branch points:** Stop all sessions…, terminals attached at the time, a pending Inbox, a restart while stopped, and Start sessions with its report. |
 | 10 | Reboot or power cut in the middle of work | **Branch points:** a cut during a fork, move or save, the last good copy, the restart report, "Couldn't resume", and Try again. |
-| 11 | Plan on the board | **Branch points:** items, drag between columns, dependencies, an agent adding items, an edit while the host is away, and edits that conflict. |
+| 11 | Plan on To-do (formerly Board) | **Branch points:** ranked To-do items, channel/session filters, `Waits on` dependencies, an agent adding items, `Needs attention` (`Yes`/`No`) asks, an edit while the host is away, and edits that conflict. |
 | 12 | Files across sessions and machines | **Branch points:** the Files page, copy, move, rename, delete to the Trash, a Finder upload, Open in editor, and another machine's files. |
 | 13 | Find anything | **Branch points:** the palette, a turn search, a conversation found, pins, and results on an offline machine. |
 | 14 | The host is away while I work on a box | **Branch points:** the passphrase login, asks held or skipped, writes journaled, and a replay when the link returns. |
@@ -83,7 +83,7 @@ These branch points recur through the map:
 |---|---|---|
 | 01 | Who am I, and who may act | **Branch points:** a session token, a script token, a login, nobody, `whoami`, and an unknown token. |
 | 02 | Type into a session | **Branch points:** its own session, another session (Ask), an exited shell, a shell or paste (user only), and a closed tab's token. |
-| 03 | A permission prompt goes to the Inbox | **Branch points:** a hook holds, Allow, Deny with a note, Always, the same ask twice, the hook stops, the daemon is gone, and asks turned off. |
+| 03 | A permission prompt goes to Agent inbox | **Branch points:** a hook holds, Allow, Deny with a note, Always, the same ask twice, the hook stops, the daemon is gone, and asks turned off. |
 | 04 | Ask ahead and grants | **Branch points:** a folder grant, Always only for the target, revoke, Approve all skipping ask-aheads, and a grant still there after a restart. |
 | 05 | Read other sessions and channels under the rules | **Branch points:** the default rule, Ask, Never, and a deferred call that runs or never runs. |
 | 06 | Propose a repo for the channel | **Branch points:** the proposal becomes a request, approving clones it, another channel is denied, a local path is refused, and the user has already added it. |
@@ -101,6 +101,7 @@ These branch points recur through the map:
 | 18 | Scripts with a token | **Branch points:** `HUMATA_TOKEN`, a capability missing, a stop refused, and token minting. |
 | 19 | An agent across a restart | **Branch points:** the token is kept, a pending deferred call is withdrawn, an ask-ahead waits, and the hook prints nothing while the daemon is gone. |
 | 20 | An agent on a box while the host is away | **Branch points:** its own files, a question journaled, a push denied or held, reads from the copy, and a replay when the link returns. |
+| 21 | Antigravity (`agy`) as a supported agent | **Branch points:** agent picker (New session / New desk session), Settings › Agents toggles (`enabled`, `install_when_missing`, `asks_in_inbox`), launch, resume, and hooks to Agent inbox. |
 
 ## Real: the real app, SSH VM and agent CLIs
 

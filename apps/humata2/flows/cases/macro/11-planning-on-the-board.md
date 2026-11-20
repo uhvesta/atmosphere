@@ -55,8 +55,7 @@ claim; the Evidence column names any part that is only faked or not built.
    - **Status:** Works (real daemon) for the write and key: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`,
      `daemon/humatad/tests/boards.rs::keys_count_up_per_channel_and_a_taken_prefix_lengthens`,
      `daemon/humatad/tests/boards.rs::a_repeated_create_with_the_same_key_makes_one_item`.
-     The UI create is Fakes only: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope`
-     (a headless test on fakes).
+     The UI create is Fakes only (To-do UI, BOARDSIMPLE D830–D874): `features/todo/tests/todo.rs`, `desktop/tests/native/todo_asks.rs::a_channels_todo_tab_lists_only_that_channels_items`, and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`.
 
 4. **Open an item's drawer.**
    - **I do:** click an item card.
@@ -95,11 +94,8 @@ claim; the Evidence column names any part that is only faked or not built.
      status.
    - **State and events:** the Move call goes to the daemon. The history records
      the move.
-   - **Status:** Fakes only for the menu: `desktop/tests/native/board.rs:31`
-     (`app.click("board-move-In review")`). The daemon move is Works (real daemon):
+   - **Status:** Fakes only for the To-do state control: `features/todo/tests/todo.rs` and `desktop/tests/design/todo.rs` / `desktop/tests/design/todo_more.rs`. The daemon move is Works (real daemon):
      `clients/live/tests/boards.rs::a_moved_item_is_in_its_new_column_on_the_next_load`.
-     Blocked and Won't do are offered in the menu but refused by the live client
-     (see Gaps).
 
 8. **Move an item from the keyboard.**
    - **I do:** select an item and try to move it with keys alone.
@@ -162,8 +158,8 @@ claim; the Evidence column names any part that is only faked or not built.
       The card shows Review.
     - **State and events:** the agent's call waits. Only the user sees the pending move.
     - **Status:** Works (real daemon). `daemon/humatad/tests/boards.rs::an_agents_move_waits_and_applies_on_approval_and_only_the_user_sees_it_pending`.
-      Approving in the drawer is Works (real daemon, fake agent): `desktop/tests/live_boards.rs::approving_an_agents_move_from_the_items_drawer_moves_it_and_returns_the_call`.
-      Denying keeps the item where it was: `desktop/tests/live_boards.rs::denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress`.
+      Approving in the To-do drawer (**Needs attention** › **Yes**) is Works (real daemon, fake agent): `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call`.
+      Denying (**No**) keeps the item open: `desktop/tests/live_flows/todo_asks.rs::denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call` (native: `desktop/tests/native/todo_asks.rs::approving_an_items_ask_answers_it_and_leaves_the_other_asks`).
 
 15. **Start a session from an item.**
     - **I do:** open an item in To do and press **Start a session for this item**.
@@ -295,18 +291,18 @@ claim; the Evidence column names any part that is only faked or not built.
 |---|---|---|
 | 1. ⌘3 opens the board | Fakes only (key table and view); data Works (real daemon) | `ui/src/keys.rs:105`; `clients/live/tests/boards.rs::a_global_item_gets_the_global_key_and_scope` |
 | 2. Global, channel and session boards | Fakes only (scope); Works (real daemon) for lists | `features/board/tests/scope.rs::each_channel_board_scope_shows_its_own_set`; `clients/live/tests/boards.rs::a_session_board_item_is_listed_on_that_sessions_board` |
-| 3. Add items | Works (real daemon); UI Fakes only | `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`; `desktop/tests/native/board.rs::board_creates_in_selected_column_and_keeps_channel_scope` |
+| 3. Add items | Works (real daemon); UI Fakes only | `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do`; `features/todo/tests/todo.rs`; `desktop/tests/native/todo_asks.rs`; `desktop/tests/design/todo.rs` & `todo_more.rs` |
 | 4. Open the drawer | Fakes only | `features/board/tests/drawer.rs::opening_an_item_reads_its_history_and_late_reads_are_dropped` |
 | 5. Edit title or description | Not built (D177, deferred to owner) | DECISIONS.md D177; OVERVIEW.md:411 |
 | 6. Drag between columns | Code, no test (UI); Works (real daemon) for the move | `ui/src/board.rs:433-438`, `:494-499`; `clients/live/tests/boards.rs::a_moved_item_is_in_its_new_column_on_the_next_load` |
-| 7. Status menu move | Fakes only (UI); Works (real daemon) for the move | `desktop/tests/native/board.rs:31` |
+| 7. State / Status move | Fakes only (UI); Works (real daemon) for the move | `features/todo/tests/todo.rs`; `desktop/tests/design/todo.rs` & `todo_more.rs` |
 | 8. Keyboard move | Not built (no milestone) | `ui/src/keys.rs` |
 | 9. Link a dependency | Fakes only (picker); Works (real daemon) for calls | `features/board/tests/drawer.rs::the_dependency_picker_leaves_out_itself_existing_edges_and_loops`; `clients/live/tests/boards.rs::a_dependency_is_listed_refuses_a_loop_and_can_be_removed` |
 | 10. Add and remove sessions | Fakes only (picker); Works (real daemon) for calls | `features/board/tests/drawer.rs::the_session_picker_offers_the_channels_other_sessions_and_stays_open`; `clients/live/tests/boards.rs::a_session_set_on_an_item_is_listed_until_it_is_taken_off` |
 | 11. Delete an item (user) | Not built (no milestone) | `features/board/src/lib.rs` has no delete action |
 | 12. History | Works (real daemon) | `clients/live/tests/boards.rs::an_items_history_has_its_move_and_an_unknown_item_is_not_found` |
 | 13. Agent board tools | Works (real daemon) | `daemon/humatad/tests/board_tools.rs::an_agent_works_its_session_board_from_making_an_item_to_deleting_it` |
-| 14. Agent's move waits for the user | Works (real daemon) | `desktop/tests/live_boards.rs::approving_an_agents_move_from_the_items_drawer_moves_it_and_returns_the_call` |
+| 14. Agent's move waits for the user | Works (real daemon) | `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call` |
 | 15. Start a session from an item | Works (real daemon); app flow Fakes only | `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress` |
 | 16. Edit from box-1 while away | Works (real daemon, fake box) | `daemon/humatad/tests/away_board_journal.rs::row_3_a_channel_board_add_while_away_is_journaled` |
 | 17. Ask on an edit while away | Works (real daemon, fake box) | `daemon/humatad/tests/away_board_journal.rs::an_edit_the_rules_ask_about_waits_in_the_machines_inbox_with_the_change_on_its_card` |
@@ -338,9 +334,7 @@ claim; the Evidence column names any part that is only faked or not built.
 - **Gap by design:** the app sends no revision on a move or a list edit (D177 "SL-7",
   `clients/live/src/boards.rs:266` and `:304`), so a user's write cannot conflict. The
   conflict path is reachable only by an agent or a CLI caller that sends a revision.
-- **Brief correction:** `desktop/tests/live_boards.rs` has two `#[test]` functions
-  (approve and deny an agent's move), not 32. The file has 33 `fn` items, but most are
-  helpers. The brief's "32" is wrong.
+- **Note (BOARDSIMPLE, D830–D874):** The Board UI was simplified to **To-do**; the live ask and session-start tests are now in `desktop/tests/live_flows/todo_asks.rs`, with native/design tests in `desktop/tests/native/todo_asks.rs`, `features/todo/tests/todo.rs`, `desktop/tests/design/todo.rs`, and `desktop/tests/design/todo_more.rs`. See `flows/cases/board/README.md` for current To-do cases.
 - **Brief correction:** `clients/live/tests/boards.rs` is a real-daemon test file with ten
   tests. The brief does not list it, but it covers create, move, dependencies, sessions,
   history and the session start.
