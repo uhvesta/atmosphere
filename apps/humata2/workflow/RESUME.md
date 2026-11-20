@@ -54,10 +54,11 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 | 9 | Fresh review terminals beside any diff (REVIEWER) | 0.3.15 | patch + launch check |
 | 10 | One ranked To-do list (BOARDSIMPLE) | 0.3.16 | patch |
 | 11 | Two quiet inboxes (INBOXHOOKS) | 0.3.17 | patch |
-| 12 | Fix every failure + power-cut trim | **0.4.0** | full suite + launch check |
+| 12 | Fix every failure + power-cut trim | **0.4.0** (released `c2d2267a`) | full suite + launch check |
 | 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
 | 14 | Fast mode as default + walk every flow, audit, fix (NORMALREL + FASTREL merged, D887) | **0.5.0** | full suite + launch check |
-| 15 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end") | 0.5.1 | patch + launch check |
+| 15 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end" of pre-FUSEFS) | 0.5.1 | patch + launch check |
+| 16 | Unified cross-machine filesystem + native config sync (FUSEFS: Gate `T1` spike, then Build `T2`–`T5` `//libs/fusefs/*` + `T6`–`T12` Humata integration) | **0.6.0** | full suite + launch check |
 
 ## 1. Finish the open feature lanes
 
@@ -108,19 +109,20 @@ A minor (0.x) release bumps the version and needs the full suite green; a patch 
 2. Fix every failure.
 3. Release `0.4.0` and install it.
 
-## 3. NORMALREL: a release that works end to end with fast mode off
+## 3. 0.5.0: Fast mode as default + end-to-end flow audit (D887)
 
-1. Walk every user flow in `apps/humata2/flows/` and audit against design goldens and `DECISIONS.md`.
-2. Fix what is broken.
-3. Run full postsubmit.
-4. Release and install. Send screenshots of the flows working.
+1. Flip fast mode to ON by default (`features/settings/src/lib.rs`) so builds and tests run once in fast mode.
+2. Walk every user flow in `apps/humata2/flows/` and audit against design goldens and `DECISIONS.md`; update stale flow docs and fix what is broken.
+3. Run full postsubmit (`presubmit.sh --full`) + launch check.
+4. Release `0.5.0` and install.
 
-## 4. FASTREL: a fast-mode release that matches the normal one
+## 4. FUSEFS: one filesystem-shaped view of every machine (after NOTIFY)
 
-1. Benchmark fast mode against the NORMALREL build (startup, diff open, scroll, turn latency).
-2. Tune it.
-3. Every test must pass with fast mode on.
-4. Release fast mode as its own release and install it.
+Source of truth: `apps/humata2/FUSEFS_SPEC.md` (including host-relayed remote-to-remote routing in §5.4), `apps/humata2/workflow/milestones/FUSEFS.md` (`T1`–`T12`), `DECISIONS.md` (`D881`–`D886`), and `workflow/DAG.md`. Dependencies (`AGENTS2`, `LIVEHOLDER`, `MASSDELETE`) are already shipped.
+
+1. **Gate (`T1`, 1-day throwaway spike):** validate FSKit mount/`MNT_DONTBROWSE`/`audit_token_t`, native local auth + OAuth refresh on macOS/Linux, SQLite WAL matrix, `BLAKE3`/FastCDC wire benchmark, and `sed -i`/`cp -r`/progress-`fsync`.
+2. **Build — standalone crates (`T2`–`T5`):** build Humata-free `//libs/fusefs/{vfs,cas,fskit,linux,host}` crates (VFS, `BLAKE3`/FastCDC CAS + sparse CoW, subtree `WriteLease`s + progress-bounded `fsync`, host-relayed remote-to-remote `ChunkTransport` with zero host-sync blocking, FSKit `cap_<id>` + Linux `libfuse`/degraded fallback).
+3. **Build — Humata integration (`T6`–`T12`):** thin `daemon/fusefs_adapter` + `daemon/config_compose` (native per-session config homes, host-canonical opt-in `[sync]` toggles, TOML/`Steel`/`bash` rewrite pipeline, instant rage-quit switch), retire file-byte MCP tools & per-channel `.carry/have` while preserving `carry_cheap.rs` `CloneRecipe` bundles, run full postsubmit + launch check, release `0.6.0` and install.
 
 ## Standing rules
 

@@ -47,7 +47,13 @@ fn switching_section_closes_an_open_font_list() {
 
 fn all_on() -> Vec<humata2_clients::AgentSwitch> {
     use humata2_clients::model::Agent;
-    [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+    [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::OpenCode,
+        Agent::Agy,
+    ]
         .map(|agent| humata2_clients::AgentSwitch {
             kind: agent.command().to_owned(),
             name: agent.name().to_owned(),

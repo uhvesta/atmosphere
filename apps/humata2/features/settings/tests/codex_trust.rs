@@ -46,7 +46,13 @@ fn hooks_not_yet_heard_show_the_step_until_the_daemon_hears_one() {
 
 fn all_on() -> Vec<humata2_clients::AgentSwitch> {
     use humata2_clients::model::Agent;
-    [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+    [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::OpenCode,
+        Agent::Agy,
+    ]
         .map(|agent| humata2_clients::AgentSwitch {
             kind: agent.command().to_owned(),
             name: agent.name().to_owned(),

@@ -85,6 +85,7 @@ fn usage_note(who: &str, agent: &str) -> String {
         "codex" => "your Codex plan",
         "copilot" => "your Copilot plan",
         "opencode" => "the provider set up in OpenCode",
+        "agy" => "your Antigravity plan",
         _ => "that agent's own account",
     };
     format!("Starts a new {who} agent; its usage counts against {plan}")

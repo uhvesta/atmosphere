@@ -38,6 +38,7 @@ Dialog "New desk session" focused
   Tab "Codex"
   Tab "Copilot"
   Tab "OpenCode"
+  Tab "Antigravity"
   Tab "Terminal"
   Button "This Mac"
   Button "Add a repo…"

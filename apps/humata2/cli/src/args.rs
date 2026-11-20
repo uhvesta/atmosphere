@@ -429,7 +429,7 @@ pub enum SessionsCommand {
     Search {
         /// Every word must match.
         words: Vec<String>,
-        /// Only this agent kind, such as claude.
+        /// Only this agent kind, such as claude, codex, copilot, opencode, or agy.
         #[arg(long)]
         agent: Option<String>,
         /// Only after this time (RFC 3339).

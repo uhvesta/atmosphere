@@ -47,6 +47,7 @@ Dialog "New session" focused
   Tab "Codex"
   Tab "Copilot"
   Tab "OpenCode"
+  Tab "Antigravity"
   Tab "Terminal"
   Button "devbox-1"
   Button "Own clone, new branch from main"

@@ -325,6 +325,8 @@ pub enum Agent {
     Copilot,
     /// OpenCode.
     OpenCode,
+    /// Antigravity.
+    Agy,
     /// A plain shell.
     Shell,
 }
@@ -338,15 +340,17 @@ impl Agent {
             Self::Codex => "codex",
             Self::Copilot => "copilot",
             Self::OpenCode => "opencode",
+            Self::Agy => "agy",
             Self::Shell => "zsh",
         }
     }
     /// Every agent, in menu order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Codex,
         Self::Copilot,
         Self::OpenCode,
+        Self::Agy,
         Self::Shell,
     ];
 
@@ -358,6 +362,7 @@ impl Agent {
             Self::Codex => "Codex",
             Self::Copilot => "Copilot",
             Self::OpenCode => "OpenCode",
+            Self::Agy => "Antigravity",
             Self::Shell => "Shell",
         }
     }

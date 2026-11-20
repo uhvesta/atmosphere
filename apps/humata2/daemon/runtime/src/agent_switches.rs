@@ -166,6 +166,7 @@ pub fn builtin_install_command(kind: &str) -> Option<&'static str> {
         "codex" => Some("npm install -g @openai/codex"),
         "copilot" => Some("npm install -g @github/copilot"),
         "opencode" => Some("curl -fsSL https://opencode.ai/install | bash"),
+        "agy" => Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
         _ => None,
     }
 }
@@ -440,6 +441,12 @@ mod tests {
             switches.install_command("claude").as_deref(),
             builtin_install_command("claude")
         );
+        assert!(switches.enabled("agy"));
+        assert!(!switches.install_when_missing("agy"));
+        assert_eq!(
+            switches.install_command("agy").as_deref(),
+            Some("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+        );
     }
 
     #[test]
@@ -540,6 +547,10 @@ mod tests {
         assert_eq!(
             cli_to_find("codex", Path::new("codex"), &args(&[])),
             CliToFind::Name("codex".to_owned())
+        );
+        assert_eq!(
+            cli_to_find("agy", Path::new("agy"), &args(&[])),
+            CliToFind::Name("agy".to_owned())
         );
     }
 

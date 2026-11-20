@@ -39,7 +39,13 @@ fn asks(store: &TestStore<Settings>, agent: Agent) -> Option<bool> {
 fn every_agent_asks_in_the_inbox_by_default() {
     let (mut store, _) = setup();
     loaded(&mut store);
-    for agent in [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode] {
+    for agent in [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::OpenCode,
+        Agent::Agy,
+    ] {
         assert_eq!(asks(&store, agent), Some(true));
     }
     store.finish();
@@ -135,14 +141,26 @@ fn a_custom_kind_has_its_own_switch_and_pickers_still_offer_only_built_in_agents
     assert_eq!(asks(&store, Agent::Claude), Some(true));
     assert_eq!(
         store.state().agents.offered(),
-        vec![Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+        vec![
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Copilot,
+            Agent::OpenCode,
+            Agent::Agy,
+        ]
     );
     store.finish();
 }
 
 fn all_on() -> Vec<AgentSwitch> {
-    [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
-        .map(|agent| AgentSwitch {
+    [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::OpenCode,
+        Agent::Agy,
+    ]
+    .map(|agent| AgentSwitch {
             kind: agent.command().to_owned(),
             name: agent.name().to_owned(),
             agent: Some(agent),

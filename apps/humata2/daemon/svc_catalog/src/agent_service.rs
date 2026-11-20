@@ -67,7 +67,7 @@ impl AgentSvc {
             resume_arguments: kind.resume_args.join(" "),
             fork_arguments: String::new(),
             supports_context_fork: kind.conversation_format != ConversationFormat::None,
-            supports_resume: !kind.resume_args.is_empty() && !kind.conversation_file.is_empty(),
+            supports_resume: !kind.is_shell() && !kind.resume_args.is_empty(),
             supports_turn_signal: kind.turn_end != TurnEnd::None,
             models: Vec::new(),
             revision: None,
@@ -283,6 +283,17 @@ mod tests {
         let claude = &listed[0];
         assert!(claude.supports_resume && claude.supports_turn_signal && claude.supports_context_fork);
         assert_eq!(claude.turn_end_source, pb::TurnEndSource::Hooks as i32);
+        let agy = listed
+            .iter()
+            .find(|agent| id(agent).as_deref() == Some("agy"))
+            .unwrap();
+        assert_eq!(agy.name, "Antigravity");
+        assert!(agy.supports_resume && agy.supports_turn_signal && !agy.supports_context_fork);
+        assert_eq!(agy.turn_end_source, pb::TurnEndSource::OutputFallback as i32);
+        assert_eq!(agy.launch_command, "agy");
+        assert_eq!(agy.resume_arguments, "--continue");
+        assert!(agy.can_install);
+        assert_eq!(agy.install_command, "curl -fsSL https://antigravity.google/cli/install.sh | bash");
         let shell = listed
             .iter()
             .find(|agent| id(agent).as_deref() == Some("zsh"))

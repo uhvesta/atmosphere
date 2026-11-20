@@ -144,6 +144,7 @@ const FRAMES: &[Frame] = &[
     Frame {
         name: "31-new-session",
         masks: &[
+            (Rect(490, 160, 424, 34), "AGY: New session offers Antigravity alongside the other agents"),
             (Rect(477, 326, 424, 78), "D147 L13: the First message box takes its own width"),
             (Rect(237, 0, 123, 760), BEHIND_NEW_SESSION_WHY),
             (Rect(920, 0, 360, 760), BEHIND_NEW_SESSION_WHY),

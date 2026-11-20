@@ -75,7 +75,13 @@ fn a_default_agent_that_is_turned_off_falls_back_to_the_first_that_is_on() {
     let mut state = AppState::launch(&clients);
     state.settings.preferences.default_agent = Agent::Claude;
     state.settings.agents.switches = Some(
-        [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+        [
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Copilot,
+            Agent::OpenCode,
+            Agent::Agy,
+        ]
             .map(|agent| AgentSwitch {
                 kind: agent.command().to_owned(),
                 name: agent.name().to_owned(),

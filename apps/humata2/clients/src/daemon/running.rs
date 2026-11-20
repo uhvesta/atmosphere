@@ -75,6 +75,7 @@ pub fn agent_of_kind(kind: &str) -> Agent {
         "codex" => Agent::Codex,
         "copilot" => Agent::Copilot,
         "opencode" => Agent::OpenCode,
+        "agy" => Agent::Agy,
         _ => Agent::Shell,
     }
 }

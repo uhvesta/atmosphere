@@ -529,7 +529,10 @@ fn cannot_resume(launch: &AgentLaunch) -> Option<ResumeFailure> {
     if !installed(Path::new(program), &launch.folder) {
         return Some(ResumeFailure::AgentNotInstalled);
     }
-    if !launch.conversation_file.is_file() {
+    let needs_file = !launch.conversation_file.as_os_str().is_empty()
+        || launch.resume_argv.len() <= 1
+        || launch.agent == "zsh";
+    if needs_file && !launch.conversation_file.is_file() {
         return Some(ResumeFailure::ConversationFileMissing);
     }
     None
@@ -649,6 +652,7 @@ async fn verify(
     // Kept open: the holder stops sending output once a client's side
     // closes.
     let (_control, mut events) = (attached.control, attached.events);
+    let has_file = !before.file.as_os_str().is_empty();
     let before = Arc::new(before);
     let mut watch = FileWatch::new(&before.file);
     let mut last_output = None;
@@ -742,12 +746,12 @@ async fn verify(
         if another_grew && !grew {
             return Ok(Err((ResumeFailure::AgentStartedAnotherConversation, None)));
         }
-        if told && (grew || !tell) {
+        if told && (grew || !tell || !has_file) {
             return Ok(Ok(()));
         }
         if timed_out {
-            if !tell {
-                // Up all along, but it never printed anything to settle.
+            if !tell || !has_file {
+                // Up all along, with no conversation file to watch or nothing to tell.
                 return Ok(Ok(()));
             }
             // Up, but it never wrote the conversation it was resumed
@@ -954,5 +958,41 @@ mod conversation_unknown_tests {
             ..AgentLaunch::default()
         };
         assert_eq!(cannot_resume(&launch), Some(ResumeFailure::ConversationUnknown));
+    }
+
+    #[test]
+    fn an_agent_with_resume_args_and_no_conversation_file_can_be_resumed() {
+        let launch = AgentLaunch {
+            agent: "agy".to_owned(),
+            folder: std::env::temp_dir(),
+            conversation_id: "c_1".to_owned(),
+            resume_argv: vec![OsString::from("/bin/sh"), OsString::from("--continue")],
+            conversation_file: PathBuf::new(),
+            ..AgentLaunch::default()
+        };
+        assert_eq!(cannot_resume(&launch), None);
+    }
+
+    #[test]
+    fn a_shell_or_agent_without_resume_args_still_needs_a_conversation_file() {
+        let shell = AgentLaunch {
+            agent: "zsh".to_owned(),
+            folder: std::env::temp_dir(),
+            conversation_id: "c_1".to_owned(),
+            resume_argv: vec![OsString::from("/bin/sh"), OsString::from("-l")],
+            conversation_file: PathBuf::new(),
+            ..AgentLaunch::default()
+        };
+        assert_eq!(cannot_resume(&shell), Some(ResumeFailure::ConversationFileMissing));
+
+        let no_args = AgentLaunch {
+            agent: "agy".to_owned(),
+            folder: std::env::temp_dir(),
+            conversation_id: "c_1".to_owned(),
+            resume_argv: vec![OsString::from("/bin/sh")],
+            conversation_file: PathBuf::new(),
+            ..AgentLaunch::default()
+        };
+        assert_eq!(cannot_resume(&no_args), Some(ResumeFailure::ConversationFileMissing));
     }
 }

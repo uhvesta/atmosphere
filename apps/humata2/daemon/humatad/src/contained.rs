@@ -79,6 +79,7 @@ fn agent_of(name: &str) -> Agent {
         "codex" => Agent::Codex,
         "copilot" => Agent::CopilotCli,
         "opencode" => Agent::OpenCode,
+        "agy" => Agent::Agy,
         _ => Agent::Other,
     }
 }
@@ -243,7 +244,7 @@ fn own_state(
         }
         // The `humata opencode` wrapper keeps its server's state here.
         Agent::OpenCode => own.agent_state.push(state.join("opencode")),
-        Agent::Codex | Agent::CopilotCli | Agent::Other => {}
+        Agent::Codex | Agent::CopilotCli | Agent::Agy | Agent::Other => {}
     }
     Ok(own)
 }
@@ -414,6 +415,12 @@ mod tests {
         assert!(own.env.is_empty());
         let own = own_state(Agent::OpenCode, &home, &state, directory.path(), Login::Keychain).unwrap();
         assert!(own.agent_state.contains(&state.join("opencode")));
+        let own = own_state(Agent::Agy, &home, &state, directory.path(), Login::Keychain).unwrap();
+        assert!(own.agent_state.contains(&home.join(".gemini/antigravity-cli")));
+        assert!(own.read_only.contains(&home.join(".gemini/antigravity-cli/settings.json")));
+        assert!(own.read_only.contains(&home.join(".gemini/config")));
+        assert!(own.env.is_empty());
+        assert_eq!(agent_of("agy"), Agent::Agy);
     }
 
     #[test]

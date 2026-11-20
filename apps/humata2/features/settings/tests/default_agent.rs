@@ -12,6 +12,9 @@ fn picking_the_default_agent_is_sent_to_the_daemon() {
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::SetAgent(Agent::Codex), |s| s.preferences.default_agent = Agent::Codex);
     store.receive(A::DefaultAgentSaved(Ok(())), |_| {});
+    store.send(A::SetAgent(Agent::Agy), |s| s.preferences.default_agent = Agent::Agy);
+    store.receive(A::DefaultAgentSaved(Ok(())), |_| {});
     store.finish();
     assert!(fakes.daemon.calls().iter().any(|call| call == "set_default_agent codex"));
+    assert!(fakes.daemon.calls().iter().any(|call| call == "set_default_agent agy"));
 }

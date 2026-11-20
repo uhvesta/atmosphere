@@ -94,6 +94,10 @@ mod tests {
             switch_of(&definition("codex", "Codex", false)).map(|s| (s.agent, s.enabled)),
             Some((Some(Agent::Codex), false))
         );
+        assert_eq!(
+            switch_of(&definition("agy", "Antigravity", true)).map(|s| (s.agent, s.enabled)),
+            Some((Some(Agent::Agy), true))
+        );
         assert_eq!(switch_of(&definition("zsh", "zsh", true)), None);
     }
 

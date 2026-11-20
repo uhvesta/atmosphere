@@ -2,32 +2,36 @@ use super::FakeDaemon;
 use crate::daemon::{AgentSwitch, Operation, Reply, SwitchChange};
 use crate::model::Agent;
 
-/// Every built-in agent on, installing off, install possible, asks in the
-/// Inbox.
+/// Every built-in agent on, installing off, install possible where a
+/// command is known, asks in the Inbox.
 pub(super) fn defaults() -> Vec<AgentSwitch> {
     Agent::ALL
         .into_iter()
         .filter(|agent| *agent != Agent::Shell)
-        .map(|agent| AgentSwitch {
-            kind: agent.command().to_owned(),
-            name: agent.name().to_owned(),
-            agent: Some(agent),
-            enabled: true,
-            install_when_missing: false,
-            can_install: true,
-            install_command: Some(install_command(agent).to_owned()),
-            asks_in_inbox: true,
+        .map(|agent| {
+            let install = install_command(agent);
+            AgentSwitch {
+                kind: agent.command().to_owned(),
+                name: agent.name().to_owned(),
+                agent: Some(agent),
+                enabled: true,
+                install_when_missing: false,
+                can_install: install.is_some(),
+                install_command: install.map(str::to_owned),
+                asks_in_inbox: true,
+            }
         })
         .collect()
 }
 
-fn install_command(agent: Agent) -> &'static str {
+fn install_command(agent: Agent) -> Option<&'static str> {
     match agent {
-        Agent::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
-        Agent::Codex => "npm install -g @openai/codex",
-        Agent::Copilot => "npm install -g @github/copilot",
-        Agent::OpenCode => "curl -fsSL https://opencode.ai/install | bash",
-        Agent::Shell => "",
+        Agent::Claude => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        Agent::Codex => Some("npm install -g @openai/codex"),
+        Agent::Copilot => Some("npm install -g @github/copilot"),
+        Agent::OpenCode => Some("curl -fsSL https://opencode.ai/install | bash"),
+        Agent::Agy => Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
+        Agent::Shell => None,
     }
 }
 

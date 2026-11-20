@@ -29,9 +29,15 @@ fn switch(agent: Agent, enabled: bool, install: bool) -> AgentSwitch {
 }
 
 fn all_on() -> Vec<AgentSwitch> {
-    [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
-        .map(|agent| switch(agent, true, false))
-        .to_vec()
+    [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::OpenCode,
+        Agent::Agy,
+    ]
+    .map(|agent| switch(agent, true, false))
+    .to_vec()
 }
 
 fn with_one_off(agent: Agent) -> Vec<AgentSwitch> {
@@ -176,7 +182,13 @@ fn pickers_offer_every_built_in_before_the_list_loads() {
     let state = SettingsState::default();
     assert_eq!(
         state.offered_agents(),
-        vec![Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+        vec![
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Copilot,
+            Agent::OpenCode,
+            Agent::Agy,
+        ]
     );
 }
 
@@ -186,7 +198,7 @@ fn pickers_leave_out_the_agents_that_are_off() {
     state.agents.switches = Some(with_one_off(Agent::Codex));
     assert_eq!(
         state.offered_agents(),
-        vec![Agent::Claude, Agent::Copilot, Agent::OpenCode]
+        vec![Agent::Claude, Agent::Copilot, Agent::OpenCode, Agent::Agy]
     );
 }
 

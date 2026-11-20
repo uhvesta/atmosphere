@@ -19,6 +19,9 @@ pub(crate) struct FileWatch {
 
 impl FileWatch {
     pub(crate) fn new(file: &Path) -> Self {
+        if file.as_os_str().is_empty() {
+            return Self { watching: None };
+        }
         let (changed, changes) = mpsc::channel(1);
         let wanted: PathBuf = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
         let name = wanted.file_name().map(ToOwned::to_owned);

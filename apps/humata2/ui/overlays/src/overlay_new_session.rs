@@ -197,7 +197,7 @@ impl Overlays {
                     .aria_label(name)
                     .aria_selected(sheet_state.agent == agent)
                     .test_support()
-                    .px(px(12.))
+                    .px(px(8.))
                     .py(px(2.))
                     .text_size(px(11.5))
                     .rounded(px(5.))

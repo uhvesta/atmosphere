@@ -69,7 +69,7 @@ impl std::fmt::Debug for LiveOptions {
 
 impl LiveOptions {
     /// The daemon's socket; agents map by their lowercase command name
-    /// (claude, codex, copilot, opencode; Shell -> "zsh").
+    /// (claude, codex, copilot, opencode, agy; Shell -> "zsh").
     #[must_use]
     pub fn new(socket: PathBuf) -> Self {
         Self {

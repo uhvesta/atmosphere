@@ -29,11 +29,12 @@ const CREDENTIAL_PATHS: &[&str] = &[
 ];
 
 /// The agents whose home-folder state is hidden from every other agent.
-const KNOWN_AGENTS: [Agent; 4] = [
+const KNOWN_AGENTS: [Agent; 5] = [
     Agent::ClaudeCode,
     Agent::Codex,
     Agent::CopilotCli,
     Agent::OpenCode,
+    Agent::Agy,
 ];
 
 /// The agents Humata knows the home-folder state of.
@@ -47,6 +48,8 @@ pub enum Agent {
     CopilotCli,
     /// OpenCode.
     OpenCode,
+    /// Antigravity (`agy`).
+    Agy,
     /// An agent Humata has no rules for. It keeps no home-folder state of its own.
     Other,
 }
@@ -125,6 +128,7 @@ fn state_paths(agent: Agent) -> &'static [&'static str] {
             ".local/state/opencode",
             ".cache/opencode",
         ],
+        Agent::Agy => &[".gemini/antigravity-cli"],
         Agent::Other => &[],
     }
 }
@@ -146,6 +150,7 @@ fn read_only_paths(agent: Agent) -> &'static [&'static str] {
         Agent::Codex => &[".codex/config.toml", ".codex/AGENTS.md"],
         Agent::CopilotCli => &[".copilot/mcp-config.json"],
         Agent::OpenCode => &[".config/opencode"],
+        Agent::Agy => &[".gemini/antigravity-cli/settings.json", ".gemini/config"],
         Agent::Other => &[],
     }
 }
@@ -214,6 +219,27 @@ mod tests {
 
         assert!(rules.agent_state.is_empty());
         assert!(rules.read_only.is_empty());
+        for hidden in [
+            ".claude",
+            ".codex",
+            ".copilot",
+            ".local/share/opencode",
+            ".gemini/antigravity-cli",
+            ".gemini/config",
+        ] {
+            assert!(rules.hidden.contains(&home.join(hidden)), "{hidden} is not hidden");
+        }
+    }
+
+    #[test]
+    fn agy_keeps_its_own_state_and_protects_its_config_read_only() {
+        let (_dir, home) = sample_home();
+        let rules = home_rules(Agent::Agy, &home).expect("rules");
+
+        assert!(rules.agent_state.contains(&home.join(".gemini/antigravity-cli")));
+        assert!(rules.read_only.contains(&home.join(".gemini/antigravity-cli/settings.json")));
+        assert!(rules.read_only.contains(&home.join(".gemini/config")));
+        assert!(!rules.hidden.contains(&home.join(".gemini/antigravity-cli")));
         for hidden in [".claude", ".codex", ".copilot", ".local/share/opencode"] {
             assert!(rules.hidden.contains(&home.join(hidden)), "{hidden} is not hidden");
         }

@@ -740,9 +740,32 @@ fn copilot() -> AgentKind {
     }
 }
 
+/// Antigravity (`agy`): launches directly with no wrapper or hooks, resumes
+/// with `--continue`, and prints its version with `--version`. Its
+/// conversation lives in its own state under `~/.gemini/antigravity-cli`, so
+/// there is no single conversation file to read.
+fn agy() -> AgentKind {
+    AgentKind {
+        name: "agy".into(),
+        display_name: Some("Antigravity".into()),
+        program: "agy".into(),
+        start_args: Vec::new(),
+        resume_args: vec!["--continue".into()],
+        conversation_file: String::new(),
+        turn_end: TurnEnd::Output,
+        conversation_format: ConversationFormat::None,
+        cli_home: None,
+        version_args: Some(vec!["--version".into()]),
+        conversation_id: ConversationId::Pinned,
+        model_args: model_flag(),
+        builtin: None,
+        tools_args: Vec::new(),
+    }
+}
+
 /// How every built-in agent's CLI is put on a model: `--model <model>` for
-/// Claude Code, Codex (`codex` and `codex resume`), Copilot, and the `humata
-/// opencode` wrapper, which hands it to OpenCode's TUI.
+/// Claude Code, Codex (`codex` and `codex resume`), Copilot, Antigravity,
+/// and the `humata opencode` wrapper, which hands it to OpenCode's TUI.
 fn model_flag() -> Vec<String> {
     vec!["--model".into(), "{model}".into()]
 }
@@ -795,6 +818,7 @@ impl Agents {
                 codex(),
                 copilot(),
                 opencode(),
+                agy(),
             ],
         }
     }
@@ -1509,15 +1533,32 @@ mod tests {
             .expect("the builtin OpenCode kind has a display name");
         assert_eq!(agents.person_name("opencode"), configured);
         assert_ne!(agents.person_name("opencode"), "opencode");
+        assert_eq!(agents.person_name("agy"), "Antigravity");
         // An id no kind has is shown as it is.
         assert_eq!(agents.person_name("nope"), "nope");
+    }
+
+    #[test]
+    fn agy_launches_directly_and_resumes_with_continue() {
+        let agents = Agents::builtin();
+        let kind = agents.get("agy").expect("Antigravity is built in");
+        assert_eq!(agents.person_name("agy"), "Antigravity");
+        assert_eq!(kind.turn_end, TurnEnd::Output);
+        assert_eq!(kind.conversation_format, ConversationFormat::None);
+        assert_eq!(kind.conversation_id, ConversationId::Pinned);
+        assert_eq!(kind.version_args, Some(vec!["--version".to_owned()]));
+        assert!(kind.placement(Path::new("/home/me"), Path::new("/work")).is_none());
+        let plan = kind.launch(Path::new("/home/me"), Path::new("/work"), "abc");
+        assert_eq!(plan.argv, ["agy"]);
+        assert_eq!(plan.resume_argv, ["agy", "--continue"]);
+        assert!(plan.conversation_file.as_os_str().is_empty());
     }
 
     #[test]
     fn codex_and_copilot_are_built_in_after_claude() {
         let agents = Agents::builtin().with_agent_hooks("{ Stop = [] }", Path::new("/state/copilot-plugin"));
         let names: Vec<&str> = agents.kinds().iter().map(|kind| kind.name.as_str()).collect();
-        assert_eq!(names, ["claude", "codex", "copilot", "opencode"]);
+        assert_eq!(names, ["claude", "codex", "copilot", "opencode", "agy"]);
         let (home, folder) = (Path::new("/home/me"), Path::new("/home/me/Humata/ch/sessions/s.1"));
         let copilot = agents.get("copilot").unwrap();
         let plan = copilot.launch(home, folder, "abc");
