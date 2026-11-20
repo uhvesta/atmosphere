@@ -171,4 +171,25 @@ Owned files:
 4. Commit with explicit `git add -- <paths>`. No AI attribution trailers.
 
 ## Lane
-(empty: the manager fills this in)
+**State: paused 2026-11-20 (main: full-suite 0.9.0 release first). Release target now 0.10.0.** No repo files changed by this lane yet except this Lane section. In flight: Fable is drawing frames into `workflow/milestones/mockups/browser/` (b1 Settings › Browser, b2 Inbox browser read card, b3 Inbox browser write card); it writes only there.
+
+**Goal / exit:** the outcome sentence above holds, and the verification gate's targets pass.
+
+**Design notes (manager picks, to log in DECISIONS.md on resume):**
+- **New `api/proto/humata/v1/browser.proto`**, added to `inbox_proto` srcs (one-line seam in `api/proto/BUILD.bazel` for main). It holds `BrowserBridgeService` with `ConnectBrowserHost`, `ExecuteBrowserAction`, `GetBrowserBridgeStatus` and also `ListDetectedBrowsers` / `InstallBrowserHost` / `UninstallBrowserHost` (user-only), plus `DetectedBrowser`, `BrowserKind`, `BrowserFamily`. So `SettingsService` and `settings_service.rs` stay untouched (no hand-over wait). settings.proto is not edited.
+- **inbox.proto (additive):** kinds 9/10, `BrowserPreview`, preview 18/19, `AllowFor30Min` answer 7, `RequestBrowserApproval`. The request carries the action itself (`action_json`); the server derives preview, `is_write` and the action key, so a card can't show a different action than the one that runs.
+- **No bypass:** `ExecuteBrowserAction` from an agent needs an approval id the inbox approved for that session with a matching action key (one use), or an active read grant for a read action. Read grants are per session, in memory, 30 min; lost on daemon restart.
+- **No `Caller::BrowserHost` in `daemon/ports`** (shared, many exhaustive matches): identity.rs checks the `humata-browser-host-token` header (token file 0o600, same uid, `!in_a_session`, method == ConnectBrowserHost only) and inserts a humatad-local marker the bridge service checks.
+- **Core crate fixes:** `HighlightGuide` classifies as Read (brief's table); drop `expect`/`unreachable!` in `policy.rs`; add a stable action key.
+- **svc_mcp:** browser tools in new `svc_mcp/src/mcp/browser.rs`; only a registration hunk in `mcp.rs` (FUSEFSWIRE owns mcp.rs).
+- **Remote (D891):** after local works, a machine daemon forwards bridge execute/status to the host over the peer link; card raised on the machine and mirrored as today.
+
+**Tasks (planned, none started):**
+- A1 proto (inbox.proto + browser.proto + exhaustive-match fixes) — first, alone.
+- A2 browser_copilot fixes (haiku) — parallel with A1.
+- B1 `daemon/mcp` 6 browser Operations + tools.txt + schemas (haiku; tools.rs is a seam hunk for main).
+- A5 agy MCP launch wiring (sonnet; check `agy --help`, never touch ~/.gemini).
+- After A1 builds: A3 browser_service.rs (+install with fake home), A4 browser_host.rs + main.rs argv0 + identity.rs + serve.rs hunks, B2 svc_mcp browser.rs, B3 svc_inbox browser.rs + decide/fits_card/replay/deferred/answer_all; tests browser_host_test, browser_mcp_test.
+- Lane C (clients/features/ui) after Fable signs off the frames.
+
+**Workers:** Fable frames (running). No others spawned.

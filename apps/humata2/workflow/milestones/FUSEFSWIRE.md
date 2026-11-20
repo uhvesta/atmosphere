@@ -1,6 +1,6 @@
 # FUSEFSWIRE: finish 0.6.0 FUSEFS (T11–T12, humatad2 and Settings wiring)
 
-- **Status:** open (owner, 2026-11-20). Follows [FUSEFS](FUSEFS.md) T1–T10 (12305aba, 127b766c).
+- **Status:** open, paused for 0.9.0; release target 0.10.0 (owner, 2026-11-20). Follows [FUSEFS](FUSEFS.md) T1–T10 (12305aba, 127b766c).
 - **Release:** 0.6.0 (RESUME.md › Release plan, step 17). Full suite + launch check.
 - **Outcome sentence:** FUSEFS is actually on: humatad2 runs the mount as a fifth helper, sessions get native per-session config homes with a zero-restart sync switch, moves carry chunks through the shared chunk store, and Settings › Sync controls it all.
 
@@ -139,4 +139,41 @@ Then split the work into 3 lanes with no shared files.
 4. Commit with explicit `git add -- <paths>`. No AI attribution trailers.
 
 ## Lane
-(empty: the manager fills this in)
+
+Manager: minion FUSEFSWIRE (Opus 5.5), started 2026-11-20. Workers never run bazel or git; main builds.
+
+**State: PAUSED 2026-11-20 (main: full-suite 0.9.0 release first; this lane now targets 0.10.0).** No worker was spawned. Every task row marked "running" below is planned and not started: nothing was written for A1–C2b, R1 or R2. On resume, spawn the workers in the table as written. Uncommitted files from this lane: only this milestone file. Step 0 is committed (d9579b71).
+
+### Exit
+The T12 gate in this file passes (narrow targets, `presubmit.sh --full`, `:app` build) and the four checks in T12.3 hold.
+
+### Design notes
+- **Step 0 (done 2026-11-20):** `settings.proto` gains `SyncSkillsMode`, `MachineSyncOverride`, `SyncSettings`, `Settings.sync = 14`, `Settings.fusefs_enabled = 15`, `UpdateSettingsRequest.sync = 14`, `optional fusefs_enabled = 15`. Additive; every Rust constructor already uses `..Default::default()`. Released to BROWSER once main builds it.
+- **Safe defaults (D-entry to log, Provisional):** `fusefs_enabled` is **off** by default. With it off humatad2 spawns no helper and nothing mounts, so the installed daemon and tests never touch `/sbin/mount`. Sync (`config-sync.toml`) follows `SyncConfig::default()` (on; skills + instructions).
+- **Composed homes only for new launches:** a session gets a composed `config/<agent>/` home when its agent tab is launched (or relaunched) after this ships. The env it got is recorded with the tab so resume and history look in the same home. Running holders are never restarted; the rage-quit switch re-materializes in place.
+- **Helper:** `humata2_fusefs` is the fifth helper, beside `humatad2`, in its own session and process group, so an exec swap of `humatad2` keeps the mount. `FuseFsSupervisor` (new `daemon/humatad/src/fusefs.rs`) finds a live helper through `fusefs_host::ControlClient` on `<state>/fusefs.sock` (0600) before spawning one.
+- **Topology push:** `libs/fusefs/host` gets a generic `ControlRequest::Extension { body }` forwarded to an optional handler, so the lib keeps zero Humata types; `humata2_fusefs serve` decodes `HumataTopology` / `DaemonLinkState` from it.
+- **MCP byte tools (Lane B2):** main handed us `daemon/svc_mcp/src/{mcp.rs,mcp/history.rs}` (BROWSER adds only a registration hunk in mcp.rs). `daemon/mcp/src/tools.rs` is a main seam: our hunks are listed for main.
+
+### Tasks
+| ID | Task | Files | Worker | Status |
+|---|---|---|---|---|
+| S0 | settings.proto fields | `api/proto/humata/v1/settings.proto` | manager | done, reported to main |
+| A1 | Package `humata2_fusefs` as 5th helper | `daemon/humatad/tools.bzl`, `daemon/humatad/BUILD.bazel` (tools targets + SHARED_DEPS hunks), `app/app.bzl`, `desktop/install/src/lib.rs` (+tests), `desktop/src/live.rs`, `daemon/machines/src/{bundle.rs,install.rs}`, `daemon/machines/tests/{fake_ssh.rs,stage_next.rs}`, `tools/release/{check.sh,release.sh}` | haiku A1 | running |
+| A2 | `FuseFsSupervisor`, socket 0600, real mount pid, topology push | new `daemon/humatad/src/fusefs.rs`, `libs/fusefs/host/src/{supervisor.rs,control.rs}`, `daemon/fusefs_adapter/src/{main.rs,layout.rs}`; own hunks in `daemon/humatad/src/{lib.rs,serve.rs,error.rs}` (BROWSER's files; main allowed own hunks, listed in report) | sonnet A2 | running |
+| A3 | Sync settings persisted, rage-quit in place, composed session env, contained homes | `daemon/humatad/src/settings_service.rs`, `settings_service/sections.rs`, new `daemon/humatad/src/config_sync.rs`, `contained.rs`, `session_service.rs`, `wire_stop_restart.rs`, `wire_machines.rs`, `daemon/svc_stop_restart/src/{ports.rs,restart.rs}`, new `daemon/humatad/tests/settings_sync.rs` | sonnet A3 | running |
+| B1 | MoveSession onto `fusefs_cas` | `daemon/sessions_carry/{BUILD.bazel,src/{lib.rs,carry.rs,carry_cheap.rs,carry_chunks.rs}}`, `daemon/sessions/src/lib.rs`, `daemon/svc_transfers/{BUILD.bazel,src/{carry.rs,transfer_end_service.rs,remote_end.rs}}` | sonnet B1 | running |
+| B2 | Retire 7 MCP byte tools | `daemon/mcp/src/tools.rs`, `daemon/svc_mcp/src/{mcp.rs,mcp/history.rs}`, `daemon/mcp/tests/{tools.txt,schemas.rs}`, `daemon/humatad/tests/{matrix.rs,mcp_desk_folder.rs,history_tools.rs}` | sonnet B2 | running (main 2026-11-20: svc_mcp files are ours; tools.rs hunks listed for main) |
+| C1 | Clients + live client + Settings feature (Sync section, rows, optimistic + rollback) | `clients/src/daemon.rs` (own hunks), new `clients/src/daemon/sync.rs`, `clients/src/daemon/fake.rs` (own hunks), new `clients/src/daemon/fake/sync.rs`, `clients/live_daemon/src/{lib.rs,daemon.rs,settings.rs}`, `features/settings/src/lib.rs` (own hunks), new `features/settings/src/sync.rs`, new `features/settings/tests/sync.rs`, `features/settings/BUILD.bazel`, `features/app/tests/every_action.rs` | sonnet C1 | running |
+| C2a | Settings › Sync design frame (candidate), Fable judges | new `desktop/tests/design/settings_sync.rs`, `desktop/tests/design.rs` (CANDIDATES hunk) | fable F1 | running |
+| C2b | Native Settings › Sync page copying the signed-off frame | `ui/settings/src/{lib.rs,settings.rs}` (own hunks), new `ui/settings/src/sync.rs` | — | waits on C1 + frame sign-off |
+| R1 | Review notes: narrow `//libs/fusefs/*` visibility, rewrite-script timeout kills the process group, cow fsync off hot paths | `libs/fusefs/*/BUILD.bazel`, `daemon/config_compose/src/rewrite.rs`, `libs/fusefs/cas/src/cow.rs` | haiku R1 | running |
+| R2 | Review note: `VfsError` typed fields + sources | `libs/fusefs/**`, `daemon/fusefs_adapter/src/**` | — | after A2 |
+
+### Claims
+As in the task table above, plus `libs/fusefs/**` (review notes) and `milestones/FUSEFSWIRE.md`. Shared-file hunks are listed per batch report.
+
+### Log
+- 2026-11-20: Step 0 written and reported to main. Asked main for hand-over of `daemon/humatad/src/{lib.rs,serve.rs,error.rs}` (BROWSER) for A2 wiring and `daemon/mcp/src/tools.rs` + `daemon/svc_mcp/**` for B2.
+- 2026-11-20: main committed Step 0 (d9579b71). Rulings: own hunks allowed in humatad `lib.rs`/`serve.rs`/`error.rs`; svc_mcp `mcp.rs`/`mcp/history.rs` ours for B2.
+- 2026-11-20: PAUSED at main's request before any worker started. On resume: spawn A1, A2, A3, B1, B2, C1, R1 and F1 in parallel. A3 doesn't edit `daemon/humatad/BUILD.bazel`; it reports its test stanza instead, so it stays clear of A1. A1 also adds `//libs/fusefs/host` to SHARED_DEPS for A2.

@@ -53,4 +53,22 @@
 - The replay tests are green in the fast tier.
 
 ## Lane
-(empty: the manager fills this in)
+**PAUSED 2026-11-20 (main: full-suite 0.9.0 release first; this lane now targets 0.10.0).** Stopped during planning. No workers started, no corpus recorded, no isolated homes made, no repo files changed except this Lane section.
+
+Findings so far, so a fresh manager can resume:
+- **Plan item 1 (screen_ask.rs test sleep): already done** in c1d3eb09. `settle_tasks` yields until no debounce timer is due (`clear_in_flight`), and screen_ask.rs no longer contains `std::thread::sleep`.
+- **Parser today:** `daemon/runtime/src/screen_question.rs` has `asked_on` (FolderTrust/Offer) and `has_active_prompt` (bool, phrase list + `❯ 1.`/`2.` + y/n suffixes). It returns no kind and no choices for permission, plan or choice prompts. Add a `prompt_on(screen) -> Option<ScreenPrompt { kind, choices }>` only after the corpus shows the real screens.
+- **What the parser sees:** `humatad/src/holders.rs` `Link::screen_text` / `screen_at_if_changed`, which is `humata2_vt_authority::Authority::screen_text()` fed with the holder's output bytes. The recorder must use the same path: `humata2_holder::spawn(HolderSpec{cols,rows,env,..})`, then `attach`, then feed `Event` output to `Authority`, then write `Step` replies back via `Control::input`, with `Control::resize` for widths. `vt_authority` is visible only to `//apps/humata2/daemon/humatad:__pkg__`, so main must widen its visibility to the recorder's package (seam line).
+- **Installed CLIs (2026-11-20):** claude 2.1.329, codex-cli 0.169.0, copilot 1.0.115-1, agy 1.5.13.
+- **Isolation recipes:**
+  - Claude: `CLAUDE_CONFIG_DIR=<copy>` with `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, which uses the keychain login (see `daemon/contain/src/login.rs`; 2.1.329 is not yet in its verified list).
+  - Codex: `CODEX_HOME=<dir>` with a copy of auth.json.
+  - Copilot: `COPILOT_HOME=<dir>`, plus `COPILOT_GITHUB_TOKEN` passed in the environment only.
+  - agy: state is in ~/.gemini/antigravity-cli. Its home override is still unknown.
+- **agy model:** `agy models` lists `gemini-3.8-flash-low`, the likely cheap pick. Still to confirm with Fable and log in DECISIONS.
+- **Planned design (not started):**
+  - A Rust recorder binary, `screenparse_record` (testonly, `bazel run`, writes under BUILD_WORKSPACE_DIRECTORY). It reads a step script (`wait <text>`, `quiet <ms>`, `type <text>`, `keys <enter|esc|up|down|tab|shift-tab|ctrl-c|…>`, `snap <label> <none|prompt:<kind>>`). Each snap is captured at 60/80/120/200 columns by resizing the holder, to save model calls (decision to log).
+  - Snapshot files go in `tests/screens/<agent>/<version>/<script>.w<cols>.<n>-<label>.txt`, with a header (agent, cli, cols, rows, expect) above the screen text.
+  - `tests/screen_replay.rs` is the fast tier and replays every snapshot against the parser.
+  - `screenparse_live` is a slow-tier test that skips when a login is missing (writes `<skipped>` to XML_OUTPUT_FILE and logs it) and goes in slow.txt.
+- **Claims to add on resume:** `daemon/svc_inbox/tests/screenparse/**` (recorder, live test, scripts).
