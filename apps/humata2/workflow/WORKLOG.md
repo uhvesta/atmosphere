@@ -47,12 +47,12 @@ Older rosters (2026-11-15 to 11-18) are in git history.
 | Agent | Model | Role | Lane / task | Started | Status |
 |---|---|---|---|---|---|
 | main (Claude Code) | Opus 5.5 | main agent | git, gates, releases | 2026-11-19 | active |
-| DIFFUI manager | Opus 5.5 | manager | release-plan steps 1–5, 8, 9 (GOLDENFIX, NATIVEFIX, REVIEWUI, PROGRESS/STACKVIEW frames, owner marks, UXSIMPLE, REVIEWER) | 2026-11-19 | running |
-| LIVEHOLDER manager | Opus 5.5 | manager | step 6 (LIVEHOLDER) | 2026-11-19 | running |
-| BUILDFIX | Opus 5.5 | fixer | baseline red: faults builds link two store crates, svc_desk/svc_files/svc_board unit tests, buildifier ×7, Vale | 2026-11-19 | running |
-| INBOX manager | Opus 5.5 | manager | steps 7, 11 (AGENTS2, INBOXHOOKS) | 2026-11-19 | running |
-| BOARDSIMPLE manager | Opus 5.5 | manager | step 10 (BOARDSIMPLE) | 2026-11-19 | running |
-| Gemini | Gemini | test optimization (outside dag-walk) | see Resume here, 2026-11-19 entry | 2026-11-19 | active |
+| minion FUSEFSWIRE | Opus 5.5 | manager | FUSEFSWIRE (0.6.0 work) | 2026-11-20 | running |
+| minion SCREENPARSE | Opus 5.5 | manager | SCREENPARSE (0.6.1 work) | 2026-11-20 | running |
+| minion TODO2WIRE | Opus 5.5 | manager | TODO2WIRE | 2026-11-20 | running |
+| minion BROWSER | Opus 5.5 | manager | BROWSER (0.7.0 work, D891) | 2026-11-20 | running |
+
+(2026-11-19 managers DIFFUI, LIVEHOLDER, BUILDFIX, INBOX, BOARDSIMPLE and Gemini ended; their work shipped in 0.8.0.)
 
 ## Claims
 
@@ -60,15 +60,17 @@ Files a lane is editing. No two lanes claim the same file. Each lane keeps detai
 
 | Lane | Paths |
 |---|---|
-| DIFFUI | `ui/**` except board/to-do and inbox views; `features/review/**`; `features/app` as needed; `desktop/**` tests and goldens (own frames only) |
-| LIVEHOLDER | `daemon/holder/**`, upgrade/migrate-holders, revive/reconcile, session move/rename/delete-channel paths, its new tests; PROGRESS T6 (2026-11-19): `api/proto/humata/v1/{inbox,peer}.proto` (`HoldersMoved`, additive), `daemon/svc_upgrade/src/{holders,items}.rs`, `clients/src/model.rs` (`MigrateCard.moved`), `clients/live_daemon/src/inbox.rs` (migrate_card), `MigrateCard` literals in `features/{inbox,hosts,app,session}/tests` + `features/inbox/src/lib.rs`, `features/hosts/src/page.rs` (holders progress), `ui/workspace/src/request_card.rs` (migrate_card), `ui/machines/src/machine_page.rs` (`upgrade_banner` only), `desktop/tests/design/upgrade.rs` + design.rs frame 125 line |
-| INBOX | agent_hooks, agent-kind code in sessions, daemon inbox + MCP ask paths, Agent access settings, Agent inbox UI, its goldens; batch 2 (2026-11-19): `api/proto/humata/v1/inbox.proto` (additive), `daemon/svc_inbox/**`, `daemon/svc_mcp/**` (except board/to-do files), `daemon/mcp/src/tools.rs` (asks/reason, session_move, inbox_explain), `daemon/svc_away/src/registry.rs` (AskWhy/ExplainAsk forwarding), `svc_transfers` preview + inbox adapter, (batch 3, 2026-11-19: released `sessions.proto`, `session_service*` and `cli/src/commands/sessions.rs` to MASSDELETE) `clients/src/model.rs` + `clients/src/daemon*` inbox seam lines, `clients/live_daemon/src/inbox.rs`, `features/inbox/**`, `ui/workspace/src/{inbox_page,request_card,panel_inbox}.rs`, `ui/settings/src/access.rs` + features/settings Agent access (shared with MASSDELETE: it adds one "delete many sessions" row to `features/settings/src/access_rows.rs`; INBOX edits only existing rows), `ui/settings/src/settings.rs` (Agent access page), `ui/src/lists.rs` (`home` stopped group only), `desktop/tests/design/{agent_inbox,agent_inbox_more,mock_sidebar}.rs` + Inbox labels in `desktop/tests/design/{uxsimple,screen_question,roam,upgrade}.rs` |
-| BOARDSIMPLE | `api/proto/humata/v1/boards.proto`, new to-do domain crate, board clients/features, To-do UI + session To-do panel, board MCP tool shapes, its goldens; `svc_board` only after Gemini hands it over |
-| PROGRESS (2026-11-19) | `features/pr_review/src/dialog.rs`, `features/pr_review/tests/dialog.rs`, `ui/overlays/src/overlay_pr_review.rs`, one line in `features/app/src/events.rs` (`Event::Operation` arm), `ui/machines/src/machine_page.rs` (`scripts_section` only), `desktop/tests/design/session.rs` (new `diff_loading` fn), `desktop/tests/design.rs` (frame 126 line only), `milestones/PROGRESS.md` |
-| STACKVIEW (2026-11-19) | `ui/changes/src/panel_stack.rs`; stack-only branches in `ui/changes/src/panel_changes/{mod,plan,file_list}.rs` (stack footer, stack repo rows, key chip, stack file bar); `desktop/tests/native/stack.rs` and its `__snapshots__/native/{stack-*,looks-good-*}` goldens; `clients/src/daemon/fake.rs` + `fake/review.rs` (`set_range_files` only); `features/review/src/stack.rs` (`SKIM_NAMES`); `features/review/src/lib.rs` (`Fetch.whole_files`, `stack_rows` repos) + `tests/stack.rs`; `milestones/STACKVIEW.md` |
-| REVIEWUI (2026-11-19) | DS-80/DS-79 hover hunks only: `ui/changes/src/panel_changes/file_list.rs` (`file_row` tooltip), `ui/changes/src/panel_changes/mod.rs` (`diff-base` chip, `change-file-note`), `ui/changes/src/panel_changes/review_header.rs` (repo base chip), `ui/changes/src/panel_changes/states.rs` (repo error name), `ui/src/pages.rs` (session heading title), `ui/core/src/chrome.rs` (`header_with`), `ui/core/src/keys.rs` (tests module); `desktop/tests/native/{review_ui,diff_full_screen}.rs`; DS status column of `milestones/DIFFVIEW-spec.md` (not DS-60–68); status rows of `flows/cases/diff/*.md` (not 15, 16); `milestones/REVIEWUI.md`; also `review_header.rs` `review_repo_head` (repo name ellipsis), `ui/src/pages.rs` terminal arrow tooltip and `review_notices` (force-push words), new tests in `desktop/tests/native/{diff_view,diff_stress,pr_session}.rs` |
-| AGENTS2 (2026-11-19, minion) | `daemon/runtime/src/screen_question.rs`, `daemon/humatad/src/input_gate.rs` (refusal arm only), `daemon/svc_inbox/src/screen_ask.rs` (`look` filter line only), `daemon/humatad/tests/screen_questions.rs` (Offer case), `milestones/AGENTS2.md`, D864 in DECISIONS.md |
-| Gemini | `daemon/humatad/tests/common/**`, test timing/sharding, `clients/live_test_support/**`, `tools/tests/**`, uncommitted edits in `svc_board/src/lib.rs`, `svc_files/src/ops.rs`, `svc_stop_restart/src/restart.rs` |
+| FUSEFSWIRE | `api/proto/humata/v1/settings.proto` (Step 0 only, then released to BROWSER), `daemon/fusefs*/**`, `config_compose` wiring, `daemon/humatad` helper supervision files named in its Lane A, `daemon/humatad/src/settings_service.rs` (sync/fusefs fields; then handed to TODO2WIRE, then BROWSER), session move → `fusefs_cas` files of its Lane B, Settings › Sync in `clients/`, `features/settings`, `ui/settings` (new sync files; shared files only by hand-over), `milestones/FUSEFSWIRE.md` |
+| SCREENPARSE | `daemon/svc_inbox/src/screen_ask.rs`, `daemon/svc_inbox/tests/screens/**` (new), `daemon/svc_inbox/tests/screen_replay*.rs` (new), `daemon/svc_inbox/BUILD.bazel` (its targets only), a new `screenparse_live` target, `daemon/runtime/src/screen_question.rs`, `milestones/SCREENPARSE.md` |
+| TODO2WIRE | `daemon/svc_board/**`, `daemon/store/src/todo_runs.rs`, `features/todo/**`, `ui/workspace/src/todo.rs`, the session-event hooks it needs in `daemon/humatad/src/session_service/**` (not `hooks.rs`), new PR/CI watcher crate or module, `milestones/TODO2WIRE.md`, `milestones/TODO2.md` |
+| BROWSER | `daemon/browser_copilot/**`, `browser_extension/**`, `api/proto/humata/v1/inbox.proto` (additive), `daemon/humatad/src/{browser_host,browser_service}.rs` (new), `daemon/humatad/tests/browser_host.rs` (new), `daemon/humatad/src/{main.rs,identity.rs,serve.rs,error.rs,lib.rs}`, `daemon/agent_hooks/src/mcp.rs`, `daemon/sessions_core/src/agents.rs`, `daemon/humatad/src/session_service/hooks.rs`, `daemon/svc_mcp/**`, `daemon/svc_inbox/**` except SCREENPARSE's files, browser UI files in `clients/`, `features/`, `ui/` (new files; shared files by hand-over); `settings.proto` and `settings_service.rs` only after hand-over; `milestones/BROWSER.md` |
+
+Shared files (`daemon/humatad/BUILD.bazel`, `Cargo.toml`, `DECISIONS.md`, `OVERVIEW.md`, `ui/settings/src/settings.rs`, `features/settings/src/lib.rs`, `clients/src/model.rs`): edit only your own hunks; tell main which hunks are yours. A hand-over is logged here by main.
+
+Hand-overs and splits (main, 2026-11-20 ~07:35):
+- `settings.proto`: FUSEFSWIRE Step 0 committed → now BROWSER's.
+- `daemon/humatad/src/{lib.rs,serve.rs,error.rs}`: BROWSER owns the files; FUSEFSWIRE may add its own hunks (mod lines, service registration, error variants) and lists them in its report.
+- `daemon/svc_mcp/src/{mcp.rs,mcp/history.rs}`: FUSEFSWIRE's (MCP byte-tool retirement). BROWSER adds browser tools in new svc_mcp files plus its own registration hunks in `mcp.rs`, listed in its report.
 
 ## Lanes
 
@@ -76,10 +78,10 @@ Each lane's plan, tasks and workers live in its milestone file (`workflow/milest
 
 | Lane | Milestone files | State |
 |---|---|---|
-| DIFFUI | GOLDENFIX/NATIVEFIX, REVIEWUI, PROGRESS, STACKVIEW, UXSIMPLE, REVIEWER | started 2026-11-19 |
-| LIVEHOLDER | LIVEHOLDER | started 2026-11-19 |
-| INBOX | AGENTS2, INBOXHOOKS | started 2026-11-19 |
-| BOARDSIMPLE | BOARDSIMPLE | started 2026-11-19 |
+| FUSEFSWIRE | FUSEFSWIRE | started 2026-11-20 |
+| SCREENPARSE | SCREENPARSE | started 2026-11-20 |
+| TODO2WIRE | TODO2WIRE | started 2026-11-20 |
+| BROWSER | BROWSER | started 2026-11-20 |
 
 Every UI lane copies Fable's signed-off frames fully: `milestones/mockups/{boardsimple,uxsimple,reviewer}/` (PNGs, FRAMES.md, src/ HTML). Fable 5.2 judges goldens against them.
 
