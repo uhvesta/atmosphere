@@ -116,6 +116,42 @@ enum TodoSyncMode {
   TODO_SYNC_MODE_AUTO = 2;
 }
 
+// FUSEFS (0.6.0): how a host's skills meet a session's own copies.
+enum SyncSkillsMode {
+  SYNC_SKILLS_MODE_UNSPECIFIED = 0;
+  // The host's skill replaces a session's skill of the same name.
+  SYNC_SKILLS_MODE_HOST_WINS = 1;
+  // A session sees only the host's skills.
+  SYNC_SKILLS_MODE_HOST_ONLY = 2;
+}
+
+// One machine's departures from SyncSettings; an unset field follows the
+// global value.
+message MachineSyncOverride {
+  optional bool enabled = 1;
+  optional bool skills = 2;
+  optional bool instructions = 3;
+  optional bool mcp = 4;
+  optional bool settings = 5;
+  optional SyncSkillsMode skills_mode = 6;
+}
+
+// FUSEFS (0.6.0) Settings › Sync, kept in config/config-sync.toml. Each
+// agent session gets its own native config home composed from the host's
+// agent config; nothing writes the user's real agent dotfiles. Turning
+// `sync_enabled` off (or on) takes effect in running sessions at once,
+// with no holder restart.
+message SyncSettings {
+  bool sync_enabled = 1;
+  bool skills = 2;
+  bool instructions = 3;
+  bool mcp = 4;
+  bool settings = 5;
+  SyncSkillsMode skills_mode = 6;
+  // Keyed by machine id.
+  map<string, MachineSyncOverride> machines = 7;
+}
+
 message TodoAutomationSettings {
   TodoSyncMode on_pr_merged = 1;
   TodoSyncMode on_todo_closed_archive_sessions = 2;
@@ -139,6 +175,10 @@ message Settings {
   SecuritySettings security = 11;       // SEC-6
   AgentSettings agents = 12;            // D199
   TodoAutomationSettings todo_automation = 13;
+  SyncSettings sync = 14;               // FUSEFS Settings › Sync
+  // FUSEFS: humatad2 mounts the cross-machine view at HUMATA_FUSE_ROOT.
+  // Local session folders stay on native disk either way.
+  bool fusefs_enabled = 15;
 }
 
 // D199, kept for older callers (D782): `permissions_in_agent` reads true
@@ -178,6 +218,9 @@ message UpdateSettingsRequest {
   SecuritySettings security = 11;
   AgentSettings agents = 12;
   TodoAutomationSettings todo_automation = 13;
+  // Replaces the whole Sync section when present.
+  SyncSettings sync = 14;
+  optional bool fusefs_enabled = 15;
 }
 
 message ChannelSettings {
