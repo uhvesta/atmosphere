@@ -1,101 +1,184 @@
-# Gemini handoff: running the Humata 2 DAG as main
+# Handoff to Gemini: 2026-11-20 ~13:00
 
-Owner, 2026-11-19: "Delegate as much of the rest of the work as possible to gemini." This file lets a Gemini main agent (`/dag-walk-gemini resume`, gemini-4-neon) run the loop end to end: managers, gates, commits, releases. Lane managers read `roles/GEMINI.md`, not this file.
+Claude Code main hands Humata 2 to a Gemini main agent running
+`/dag-walk-gemini resume`.
 
-## Read in this order
-1. This file.
-2. `WORKLOG.md` › Resume here, Roster, Claims (the newest lines are at the end of the Event log).
-3. `RESUME.md` › Release plan: the order of work and releases.
-4. `CONFIG.md`: build, test, commit, push and never-touch rules.
-5. `roles/MAIN.md`; `roles/GEMINI.md` is the brief every lane manager gets.
+- Read this file first, then `WORKLOG.md` › Resume here, then `CONFIG.md`.
+- The goal stays the same: **ship every release listed below**, install each one, and log it.
+- Keep `WORKLOG.md` › Resume here and each milestone's Lane section current as you go. They are the only memory a later session gets.
+- The 2026-11-19 handoff that used to be in this file is in git history.
 
-## State at handoff (2026-11-19 ~16:10)
-- **Released and installed:** humata2-v0.3.9, built from 3c4c7346 (INBOXHOOKS + BOARDSIMPLE + DIFFUI round 1). Pushed to origin/main.
-- **Uncommitted in the tree, not yet built green:**
-  - DIFFUI round 2 (D868 "N repos" header, drawn-order stepping, collapsed Fork dialog D873, missing-agent rows).
-  - INBOXHOOKS batch 3 (session_move, inbox_explain, required reason, Home stopped group, global access page, Bulk removed).
-  - BOARDSIMPLE board removal (D874: Route::Board, the features/board crate and the kanban page are gone; crates repinned).
-  - MASSDELETE (D875 design, D876 daemon/CLI/access). All 16 seams are applied. T1–T9, T11 and T12 are written but not built; T10 (select mode) is partly written; T13 (frames) hasn't started. `milestones/MASSDELETE.md` › Lane › "Handoff state" has the details.
-- **The tree does not compile yet.** MASSDELETE's UI and palette code refer to `state.mass_delete`, `AppAction::MassDelete` and two `commands.rs` arms that don't exist yet. **Do this first:** apply the `features/app` wiring listed in MASSDELETE.md › Handoff state:
-  - the features/mass_delete dependency in Cargo.toml and BUILD, plus the root members;
-  - the AppState field and the AppAction variant;
-  - the `App.mass_delete` constructor, the reduce arm and the toast arm;
-  - `SelectSessions => EnterEmpty(surface)` and `DeleteAllSessions => OpenAll`;
-  - `dialog_holds_keys`, Escape routing, `Show(Listing)` and `SurfaceChanged`.
+## Where the tree is
 
-  Then repin and build the targets that section lists. These gpui names are unchecked: `IconName::Trash`, `ListChecks`, `Role::Button`, `border_1`.
-- **Gemini lanes started via agy (brief `roles/GEMINI.md`):**
-  - TODOLIVE: BOARDSIMPLE leftovers.
-  - INBOXFWD: the INBOXHOOKS AskWhy host forwarding, IN-8 and the file-read preview.
-  - REVIEWER: D858 ShellTab and OpenAgentTab.
-  - DIFFVIEW: DV-10–DV-19 plus the GOLDENFIX follow-ups.
-  - PROGRESS: the remaining tasks.
+- **Last release:** 0.9.0, at 5e86d620. It is installed.
+- **Last push:** `0385636a` on `main` and `atmosphere-khodr`. It holds all the 0.10.x lane work so far; some lanes are still open. The owner said to push existing work and put fixes on top: never rewrite or hold back commits.
+- **Uncommitted since `0385636a`:** these are the FUSEFSWIRE shell fix (D916). Commit them once its tests pass.
+  - `daemon/svc_stop_restart/src/{restart.rs,ports.rs}`
+  - `daemon/humatad/src/wire_stop_restart.rs`
+  - `DECISIONS.md` (D916)
+  - `milestones/FUSEFSWIRE.md`
+  - `WORKLOG.md`
+- **Never commit:**
+  - `apps/humata/proto/plugin/BUILD.bazel`
+  - `apps/humata2/desktop/tests/__snapshots__/native/away-left-out-before.png`
+  - `.claude/`, `.signals/` and `tools/skills/dag-walk-gemini/`
 
-  - **PROGRESS reported (16:20):** T0–T10 are in the tree with no seams left; it fixed audit bugs. Report: `lane-reports/gemini-progress-2026-11-19.md` (targets list at the end). Tick T0–T5 and T8–T10 once the gate passes.
-  - agy said `--mode auto` isn't available on this account, so the lanes ran in default mode. PROGRESS still edited files. If a lane log ends with no report, re-run it.
+  During a release, set these aside with a SHA-tagged stash (`git stash push -m <tag> -- <paths>`), then apply them back by SHA.
+- **A test run was in flight at handoff:** the D916 targets, then T13. Check the newest `.bq/logs/*.log` and `bazel-testlogs/apps/humata2/desktop/live_flows_fuse_vm_test/test.log` before rerunning.
+- **Agents:** none are running. Every lane needs a fresh manager pointed at its milestone file. The Claude agent IDs in older notes don't carry over.
 
-  - **DIFFVIEW reported (16:35):** report in `lane-reports/gemini-diffview-2026-11-19.md`. Apply its seam (the native pr_session.rs huge-file test). Re-record `diff-stress-pr-huge-file` (the PR file is now a bounded virtual box) and have it judged: should the box be borderless like frame 68, or carry a 1 px hairline?
+## Releases still owed, in order
 
-  - **REVIEWER reported (16:45):** D858 ShellTab plus OpenAgentTab. Report in `lane-reports/gemini-reviewer-2026-11-19.md`. Its seams S1… (starting with the sessions.proto `ShellTab` message and the `Session` field) go in after the MASSDELETE wiring builds. Still open: a run against a real Copilot agent.
+Each milestone's file is `milestones/<ID>.md`. Its top half has the outcome and exit criterion; its Lane section says where work stopped and lists the exact targets.
 
-  - **TODOLIVE reported (16:50):** report in `lane-reports/gemini-todolive-2026-11-19.md`. Seams 1–3 are required for `ui/workspace/src/todo.rs` to compile; seam 1 is `TodoAction::StartSession` in features/todo. Seam 4 is optional. To judge: should `overlay_new_session.rs` be redrawn to frame b4-3 (with `31-new-session` re-recorded)? Should `StartNewForItem` prefill `first_message` the way `fill_do_next` does?
+### 0.10.0 (a minor release: full suite, launch check and slow tier)
 
-  - **INBOXFWD reported (17:00):** report in `lane-reports/gemini-inboxfwd-2026-11-19.md`. Seams:
-    - seam 1 (`wire_board.rs`) is required, or humatad won't compile;
-    - seam 2 is the IN-8 count end to end (inbox.proto, guard, wire_inbox, svc_inbox, clients, inbox_page);
-    - seam 3 is optional (forwarding `ReadFileRequest.reason`);
-    - seam 4 is a DECISIONS note.
+**FUSEFSWIRE: the Linux FUSE mount**
+- What's done:
+  - The real mount is in: `libs/fusefs/linux/src/{mount,wire}.rs` and `daemon/fusefs_adapter/src/linux_mount.rs`.
+  - The Lima T13 run went 1/6: the mount came up, but sessions had no `HUMATA_FUSE_ROOT`. The cause was that shells weren't given the variable. That is now fixed (D916, uncommitted).
+- Next:
+  1. Run `//apps/humata2/daemon/svc_stop_restart:svc_stop_restart_unit_test`, `//apps/humata2/daemon/humatad:{humatad2_unit_test,files_without_mount_test,fusefs_restart_test,humatad2}`.
+  2. Run T13:
+     ```
+     tools/bq/bq //apps/humata2/desktop:live_flows_fuse_vm_test -- --strategy=TestRunner=local --test_env=FUSE_VM_SSH_CONFIG="$HOME/.lima/h2-fuse-r1/ssh.config" --test_env=TERMINAL_LAB_SSH_CONFIG="$HOME/.lima/h2-terminal-c1/ssh.config" --test_output=errors
+     ```
+     Look for the result in `bazel-testlogs/apps/humata2/desktop/live_flows_fuse_vm_test/test.log`.
+  3. If T13 passes 6/6, run T12: `presubmit.sh --with-slow`, then `--full`, then `bq --build //apps/humata2/app:app`.
+- Run the Linux cross-build **alone**, because bq merges requests and a merged run marks the Mac targets incompatible:
+  `tools/bq/bq --build --config=linux_arm64 //apps/humata2/daemon/fusefs_adapter:humata2_fusefs //libs/fusefs/linux:linux`
+- Known follow-ups, not blockers:
+  - Files made in the mount live only in the helper's memory.
+  - The serve loop is single-threaded.
 
-    Then re-judge 206 and 209.
-  - **All five lanes have reported.** The next main step: wire MASSDELETE's features/app; apply the required seams (TODOLIVE 1–3, INBOXFWD 1–2, REVIEWER S1–S7, the DIFFVIEW test); run one batched fast gate.
+**SCREENPARSE**
+- Batch 1 is written but not yet built. Build it, then route the failures to its manager.
+- There is an open question in its Lane: a Codex probe saw a new folder under `~/.codex/tmp/arg0-macos/`.
+  - Never touch `~/.codex`.
+  - Run probes only with scratch HOMEs.
+  - Ask Fable whether the probe is safe to rerun.
 
-  Each reports files, seam lines, targets and goldens. Save every report under `lane-reports/`. Their logs were in a session scratchpad, which doesn't survive. If a lane's report is lost, read its milestone's Lane section and re-run it.
-- **Not yet given out (one Gemini lane after the wiring builds):**
-  - the rest of MASSDELETE T10: sidebar select mode in `ui/workspace/src/sidebar.rs`, keys, and the row context-menu item;
-  - T13: frames copied exactly from `mockups/massdelete/`, with FRAMES.md;
-  - the gaps: no MCP list_changed after a rule change, agents can't pass `delete_unpushed_work`, remote `forks_staying` is lost after a re-plan, and the box-id assumption in `delete_sessions_remote` is unchecked.
+**TODO2WIRE**
+- Batches 3 and 4 are written but not yet built: svc_board automation, PR watcher and session events.
+- After they build, tick T2 and T5–T8 in `TODO2.md`.
 
-## Next steps (the loop)
-1. **Gate:**
-   - When lanes report, apply their seam lines.
-   - Then run one batched build and test, in the background, at first in the fast loop: `tools/bq/bq --fast --jobs=6 <targets>`. In zsh, run it through `bash -c` so a list of targets word-splits.
-   - Split the errors per lane by file claims, and send each lane's errors back to a Gemini fixer lane with the same claims.
-2. **Lint:** before any commit, run the same targets without `--fast` (the default is lint).
-3. **Goldens:**
-   - Record them with `PATH=$PWD/.tools/bin:$PATH bazel run --jobs=6 //apps/humata2/desktop:<native|design|panels>_test_record`, then run `look_test`.
-   - Every changed golden is judged by a gemini-4-neon-high judge against the signed-off frames and mockups. Copy those frames fully: a golden that drifts from a signed-off frame is rejected, not re-recorded.
-   - Frames waiting to be judged:
-     - INBOXHOOKS 206 and 209 (re-judge);
-     - native 26 and nearby frames (footer gap change);
-     - fork-dialog, plus the new fork-dialog-expanded;
-     - the two-repo diff families (D868);
-     - design 122;
-     - the 34 native `.view.txt` that still say `board_item_move` (now `todo_close`);
-     - the To-do desk hint.
-   - Also: the MASSDELETE frames, and whether design frames 01, 02, 11 and 84–86 should be redrawn to match D868.
-   - A Claude main that resumes later may send any of these to Fable 5.2 to re-judge. Mark each Gemini verdict "judged by Gemini" in DECISIONS so that main can find them.
-4. **Commit:**
-   - Stage by pathspec only (`git add -- <paths>`), then check `git diff --cached --stat`. Never `git commit -a`, never `git add -A`.
-   - Never commit `tools/skills/dag-walk-gemini/`, `.claude/`, `.signals/`, `apps/humata/proto/plugin/BUILD.bazel` or `apps/humata2/desktop/tests/__snapshots__/native/away-left-out-before.png`. These are the owner's own edits; leave them in the tree.
-   - **No AI attribution in commit messages**: no Co-authored-by, no session or "Generated with" trailers.
-   - Subject style: `Humata 2 (minion X + Y): <user-visible outcome sentence> (Dnnn–Dmmm)`.
-   - Also update `GAPS_REVIEW.md` and `OVERVIEW.md` as the lanes did.
-5. **Push:** `GH_TOKEN=$(gh auth token --user uhvesta) git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -q origin HEAD:main`. The token lives only in the environment: never write it to a file. Never change the global git config or the gh account.
-6. **Release** (next patch is 0.3.10; then follow `RESUME.md`'s order up to 0.4.0 full suite, 0.4.1 AGY, 0.5.0 merged fast-mode-default release per D887, 0.5.1 NOTIFY last):
-   - `release.sh` needs a clean tracked tree. Set the two foreign files aside with a tagged stash: `git stash push -m relNNN-foreign -- <the two files>`.
-   - Record the SHA from `git stash list --format='%H %gs'`.
-   - Run `export GH_TOKEN=$(gh auth token --user uhvesta); apps/humata2/tools/release/release.sh <ver>`.
-   - Then `git stash apply <sha>`, and drop that entry by its tag. Never a bare `git stash` or `pop`: other sessions share the stash.
-   - Install with `sh apps/humata2/tools/release/install.sh humata2-v<ver>`; it installs to /Applications. Never open the app.
-7. Update `WORKLOG.md` (Event log line per gate, commit, release) and each milestone's status in `DAG.md`.
+**BROWSER**
+- A1 compiles. A2 (`browser_copilot` fixes) and B1 (the `daemon/mcp` browser operations) are written but not yet built.
+- A one-line seam in `api/proto/BUILD.bazel` adds `browser.proto` to `inbox_proto`. Check it.
+- The remote half (D891) comes after local works.
 
-## Rules (the owner's, not all in AGENTS.md)
-- **Builds:** Bazel only, via `tools/bq/bq`. Never cargo. Never `bazel clean` or `shutdown`. Repin with `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
-- **Don't ask the owner for approvals or design picks:** a gemini-4-neon-high judge decides them, and they're logged as Provisional decisions.
-- **Fix every failure:** never skip a red test or lint as pre-existing.
-- **Terminals:** never end a running terminal, holder or the owner's sessions. Never kill the terminal host pid 41874. Never replace launchd `app.humata2.humatad2`. Don't reboot or resize the `h2-terminal-c1` VM.
-- **Headless only:** no windows over the screen.
-- **Deleting:** never delete images, goldens, uncommitted code or personal documents. The orphan board goldens 21–24 stay until the owner decides.
-- **Config:** never modify `~/.claude`, `~/.codex` or `~/.copilot`.
-- **Outside projects:** never name or link them in code, docs or commits.
-- **NOTIFY** is literally the last milestone.
+**Then, before the release:**
+1. Run the full gate.
+2. Check `desktop/tests/__snapshots__/native/providers-e-remove-blocked.view.txt`. Commit `0385636a` added a `Tab "Sync"` line to it, from Settings › Sync. Have Fable confirm it is intended, rather than re-recording the snapshot just to make the test pass.
+3. Commit each lane's paths.
+4. Release, install and log.
+
+### 0.10.1
+
+- **AGENTOFF:** an agent that is switched off is never picked as a default.
+  - Its tests are green: `features/app:agent_off_test`, `desk`, `channel_desk`, `pr_review`, `humatad2_unit` and the clients tests.
+  - Two hunks remain:
+    - B15, the Settings row. It is at scratchpad `agentoff-settings-row.patch`, which may be gone; regenerate it from the AGENTOFF.md Lane. Apply it once `ui/settings` is free.
+    - The `serve.rs` re-tell hunk, written exactly in AGENTOFF.md › Lane › Follow-ups. Apply it once BROWSER frees `serve.rs`.
+- **D910:** the Desk starts or forks sessions in any channel, with the owner's approval. Done and green.
+- **PROVIDERCLI (D906):** not started.
+
+### 0.10.2
+
+- **NOTIFY2 (D912–D914):** To-do asks stay out of the Inbox, notifications ask for permission when switched on, and there are two short sounds. Built.
+  - Still to do:
+    - the Settings "Play a sound" row, greyed while notifications are off;
+    - the "Why?" on a To-do item, in `features/todo` and `ui/workspace/src/todo.rs` (wait for TODO2WIRE to free them);
+    - the live check on the installed app.
+  - Batch 2 touched `features/app/src/home.rs`, which was outside NOTIFY2's claims. Check that change.
+- **NEWCHCLOSE, MACHINEARCHIVE and HIGHLIGHT:** each has its own milestone file.
+
+### Later releases
+
+- **0.10.3, SMFIX-P0 and SMFIX-P1:** from `STATE_MACHINE_BUGS.md`. It also includes the P2 change: an MCP oneOf error names the closest matching shape.
+- **0.10.4, STACKGH:** includes outcome 5. In GitHub's native stacked-PR mode it writes no stack or history comments, since GitHub's own data covers that. A PR is a stack of commits, and a stacked PR is a stack of those.
+- **0.10.5, FSKITSERVE:** the macOS FSKit mount (D911).
+- **0.11.0, WEBTODO:** last of all.
+
+## How to work
+
+### Builds
+
+- Run every build through `bash -c 'export PATH=$PWD/.tools/bin:$PATH; tools/bq/bq [--build] --jobs=6 <targets>'`, from the repo root.
+- In zsh, quote targets like `"${H}:target"`.
+- Logs are in `.bq/logs/`.
+- Never run cargo, `bazel clean` or `bazel shutdown`.
+- Repin with `CARGO_BAZEL_REPIN=true bazel mod tidy`.
+- Humatad integration test targets are named `<file stem>_test`.
+
+### Release
+
+1. Stash the never-commit files by SHA.
+2. Run `GH_TOKEN=$(gh auth token --user uhvesta) apps/humata2/tools/release/release.sh <ver>`.
+3. Run `sh apps/humata2/tools/release/install.sh humata2-v<ver>`.
+4. Push to both branches:
+   ```
+   git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -q origin HEAD:main
+   git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -q origin HEAD:atmosphere-khodr
+   ```
+5. Log the release in WORKLOG.
+
+### Tests (the owner's emphasis)
+
+Every test must check an outcome a user or caller would notice: given these inputs, this result or this error. Tests here have often been slow or tied to the implementation in the past; don't repeat that.
+
+**What a test checks**
+- Write the test first, fail it for the right reason, then make it pass.
+- Check behavior, not wording. No asserts on exact message text, call order, or that one function calls another. A test should break when behavior breaks, not when code is refactored.
+- One behavior per test, named as a sentence: `a_shell_in_a_session_gets_the_mount_root`.
+- No tests that restate the code, check only that something doesn't panic, or snapshot whole structs to "lock in" output.
+- Don't re-record goldens just to make a test pass; Fable judges each image change against the signed-off frames.
+- A test that fails often for reasons unrelated to the code under test is a bug to fix, not to rerun or mark slow.
+
+**Keeping tests fast**
+- **Use the cheapest test that proves the behavior.** Go up a level only when the behavior needs it:
+  1. an in-process `rust_test` on the leaf crate;
+  2. a reducer test (TestStore);
+  3. a scoped daemon profile;
+  4. a full daemon;
+  5. a live or VM test.
+- **Never wait with a fixed sleep, or a poll of 20 ms or more.** Wait on an event or channel, or poll every 2 ms against a generous deadline.
+- **Use the narrowest daemon test profile** (`humatad2_test_machines`, `_power_cut`, `_review_remote`, `_away_board`). Use `:humatad2` only for true full-stack tests.
+- **Share the harness:** `use humatad_test_common as common;`, never `mod common;`.
+- **Fake agent scripts** set `stty -icanon 2>/dev/null`.
+- **Multi-machine rigs** pass short retry knobs (`HUMATA2_PEER_RETRY_MS=20`).
+- **A new test file in `daemon/humatad/tests/`** builds a whole binary, so first look for an existing file the case fits in.
+- **Watch the timings.** After each gate, compare test times in the bq log. A test slower than about 10 s needs a reason in its Lane section, or a faster version.
+- **Slow tier:** only true power-cut, VM and live-agent tests go in `tools/tests/slow.txt`, and each needs a note on why.
+
+### Lanes
+
+- Managers plan and review. Workers write code and never run git or bazel.
+- Only main builds, tests and commits. Stage explicit paths only: never `add -A`, `commit -a` or a bare stash.
+- Each milestone file's Lane section holds the lane's claims; respect them. Shared files take hunks only, and main logs every hand-over.
+
+### Decisions
+
+- Never ask the owner. Fable 5.2 decides anything you'd ask them: design, goldens, approvals, second opinions.
+- Log every decision in `DECISIONS.md`. The next free number is **D917**.
+- UI lanes copy Fable's signed-off frames in `milestones/mockups/` exactly.
+
+### Hard rules
+
+- Never modify `~/.claude`, `~/.codex`, `~/.copilot` or `~/.gemini`. Tokens go in env only.
+- Never change the global git config or the gh account.
+- Never end or kill sessions or holders.
+- Never kill pid 41874, and never replace launchd `app.humata2.humatad2`.
+- Don't reboot, resize or stop the `h2-terminal-c1` VM. Don't reboot `h2-fuse-r1`.
+- Headless only.
+- Never name outside projects in code, docs or commits.
+- Fix every failing test or lint; never skip one as pre-existing.
+- Never delete images, uncommitted code or personal documents.
+- Approvals already given: copying agent logins into test VMs and isolated homes, SSH to the test VMs, and uploading releases.
+
+### Notes for the owner
+
+They review your work when they're back. Keep notes they can act on:
+- one WORKLOG Event log line per gate, commit and release;
+- each lane's Lane section is kept current;
+- reports name milestones by their outcome sentence, not by ID.

@@ -6,6 +6,8 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **2026-11-20 ~13:00: Claude Code main hands over to a Gemini main agent. Read `GEMINI_HANDOFF.md` first.** It holds the state at `0385636a` plus the uncommitted D916 shell fix, every release still owed (0.10.0 → 0.11.0), the next steps for each lane, how to test (outcome tests, fast tiers: the owner's emphasis) and the hard rules. No agents are running; each lane needs a fresh manager pointed at its milestone file.
+
 - **2026-11-20 ~09:45 (Claude Code main): current state. Read this first; a /dag-walk or /dag-walk-gemini resume starts here.**
   - **Released and installed:** 0.9.0 (5e86d620 is the last commit). Everything below is **uncommitted** lane work in the tree; don't stash, revert or `add -A` it.
   - **Open lanes, all targeting 0.10.0** (full suite + launch check):
@@ -525,3 +527,4 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
 - 2026-11-20 ~11:55 main: T13 root cause: Linux FUSE mount never written (PosixMountBackend runs mount -t linux). FUSEFSWIRE now writes fusermount3 + wire codec + serve loop (libs/fusefs/linux) + LinuxFuseBackend. macOS FSKit serve split to new FSKITSERVE (0.10.5, before WEBTODO); macOS uses the files-tools fallback until then (reversible D).
 - 2026-11-20 ~12:10 main: STACKGH outcome 5 added (owner): native GitHub stack mode writes no comments; PR = stack of commits, stacked PR = stack of PRs; comments only as fallback. NOTIFY2 batch 2 landed unbuilt (gpui sound+permission patches); repinned crates; its D911–D913 renumbered D912–D914 (FSKITSERVE took D911). Testing b6txftenl.
 - 2026-11-20 ~12:25 main: AGENTOFF batch 1 landed unbuilt (B1–B18 in milestones/AGENTOFF.md; D915). Claims: see AGENTOFF.md Lane. B15 settings-row hunk at scratchpad/agentoff-settings-row.patch, apply when ui/settings frees. Gaps 1–3 sent back. Testing b9n5r396j. FUSE libs + linux_test PASS; Mac builds rerun bhb7irhof (bq merged a --config=linux_arm64 request with Mac targets → incompatible; run cross-builds alone).
+- 2026-11-20 ~12:45 main: owner asked commit+push: 0385636a pushed to main and atmosphere-khodr (lanes still open; fixes on top). Running: agent_off rerun + Lima T13 (bm5wyiuiw).
