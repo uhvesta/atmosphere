@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fusefs_host::{
-    CapabilityRouter, ControlClient, ControlHandler, ControlResponse, ControlServer, MountConfig,
-    MountState, MountSupervisor, PosixMountBackend,
+    CapabilityRouter, ControlClient, ControlHandler, ControlResponse, ControlServer,
+    ExtensionCallback, MountBackend, MountConfig, MountState, MountSupervisor, PosixMountBackend,
 };
-use humata2_fusefs_adapter::layout::BuildCacheStub;
+use humata2_fusefs_adapter::layout::{
+    BuildCacheStub, DaemonLinkState, HostUpdate, HumataTopology, HumataVolumeHost,
+};
 use humata2_fusefs_adapter::materialize::{
     DEFAULT_CONFIRMATION_THRESHOLD_BYTES, FsMountMode, FsStatusSummary, MaterializePlanner,
     format_bytes,
@@ -39,13 +41,15 @@ impl From<CliMode> for FsMountMode {
     about = "Humata 2 FUSEFS virtual filesystem daemon & CLI"
 )]
 struct Cli {
-    /// Unix control socket path.
-    #[arg(long, default_value = "/tmp/humata2-fusefs.sock", global = true)]
-    socket: PathBuf,
+    /// Unix control socket path (required by `serve` and `status`). There is
+    /// no default: a path in a shared folder like /tmp would let other users
+    /// reach the mount. humatad2 passes a path in its private state folder.
+    #[arg(long, global = true)]
+    socket: Option<PathBuf>,
 
-    /// Mountpoint directory for the Humata virtual tree.
-    #[arg(long, default_value = "/tmp/humata2-mnt", global = true)]
-    mountpoint: PathBuf,
+    /// Mountpoint directory for the Humata virtual tree (required by `serve`).
+    #[arg(long, global = true)]
+    mountpoint: Option<PathBuf>,
 
     /// Filesystem backend mode (`fskit`, `linux`, or `degraded`).
     #[arg(long, value_enum, default_value_t = default_cli_mode(), global = true)]
@@ -111,8 +115,24 @@ fn main() -> ExitCode {
     let mode: FsMountMode = cli.mode.into();
 
     match cli.command {
-        Command::Serve { once } => run_serve(cli.socket, cli.mountpoint, mode, once),
-        Command::Status { json } => run_status(cli.socket, cli.mountpoint, mode, json),
+        Command::Serve { once } => {
+            let (Some(socket), Some(mountpoint)) = (cli.socket, cli.mountpoint) else {
+                eprintln!(
+                    "humata2_fusefs serve needs --socket and --mountpoint; pass a socket in a folder only you can open, and the folder to mount"
+                );
+                return ExitCode::from(2);
+            };
+            run_serve(socket, mountpoint, mode, once)
+        }
+        Command::Status { json } => {
+            let Some(socket) = cli.socket else {
+                eprintln!(
+                    "humata2_fusefs status needs --socket; pass the socket humatad2 started the helper with (<state>/fusefs.sock)"
+                );
+                return ExitCode::from(2);
+            };
+            run_status(socket, cli.mountpoint.unwrap_or_default(), mode, json)
+        }
         Command::Materialize {
             path,
             bytes,
@@ -127,10 +147,30 @@ fn main() -> ExitCode {
 fn run_serve(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, once: bool) -> ExitCode {
     let resource_url = format!("fusefs://{mode}/humata2");
     let config = MountConfig::new(&mountpoint, resource_url);
-    let backend = Arc::new(PosixMountBackend::new(mode.to_string()));
+    let host = match HumataVolumeHost::new(
+        std::process::id(),
+        HumataTopology::default(),
+        None,
+        None,
+        None,
+    ) {
+        Ok(host) => Arc::new(host),
+        Err(err) => {
+            eprintln!("failed to build the Humata volume: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // No daemon has connected yet; humatad2 pushes its link state on connect.
+    host.set_daemon_link(DaemonLinkState::Disconnected {
+        last_daemon_pid: None,
+        epoch: 0,
+    });
+    let backend = mount_backend(mode, &host);
     let supervisor = Arc::new(MountSupervisor::new(config, backend));
     let router = Arc::new(CapabilityRouter::new());
-    let handler = Arc::new(ControlHandler::new(supervisor, router));
+    let handler = Arc::new(
+        ControlHandler::new(supervisor, router).with_extension(extension_callback(host)),
+    );
 
     let server = match ControlServer::bind(&socket, handler) {
         Ok(s) => s,
@@ -155,11 +195,42 @@ fn run_serve(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, once: bool
         return ExitCode::SUCCESS;
     }
 
+    // Connections are served on their own threads, so a pushed update never
+    // waits behind another client. This thread has nothing left to do.
+    let _handle = server.spawn();
     loop {
-        if let Err(err) = server.serve_one() {
-            eprintln!("control connection error: {err}");
-        }
+        std::thread::park();
     }
+}
+
+/// On Linux the helper mounts and serves the volume itself through
+/// `fusermount3`; everywhere else the system mount tool does it.
+#[cfg(target_os = "linux")]
+fn mount_backend(mode: FsMountMode, host: &Arc<HumataVolumeHost>) -> Arc<dyn MountBackend> {
+    if mode == FsMountMode::Linux {
+        return Arc::new(humata2_fusefs_adapter::linux_mount::LinuxFuseBackend::new(
+            host.clone(),
+        ));
+    }
+    Arc::new(PosixMountBackend::new(mode.to_string()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mount_backend(mode: FsMountMode, _host: &Arc<HumataVolumeHost>) -> Arc<dyn MountBackend> {
+    Arc::new(PosixMountBackend::new(mode.to_string()))
+}
+
+/// Decodes the updates humatad2 pushes and applies them to the volume host.
+fn extension_callback(host: Arc<HumataVolumeHost>) -> ExtensionCallback {
+    Arc::new(move |body: serde_json::Value| {
+        let update: HostUpdate = serde_json::from_value(body).map_err(|err| {
+            format!("unrecognised update from humatad2 (is it the same release as this helper?): {err}")
+        })?;
+        update
+            .apply(&host)
+            .map_err(|err| format!("couldn't apply the update to the Humata volume: {err}"))?;
+        Ok(serde_json::json!({ "applied": true }))
+    })
 }
 
 fn run_status(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, json: bool) -> ExitCode {

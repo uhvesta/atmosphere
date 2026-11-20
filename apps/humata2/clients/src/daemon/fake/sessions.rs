@@ -18,13 +18,24 @@ pub(super) fn load(daemon: &FakeDaemon) -> Reply<Workspace> {
 }
 
 pub(super) fn events(daemon: &FakeDaemon) -> Reply<Events> {
-    daemon.reply(None, "events".to_owned(), |inner| {
+    let gate = daemon.inner().subscribe_gate.take();
+    let reply = daemon.reply(None, "events".to_owned(), |inner| {
         let (events, receiver) = mpsc::channel(EVENT_QUEUE);
+        if inner.resync_on_subscribe {
+            let _ = events.try_send(Ok(Event::Resync));
+        }
         inner.subscribers.push(Subscriber {
             events,
             behind: false,
         });
         Ok(receiver)
+    });
+    Box::pin(async move {
+        if let Some(gate) = gate {
+            // A dropped sender is a release too.
+            let _ = gate.await;
+        }
+        reply.await
     })
 }
 

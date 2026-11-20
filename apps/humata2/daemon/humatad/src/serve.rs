@@ -126,6 +126,14 @@ pub struct ServeArgs {
     /// The humata2_holder binary. Default: the one beside humatad2.
     #[arg(long)]
     holder: Option<PathBuf>,
+    /// The humata2_fusefs helper that mounts the Humata tree when Settings
+    /// turns FUSEFS on. Default: the one beside humatad2.
+    #[arg(long)]
+    fusefs: Option<PathBuf>,
+    /// Where the FUSEFS tree is mounted (HUMATA_FUSE_ROOT). Default:
+    /// <state>/mnt.
+    #[arg(long)]
+    fusefs_mount: Option<PathBuf>,
     /// The humata binary the agents' turn hooks run (D169). Default: the
     /// one beside humatad2.
     #[arg(long)]
@@ -492,6 +500,28 @@ pub async fn run(
         .unwrap_or_else(|_| beside_this_binary("humatad2"));
     let humata_tools = crate::session_service::install_mcp_configs(&state, &humatad, &socket)
         .map_err(|source| DaemonError::McpConfigs { source })?;
+    // FUSEFSWIRE (A3): the sync settings and the sessions composed from them.
+    // Made before any tab is brought back, so a relaunched agent is composed
+    // too. The FUSE root is the supervisor's mount root, given just below.
+    let fuse_mount = args.fusefs_mount.clone().unwrap_or_else(|| state.join("mnt"));
+    // True only while the tree is mounted; the supervisor sets it and a
+    // launched agent gets `HUMATA_FUSE_ROOT` only while it is true.
+    let fuse_mounted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let config_sync = Arc::new(crate::config_sync::ConfigSync::new(
+        &state,
+        layout.root().to_path_buf(),
+        std::env::var_os("HOME").map_or_else(|| root.clone(), PathBuf::from),
+        machine.clone(),
+        fuse_mount,
+    ));
+    // D895: an agent tab launched or relaunched from now on runs in its own
+    // composed config home; one already running is never touched.
+    crate::wire_stop_restart::use_compose_env(Arc::new(crate::wire_stop_restart::ComposeEnv::new(
+        config_sync.clone(),
+        &humatad,
+        &socket,
+        fuse_mounted.clone(),
+    )));
     // D790: Humata's own skills go into the skills folders of the agents set
     // up in the home, on the host and on a machine alike. A daemon given a
     // state folder of its own (a test's) and no --skills-home has no home
@@ -525,6 +555,11 @@ pub async fn run(
         Some(home) => agents.with_settings(crate::agent_switches::host_path(home)),
         None => agents,
     };
+    // A session's launch records its conversation in the config home composed
+    // for it, the one its agent's home variable points at.
+    let agents = agents
+        .with_session_homes(crate::wire_stop_restart::launch_home)
+        .with_existing_session_homes(crate::config_sync::existing_home_of);
     // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
     // D782: a write to agents.toml reaches every linked machine, once the
     // machines are served (below).
@@ -926,6 +961,8 @@ pub async fn run(
     let session_bin = channel_bin.clone();
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
+    // TODO2WIRE: the board's session control, filled once `session_svc` exists.
+    let board_sessions = Arc::new(std::sync::OnceLock::new());
     let board_plugin = plugins.board.map(|plugin| {
         plugin.build(crate::plugins::BoardContext {
             guard: guard.clone(),
@@ -937,6 +974,7 @@ pub async fn run(
             // REPOS (RL-12, D568): a machine's agents search the host's library.
             repos: Some(repos.clone()),
             forwarder: Some(uplinks.forwarder()),
+            sessions: board_sessions.clone(),
         })
     });
     // REPOS (RL-12, D568): on a machine, its RepoService sends up the Uplink.
@@ -1007,6 +1045,7 @@ pub async fn run(
     // REPOS (CH-21): AddRepoToSession adds a repo the channel lacks.
     session_svc.use_channels(channel_svc.clone());
     let _ = remote_terminal_sessions.set(session_svc.clone());
+    let _ = board_sessions.set(session_svc.clone());
     // PR-17: Archive names a review's unsubmitted drafts.
     // D287: a submit cut short is settled against GitHub before anyone
     // posts again. A stopped machine asks GitHub nothing; its records stay
@@ -1026,6 +1065,24 @@ pub async fn run(
         // MV-13, D209: a moved or rebuilt conversation is mirrored once.
         session_svc.use_rebase(Arc::new(move |session, machine, skip| rebase.rebase_source(session, machine, skip)));
     }
+    // FUSEFSWIRE (A2, D895): the helper that mounts the Humata tree. Off
+    // unless Settings turned it on: while off, no helper is started.
+    let fusefs = crate::fusefs::FuseFsSupervisor::new(
+        args.fusefs.unwrap_or_else(|| beside_this_binary("humata2_fusefs")),
+        &state,
+        args.fusefs_mount.unwrap_or_else(|| state.join("mnt")),
+        fuse_mounted,
+    );
+    {
+        let store = store.clone();
+        let machine = machine.clone();
+        let machine_root = layout.root().to_path_buf();
+        fusefs.use_topology(Arc::new(move || {
+            crate::fusefs::topology_from_store(&store, &machine, &machine_root)
+        }));
+    }
+    fusefs.follow(&feed);
+    fusefs.set_enabled(crate::config_sync::saved_fusefs_enabled(&state));
     let settings = crate::settings_service::SettingsSvc::new(
         guard.clone(),
         store.clone(),
@@ -1035,7 +1092,22 @@ pub async fn run(
         settings_agents,
         args.default_agent.clone(),
     )
-    .with_agents_changed(agents_changed.clone());
+    .with_agents_changed(agents_changed.clone())
+    .with_config_sync(config_sync.clone())
+    .with_fusefs_switch({
+        let fusefs = fusefs.clone();
+        Arc::new(move |on| fusefs.set_enabled(on))
+    })
+    .with_fusefs_status({
+        let fusefs = fusefs.clone();
+        Arc::new(move || fusefs.mount_status_wire())
+    });
+    // D908: the mount moves on its own (Starting to Mounted, a helper that
+    // died); the app hears it as a Settings event.
+    fusefs.on_status_change({
+        let (settings, runtime) = (settings.clone(), tokio::runtime::Handle::current());
+        Arc::new(move || settings.tell_in_background(runtime.clone()))
+    });
     // The default branch prefix is the host's gh login; a start never waits for it (D196).
     settings.follow_gh_login();
     // A machine's own storage and Humata folder, for the host's relayed
@@ -1875,7 +1947,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join(MACHINE_TOOLS);
         std::fs::create_dir_all(&tools).unwrap();
-        let entries: Vec<String> = ["humatad2", "humata2_holder", "humata", "stack"]
+        let entries: Vec<String> = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"]
             .iter()
             .map(|name| format!(r#""{name}": {{"path": "linux-x86_64/{name}", "sha256": "{}"}}"#, "0".repeat(64)))
             .collect();

@@ -1,4 +1,5 @@
 use humata2_clients::DaemonError;
+use humata2_clients::{NoAgentOn, pick_agent};
 use humata2_clients::model::{
     Agent, ChannelId, ItemId, MachineId, SessionId, SessionOptions,
 };
@@ -34,6 +35,9 @@ pub struct NewSession {
     pub op: Option<String>,
     /// Why it couldn't be made.
     pub error: Option<String>,
+    /// Something the sheet says without it being a failure: every agent is
+    /// off, so it starts a plain shell.
+    pub note: Option<String>,
 }
 
 impl NewSession {
@@ -82,21 +86,25 @@ pub enum NewSessionAction {
     Create,
 }
 
-/// The agent a new session starts with. In a channel, the one the daemon
-/// says a start takes there (D770, ST-15: the channel's own default, then
-/// Settings', then the one it was made with); with no channel, or before the
-/// daemon has said, the default agent picked in Settings. Either way, the
-/// first agent that is on when that one has been turned off (AGENTSET).
-pub(crate) fn default_agent(state: &AppState, channel: Option<&ChannelId>) -> Agent {
-    let preferred = channel
-        .and_then(|id| state.workspace.channels.iter().find(|channel| &channel.id == id))
-        .and_then(|channel| channel.default_agent)
-        .unwrap_or(state.settings.preferences.default_agent);
-    let offered = state.settings.offered_agents();
-    if preferred == Agent::Shell || offered.contains(&preferred) {
-        return preferred;
+impl AppState {
+    /// The agent a new session starts with. In a channel, the one the daemon
+    /// says a start takes there (D770, ST-15: the channel's own default, then
+    /// Settings'); with no channel, or before the daemon has said, the default
+    /// agent picked in Settings. Either way, the first agent that is on when
+    /// that one has been turned off (AGENTSET, AGENTOFF).
+    ///
+    /// # Errors
+    /// [`NoAgentOn`] when every agent is off.
+    pub fn default_agent(&self, channel: Option<&ChannelId>) -> Result<Agent, NoAgentOn> {
+        let channel_default = channel
+            .and_then(|id| self.workspace.channels.iter().find(|channel| &channel.id == id))
+            .and_then(|channel| channel.default_agent);
+        let preferred: Vec<Agent> = channel_default
+            .into_iter()
+            .chain([self.settings.preferences.default_agent])
+            .collect();
+        pick_agent(&self.settings.offered_agents(), &preferred)
     }
-    offered.first().copied().unwrap_or(preferred)
 }
 
 impl App {
@@ -116,7 +124,16 @@ impl App {
                 .find(|machine| machine.online)
                 .map(|machine| machine.id.clone())
         });
-        let agent = default_agent(state, channel.as_ref());
+        let (agent, note) = match state.default_agent(channel.as_ref()) {
+            Ok(agent) => (agent, None),
+            Err(NoAgentOn) => (
+                Agent::Shell,
+                Some(
+                    "Every agent is off. Terminal still starts a plain shell; to start an agent, turn one on in Settings › Agents."
+                        .to_owned(),
+                ),
+            ),
+        };
         state.overlays.push(Overlay::NewSession(NewSession {
             channel,
             agent,
@@ -130,6 +147,7 @@ impl App {
             progress: None,
             op: None,
             error: None,
+            note,
         }));
         Effect::none()
     }

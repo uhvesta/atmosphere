@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
-use fusefs_vfs::{CallerContext, VfsError, VfsResult, VirtualPath};
+use fusefs_vfs::{CallerContext, VfsError, VfsResult, VfsTarget, VirtualPath};
 use serde::{Deserialize, Serialize};
 
 /// Required prefix for capability root directory segments.
@@ -46,9 +46,10 @@ impl CapabilityRouter {
     /// Validates that `cap_id` is a well-formed `cap_<id>` single path segment.
     pub fn validate_cap_id(cap_id: &str) -> VfsResult<()> {
         if !cap_id.starts_with(CAPABILITY_PREFIX) {
-            return Err(VfsError::Einval(format!(
-                "capability id '{cap_id}' must start with '{CAPABILITY_PREFIX}'"
-            )));
+            return Err(VfsError::Einval {
+                op: "validate capability id (missing cap_ prefix)",
+                target: VfsTarget::Capability(cap_id.to_string()),
+            });
         }
         let suffix = &cap_id[CAPABILITY_PREFIX.len()..];
         if suffix.is_empty()
@@ -57,9 +58,10 @@ impl CapabilityRouter {
             || suffix == "."
             || suffix == ".."
         {
-            return Err(VfsError::Einval(format!(
-                "invalid capability id '{cap_id}'"
-            )));
+            return Err(VfsError::Einval {
+                op: "validate capability id",
+                target: VfsTarget::Capability(cap_id.to_string()),
+            });
         }
         Ok(())
     }
@@ -137,18 +139,21 @@ impl CapabilityRouter {
         base_caller: CallerContext,
     ) -> VfsResult<(CallerContext, VirtualPath, bool)> {
         if !cap_id.starts_with(CAPABILITY_PREFIX) {
-            return Err(VfsError::Eacces(format!(
-                "unknown capability root '{cap_id}'"
-            )));
+            return Err(VfsError::Eacces {
+                op: "resolve capability (unknown root)",
+                target: VfsTarget::Capability(cap_id.to_string()),
+            });
         }
         let entries = self.entries.read().expect("capability router lock poisoned");
-        let entry = entries
-            .get(cap_id)
-            .ok_or_else(|| VfsError::Eacces(format!("unknown capability root '{cap_id}'")))?;
+        let entry = entries.get(cap_id).ok_or_else(|| VfsError::Eacces {
+            op: "resolve capability (unknown root)",
+            target: VfsTarget::Capability(cap_id.to_string()),
+        })?;
         if entry.revoked {
-            return Err(VfsError::Eacces(format!(
-                "capability root '{cap_id}' has been revoked"
-            )));
+            return Err(VfsError::Eacces {
+                op: "resolve capability (revoked)",
+                target: VfsTarget::Capability(cap_id.to_string()),
+            });
         }
         let caller = base_caller.with_capability_root(entry.root_path.as_str());
         Ok((caller, entry.root_path.clone(), entry.read_only))
@@ -162,7 +167,10 @@ impl CapabilityRouter {
     /// - Clamps all `..` segments strictly inside the capability's `root_path`.
     pub fn resolve(&self, raw_path: &str, base_caller: CallerContext) -> VfsResult<RoutedRequest> {
         if raw_path.as_bytes().contains(&0) {
-            return Err(VfsError::Einval("path contains NUL byte".to_string()));
+            return Err(VfsError::Einval {
+                op: "route path",
+                target: VfsTarget::Path(raw_path.replace('\0', "\\0")),
+            });
         }
         let trimmed = raw_path.trim_start_matches('/');
         let (first_seg, remainder) = match trimmed.split_once('/') {
@@ -170,9 +178,10 @@ impl CapabilityRouter {
             None => (trimmed, ""),
         };
         if first_seg.is_empty() || !first_seg.starts_with(CAPABILITY_PREFIX) {
-            return Err(VfsError::Eacces(format!(
-                "path '{raw_path}' does not start with a capability root"
-            )));
+            return Err(VfsError::Eacces {
+                op: "route path (no capability root)",
+                target: VfsTarget::Path(raw_path.to_string()),
+            });
         }
 
         let (caller, root_path, read_only) = self.resolve_cap_id(first_seg, base_caller)?;

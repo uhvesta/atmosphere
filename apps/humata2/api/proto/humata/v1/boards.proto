@@ -339,7 +339,8 @@ message TodoFields {
   repeated LifecyclePrompt lifecycle_prompts = 28;
   // Summary counts for the folded Runs ledger.
   uint32 run_count = 29;
-  uint64 total_cost_micros = 30;
+  // Absent when no run reported a cost (unknown is not zero).
+  optional uint64 total_cost_micros = 30;
   // Optional reason recorded when state is WONT_DO.
   string wont_do_reason = 31;
 }
@@ -505,7 +506,8 @@ message TodoRun {
   string tool = 2;
   string model = 3;
   string outcome = 4;
-  uint64 cost_micros = 5;
+  // Absent when the agent reported no cost (unknown is not zero).
+  optional uint64 cost_micros = 5;
   google.protobuf.Timestamp started_at = 6;
   google.protobuf.Timestamp finished_at = 7;
   repeated RunLink links = 8;
@@ -719,7 +721,8 @@ message ListTodoRunsRequest {
 
 message ListTodoRunsResponse {
   repeated TodoRun runs = 1;
-  uint64 total_cost_micros = 2;
+  // Absent when no run has a known cost.
+  optional uint64 total_cost_micros = 2;
 }
 
 message GetTodoHistoryRequest {

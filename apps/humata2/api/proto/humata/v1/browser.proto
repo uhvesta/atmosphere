@@ -1,0 +1,136 @@
+// BROWSER: agents (claude, codex, copilot and agy only) read the user's own
+// browser tabs and, with the user's per-action approval in the Inbox,
+// click, type and navigate in them. The browser starts Humata's native
+// messaging host (`humata2-browser-host`, a link to humatad2), which
+// connects here and relays the extension's JSON messages. No webview or
+// browser of Humata's own is involved.
+syntax = "proto3";
+
+package humata.v1;
+
+import "humata/v1/common.proto";
+
+service BrowserBridgeService {
+  // The native messaging host's one call: it says hello, then relays the
+  // extension's replies up and receives the daemon's requests down until
+  // the browser closes it. Only a host carrying the browser host token,
+  // from the same user and outside every session, may call it.
+  rpc ConnectBrowserHost(stream BrowserHostFrame) returns (stream BrowserDaemonFrame);
+  // Runs one action in the connected browser. An agent's call must name an
+  // Inbox request its own session made and the user approved for exactly
+  // this action (one use), or, for a read, fall under an active 30-minute
+  // read grant of its session. Waits at most 30 seconds for the browser.
+  rpc ExecuteBrowserAction(ExecuteBrowserActionRequest) returns (ExecuteBrowserActionResponse);
+  // Whether a browser is connected now, and which.
+  rpc GetBrowserBridgeStatus(GetBrowserBridgeStatusRequest) returns (GetBrowserBridgeStatusResponse);
+
+  // ----- Settings › Browser. User-only. -----
+
+  // The browsers found on this Mac and whether each has the host set up.
+  rpc ListDetectedBrowsers(ListDetectedBrowsersRequest) returns (ListDetectedBrowsersResponse);
+  // Links `~/.humata2/bin/humata2-browser-host` to this humatad2 and writes
+  // the one native messaging manifest Humata owns into each named browser's
+  // folder (every found browser when none is named). Touches nothing else.
+  rpc InstallBrowserHost(InstallBrowserHostRequest) returns (ListDetectedBrowsersResponse);
+  // Removes that manifest from each named browser's folder, and nothing else.
+  rpc UninstallBrowserHost(UninstallBrowserHostRequest) returns (ListDetectedBrowsersResponse);
+}
+
+enum BrowserKind {
+  BROWSER_KIND_UNSPECIFIED = 0;
+  BROWSER_KIND_CHROME = 1;
+  BROWSER_KIND_BRAVE = 2;
+  BROWSER_KIND_EDGE = 3;
+  BROWSER_KIND_CHROMIUM = 4;
+  BROWSER_KIND_ARC = 5;
+  BROWSER_KIND_VIVALDI = 6;
+  BROWSER_KIND_FIREFOX = 7;
+}
+
+enum BrowserFamily {
+  BROWSER_FAMILY_UNSPECIFIED = 0;
+  BROWSER_FAMILY_CHROMIUM = 1;
+  BROWSER_FAMILY_FIREFOX = 2;
+}
+
+message DetectedBrowser {
+  BrowserKind kind = 1;
+  BrowserFamily family = 2;
+  string display_name = 3;
+  string binary_path = 4;
+  string native_messaging_dir = 5;
+  // Where Humata's manifest is, or would be, in that folder.
+  string manifest_path = 6;
+  // Humata's manifest is there.
+  bool host_installed = 7;
+  // ...and points at this humatad2's host link; false means out of date.
+  bool host_matches_current = 8;
+  // A host from this browser is connected now.
+  bool connected = 9;
+  // The unpacked extension folder to load for this browser's family.
+  string extension_path = 10;
+}
+
+message BrowserHostFrame {
+  oneof frame {
+    BrowserHostHello hello = 1;
+    // One reply from the extension, as the JSON it sent.
+    string reply_json = 2;
+  }
+}
+
+message BrowserHostHello {
+  // What the browser passed the host as argv[1], e.g.
+  // "chrome-extension://<id>/"; Firefox passes the manifest path instead.
+  string extension_origin = 1;
+  uint32 host_pid = 2;
+}
+
+message BrowserDaemonFrame {
+  // One request for the extension, as JSON with its request_id.
+  string request_json = 1;
+}
+
+message ExecuteBrowserActionRequest {
+  // The approved Inbox request this action runs under; empty for a read
+  // under an active 30-minute grant.
+  RequestId approval = 1;
+  // The action, in the same JSON the approval was asked with.
+  string action_json = 2;
+}
+
+message ExecuteBrowserActionResponse {
+  // The extension's reply payload as JSON.
+  string reply_json = 1;
+}
+
+message GetBrowserBridgeStatusRequest {}
+
+message GetBrowserBridgeStatusResponse {
+  bool connected = 1;
+  repeated ConnectedBrowserHost hosts = 2;
+}
+
+message ConnectedBrowserHost {
+  string extension_origin = 1;
+  uint32 host_pid = 2;
+  BrowserFamily family = 3;
+}
+
+message ListDetectedBrowsersRequest {}
+
+message ListDetectedBrowsersResponse {
+  repeated DetectedBrowser browsers = 1;
+}
+
+message InstallBrowserHostRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Empty: every found browser.
+  repeated BrowserKind kinds = 2;
+}
+
+message UninstallBrowserHostRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Empty: every found browser.
+  repeated BrowserKind kinds = 2;
+}

@@ -619,7 +619,7 @@ call, and a cell may name its own call when the row's words need it (a
 
 | Tier | Representative call | Capability |
 | --- | --- | --- |
-| No rule | `file_write` into its own clone; `humata files put` | none |
+| No rule | `whoami`; `humata files put` | none |
 | Default Allow | `board_item_create` on the channel board; `humata board add` | `CHANNEL_BOARD_ADD` |
 | Ask me | `channels_list`; `humata channels` (the test sets `GLOBAL_READ` to Ask first; its default is Allow, D127.4) | `GLOBAL_READ` |
 | Never by default | `session_stop` of another session; `humata session stop` | `SESSION_STOP_OTHER` |

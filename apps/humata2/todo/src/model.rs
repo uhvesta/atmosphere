@@ -248,7 +248,8 @@ pub struct RunEntry {
     pub tool: String,
     pub model: String,
     pub outcome: String,
-    pub cost_micros: u64,
+    /// `None` when the agent reported no cost.
+    pub cost_micros: Option<u64>,
     pub started: Option<Day>,
     pub links: Vec<RunLink>,
     pub session: Option<String>,
@@ -581,7 +582,8 @@ pub struct Todo {
     #[serde(default)]
     pub run_count: u32,
     #[serde(default)]
-    pub total_cost_micros: u64,
+    /// Sum of known run costs; `None` when no run has a known cost.
+    pub total_cost_micros: Option<u64>,
     #[serde(default)]
     pub wont_do_reason: Option<String>,
 }
@@ -627,7 +629,7 @@ impl Todo {
             session_signals: Vec::new(),
             lifecycle_prompts: Vec::new(),
             run_count: 0,
-            total_cost_micros: 0,
+            total_cost_micros: None,
             wont_do_reason: None,
         }
     }

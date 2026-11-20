@@ -378,7 +378,7 @@ fn split_fold_history_and_runs() {
             tool: "claude".to_owned(),
             model: "sonnet".to_owned(),
             outcome: "ok".to_owned(),
-            cost_micros: 120_000,
+            cost_micros: Some(120_000),
             ..RunEntry::default()
         },
     );
@@ -419,7 +419,7 @@ fn split_fold_history_and_runs() {
     store.receive_matching("RunsLoaded", |a| matches!(a, A::RunsLoaded { .. }), |_| {});
     let runs = store.state().runs.get("PAY-5").expect("runs loaded");
     assert_eq!(runs.runs.len(), 1);
-    assert_eq!(runs.total_cost_micros, 120_000);
+    assert_eq!(runs.total_cost_micros, Some(120_000));
 }
 
 #[test]
@@ -654,4 +654,83 @@ fn diff_and_markdown_comment_hooks() {
     let before = store.state().items.clone();
     store.send(A::NavigateAnchor(anchor), |_| {});
     assert_eq!(store.state().items, before);
+}
+
+fn with_steps(fake: &FakeTodo) -> TestStore<Todo> {
+    let mut item = Item::new("CTX-1", "Context item", today());
+    let mut second = Step::new("Second");
+    second.markdown_context = Some("Old context".to_owned());
+    item.steps = vec![Step::new("First"), second];
+    fake.insert(item, None);
+    let mut store = store(fake);
+    loaded(&mut store);
+    store
+}
+
+fn updates(fake: &FakeTodo) -> usize {
+    fake.calls().iter().filter(|c| matches!(c, Call::Update(..))).count()
+}
+
+#[test]
+fn editing_a_step_context_starts_with_what_it_has() {
+    use humata2_todo_feature::EditField;
+    let fake = FakeTodo::new();
+    let mut store = with_steps(&fake);
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(1)), |_| {});
+    assert_eq!(store.state().editing.as_ref().map(|e| e.text.as_str()), Some("Old context"));
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(0)), |_| {});
+    assert_eq!(store.state().editing.as_ref().map(|e| e.text.as_str()), Some(""));
+}
+
+#[test]
+fn saving_a_step_context_trims_it_and_blank_removes_it() {
+    use humata2_todo_feature::EditField;
+    let fake = FakeTodo::new();
+    let mut store = with_steps(&fake);
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(0)), |_| {});
+    store.send(A::EditChanged("  line one\nline two \n".to_owned()), |_| {});
+    store.send(A::CommitEdit, |_| {});
+    store.receive_matching("Written", |a| matches!(a, A::Written { .. }), |_| {});
+    assert!(store.state().editing.is_none());
+    assert_eq!(
+        item(store.state(), "CTX-1").steps[0].markdown_context.as_deref(),
+        Some("line one\nline two")
+    );
+
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(1)), |_| {});
+    store.send(A::EditChanged("  \n ".to_owned()), |_| {});
+    store.send(A::CommitEdit, |_| {});
+    store.receive_matching("Written", |a| matches!(a, A::Written { .. }), |_| {});
+    assert_eq!(item(store.state(), "CTX-1").steps[1].markdown_context, None);
+}
+
+#[test]
+fn saving_an_unchanged_step_context_only_closes_the_editor() {
+    use humata2_todo_feature::EditField;
+    let fake = FakeTodo::new();
+    let mut store = with_steps(&fake);
+    let before = updates(&fake);
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(1)), |_| {});
+    store.send(A::CommitEdit, |_| {});
+    assert!(store.state().editing.is_none());
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(0)), |_| {});
+    store.send(A::CommitEdit, |_| {});
+    assert!(store.state().editing.is_none());
+    assert_eq!(updates(&fake), before);
+}
+
+#[test]
+fn moving_or_dropping_a_step_closes_its_context_editor() {
+    use humata2_todo_feature::EditField;
+    let fake = FakeTodo::new();
+    let mut store = with_steps(&fake);
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(1)), |_| {});
+    store.send(A::MoveStep("CTX-1".to_owned(), 1, 0), |_| {});
+    assert!(store.state().editing.is_none());
+    store.receive_matching("Written", |a| matches!(a, A::Written { .. }), |_| {});
+
+    store.send(A::StartEdit("CTX-1".to_owned(), EditField::StepContext(0)), |_| {});
+    store.send(A::DropStep("CTX-1".to_owned(), 0), |_| {});
+    assert!(store.state().editing.is_none());
+    store.receive_matching("Written", |a| matches!(a, A::Written { .. }), |_| {});
 }

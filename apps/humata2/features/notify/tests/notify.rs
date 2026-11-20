@@ -1,5 +1,5 @@
-use humata2_clients::model::{ChannelId, MachineId, RequestId, RequestKind, SessionId};
-use humata2_clients::NotifyTarget;
+use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, RequestKind, SessionId};
+use humata2_clients::{NoticeSound, NotifyTarget};
 use humata2_notify::{
     BurstState, FrontmostContext, NotifyConfig, NotifyEvent, channel_notice_id, clear_request,
     clear_restart, clear_session, evaluate, migrate_notice_id, restart_notice_id,
@@ -667,4 +667,133 @@ fn clear_request_and_clear_session_withdraw_and_reset_cooldown() {
         clear_request(&mut burst, &RequestId::new("r4")),
         vec!["humata.channel.c1".to_owned()]
     );
+}
+
+fn todo_ask(req: &str, item: Option<&str>) -> NotifyEvent {
+    NotifyEvent::TodoAsk {
+        request_id: RequestId::new(req),
+        session_id: SessionId::new("s1"),
+        channel_id: None,
+        item: item.map(ItemId::new),
+        answered: false,
+        title: "Add an item?".to_owned(),
+        body: "Open the To-do to answer.".to_owned(),
+    }
+}
+
+fn sound_config() -> NotifyConfig {
+    NotifyConfig {
+        enabled: true,
+        play_sound: true,
+        ..NotifyConfig::default()
+    }
+}
+
+#[test]
+fn play_sound_defaults_off_and_old_json_still_loads() {
+    assert!(!NotifyConfig::default().play_sound);
+    let old: NotifyConfig =
+        serde_json::from_str(r#"{"enabled": true, "cooldown_secs": 10}"#).expect("old JSON");
+    assert!(!old.play_sound);
+}
+
+#[test]
+fn todo_ask_posts_as_todo_under_master_switch_only() {
+    let config = NotifyConfig {
+        enabled: true,
+        inbox_requests: false,
+        agent_questions: false,
+        ..NotifyConfig::default()
+    };
+    let mut burst = BurstState::default();
+    let notice = evaluate(
+        &config,
+        &background(),
+        &mut burst,
+        todo_ask("r1", Some("i1")),
+        0,
+    )
+    .expect("posts");
+    assert_eq!(notice.id, "humata.todo.r1");
+    assert_eq!(
+        notice.target,
+        NotifyTarget::Todo {
+            item: Some(ItemId::new("i1"))
+        }
+    );
+    assert!(
+        evaluate(&config, &background(), &mut burst, todo_ask("r1", None), 1).is_none(),
+        "duplicate request"
+    );
+    assert_eq!(clear_request(&mut burst, &RequestId::new("r1")), vec!["humata.todo.r1"]);
+}
+
+#[test]
+fn todo_ask_is_silent_when_off_answered_or_already_on_todo() {
+    let mut burst = BurstState::default();
+    assert!(
+        evaluate(
+            &NotifyConfig::default(),
+            &background(),
+            &mut burst,
+            todo_ask("r1", None),
+            0
+        )
+        .is_none()
+    );
+    let answered = NotifyEvent::TodoAsk {
+        request_id: RequestId::new("r2"),
+        session_id: SessionId::new("s1"),
+        channel_id: None,
+        item: None,
+        answered: true,
+        title: String::new(),
+        body: String::new(),
+    };
+    assert!(evaluate(&enabled_config(), &background(), &mut burst, answered, 0).is_none());
+    let on_todo = FrontmostContext {
+        app_active: true,
+        viewing_todo: true,
+        ..FrontmostContext::default()
+    };
+    assert!(evaluate(&enabled_config(), &on_todo, &mut burst, todo_ask("r3", None), 0).is_none());
+}
+
+#[test]
+fn sounds_follow_event_kind_and_switch() {
+    let mut burst = BurstState::default();
+    let inbox = evaluate(
+        &sound_config(),
+        &background(),
+        &mut burst,
+        inbox_request("r1", "s1", None),
+        0,
+    )
+    .expect("posts");
+    assert_eq!(inbox.sound, Some(NoticeSound::Inbox));
+
+    let mut burst = BurstState::default();
+    let todo = evaluate(&sound_config(), &background(), &mut burst, todo_ask("r2", None), 0)
+        .expect("posts");
+    assert_eq!(todo.sound, Some(NoticeSound::Todo));
+
+    let mut burst = BurstState::default();
+    let silent = evaluate(&enabled_config(), &background(), &mut burst, todo_ask("r3", None), 0)
+        .expect("posts");
+    assert_eq!(silent.sound, None);
+}
+
+#[test]
+fn a_burst_plays_one_sound_and_the_next_after_cooldown_plays_again() {
+    let config = sound_config();
+    let mut burst = BurstState::default();
+    let first = evaluate(&config, &background(), &mut burst, todo_ask("r1", None), 0)
+        .expect("posts");
+    let second = evaluate(&config, &background(), &mut burst, todo_ask("r2", None), 5)
+        .expect("posts");
+    let later = evaluate(&config, &background(), &mut burst, todo_ask("r3", None), 40)
+        .expect("posts");
+    assert_eq!(first.sound, Some(NoticeSound::Todo));
+    assert_eq!(second.sound, None);
+    assert_eq!(later.sound, Some(NoticeSound::Todo));
 }

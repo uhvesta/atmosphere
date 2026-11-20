@@ -1,0 +1,11 @@
+# An edit permission on an existing file (the runner seeds notes.txt), answered.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type In notes.txt, change the word hello to goodbye. Edit the file directly, do nothing else.
+quiet 3000
+snap edit_permission unknown
+keys enter
+quiet 4000
+snap after_answer unknown

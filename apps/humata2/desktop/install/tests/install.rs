@@ -64,6 +64,7 @@ impl Fixture {
         f.bundle_write("humata2_holder", "holder v1");
         f.bundle_write("humata", "cli v1");
         f.bundle_write("stack", "stack v1");
+        f.bundle_write("humata2_fusefs", "fusefs v1");
         f
     }
     fn app(&self) -> PathBuf {
@@ -81,6 +82,7 @@ impl Fixture {
             self.app().join("humata2_holder"),
             self.app().join("humata"),
             self.app().join("stack"),
+            self.app().join("humata2_fusefs"),
         )
     }
     fn layout(&self) -> Layout {
@@ -101,10 +103,12 @@ fn first_install_copies_everything_and_registers() {
     assert_eq!(done.holder, BinaryChange::Installed);
     assert_eq!(done.humata, BinaryChange::Installed);
     assert_eq!(done.stack, BinaryChange::Installed);
+    assert_eq!(done.fusefs, BinaryChange::Installed);
     assert_eq!(done.agent, AgentChange::Reloaded);
     assert_eq!(fs::read_to_string(fx.bin("humatad2")).unwrap(), "daemon v1");
     assert_eq!(fs::read_to_string(fx.bin("humata2_holder")).unwrap(), "holder v1");
     assert_eq!(fs::read_to_string(fx.bin("stack")).unwrap(), "stack v1");
+    assert_eq!(fs::read_to_string(fx.bin("humata2_fusefs")).unwrap(), "fusefs v1");
     assert!(fx
         .home()
         .join("Library/LaunchAgents/app.humata2.humatad2.plist")
@@ -127,6 +131,7 @@ fn second_install_changes_nothing() {
     assert_eq!(done.holder, BinaryChange::Unchanged);
     assert_eq!(done.humata, BinaryChange::Unchanged);
     assert_eq!(done.stack, BinaryChange::Unchanged);
+    assert_eq!(done.fusefs, BinaryChange::Unchanged);
     assert_eq!(done.agent, AgentChange::Unchanged);
     assert_eq!(ld.count("bootstrap"), 1);
 }
@@ -152,6 +157,7 @@ fn changed_daemon_is_staged_beside_the_installed_one_not_swapped() {
     assert_eq!(fs::read_to_string(fx.bin(".humata2_holder.next")).unwrap(), "holder v1");
     assert_eq!(fs::read_to_string(fx.bin(".humata.next")).unwrap(), "cli v1");
     assert_eq!(fs::read_to_string(fx.bin(".stack.next")).unwrap(), "stack v1");
+    assert_eq!(fs::read_to_string(fx.bin(".humata2_fusefs.next")).unwrap(), "fusefs v1");
     let staged = staged_release(&fx.layout()).unwrap().expect("a release is staged");
     assert_eq!(staged, sha_hex(&fs::read(fx.bin(".bundle.json.next")).unwrap()));
     assert_ne!(staged, installed_id);
@@ -174,6 +180,22 @@ fn changed_holder_is_staged_not_swapped_and_no_daemon_restarts() {
 }
 
 #[test]
+fn changed_fusefs_is_staged_not_swapped_and_no_daemon_restarts() {
+    let fx = Fixture::new();
+    let ld = FakeLaunchd::default();
+    install(&fx.bundle(), &fx.layout(), &ld).unwrap();
+    fx.bundle_write("humata2_fusefs", "fusefs v2");
+    let done = install(&fx.bundle(), &fx.layout(), &ld).unwrap();
+
+    // The mount's helper waits whole beside the one that runs, like the rest.
+    assert_eq!(done.fusefs, BinaryChange::Unchanged);
+    assert_eq!(done.agent, AgentChange::Unchanged);
+    assert_eq!(fs::read_to_string(fx.bin("humata2_fusefs")).unwrap(), "fusefs v1");
+    assert_eq!(fs::read_to_string(fx.bin(".humata2_fusefs.next")).unwrap(), "fusefs v2");
+    assert_eq!(ld.count("bootstrap"), 1);
+}
+
+#[test]
 fn the_same_release_stages_nothing() {
     let fx = Fixture::new();
     let ld = FakeLaunchd::default();
@@ -181,7 +203,13 @@ fn the_same_release_stages_nothing() {
     install(&fx.bundle(), &fx.layout(), &ld).unwrap();
 
     assert_eq!(staged_release(&fx.layout()).unwrap(), None);
-    for name in [".humatad2.next", ".humata2_holder.next", ".humata.next", ".stack.next"] {
+    for name in [
+        ".humatad2.next",
+        ".humata2_holder.next",
+        ".humata.next",
+        ".stack.next",
+        ".humata2_fusefs.next",
+    ] {
         assert!(!fx.bin(name).exists(), "{name} was staged");
     }
 }
@@ -213,6 +241,7 @@ fn a_first_install_writes_a_bundle_json_that_names_the_installed_files() {
         ("humata2_holder", "holder v1"),
         ("humata", "cli v1"),
         ("stack", "stack v1"),
+        ("humata2_fusefs", "fusefs v1"),
     ] {
         assert_eq!(json["platforms"][platform][name]["sha256"], sha_hex(body.as_bytes()), "{name}");
     }
@@ -231,6 +260,7 @@ fn a_manifest_names_the_release_for_every_platform_it_lists() {
             "humata2_holder": {"path": "x/humata2_holder", "sha256": sha_hex(b"holder v1")},
             "humata": {"path": "x/humata", "sha256": sha_hex(b"cli v1")},
             "stack": {"path": "x/stack", "sha256": sha_hex(b"stack v1")},
+            "humata2_fusefs": {"path": "x/humata2_fusefs", "sha256": sha_hex(b"fusefs v1")},
         })
     };
     let text = serde_json::json!({"platforms": {platform: entry("daemon v1"), "elsewhere-os": entry("other daemon")}});
@@ -252,6 +282,7 @@ fn a_manifest_that_does_not_describe_the_apps_files_is_refused_and_nothing_is_in
         "humata2_holder": {"path": "x", "sha256": sha_hex(b"holder v1")},
         "humata": {"path": "x", "sha256": sha_hex(b"cli v1")},
         "stack": {"path": "x", "sha256": sha_hex(b"stack v1")},
+        "humata2_fusefs": {"path": "x", "sha256": sha_hex(b"fusefs v1")},
     }}});
     fs::write(&manifest, text.to_string()).unwrap();
 
@@ -269,7 +300,13 @@ fn with_machine_tools(fx: &Fixture, daemon: &str) -> (Bundle, &'static str) {
     let tools = fx.app().join("machine-tools");
     fs::create_dir_all(tools.join(other)).unwrap();
     let mut entries = serde_json::Map::new();
-    for (name, body) in [("humatad2", daemon), ("humata2_holder", "holder v1"), ("humata", "cli v1"), ("stack", "stack v1")] {
+    for (name, body) in [
+        ("humatad2", daemon),
+        ("humata2_holder", "holder v1"),
+        ("humata", "cli v1"),
+        ("stack", "stack v1"),
+        ("humata2_fusefs", "fusefs v1"),
+    ] {
         fs::write(tools.join(other).join(name), body).unwrap();
         entries.insert(name.to_owned(), serde_json::json!({"path": format!("{other}/{name}"), "sha256": sha_hex(body.as_bytes())}));
     }
@@ -277,7 +314,8 @@ fn with_machine_tools(fx: &Fixture, daemon: &str) -> (Bundle, &'static str) {
     fs::write(tools.join("manifest.json"), serde_json::json!({"platforms": {other: entries}}).to_string()).unwrap();
     let full = serde_json::json!({"platforms": {
         host.bundle_name(): {"humatad2": own("humatad2", "daemon v1"), "humata2_holder": own("h", "holder v1"),
-                              "humata": own("c", "cli v1"), "stack": own("s", "stack v1")},
+                              "humata": own("c", "cli v1"), "stack": own("s", "stack v1"),
+                              "humata2_fusefs": own("f", "fusefs v1")},
         other: entries,
     }});
     let manifest = fx.app().join("manifest.json");

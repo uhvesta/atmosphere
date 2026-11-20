@@ -20,31 +20,35 @@ New TODO2 features beyond the five gaps; Settings page redesign.
 
 ## Lane
 
-- **State (2026-11-20):** PAUSED by main for the 0.9.0 release, during planning. No code edited, no workers started; this section is the only change. Release target is now 0.10.0.
-- **Design notes (draft, from reading the code):**
-  - Leaf logic goes in new `daemon/svc_board` modules on `BoardSvc`. It is unit-tested with explicit `now_ms` and fake ports, with no sleeps.
-  - `session_events.rs` (T5, T6, T7 archive):
-    - `observe_session(&pb::Session, now)` keeps each session's last status in memory and finds linked items (`record.sessions`, `fields.owner.session`, `Session.board_item`).
-    - When a session goes from Working to Idle, NeedsInput, ProbablyIdle, Exited, Stopped or ResumeFailed, it records one run per linked item with `record_todo_run`: tool = agent, model, outcome, a session link, and cost unknown.
-    - Exited, Stopped or ResumeFailed on an agent-owned In progress item sets `stuck_agent`; Working or Starting clears it.
-    - Archived calls `evaluate_last_session_archived` (dedupe prompts by id).
-    - `tick(now)` sets idle `session_signals` and calls `evaluate_session_idle` with `idle_nudge_days`. An owned agent session that has been idle too long with no open ask is marked stuck.
-  - `automation.rs` (T7):
-    - `TodoAutomationSource` port, default Ask. Auto closes the item on PR merge.
-    - Closing an item offers to archive its clean sessions (Ask), or archives them with an Undo prompt (Auto). Sessions kept open get a reason.
-    - `SessionControl` port: `is_clean`, `archive`, `restore`, `send_note`. `resolve_lifecycle_prompt_in` then acts on "Send to session", "Send comments to session", "Undo" and "Archive".
-  - `pr_watcher.rs` + `pr_watch_gh.rs` (T8):
-    - `PrStatusPort` uses `gh`, following `pr_reviews_gh.rs` and `HUMATA2_GH`. A rate limit returns a `RateLimited { wait }` error.
-    - `refresh_watched_prs(now)` updates the rows and prompts only on a changed signal. Auto-wake follows `auto_wake_on_ci_fail` and `auto_wake_on_review_comments`.
-    - The driver runs at most every 5 min, only while there are watched PRs, waits out rate limits, and is also triggered when a watched PR is added.
-  - T6 cost: unknown cost must stay unknown. Plan: `optional uint64 cost_micros` in `boards.proto` `TodoRun` (needs a main seam), `Option` in `store/todo_runs.rs` (store -1 = unknown in the existing column, no migration), and a ledger that drops `$` when no run's cost is known. Needs claims on `todo/src/model.rs`, `clients/src/todo.rs`, `clients/src/todo/fake.rs`, `clients/live_daemon/src/todo.rs`.
-  - T2: add `EditField::StepContext(usize)` in `features/todo`; committing it sends `SetStepMarkdown`. The drawer affordance in `ui/workspace/src/todo.rs` is waiting on a Fable ruling (frames 12/22 must not change; consider a hover-only "Add context" plus clicking the existing context to edit).
-  - humatad wiring, after the above:
-    - `wire_board.rs` adapters subscribe to session events, seed from ListSessions and run the tick and watcher tasks.
-    - Seams: `Feed::subscribe_events` → `pub` in `events.rs`, and extra `BoardContext` fields in `plugins.rs`, filled in `serve.rs` (main/BROWSER).
-    - `settings_service` todo_automation persistence comes after the FUSEFSWIRE hand-over.
-    - One scoped daemon test on `humatad2_test_away_board`.
-  - A Settings toggle UI has no frame yet; Fable needs to draw it first.
-- **Files changed:** this file only.
-- **Workers:** none yet.
+- **State (2026-11-20, resumed after 0.9.0):** batches 1 (T5–T8 + wiring) and 2 (T2) are written and waiting on main's build. Release target is 0.10.0. One gap remains: the PR watcher's Auto close on merge needs the `pr_watcher.rs` hunk that is waiting on main.
+- **Design:** see the plan below (the logic lives in `daemon/svc_board` modules, with ports for settings, session control and PR status; humatad wiring comes last).
+- **Manager's own edits so far:**
+  - `daemon/svc_board/src/ports.rs`: appended `SeenStatus`, `SessionSeen`, `SyncMode`, `TodoAutomation` (+`IDLE_NUDGE_DAYS`), `TodoAutomationSource`, `ArchiveOutcome`, `SessionControl`, `PrStatus`, `PrStatusError`, `PrStatusPort`.
+  - `daemon/svc_board/src/lib.rs`: the `mod` lines for `automation`, `pr_watch_gh`, `pr_watcher` and `session_events`; the re-exports; the `BoardSvc` fields `automation`, `sessions_control`, `pr_status`, `seen` and `pr_watch_state`; the builders `with_automation`, `with_session_control` and `with_pr_status`; and `automation_for`.
+  - Stub files for the four new modules.
+- **Workers (batch 1):**
+  | Worker | Task | Files | Status |
+  |---|---|---|---|
+  | W-A (Sonnet) | T5 stuck agent, T6 runs, T7 last-archived/idle: `observe_session`, `session_tick`, `seed_sessions` | `svc_board/src/session_events.rs` | done, unbuilt |
+  | W-B (Sonnet) | T7 Ask/Auto: PR merged, close → archive clean sessions with Undo, prompt choices act on sessions (incl. Send comments to session) | `svc_board/src/automation.rs`, `svc_board/src/todo.rs`, one field in `todo_fields.rs` | done, unbuilt |
+  | W-C (Sonnet) | T8 watcher: gh `PrStatusPort`, `refresh_watched_prs`, driver with Notify, rate-limit waits | `svc_board/src/pr_watcher.rs`, `svc_board/src/pr_watch_gh.rs` | done, unbuilt |
+  | W-D (Sonnet) | T6 unknown cost end to end | `api/proto/humata/v1/boards.proto` (TodoRun.cost_micros optional), `daemon/store/src/todo_runs.rs`, `daemon/store/tests/boards.rs`, `todo/src/model.rs`, `clients/src/todo.rs`, `clients/src/todo/fake.rs`, `clients/live_daemon/src/todo.rs`, the Runs ledger hunk of `ui/workspace/src/todo.rs` | done, unbuilt |
+  | Fable | T2 step-context editor ruling, plus the Settings › To-do frame | `workflow/milestones/mockups/todo2wire/**` (new) | done: D901, D902 |
+  | W-F (Sonnet) | humatad wiring: `SessionsAdapter`, event pump, tick, PR watcher, plus the scoped test `tests/todo_automation.rs` | `daemon/humatad/src/wire_board.rs`, the new test | done, unbuilt |
+  | W-E (Sonnet) | T2 step context editor (D901) | `features/todo/src/lib.rs`, `ui/workspace/src/todo.rs`, `features/todo/tests/todo2.rs` | done, unbuilt |
+- **Manager's seam edits:**
+  - `events.rs`: `subscribe_events` is `pub`.
+  - `plugins.rs`: `BoardContext.sessions`.
+  - `serve.rs`: `board_sessions` OnceLock.
+  - `humatad/BUILD.bazel`: the tokio and rpc_kit deps on both `humatad_plugin_board*` targets, plus `todo_automation` in `AWAY_BOARD_SCOPED_TESTS`.
+  - `svc_mcp/src/mcp/todo.rs`: an unreported cost stays null.
+  - DECISIONS D901–D903.
+- **Batch 3:** done, unbuilt.
+  - The session_events fixture fix.
+  - The pr_watcher Auto-merge hunk and its test.
+  - Settings persistence in `settings_service.rs`, `settings_service/sections.rs`, one line in `humatad/src/lib.rs`, and `AutomationAdapter` in `wire_board.rs`, tested in `tests/settings_sections.rs`.
+  - The T2 click-through in `desktop/tests/native/todo_step_context.rs`, plus its line in `desktop/tests/native.rs`.
+- **Batch 4:** done, unbuilt. The Settings › General To-do group (D902) across clients, `features/settings` and `ui/settings`.
+- **GAPS_REVIEW:** TODO2WIRE entry logged; it includes the pre-existing `with_review_requests` branch.
+- **Next:** main's build of batches 3 and 4. Then tick T2 and T5–T8 in TODO2.md and say "ready to close".
 - **Ready to commit:** no.

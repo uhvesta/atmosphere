@@ -8,9 +8,13 @@ rust_library(
     name = "linux",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "fusefs_linux",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//libs/fusefs:__subpackages__",
+    ],
     deps = [
         "//libs/fusefs/vfs",
+        "@crates//:libc",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",

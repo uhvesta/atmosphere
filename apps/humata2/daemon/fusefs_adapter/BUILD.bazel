@@ -26,6 +26,7 @@ rust_library(
         "//libs/fusefs/host",
         "//libs/fusefs/linux",
         "//libs/fusefs/vfs",
+        "@crates//:libc",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",

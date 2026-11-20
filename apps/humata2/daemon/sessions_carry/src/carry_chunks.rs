@@ -1,58 +1,64 @@
 //! Chunk-level reuse in a move (MV-17, D346): a file of a megabyte or more
-//! travels as fixed 1 MiB chunks, the size the transfer engine moves them
-//! in, and the new machine is sent only the chunks it doesn't hold. A file
-//! that grew at its end since a machine last held it costs its new tail.
+//! is cut into content-defined chunks (FastCDC), each named by its BLAKE3
+//! hash, and the new machine is sent only the chunks it doesn't hold. A file
+//! that grew, or was edited in the middle, costs the chunks around the
+//! change, not the file.
 //!
-//! - Each machine keeps a **chunk store**, one file per chunk named by its
-//!   SHA-256, in `<channel>/.carry/have`. It is filled from what the machine
-//!   packs and from what it takes in, and is kept to [`HAVE_CAP`] bytes by
-//!   dropping the chunks used longest ago. A chunk is written to a temporary
-//!   file that is synced and renamed, so a power cut leaves it whole or not
-//!   there; one whose size or hash no longer matches its name counts as not
-//!   held and is removed.
-//! - Packing lists the chunk hashes of each big file in `chunks.json` beside
-//!   the manifest. The host asks the new machine which of them it holds
-//!   (`TransferEndService.HaveChunks`), leaves those files out of the copy,
-//!   sends the chunks that are missing into `<stage>/chunks/` and writes
-//!   `dedupe.json`, the recipe of each file: its chunks in order.
+//! - Each machine keeps one **chunk store** for every channel under its
+//!   root, `<root>/.cas` (the folder that holds the channel's folder), the
+//!   `fusefs_cas` store: one file per chunk, sharded by its hash, kept to
+//!   [`STORE_CAP`] bytes by dropping the chunks used longest ago. It is
+//!   filled from what the machine packs and from what it takes in.
+//! - Packing lists the [`FileManifest`] of each big file in `chunks.json`
+//!   beside the move's manifest. The host asks the new machine which chunks
+//!   it holds (`TransferEndService.HaveChunks`), leaves those files out of
+//!   the copy, sends the chunks that are missing into `<stage>/chunks/`,
+//!   each compressed as the adaptive planner picks, and writes `dedupe.json`,
+//!   the recipe of each file: its manifest.
 //! - Unpacking rebuilds each file from the chunks it was sent and those its
-//!   store holds, checks every chunk and the whole file's SHA-256, and only
+//!   store holds, checks every chunk's hash and the file's size, and only
 //!   then goes on to the manifest's checks. A chunk that has gone fails the
 //!   move with nothing deleted, and the next try sends it.
+//!
+//! An empty `<channel>/.carry/have`, where an earlier version kept fixed-size
+//! chunks, is removed when a channel's store is first used.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
 
+use fusefs_cas::cdc::DEFAULT_MAX_SIZE;
+use fusefs_cas::{
+    AdaptiveCodecPlanner, ChunkHash, ChunkRef, ChunkSlice, ChunkStore, ChunkStoreConfig, Codec, CodecError,
+    CompressionContext, EncodedChunk, EvictionPriority, FastCdcConfig, FileManifest, StoreError, chunk_ranges,
+    decode_chunk, hash_bytes,
+};
 use humata2_store::ChannelRecord;
-use serde::Deserialize;
-use serde_json::json;
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 
-use super::{AGENT, Area, CarryError, Item, Manifest, ManifestProblem, hex, io};
-use humata2_sessions_core::layout::{make_dirs, partial};
-use humata2_sessions_core::start::Starter;
+use super::{AGENT, Area, CARRY_DIR, CarryError, Item, Manifest, ManifestProblem, io};
 
-/// The staged file that lists the chunk hashes of each big file.
+/// The staged file that lists the manifest of each big file.
 pub const CHUNKS_FILE: &str = "chunks.json";
 /// Where, in the new machine's stage, the host puts the chunks it sends.
 pub const CHUNKS_DIR: &str = "chunks";
 /// The staged file the host writes with the recipe of each file the new
 /// machine rebuilds from chunks.
 pub const REUSE_FILE: &str = "dedupe.json";
-/// Where, under a channel's folder, a machine keeps its chunk store.
-pub const HAVE_DIR: &str = ".carry/have";
-/// The size of a chunk, which is the transfer engine's.
-pub const CHUNK_SIZE: u64 = 1 << 20;
+/// A file of at least this many bytes travels as chunks.
+pub const CHUNKED_FROM: u64 = 1 << 20;
 
-const CHUNK: usize = 1 << 20;
-/// What a chunk store may hold; the chunks used longest ago go first.
-const HAVE_CAP: u64 = 256 << 20;
+/// The machine's chunk store, in the folder that holds the channel folders.
+const STORE_DIR: &str = ".cas";
+/// Where an earlier version kept its fixed-size chunks, under a channel's `.carry`.
+const LEGACY_HAVE: &str = "have";
+/// What the chunk store may hold; the chunks used longest ago go first.
+const STORE_CAP: u64 = 2 << 30;
+/// How much of a file is cut at a time, so a big file isn't held whole.
+const WINDOW: usize = 16 << 20;
 
 /// What a recipe's path is relative to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum At {
     /// The session's folder.
@@ -61,19 +67,23 @@ pub(super) enum At {
     Stage,
 }
 
-#[derive(Debug, Deserialize)]
-struct Piece {
-    sha256: String,
-    size: u64,
+#[derive(Debug, Serialize)]
+struct Listed {
+    at: At,
+    rel: String,
+    manifest: FileManifest,
+}
+
+#[derive(Debug, Serialize)]
+struct List {
+    files: Vec<Listed>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Assembled {
     at: At,
     rel: String,
-    size: u64,
-    sha256: String,
-    chunks: Vec<Piece>,
+    manifest: FileManifest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,8 +91,62 @@ struct Recipe {
     files: Vec<Assembled>,
 }
 
-fn is_hex(sha256: &str) -> bool {
-    sha256.len() == 64 && sha256.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+/// Where the chunk store of the channel whose folder is `channel_dir` is:
+/// beside the channel folders.
+pub fn chunk_store_dir(channel_dir: &Path) -> PathBuf {
+    channel_dir.parent().map_or_else(|| PathBuf::from(STORE_DIR), |root| root.join(STORE_DIR))
+}
+
+/// Which of `names` (BLAKE3 hashes in hex) the chunk store at `store` holds.
+/// A name that isn't a hash, and a store that isn't there, hold nothing.
+pub fn held_chunks(store: &Path, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| ChunkHash::from_hex(name).is_ok_and(|hash| chunk_path(store, &hash).is_file()))
+        .cloned()
+        .collect()
+}
+
+fn chunk_path(store: &Path, hash: &ChunkHash) -> PathBuf {
+    let hex = hash.to_hex();
+    store.join(&hex[0..2]).join(&hex[2..4]).join(hex)
+}
+
+const TAG_NONE: u8 = 0;
+const TAG_LZ4: u8 = 1;
+const TAG_ZSTD: u8 = 2;
+
+/// A chunk as it is sent: how the adaptive planner picked to compress it, its
+/// length and its bytes.
+pub fn frame_chunk(raw: &[u8]) -> Result<Vec<u8>, CodecError> {
+    let encoded = AdaptiveCodecPlanner::default().encode(raw, &CompressionContext::default())?;
+    let tag = match encoded.codec {
+        Codec::None => TAG_NONE,
+        Codec::Lz4 => TAG_LZ4,
+        Codec::Zstd { .. } => TAG_ZSTD,
+    };
+    let mut out = Vec::with_capacity(encoded.data.len() + 5);
+    out.push(tag);
+    out.extend_from_slice(&encoded.raw_len.to_le_bytes());
+    out.extend_from_slice(&encoded.data);
+    Ok(out)
+}
+
+/// The chunk [`frame_chunk`] made `framed` from; none when it isn't one.
+fn unframe_chunk(framed: &[u8]) -> Option<Vec<u8>> {
+    let (tag, rest) = framed.split_first()?;
+    let (len, data) = rest.split_first_chunk::<4>()?;
+    let raw_len = u32::from_le_bytes(*len);
+    if usize::try_from(raw_len).ok()? > DEFAULT_MAX_SIZE {
+        return None;
+    }
+    let codec = match *tag {
+        TAG_NONE => Codec::None,
+        TAG_LZ4 => Codec::Lz4,
+        TAG_ZSTD => Codec::Zstd { level: 0 },
+        _ => return None,
+    };
+    decode_chunk(&EncodedChunk { codec, raw_len, data: data.to_vec() }).ok()
 }
 
 /// Reads until `buffer` is full or the file ends; how much it holds.
@@ -99,204 +163,95 @@ fn fill(file: &mut fs::File, buffer: &mut [u8]) -> std::io::Result<usize> {
     Ok(filled)
 }
 
-/// Marks a chunk as used now, for the store's trimming.
-fn touch(path: &Path) {
-    if let Ok(file) = fs::OpenOptions::new().write(true).open(path) {
-        let _ = file.set_modified(SystemTime::now());
-    }
-}
-
-/// A machine's chunk store: one file per chunk, flat, named by its SHA-256.
-struct Held {
-    dir: PathBuf,
-}
-
-impl Held {
-    fn file(&self, sha256: &str) -> PathBuf {
-        self.dir.join(sha256)
-    }
-
-    /// The chunk, if the store holds it whole: its size and hash must be
-    /// what it was asked for. One that isn't is removed. Marks it used.
-    fn read(&self, sha256: &str, size: u64) -> Option<Vec<u8>> {
-        let path = self.file(sha256);
-        let bytes = fs::read(&path).ok()?;
-        if u64::try_from(bytes.len()).ok() != Some(size) || hex(&Sha256::digest(&bytes)) != sha256 {
-            let _ = fs::remove_file(&path);
-            return None;
+/// Cuts the file at `path` into chunks, puts each in `store`, pinned so this
+/// operation's own writes can't push it out, and describes the file.
+fn chunk_file(store: &mut ChunkStore, path: &Path) -> Result<FileManifest, CarryError> {
+    let stored = |source: StoreError| CarryError::ChunkStore { file: path.display().to_string(), source };
+    let config = FastCdcConfig::fusefs_default();
+    let mut file = fs::File::open(path).map_err(io("read", path))?;
+    let mut buffer = vec![0u8; WINDOW];
+    let mut carried = 0usize;
+    let mut base = 0u64;
+    let mut slices = Vec::new();
+    loop {
+        let read = fill(&mut file, &mut buffer[carried..]).map_err(io("read", path))?;
+        let end = carried + read;
+        let last = end < buffer.len();
+        let ranges = chunk_ranges(&buffer[..end], config);
+        // Only the window's last chunk may have been cut short by the end of
+        // the window, so it is cut again with what follows.
+        let settled = if last { ranges.len() } else { ranges.len().saturating_sub(1) };
+        let mut consumed = 0usize;
+        for range in &ranges[..settled] {
+            let bytes = &buffer[range.clone()];
+            let hash = store.put(bytes, EvictionPriority::Bulk).map_err(stored)?;
+            store.pin(&hash);
+            let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            slices.push(ChunkSlice { offset: base + range.start as u64, len, hash });
+            consumed = range.end;
         }
-        touch(&path);
-        Some(bytes)
+        if last {
+            break;
+        }
+        buffer.copy_within(consumed..end, 0);
+        base += consumed as u64;
+        carried = end - consumed;
     }
-
-    /// Stores a chunk. Best effort: one that can't be written only costs a
-    /// later move the chance to skip it.
-    fn put(&self, sha256: &str, bytes: &[u8]) {
-        let path = self.file(sha256);
-        if path.is_file() {
-            touch(&path);
-            return;
-        }
-        let _ = self.write(&path, bytes);
-    }
-
-    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            make_dirs(parent, 0o700)?;
-        }
-        let temporary = partial(path);
-        let written = (|| {
-            let mut file = fs::File::create(&temporary)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            drop(file);
-            humata2_durable::rename(&temporary, path)?;
-            humata2_durable::sync_dir(&self.dir)
-        })();
-        if written.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        written
-    }
-
-    /// The hashes of `path`'s chunks in order, each stored.
-    fn add_file(&self, path: &Path) -> std::io::Result<Vec<String>> {
-        let mut file = fs::File::open(path)?;
-        let mut buffer = vec![0u8; CHUNK];
-        let mut hashes = Vec::new();
-        loop {
-            let len = fill(&mut file, &mut buffer)?;
-            if len == 0 {
-                break;
-            }
-            let sha256 = hex(&Sha256::digest(&buffer[..len]));
-            self.put(&sha256, &buffer[..len]);
-            hashes.push(sha256);
-            if len < CHUNK {
-                break;
-            }
-        }
-        Ok(hashes)
-    }
-
-    /// Collects chunk SHA-256 hashes referenced by any active carry transfer
-    /// under `<channel>/.carry/<op>/` (`chunks.json` or `dedupe.json`), so
-    /// trimming never evicts chunks belonging to an in-flight transfer.
-    fn active_chunks(&self) -> HashSet<String> {
-        let mut pinned = HashSet::new();
-        let Some(carry_dir) = self.dir.parent() else {
-            return pinned;
-        };
-        let Ok(ops) = fs::read_dir(carry_dir) else {
-            return pinned;
-        };
-        for op in ops.flatten() {
-            let op_path = op.path();
-            if op_path == self.dir || !op_path.is_dir() {
-                continue;
-            }
-            for candidate in [
-                op_path.join(super::STAGE).join(CHUNKS_FILE),
-                op_path.join(super::STAGE).join(REUSE_FILE),
-                op_path.join(super::INCOMING).join(REUSE_FILE),
-                op_path.join(super::INCOMING).join(super::STAGE).join(REUSE_FILE),
-                op_path.join(CHUNKS_FILE),
-                op_path.join(REUSE_FILE),
-            ] {
-                collect_pinned_from_file(&candidate, &mut pinned);
-            }
-        }
-        pinned
-    }
-
-    /// Removes the chunks used longest ago until the store fits `cap` bytes,
-    /// and what a write a power cut cut short left behind. Chunks in `extra_pinned`
-    /// or referenced by active transfers in `<channel>/.carry/*/` are never evicted.
-    fn trim(&self, cap: u64, extra_pinned: &HashSet<String>) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
-        };
-        let mut pinned = self.active_chunks();
-        pinned.extend(extra_pinned.iter().cloned());
-        let mut chunks = Vec::new();
-        let mut total = 0u64;
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if !meta.is_file() {
-                continue;
-            }
-            if !is_hex(&entry.file_name().to_string_lossy()) {
-                let _ = fs::remove_file(entry.path());
-                continue;
-            }
-            total += meta.len();
-            chunks.push((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), entry.path()));
-        }
-        chunks.sort();
-        for (_, len, path) in chunks {
-            if total <= cap {
-                break;
-            }
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| pinned.contains(name))
-            {
-                continue;
-            }
-            if fs::remove_file(&path).is_ok() {
-                total -= len;
-            }
-        }
-    }
-}
-
-/// Extracts chunk SHA-256 names from a `chunks.json` or `dedupe.json` file.
-fn collect_pinned_from_file(path: &Path, pinned: &mut HashSet<String>) {
-    let Ok(bytes) = fs::read(path) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return;
-    };
-    for file in value["files"].as_array().into_iter().flatten() {
-        for chunk in file["chunks"].as_array().into_iter().flatten() {
-            if let Some(sha) = chunk.as_str() {
-                if is_hex(sha) {
-                    pinned.insert(sha.to_owned());
-                }
-            } else if let Some(sha) = chunk["sha256"].as_str() {
-                if is_hex(sha) {
-                    pinned.insert(sha.to_owned());
-                }
-            }
-        }
-    }
+    let size = slices.last().map_or(0, ChunkSlice::end);
+    Ok(FileManifest::from_slices(size, 1, slices))
 }
 
 /// One chunk of a recipe, from what the host sent or from the store; none
-/// when neither has it whole.
-fn piece_bytes(sent: &Path, held: &Held, piece: &Piece) -> Option<Vec<u8>> {
-    if !is_hex(&piece.sha256) || piece.size > CHUNK_SIZE {
-        return None;
+/// when neither has it whole. What the host sent is kept in the store.
+fn chunk_bytes_of(
+    sent: &Path,
+    store: &mut ChunkStore,
+    chunk: &ChunkRef,
+    file: &str,
+) -> Result<Option<Vec<u8>>, CarryError> {
+    let wanted = |bytes: &[u8]| usize::try_from(chunk.len).ok() == Some(bytes.len()) && hash_bytes(bytes) == chunk.hash;
+    if usize::try_from(chunk.len).is_ok_and(|len| len > DEFAULT_MAX_SIZE) {
+        return Ok(None);
     }
-    if let Ok(bytes) = fs::read(sent.join(&piece.sha256))
-        && u64::try_from(bytes.len()).ok() == Some(piece.size)
-        && hex(&Sha256::digest(&bytes)) == piece.sha256
+    if let Ok(framed) = fs::read(sent.join(chunk.hash.to_hex()))
+        && let Some(bytes) = unframe_chunk(&framed)
+        && wanted(&bytes)
     {
-        return Some(bytes);
+        store
+            .put_verified(chunk.hash, &bytes, EvictionPriority::Bulk)
+            .map_err(|source| CarryError::ChunkStore { file: file.to_owned(), source })?;
+        store.pin(&chunk.hash);
+        return Ok(Some(bytes));
     }
-    held.read(&piece.sha256, piece.size)
+    let held = store.get(&chunk.hash).map_err(|source| CarryError::ChunkStore { file: file.to_owned(), source })?;
+    match held {
+        Some(bytes) if wanted(&bytes) => {
+            store.pin(&chunk.hash);
+            Ok(Some(bytes))
+        }
+        Some(_) => {
+            // A chunk that isn't what its name says is no chunk: the host
+            // then sees the machine lacks it and sends it.
+            let _ = fs::remove_file(store.chunk_path(&chunk.hash));
+            Ok(None)
+        }
+        None => Ok(None),
+    }
 }
 
 impl crate::CarryOps<'_> {
-    fn held(&self, channel: &ChannelRecord) -> Held {
-        Held { dir: self.layout.channel(&channel.folder).join(HAVE_DIR) }
+    /// The machine's chunk store for `channel`'s folder.
+    fn chunk_store(&self, channel: &ChannelRecord) -> Result<ChunkStore, CarryError> {
+        let channel_dir = self.layout.channel(&channel.folder);
+        remove_empty_legacy(&channel_dir);
+        let dir = chunk_store_dir(&channel_dir);
+        ChunkStore::open(&dir, ChunkStoreConfig { max_bytes: STORE_CAP })
+            .map_err(|source| CarryError::ChunkStore { file: dir.display().to_string(), source })
     }
 
-    /// Stores the chunks of each big file of `items` and lists their hashes
-    /// in `stage`'s `chunks.json` for the host. `folder` is the session's
-    /// folder; the agent's files are already in `stage`.
+    /// Stores the chunks of each big file of `items` and lists their
+    /// manifests in `stage`'s `chunks.json` for the host. `folder` is the
+    /// session's folder; the agent's files are already in `stage`.
     pub(super) fn stage_chunks(
         &self,
         channel: &ChannelRecord,
@@ -304,39 +259,39 @@ impl crate::CarryOps<'_> {
         folder: &Path,
         stage: &Path,
     ) -> Result<(), CarryError> {
-        let held = self.held(channel);
-        let mut listed = Vec::new();
-        let mut pinned = HashSet::new();
-        for item in items.iter().filter(|item| item.link.is_none() && item.size >= CHUNK_SIZE) {
+        let big: Vec<&Item> = items.iter().filter(|item| item.link.is_none() && item.size >= CHUNKED_FROM).collect();
+        if big.is_empty() {
+            remove_empty_legacy(&self.layout.channel(&channel.folder));
+            return Ok(());
+        }
+        let mut store = self.chunk_store(channel)?;
+        let mut files = Vec::new();
+        for item in big {
             let (at, rel, path) = match item.area {
-                Area::Folder => ("folder", item.rel.clone(), folder.join(&item.rel)),
-                Area::Agent => ("stage", format!("{AGENT}/{}", item.rel), stage.join(AGENT).join(&item.rel)),
+                Area::Folder => (At::Folder, item.rel.clone(), folder.join(&item.rel)),
+                Area::Agent => (At::Stage, format!("{AGENT}/{}", item.rel), stage.join(AGENT).join(&item.rel)),
                 Area::Records | Area::Tabs => continue,
             };
-            let hashes = held.add_file(&path).map_err(io("read", &path))?;
+            let manifest = chunk_file(&mut store, &path)?;
             // A file that changed since it was listed is copied whole.
-            if u64::try_from(hashes.len()).ok() != Some(item.size.div_ceil(CHUNK_SIZE)) {
+            if manifest.size != item.size {
                 continue;
             }
-            pinned.extend(hashes.iter().cloned());
-            listed.push(json!({ "at": at, "rel": rel, "size": item.size, "sha256": item.sha256, "chunks": hashes }));
+            files.push(Listed { at, rel, manifest });
         }
-        held.trim(HAVE_CAP, &pinned);
-        if listed.is_empty() {
+        if files.is_empty() {
             return Ok(());
         }
         let path = stage.join(CHUNKS_FILE);
-        let bytes = serde_json::to_vec(&json!({ "files": listed })).map_err(|source| CarryError::Manifest {
-            path: path.clone(),
-            source: ManifestProblem::Parse(source),
-        })?;
+        let bytes = serde_json::to_vec(&List { files })
+            .map_err(|source| CarryError::Manifest { path: path.clone(), source: ManifestProblem::Parse(source) })?;
         fs::write(&path, bytes).map_err(io("write", &path))
     }
 
     /// Rebuilds the files of the host's recipe that belong at `at`: each
     /// from the chunks it sent and those this machine's store holds, every
-    /// chunk and the whole file checked. Nothing to do when the host sent no
-    /// recipe.
+    /// chunk and the whole file's size checked. Nothing to do when the host
+    /// sent no recipe.
     pub(super) fn assemble(
         &self,
         stage: &Path,
@@ -354,13 +309,17 @@ impl crate::CarryOps<'_> {
             path: path.clone(),
             source: ManifestProblem::Parse(source),
         })?;
-        let held = self.held(channel);
+        let files: Vec<&Assembled> = recipe.files.iter().filter(|file| file.at == at).collect();
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut store = self.chunk_store(channel)?;
         let sent = stage.join(CHUNKS_DIR);
         let root = match at {
             At::Folder => folder,
             At::Stage => stage,
         };
-        for file in recipe.files.iter().filter(|file| file.at == at) {
+        for file in files {
             if !Path::new(&file.rel).components().all(|part| matches!(part, Component::Normal(_))) {
                 return Err(CarryError::BadFolder { path: file.rel.clone() });
             }
@@ -369,18 +328,19 @@ impl crate::CarryOps<'_> {
                 fs::create_dir_all(parent).map_err(io("create", parent))?;
             }
             let mut out = fs::File::create(&target).map_err(io("create", &target))?;
-            let mut whole = Sha256::new();
             let mut total = 0u64;
-            for piece in &file.chunks {
-                let bytes = piece_bytes(&sent, &held, piece).ok_or_else(|| CarryError::Missing {
+            for chunk in &file.manifest.chunks {
+                if chunk.offset != total {
+                    return Err(CarryError::Changed { item: file.rel.clone() });
+                }
+                let bytes = chunk_bytes_of(&sent, &mut store, chunk, &file.rel)?.ok_or_else(|| CarryError::Missing {
                     item: format!("a chunk of {}, which this machine was to take from its own copy", file.rel),
                 })?;
                 out.write_all(&bytes).map_err(io("write", &target))?;
-                whole.update(&bytes);
-                total += piece.size;
+                total += bytes.len() as u64;
             }
             out.sync_all().map_err(io("save", &target))?;
-            if total != file.size || hex(&whole.finalize()) != file.sha256 {
+            if total != file.manifest.size {
                 return Err(CarryError::Changed { item: file.rel.clone() });
             }
         }
@@ -399,25 +359,20 @@ impl crate::CarryOps<'_> {
         manifest: &Manifest,
         placed: Option<&Path>,
     ) {
-        let held = self.held(channel);
-        let mut pinned = HashSet::new();
-        for item in manifest.items.iter().filter(|item| item.link.is_none() && item.size >= CHUNK_SIZE) {
-            let path = match item.area {
-                Area::Folder => folder.join(&item.rel),
-                Area::Agent => stage.join(AGENT).join(&item.rel),
-                Area::Records | Area::Tabs => continue,
-            };
-            if let Ok(hashes) = held.add_file(&path) {
-                pinned.extend(hashes);
+        let mut paths = Vec::new();
+        for item in manifest.items.iter().filter(|item| item.link.is_none() && item.size >= CHUNKED_FROM) {
+            match item.area {
+                Area::Folder => paths.push(folder.join(&item.rel)),
+                Area::Agent => paths.push(stage.join(AGENT).join(&item.rel)),
+                Area::Records | Area::Tabs => {}
             }
         }
         if let Some(path) = placed
-            && fs::metadata(path).is_ok_and(|meta| meta.len() >= CHUNK_SIZE)
-            && let Ok(hashes) = held.add_file(path)
+            && fs::metadata(path).is_ok_and(|meta| meta.len() >= CHUNKED_FROM)
         {
-            pinned.extend(hashes);
+            paths.push(path.to_owned());
         }
-        held.trim(HAVE_CAP, &pinned);
+        self.hold_files(channel, &paths);
     }
 
     /// Stores the chunks of each big file under `dir` as it is, before the
@@ -425,136 +380,222 @@ impl crate::CarryOps<'_> {
     /// session comes back, this machine holds the chunks of the form it had
     /// here. Best effort.
     pub(super) fn hold_staged(&self, channel: &ChannelRecord, dir: &Path) {
-        let held = self.held(channel);
         let mut files = Vec::new();
         if super::collect_files(dir, "", &mut files).is_err() {
             return;
         }
-        let mut pinned = HashSet::new();
-        for rel in files {
-            let path = dir.join(&rel);
-            if fs::metadata(&path).is_ok_and(|meta| meta.len() >= CHUNK_SIZE)
-                && let Ok(hashes) = held.add_file(&path)
-            {
-                pinned.extend(hashes);
-            }
-        }
-        held.trim(HAVE_CAP, &pinned);
+        let paths: Vec<PathBuf> = files
+            .into_iter()
+            .map(|rel| dir.join(rel))
+            .filter(|path| fs::metadata(path).is_ok_and(|meta| meta.len() >= CHUNKED_FROM))
+            .collect();
+        self.hold_files(channel, &paths);
     }
+
+    /// Chunks `paths` into the store. A file or a store that can't be used
+    /// only costs a later move the chance to skip chunks.
+    fn hold_files(&self, channel: &ChannelRecord, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let Ok(mut store) = self.chunk_store(channel) else { return };
+        for path in paths {
+            let _ = chunk_file(&mut store, path);
+        }
+    }
+}
+
+/// Removes `<channel>/.carry/have` when it is an empty folder, where an
+/// earlier version kept its chunks. One that holds anything is left alone.
+fn remove_empty_legacy(channel_dir: &Path) {
+    let _ = fs::remove_dir(channel_dir.join(CARRY_DIR).join(LEGACY_HAVE));
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
-    fn store(root: &Path) -> Held {
-        Held { dir: root.join("have") }
+    /// Bytes that don't repeat, so each chunk is its own.
+    fn noise(seed: u64, len: usize) -> Vec<u8> {
+        let mut x = seed;
+        let mut out = Vec::with_capacity(len + 8);
+        while out.len() < len {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            out.extend_from_slice(&(x >> 7).to_le_bytes());
+        }
+        out.truncate(len);
+        out
     }
 
-    fn name(bytes: &[u8]) -> String {
-        hex(&Sha256::digest(bytes))
+    fn open(root: &Path) -> ChunkStore {
+        ChunkStore::open(root.join(".cas"), ChunkStoreConfig { max_bytes: STORE_CAP }).unwrap()
+    }
+
+    fn names(manifest: &FileManifest) -> Vec<String> {
+        manifest.chunks.iter().map(|chunk| chunk.hash.to_hex()).collect()
+    }
+
+    /// The chunks of `manifest` that the store at `store` lacks.
+    fn lacking(store: &Path, manifest: &FileManifest) -> Vec<String> {
+        let asked = names(manifest);
+        let held = held_chunks(store, &asked);
+        asked.into_iter().filter(|name| !held.contains(name)).collect()
     }
 
     #[test]
-    fn a_stored_chunk_reads_back_whole() {
+    fn a_file_is_described_by_chunks_that_add_up_to_it_and_each_is_stored() {
         let root = tempfile::tempdir().unwrap();
-        let held = store(root.path());
-        let bytes = vec![7u8; 1000];
-        held.put(&name(&bytes), &bytes);
-        assert_eq!(held.read(&name(&bytes), 1000), Some(bytes));
-    }
-
-    #[test]
-    fn a_chunk_that_no_longer_matches_its_name_is_not_held_and_goes() {
-        let root = tempfile::tempdir().unwrap();
-        let held = store(root.path());
-        let bytes = vec![7u8; 1000];
-        held.put(&name(&bytes), &bytes);
-        fs::write(held.file(&name(&bytes)), &bytes[..400]).unwrap();
-        assert_eq!(held.read(&name(&bytes), 1000), None);
-        assert!(!held.file(&name(&bytes)).exists());
-    }
-
-    #[test]
-    fn a_file_is_listed_as_its_chunks_and_each_is_stored() {
-        let root = tempfile::tempdir().unwrap();
-        let held = store(root.path());
-        let mut data = vec![1u8; CHUNK];
-        data.extend(vec![2u8; 100]);
+        let mut store = open(root.path());
+        let data = noise(1, 5 << 20);
         let file = root.path().join("data.bin");
         fs::write(&file, &data).unwrap();
-        let hashes = held.add_file(&file).unwrap();
-        assert_eq!(hashes, vec![name(&data[..CHUNK]), name(&data[CHUNK..])]);
-        assert_eq!(held.read(&hashes[1], 100), Some(data[CHUNK..].to_vec()));
+
+        let manifest = chunk_file(&mut store, &file).unwrap();
+
+        assert_eq!(manifest.size, data.len() as u64);
+        let mut end = 0;
+        for chunk in &manifest.chunks {
+            assert_eq!(chunk.offset, end);
+            assert_eq!(hash_bytes(&data[chunk.offset as usize..chunk.end() as usize]), chunk.hash);
+            end = chunk.end();
+        }
+        assert_eq!(end, data.len() as u64);
+        assert!(lacking(&root.path().join(".cas"), &manifest).is_empty());
     }
 
     #[test]
-    fn trimming_drops_the_chunks_used_longest_ago_and_keeps_the_rest() {
+    fn a_file_is_cut_the_same_whatever_the_window_it_is_read_in() {
         let root = tempfile::tempdir().unwrap();
-        let held = store(root.path());
-        let (old, new) = (vec![1u8; 600], vec![2u8; 600]);
-        held.put(&name(&old), &old);
-        held.put(&name(&new), &new);
-        let then = SystemTime::now() - Duration::from_secs(3600);
-        fs::File::options().write(true).open(held.file(&name(&old))).unwrap().set_modified(then).unwrap();
-        held.trim(700, &HashSet::new());
-        assert_eq!(held.read(&name(&old), 600), None);
-        assert_eq!(held.read(&name(&new), 600), Some(new));
+        let mut store = open(root.path());
+        // More than one window, so a cut spans the window's edge.
+        let data = noise(2, WINDOW + (3 << 20));
+        let file = root.path().join("big.bin");
+        fs::write(&file, &data).unwrap();
+
+        let manifest = chunk_file(&mut store, &file).unwrap();
+        let whole: Vec<ChunkSlice> = fusefs_cas::chunk_bytes(&data, FastCdcConfig::fusefs_default());
+
+        assert_eq!(manifest.chunks.len(), whole.len());
+        for (chunk, slice) in manifest.chunks.iter().zip(&whole) {
+            assert_eq!((chunk.offset, chunk.len, chunk.hash), (slice.offset, slice.len, slice.hash));
+        }
     }
 
     #[test]
-    fn trimming_never_evicts_chunks_pinned_by_active_transfers() {
+    fn a_second_carry_of_the_same_bytes_lacks_no_chunk() {
         let root = tempfile::tempdir().unwrap();
-        let carry = root.path().join(".carry");
-        let held = Held { dir: carry.join("have") };
-        let (old_pinned, newer_unpinned) = (vec![1u8; 600], vec![2u8; 600]);
-        let pinned_hash = name(&old_pinned);
-        let unpinned_hash = name(&newer_unpinned);
-        held.put(&pinned_hash, &old_pinned);
-        held.put(&unpinned_hash, &newer_unpinned);
-        let then = SystemTime::now() - Duration::from_secs(3600);
-        fs::File::options()
-            .write(true)
-            .open(held.file(&pinned_hash))
-            .unwrap()
-            .set_modified(then)
-            .unwrap();
-        // Active transfer references `old_pinned` in its stage/dedupe.json.
-        let op_stage = carry.join("op_active").join("stage");
-        fs::create_dir_all(&op_stage).unwrap();
-        fs::write(
-            op_stage.join(REUSE_FILE),
-            serde_json::to_vec(&json!({
-                "files": [{
-                    "at": "folder",
-                    "rel": "big.bin",
-                    "size": 600,
-                    "sha256": pinned_hash,
-                    "chunks": [{ "sha256": pinned_hash, "size": 600 }]
-                }]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let mut store = open(root.path());
+        let file = root.path().join("data.bin");
+        fs::write(&file, noise(3, 4 << 20)).unwrap();
+        let first = chunk_file(&mut store, &file).unwrap();
+        assert!(lacking(&root.path().join(".cas"), &first).is_empty(), "the first carry stored what it chunked");
 
-        held.trim(700, &HashSet::new());
+        let copy = root.path().join("copy.bin");
+        fs::copy(&file, &copy).unwrap();
+        let second = chunk_file(&mut store, &copy).unwrap();
 
-        assert_eq!(held.read(&pinned_hash, 600), Some(old_pinned));
-        assert_eq!(held.read(&unpinned_hash, 600), None);
+        assert_eq!(first, second);
+        assert!(lacking(&root.path().join(".cas"), &second).is_empty());
     }
 
     #[test]
-    fn a_write_a_power_cut_cut_short_is_swept_and_never_read_as_a_chunk() {
+    fn a_changed_file_lacks_only_the_chunks_around_the_change() {
+        let mut data = noise(4, 6 << 20);
         let root = tempfile::tempdir().unwrap();
-        let held = store(root.path());
-        let bytes = vec![3u8; 500];
-        held.put(&name(&bytes), &bytes);
-        let torn = partial(&held.file(&name(&[9u8; 10])));
-        fs::write(&torn, [9u8; 4]).unwrap();
-        held.trim(u64::MAX, &HashSet::new());
-        assert!(!torn.exists());
-        assert_eq!(held.read(&name(&bytes), 500), Some(bytes));
+        let mut sender = open(root.path());
+        let file = root.path().join("data.bin");
+        fs::write(&file, &data).unwrap();
+        let before = chunk_file(&mut sender, &file).unwrap();
+
+        // What the receiver holds is what the first carry stored.
+        let receiver = tempfile::tempdir().unwrap();
+        let mut theirs = open(receiver.path());
+        for chunk in &before.chunks {
+            let bytes = &data[chunk.offset as usize..chunk.end() as usize];
+            theirs.put_verified(chunk.hash, bytes, EvictionPriority::Bulk).unwrap();
+        }
+
+        let middle = data.len() / 2;
+        data[middle..middle + 64].fill(0xA5);
+        fs::write(&file, &data).unwrap();
+        let after = chunk_file(&mut sender, &file).unwrap();
+
+        let missing = lacking(&receiver.path().join(".cas"), &after);
+        assert!(!missing.is_empty(), "the edit changed at least one chunk");
+        assert!(
+            missing.len() <= 3 && missing.len() < after.chunks.len() / 2,
+            "{} of {} chunks lacking after a 64 byte edit",
+            missing.len(),
+            after.chunks.len()
+        );
+    }
+
+    #[test]
+    fn a_framed_chunk_reads_back_to_the_same_bytes_whatever_its_codec() {
+        let compressible = vec![7u8; 100_000];
+        let random = noise(5, 100_000);
+        for raw in [compressible, random, vec![1u8; 10]] {
+            let framed = frame_chunk(&raw).unwrap();
+            assert_eq!(unframe_chunk(&framed), Some(raw));
+        }
+        assert_eq!(unframe_chunk(&[9, 0, 0]), None);
+        assert_eq!(unframe_chunk(&[]), None);
+    }
+
+    #[test]
+    fn a_chunk_that_isnt_what_its_name_says_is_not_held_and_goes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = open(root.path());
+        let bytes = noise(6, 4000);
+        let hash = store.put(&bytes, EvictionPriority::Bulk).unwrap();
+        fs::write(store.chunk_path(&hash), &bytes[..100]).unwrap();
+        let chunk = ChunkRef { offset: 0, len: 4000, hash };
+
+        let found = chunk_bytes_of(&root.path().join("none"), &mut store, &chunk, "x").unwrap();
+
+        assert_eq!(found, None);
+        assert!(!store.chunk_path(&hash).exists());
+    }
+
+    #[test]
+    fn a_chunk_sent_arrives_whole_and_is_kept_for_the_next_move() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = open(root.path());
+        let bytes = noise(7, 50_000);
+        let hash = hash_bytes(&bytes);
+        let sent = root.path().join("chunks");
+        fs::create_dir_all(&sent).unwrap();
+        fs::write(sent.join(hash.to_hex()), frame_chunk(&bytes).unwrap()).unwrap();
+        let chunk = ChunkRef { offset: 0, len: 50_000, hash };
+
+        let found = chunk_bytes_of(&sent, &mut store, &chunk, "x").unwrap();
+
+        assert_eq!(found, Some(bytes.clone()));
+        assert_eq!(held_chunks(&root.path().join(".cas"), &[hash.to_hex()]), vec![hash.to_hex()]);
+        let later = chunk_bytes_of(&root.path().join("gone"), &mut store, &chunk, "x").unwrap();
+        assert_eq!(later, Some(bytes));
+    }
+
+    #[test]
+    fn an_empty_legacy_have_folder_is_removed_and_a_full_one_is_left() {
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("payments");
+        fs::create_dir_all(empty.join(CARRY_DIR).join(LEGACY_HAVE)).unwrap();
+        remove_empty_legacy(&empty);
+        assert!(!empty.join(CARRY_DIR).join(LEGACY_HAVE).exists());
+        assert!(empty.join(CARRY_DIR).exists(), "only the legacy folder goes");
+
+        let full = root.path().join("search");
+        fs::create_dir_all(full.join(CARRY_DIR).join(LEGACY_HAVE)).unwrap();
+        fs::write(full.join(CARRY_DIR).join(LEGACY_HAVE).join("a"), b"x").unwrap();
+        remove_empty_legacy(&full);
+        assert!(full.join(CARRY_DIR).join(LEGACY_HAVE).join("a").exists());
+    }
+
+    #[test]
+    fn the_store_is_beside_the_channel_folders_and_names_that_arent_hashes_are_not_held() {
+        assert_eq!(chunk_store_dir(Path::new("/r/Humata/payments")), PathBuf::from("/r/Humata/.cas"));
+        let root = tempfile::tempdir().unwrap();
+        assert!(held_chunks(&root.path().join("nothing"), &["zz".to_owned(), "a".repeat(64)]).is_empty());
     }
 }

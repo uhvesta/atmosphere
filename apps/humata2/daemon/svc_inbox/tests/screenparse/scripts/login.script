@@ -1,0 +1,6 @@
+# No login: the runner starts the agent with an empty home and no token.
+quiet 5000
+snap no_login unknown
+keys esc
+quiet 2500
+snap after_escape unknown

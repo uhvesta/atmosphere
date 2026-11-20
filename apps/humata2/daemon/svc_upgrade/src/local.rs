@@ -353,17 +353,19 @@ mod tests {
         let bin = dir.path().join("bin");
         let state = dir.path().join("state");
         std::fs::create_dir_all(&bin).unwrap();
-        let old_files: [(&str, &[u8]); 4] = [
+        let old_files: [(&str, &[u8]); 5] = [
             ("humatad2", b"daemon v1"),
             ("humata2_holder", b"holder v1"),
             ("humata", b"cli v1"),
             ("stack", b"stack v1"),
+            ("humata2_fusefs", b"fusefs v1"),
         ];
-        let new_files: [(&str, &[u8]); 4] = [
+        let new_files: [(&str, &[u8]); 5] = [
             ("humatad2", b"daemon v2"),
             ("humata2_holder", b"holder v2"),
             ("humata", b"cli v2"),
             ("stack", b"stack v2"),
+            ("humata2_fusefs", b"fusefs v2"),
         ];
         write_release(&bin, "", &old_files);
         let to_bundle = write_release(&bin, ".next", &new_files);

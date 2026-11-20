@@ -924,7 +924,16 @@ review) are in §11.
   the second the
   "Create a channel" and "Add, create, start or stop machines" rows. No
   channel is a Desk agent's own: the IN-17 rows about "its channel" give it
-  nothing. (provisional, D108)
+  nothing. The exception is the two "Start or fork sessions" rows, which
+  apply to any channel. A Desk agent may start or fork a session in any
+  channel, on this machine or another. The rule decides (Ask me by
+  default), so the owner approves each start in the Inbox, and the card
+  names the channel and machine. Never still wins, and neither DK-4 switch
+  allows it. **Always allow** grants that agent on that machine in any
+  channel, and the option says so. A fork also reads the parent's conversation, so it is refused
+  when the Desk's "Global board, or other channels and their boards: read"
+  rule is Never (D910).
+  (provisional, D108)
 - **DK-11** **Close session** (the session menu) is the Desk's Archive. It
   stops the agent and the terminals and keeps the record, conversation and
   scrollback as archiving does (LD-2), but leaves the folder in place. The

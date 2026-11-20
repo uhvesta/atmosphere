@@ -6,7 +6,7 @@
 //! - `browser_click` (`Write`)
 //! - `browser_type` (`Write`)
 //! - `browser_navigate` (`Write`)
-//! - `browser_guide_highlight` (`Write`)
+//! - `browser_guide_highlight` (`Read`: it only draws an overlay)
 
 use std::collections::HashMap;
 
@@ -108,8 +108,8 @@ pub fn tool_schemas() -> Vec<McpToolSchema> {
         },
         McpToolSchema {
             name: "browser_guide_highlight".to_string(),
-            description: "Highlight an on-page element with a dismissible callout bubble to visually guide the user (requires per-action Agent Inbox approval).".to_string(),
-            action_class: ActionClass::Write,
+            description: "Highlight an on-page element with a dismissible callout bubble to visually guide the user (requires Agent Inbox approval; a 30-minute read grant covers it).".to_string(),
+            action_class: ActionClass::Read,
             input_schema: json!({
                 "type": "object",
                 "required": ["url", "selector", "title", "body"],
@@ -628,8 +628,8 @@ mod tests {
             })
         ));
 
-        // 3. Write tool (`browser_guide_highlight`) MUST still ask for per-action approval.
-        let guide_ask = match dispatcher
+        // 3. Guide highlight is a Read, so the active 30-min grant covers it.
+        let guide_outcome = dispatcher
             .call_tool(
                 "claude",
                 "browser_guide_highlight",
@@ -643,35 +643,9 @@ mod tests {
                 }),
                 t0 + 61_000,
             )
-            .unwrap()
-        {
-            DispatchOutcome::PendingApproval(ask) => ask,
-            other => panic!("Write must require approval, got {other:?}"),
-        };
-        assert_eq!(guide_ask.action_class, ActionClass::Write);
-        assert_eq!(
-            guide_ask.allowed_decisions,
-            vec![Decision::AllowOnce, Decision::Deny]
-        );
-
-        // AllowFor30Min is rejected on write.
-        assert!(matches!(
-            dispatcher.resolve_and_execute(
-                &guide_ask.ask_id,
-                Decision::AllowFor30Min,
-                t0 + 61_500
-            ),
-            Err(DispatchError::Policy(
-                PolicyError::WriteRequiresPerActionApproval
-            ))
-        ));
-
-        // AllowOnce executes the visual guide highlight.
-        let guide_exec = dispatcher
-            .resolve_and_execute(&guide_ask.ask_id, Decision::AllowOnce, t0 + 62_000)
             .unwrap();
         assert!(matches!(
-            guide_exec,
+            guide_outcome,
             DispatchOutcome::Executed(BrowserReply {
                 ok: true,
                 payload: Some(BrowserReplyPayload::Highlight { .. }),
@@ -680,7 +654,55 @@ mod tests {
         ));
         assert_eq!(dispatcher.transport().displayed_highlights.len(), 1);
 
-        // 4. Unsupported agent is rejected before touching transport.
+        // 4. Write tool (`browser_click`) MUST still ask for per-action approval.
+        let click_ask = match dispatcher
+            .call_tool(
+                "claude",
+                "browser_click",
+                json!({
+                    "tab_id": 1,
+                    "url": "https://app.humata.example/projects",
+                    "selector": "button#new-project"
+                }),
+                t0 + 62_000,
+            )
+            .unwrap()
+        {
+            DispatchOutcome::PendingApproval(ask) => ask,
+            other => panic!("Write must require approval, got {other:?}"),
+        };
+        assert_eq!(click_ask.action_class, ActionClass::Write);
+        assert_eq!(
+            click_ask.allowed_decisions,
+            vec![Decision::AllowOnce, Decision::Deny]
+        );
+
+        // AllowFor30Min is rejected on write.
+        assert!(matches!(
+            dispatcher.resolve_and_execute(
+                &click_ask.ask_id,
+                Decision::AllowFor30Min,
+                t0 + 62_500
+            ),
+            Err(DispatchError::Policy(
+                PolicyError::WriteRequiresPerActionApproval
+            ))
+        ));
+
+        // AllowOnce executes the click.
+        let click_exec = dispatcher
+            .resolve_and_execute(&click_ask.ask_id, Decision::AllowOnce, t0 + 63_000)
+            .unwrap();
+        assert!(matches!(
+            click_exec,
+            DispatchOutcome::Executed(BrowserReply {
+                ok: true,
+                payload: Some(BrowserReplyPayload::ActionAck { .. }),
+                ..
+            })
+        ));
+
+        // 5. Unsupported agent is rejected before touching transport.
         assert!(matches!(
             dispatcher.call_tool("unknown-agent", "browser_list_tabs", json!({}), t0 + 63_000),
             Err(DispatchError::Policy(PolicyError::UnsupportedAgent(_)))

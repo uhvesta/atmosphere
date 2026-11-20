@@ -48,13 +48,14 @@ const MANUAL: &[(&str, &str)] = &[("HUMATA2_AUTO_MIGRATE", "0")];
 /// safety net, never a time anything is expected to take.
 const LONG: Duration = Duration::from_secs(90);
 
-/// A release's four files: the installed name, the test binary that is
+/// A release's five files: the installed name, the test binary that is
 /// this platform's file, and the file as the machines crate names it.
-const FILES: [(&str, &str, InstalledFile); 4] = [
+const FILES: [(&str, &str, InstalledFile); 5] = [
     ("humatad2", "HUMATAD2", InstalledFile::Humatad),
     ("humata2_holder", "HUMATA2_HOLDER", InstalledFile::Holder),
     ("humata", "HUMATA", InstalledFile::Cli),
     ("stack", "STACK", InstalledFile::Stack),
+    ("humata2_fusefs", "HUMATA2_FUSEFS", InstalledFile::FuseFs),
 ];
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ fn put_file(variable: &str, to: &Path) {
     std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).expect("the file is made runnable");
 }
 
-/// This platform's three files installed in `bin` with no `bundle.json`.
+/// This platform's files installed in `bin` with no `bundle.json`.
 fn install_files(bin: &Path) {
     std::fs::create_dir_all(bin).expect("the bin folder is made");
     for (name, variable, _) in FILES {
@@ -455,6 +456,19 @@ async fn an_installed_holder_that_is_not_the_releases_is_one_host_tools_item_for
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_installed_fusefs_helper_that_is_not_the_releases_is_one_host_tools_item_for_this_machine() {
+    let mac = Mac::bare().await;
+
+    swap_in(&mac.bin, "humata2_fusefs", &foreign("humata2_fusefs"));
+
+    let item = mac.item(pb::MigrateThing::HostTools).await;
+    assert_eq!(card(&item).machine.as_ref(), Some(&mac.machine));
+    let items = upgrade::inbox(&mac.daemon).await;
+    assert_eq!(pending(&items, pb::MigrateThing::HostTools, &mac.machine), 1, "{items:?}");
+    assert_eq!(pending(&items, pb::MigrateThing::Daemon, &mac.machine), 0, "{items:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn putting_the_releases_cli_back_withdraws_its_item_as_resolved() {
     let mac = Mac::bare().await;
     swap_in(&mac.bin, "humata", &foreign("humata"));
@@ -573,7 +587,7 @@ async fn box_at_the_hosts_release() -> (remote_rig::Rig, PathBuf, PathBuf) {
     let release = upgrade_rig::host_at_tools_release(&mut rig).await;
     let tools = rig.host.dir.path().join("tools").join("linux-x86_64");
     let bin = upgrade::machine_bin(rig.the(BOX).home());
-    for name in ["humata2_holder", "humata"] {
+    for name in ["humata2_holder", "humata", "humata2_fusefs"] {
         let bytes = std::fs::read(tools.join(name)).unwrap_or_else(|error| panic!("the release's {name} reads: {error}"));
         swap_in(&bin, name, &bytes);
     }

@@ -54,6 +54,7 @@ async fn a_daemon_whose_binary_is_its_platforms_entry_names_the_bundle() {
         ("humata2_holder".to_owned(), upgrade::sha256_of(&common::binary("HUMATA2_HOLDER"))),
         ("humatad2".to_owned(), upgrade::admin_sha()),
         ("stack".to_owned(), upgrade::sha256_of(&common::binary("STACK"))),
+        ("humata2_fusefs".to_owned(), upgrade::sha256_of(&common::binary("HUMATA2_FUSEFS"))),
     ];
     expected.sort();
     assert_eq!(files, expected, "the bundle's files for this platform");

@@ -483,6 +483,9 @@ pub trait DeskSessionPort: Send + Sync {
     async fn agent_ready(&self, agents: &Agents, agent: &str) -> Result<(), Status>;
     /// Refuses an agent whose switch is off (`agent_gate::enabled`).
     fn agent_enabled(&self, agents: &Agents, agent: &str) -> Result<(), Status>;
+    /// The first of `preferred` that is on, else the first agent that is on
+    /// (`agent_gate::pick`); every agent off is refused.
+    fn pick_agent(&self, agents: &Agents, preferred: &[String]) -> Result<String, Status>;
     /// Watches `session`'s agent the way a channel session's is watched (SE-21).
     fn watch_agent(&self, session: String);
     /// What the agent of `session`, running in holder `holder_pid`, is doing

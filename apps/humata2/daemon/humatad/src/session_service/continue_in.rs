@@ -102,6 +102,10 @@ impl SessionSvc {
             return self.continue_there(caller, &source.record, &channel, request, approved).await;
         }
         let agent = source.record.agent.clone();
+        // AGENTOFF: continuing starts this agent again in the new channel.
+        crate::agent_gate::enabled_or(&self.starter.agents, &agent, |display| {
+            crate::agent_gate::GateError::ContinueAgentOff { display }
+        })?;
         if source
             .agent
             .as_ref()

@@ -40,6 +40,9 @@ const CODEX_DAY: &str = "sessions/2026/11/16";
 /// test put there is what a copy carries. Asked its version, it prints what
 /// [`VERSION_FILE`] beside it holds, else a Copilot version Humata knows.
 const AGENT: &str = r#"mode=$1; f=$2
+# A file under the CLI's own home is given as the variable naming that home
+# (the session's composed one) and the path under it.
+if [ -n "${3:-}" ]; then eval "f=\"\${$2}/$3\""; fi
 case "$mode" in
   --version) if [ -f "$0.version" ]; then cat "$0.version"; else echo "GitHub Copilot CLI 1.0.112-0."; fi; exit 0 ;;
   --session-id) mkdir -p "$(dirname "$f")"; : > "$f" ;;
@@ -166,15 +169,20 @@ fn copilot_transcript(id: &str, folder: &Path) -> String {
 /// Settings › Agents: the test agent as Claude, Codex and Copilot, each
 /// keeping its conversation where that CLI does (Claude's by folder, in the
 /// world's conversations folder).
-fn write_agents(world: &World, home: &Path) {
+fn write_agents(world: &World) {
     let script = world.root.join("continue-agent.sh");
     std::fs::write(&script, AGENT).unwrap();
-    let agent = |name: &str, format: &str, file: String, arg: String| {
+    // `args` locate the file as the agent finds it: an absolute path, or
+    // its home's variable and the path under it, since each session runs
+    // with a composed home of its own.
+    let agent = |name: &str, format: &str, file: String, args: Vec<String>| {
+        let start_args = [vec![script.display().to_string(), "--session-id".to_owned()], args.clone()].concat();
+        let resume_args = [vec![script.display().to_string(), "--resume".to_owned()], args].concat();
         serde_json::json!({
             "name": name,
             "program": "/bin/sh",
-            "start_args": [script, "--session-id", arg],
-            "resume_args": [script, "--resume", arg],
+            "start_args": start_args,
+            "resume_args": resume_args,
             "conversation_file": file,
             "conversation_format": format,
             "version_args": [],
@@ -188,16 +196,16 @@ fn write_agents(world: &World, home: &Path) {
         COPILOT,
         "copilot-session-state",
         format!("{{home}}/.copilot/{copilot}"),
-        format!("{}/.copilot/{copilot}", home.display()),
+        vec!["COPILOT_HOME".to_owned(), copilot.to_owned()],
     );
     copilot_agent["version_args"] = serde_json::json!([script, "--version"]);
     let agents = serde_json::json!([
-        agent(CLAUDE, "claude-jsonl", claude.clone(), claude),
+        agent(CLAUDE, "claude-jsonl", claude.clone(), vec![claude]),
         agent(
             CODEX,
             "codex-rollout",
             format!("{{home}}/.codex/{codex}"),
-            format!("{}/.codex/{codex}", home.display()),
+            vec!["CODEX_HOME".to_owned(), codex.clone()],
         ),
         copilot_agent,
     ]);
@@ -281,7 +289,7 @@ impl Fixture {
         let dir = folder();
         let world = World::new(dir.path());
         let home = dir.path().join("home");
-        write_agents(&world, &home);
+        write_agents(&world);
         world.remote("acme", "api");
         world.remote("acme", "web");
         let env = home_env(&home);
@@ -374,7 +382,7 @@ impl Fixture {
                 "the agent never made its conversation file {}",
                 launch.conversation_file.display()
             );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         std::fs::write(&launch.conversation_file, &text).unwrap();
         Source { id, conversation: launch.conversation_id, file: launch.conversation_file, text }
@@ -507,14 +515,22 @@ async fn continues(agent: &str, before_turn: u32, kept: &[&str], cut: &[&str]) {
         assert!(!copy.contains(prompt), "the copy stops before {prompt:?}:\n{copy}");
     }
     if agent == CODEX {
-        assert!(launch.conversation_file.starts_with(fixture.home.join(".codex/sessions")));
+        assert!(in_own_home(&launch.conversation_file, &id.value, "codex/sessions"), "{}", launch.conversation_file.display());
         assert!(!copy.contains(&source.conversation), "the rollout names its new id only:\n{copy}");
     }
     if agent == COPILOT {
-        assert!(launch.conversation_file.starts_with(fixture.home.join(".copilot/session-state")));
+        assert!(in_own_home(&launch.conversation_file, &id.value, "copilot/session-state"), "{}", launch.conversation_file.display());
         assert!(!copy.contains(&source.conversation), "the session state names its new id only:\n{copy}");
     }
     fixture.assert_source_untouched(&source).await;
+}
+
+/// Whether `file` is under session `session`'s own composed config home
+/// (`<machine root>/.sessions/<session>/config/<agent>`) at `under`, where
+/// the agent keeps its conversations (A3f).
+fn in_own_home(file: &std::path::Path, session: &str, under: &str) -> bool {
+    let place = std::path::Path::new(".sessions").join(session).join("config").join(under);
+    file.ancestors().any(|dir| dir.ends_with(&place))
 }
 
 /// A session of `agent` lists the three prompts as its turns, in order.

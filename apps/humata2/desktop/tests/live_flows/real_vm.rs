@@ -59,7 +59,7 @@ use super::{App, runtime};
 
 /// The most the install and the machine's first link take: the add sends
 /// real binaries over a 1-CPU VM's ssh.
-const INSTALL: Duration = Duration::from_secs(300);
+pub(super) const INSTALL: Duration = Duration::from_secs(300);
 /// What the tab says while its machine is out of reach.
 const LOST: &str = "Lost the connection to";
 /// The host name the daemon is told to add; the temp ssh config defines it.
@@ -73,7 +73,7 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 /// Why the VM fixture couldn't be set up or driven. Tests stop on any of
 /// these.
 #[derive(Debug, thiserror::Error)]
-enum VmError {
+pub(super) enum VmError {
     /// A needed setting is missing from the test's environment.
     #[error("{what}: {fix}")]
     Setup { what: String, fix: String },
@@ -134,14 +134,14 @@ fn quote(text: &str) -> String {
 
 /// The ssh the test uses as the VM's admin (the Lima user, who has
 /// passwordless sudo).
-struct Admin {
-    config: PathBuf,
-    host: String,
+pub(super) struct Admin {
+    pub(super) config: PathBuf,
+    pub(super) host: String,
 }
 
 impl Admin {
     /// Runs `script` on the VM as the Lima user and returns what it printed.
-    fn run(&self, step: &str, script: &str) -> Result<String, VmError> {
+    pub(super) fn run(&self, step: &str, script: &str) -> Result<String, VmError> {
         let output = Command::new("/usr/bin/ssh")
             .arg("-F")
             .arg(&self.config)
@@ -174,7 +174,7 @@ impl Admin {
 /// user gets the same uid back from `useradd`: its `enable-linger` lands on
 /// the closing user, which starts no `user@<uid>.service`, and the stop
 /// that follows takes the new user's runtime folder too.
-const CLEANUP: &str = r#"h2e_forget_uid() {
+const CLEANUP: &str = r##"h2e_forget_uid() {
   i=0
   while loginctl show-user "$1" >/dev/null 2>&1 && [ "$i" -lt 150 ]; do i=$((i+1)); sleep 0.2; done
   sudo systemctl reset-failed "user@$1.service" "user-runtime-dir@$1.service" 2>/dev/null || true
@@ -188,11 +188,15 @@ h2e_cleanup() {
   i=0
   while sudo pgrep -u "$u" >/dev/null 2>&1 && [ "$i" -lt 50 ]; do i=$((i+1)); sleep 0.2; done
   [ -z "$uid" ] || h2e_forget_uid "$uid"
+  if grep -q "# h2e-$u\$" /etc/fstab 2>/dev/null; then
+    sudo sed -i "/# h2e-$u\$/d" /etc/fstab
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
   sudo umount "$base/home" 2>/dev/null || sudo umount -l "$base/home" 2>/dev/null || true
   sudo userdel "$u" 2>/dev/null || true
   sudo rm -rf --one-file-system "$base"
 }
-"#;
+"##;
 
 /// A random-looking 8 hex digits: this process, the clock and a counter,
 /// hashed. Two tests in one process never share one.
@@ -278,12 +282,13 @@ fn public_keys(config: &Path, block: &[(String, String)]) -> Result<Vec<String>,
 
 /// The VM, one throwaway user on it, and the host daemon (admin build) that
 /// reaches it over the real `ssh`.
-struct Vm {
-    admin: Admin,
-    user: String,
-    base: String,
-    name: String,
-    dir: tempfile::TempDir,
+pub(super) struct Vm {
+    pub(super) admin: Admin,
+    pub(super) user: String,
+    pub(super) base: String,
+    /// The machine's name on the host.
+    pub(super) name: String,
+    pub(super) dir: tempfile::TempDir,
     daemon: Option<Child>,
     /// Released last, after the VM is clean.
     _one_at_a_time: MutexGuard<'static, ()>,
@@ -293,6 +298,16 @@ impl Vm {
     /// Checks the VM, makes the user, starts the host daemon and adds the
     /// VM as a machine; returns once the host shows it online.
     async fn start(config: PathBuf) -> Result<Self, VmError> {
+        let host = std::env::var("TERMINAL_LAB_SSH_HOST").unwrap_or_else(|_| "lima-h2-terminal-c1".to_owned());
+        Self::start_on(config, host, false).await
+    }
+
+    /// The same on the Lima host `host` of the ssh config `config`. With
+    /// `fuse_vm` (a VM that is power-cut and boots again) the throwaway
+    /// user's home image is also put in `/etc/fstab`, so it is mounted
+    /// again before the user's service manager starts, and the VM needs no
+    /// `vim` or `less`.
+    pub(super) async fn start_on(config: PathBuf, host: String, fuse_vm: bool) -> Result<Self, VmError> {
         let tools = std::env::var_os("HUMATA2_TOOLS").map(PathBuf::from);
         let tools = match tools.and_then(|path| std::fs::canonicalize(path).ok()) {
             Some(tools) if tools.join("linux-aarch64").is_dir() && tools.join("manifest.json").is_file() => tools,
@@ -303,7 +318,6 @@ impl Vm {
                 });
             }
         };
-        let host = std::env::var("TERMINAL_LAB_SSH_HOST").unwrap_or_else(|_| "lima-h2-terminal-c1".to_owned());
         let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let hex = unique_hex();
         let user = format!("h2e{hex}");
@@ -324,11 +338,11 @@ impl Vm {
             daemon: None,
             _one_at_a_time: guard,
         };
-        vm.preflight()?;
+        vm.preflight(fuse_vm)?;
         vm.sweep()?;
         let block = lima_block(&config, &vm.admin.host)?;
         let keys = public_keys(&config, &block)?;
-        vm.make_user(&keys)?;
+        vm.make_user(&keys, fuse_vm)?;
         vm.write_host_files(&config, &block)?;
         vm.spawn_daemon(&tools).await?;
         vm.add_machine().await?;
@@ -336,7 +350,7 @@ impl Vm {
     }
 
     /// The VM is arm64, has room, and has the programs the tests type.
-    fn preflight(&self) -> Result<(), VmError> {
+    fn preflight(&self, fuse_vm: bool) -> Result<(), VmError> {
         let arch = self.admin.run("check the VM's architecture", "uname -m")?;
         if arch.trim() != "aarch64" {
             return Err(VmError::Arch { found: arch.trim().to_owned() });
@@ -348,7 +362,7 @@ impl Vm {
         if free_mib < NEED_FREE_MIB {
             return Err(VmError::DiskLow { free_mib, need_mib: NEED_FREE_MIB });
         }
-        for tool in ["vim", "less"] {
+        for tool in ["vim", "less"].into_iter().filter(|_| !fuse_vm) {
             self.admin
                 .run("look for a program", &format!("command -v {tool} >/dev/null"))
                 .map_err(|_| VmError::NoTool { tool })?;
@@ -366,8 +380,9 @@ impl Vm {
 
     /// The throwaway user: its home is a mounted sparse image, it takes the
     /// test's keys, and its systemd --user manager runs.
-    fn make_user(&self, keys: &[String]) -> Result<(), VmError> {
+    fn make_user(&self, keys: &[String], fuse_vm: bool) -> Result<(), VmError> {
         let keys = keys.join("\n");
+        let persist = if fuse_vm { "yes" } else { "no" };
         let script = format!(
             r#"{CLEANUP}set -eu
 u={user}; base={base}
@@ -375,6 +390,10 @@ sudo mkdir -p "$base/home"
 sudo truncate -s 3G "$base/home.img"
 sudo /usr/sbin/mkfs.ext4 -q -F -m 0 "$base/home.img"
 sudo mount -o loop "$base/home.img" "$base/home"
+if [ {persist} = yes ]; then
+  printf '%s %s ext4 loop,nofail 0 0 # h2e-%s\n' "$base/home.img" "$base/home" "$u" | sudo tee -a /etc/fstab >/dev/null
+  sudo systemctl daemon-reload
+fi
 sudo /usr/sbin/useradd -M -d "$base/home" -s /bin/bash "$u"
 sudo chown "$u:" "$base/home"
 sudo chmod 700 "$base/home"
@@ -397,6 +416,7 @@ done
             user = quote(&self.user),
             base = quote(&self.base),
             keys = quote(&keys),
+            persist = persist,
         );
         self.admin.run("make the throwaway user", &script).map(drop)
     }
@@ -479,18 +499,18 @@ done
         Ok(())
     }
 
-    fn socket(&self) -> PathBuf {
+    pub(super) fn socket(&self) -> PathBuf {
         self.dir.path().join("d.sock")
     }
 
     /// Clients on the host daemon, the real machines client included.
-    async fn clients(&self) -> Result<Clients, VmError> {
+    pub(super) async fn clients(&self) -> Result<Clients, VmError> {
         live_clients(self.socket(), true)
             .await
             .map_err(|source| VmError::World { step: "connect to the host daemon", source })
     }
 
-    async fn host_channel(&self) -> Result<Channel, VmError> {
+    pub(super) async fn host_channel(&self) -> Result<Channel, VmError> {
         let path = self.socket();
         Endpoint::from_static("http://[::]:50051")
             .connect_with_connector(tower::service_fn(move |_: Uri| {
@@ -606,7 +626,7 @@ done
 
     /// Runs `script` on the VM as the throwaway user, in its home, and
     /// returns what it printed.
-    fn on_vm(&self, script: &str) -> Result<String, VmError> {
+    pub(super) fn on_vm(&self, script: &str) -> Result<String, VmError> {
         let inner = format!("sudo -u {} -H sh -c {}", quote(&self.user), quote(script));
         self.admin.run("run a command as the throwaway user", &inner)
     }
@@ -616,15 +636,23 @@ done
     /// so no dial can get through. Only this run's link is killed: its
     /// command line has this run's ssh config and the machine daemon's
     /// `serve --stdio`.
-    fn cut_link(&self) {
+    pub(super) fn cut_link(&self) {
         let _ = std::fs::write(self.dir.path().join("hang"), b"");
         let pattern = format!("-F {}/ssh_config.*serve --stdio", self.dir.path().display());
         let _ = Command::new("pkill").args(["-f", "--", &pattern]).status();
     }
 
     /// Lets the host's dials reach the VM again; the redial is the host's own.
-    fn restore_link(&self) {
+    pub(super) fn restore_link(&self) {
         let _ = std::fs::remove_file(self.dir.path().join("hang"));
+    }
+
+    /// Writes the ssh config for this user again from Lima's current one:
+    /// Lima picks a new local port each time the VM starts.
+    pub(super) fn refresh_link_config(&self) -> Result<(), VmError> {
+        let config = self.admin.config.clone();
+        let block = lima_block(&config, &self.admin.host)?;
+        self.write_host_files(&config, &block)
     }
 }
 
@@ -657,16 +685,21 @@ fn gate() -> Option<PathBuf> {
 
 /// The VM fixture, clients on its host, the VM's machine and the channel
 /// holding it and This Mac.
-struct Rig {
-    vm: Vm,
-    clients: Clients,
-    machine: MachineId,
+pub(super) struct Rig {
+    pub(super) vm: Vm,
+    pub(super) clients: Clients,
+    pub(super) machine: MachineId,
     #[allow(dead_code)]
-    channel: ChannelId,
+    pub(super) channel: ChannelId,
 }
 
 async fn rig(config: PathBuf) -> Rig {
     let vm = Vm::start(config).await.expect("set up the VM and add it as a machine");
+    rig_of(vm).await
+}
+
+/// The rig of an already started VM.
+pub(super) async fn rig_of(vm: Vm) -> Rig {
     let clients = vm.clients().await.expect("connect to the host");
     let workspace = clients.daemon.load().await.expect("load");
     let find = |pick: &dyn Fn(&str) -> bool| -> MachineId {
@@ -689,7 +722,7 @@ async fn rig(config: PathBuf) -> Rig {
     Rig { vm, clients, machine, channel }
 }
 
-fn activate(app: &mut App<'_>) {
+pub(super) fn activate(app: &mut App<'_>) {
     app.cx
         .update_window(app.window, |_, window, _| window.activate_window())
         .expect("the window stays open");
@@ -717,7 +750,7 @@ fn toasts_saying(app: &App<'_>, what: &str) -> usize {
 
 /// Clicks the terminal, so keys go to it (what a person does on a tab that
 /// opened before the window did).
-fn focus_terminal(app: &mut App<'_>) {
+pub(super) fn focus_terminal(app: &mut App<'_>) {
     app.cx
         .update_window(app.window, |_, window, cx| {
             window
@@ -731,7 +764,7 @@ fn focus_terminal(app: &mut App<'_>) {
 /// The values printed as `<tag><digits and x>q`: the run after `tag` that
 /// holds a digit first and ends at a `q`. The typed line has `$$` or `$(`
 /// after the tag, never digits, so only the shell's answers match.
-fn tagged(view: &str, tag: &str) -> Vec<String> {
+pub(super) fn tagged(view: &str, tag: &str) -> Vec<String> {
     view.match_indices(tag)
         .filter_map(|(at, _)| {
             let rest = &view[at + tag.len()..];
@@ -743,7 +776,7 @@ fn tagged(view: &str, tag: &str) -> Vec<String> {
 }
 
 /// Has the shell print its own process id as `<tag><pid>q` and returns it.
-fn shell_pid(app: &mut App<'_>, tag: &str) -> u32 {
+pub(super) fn shell_pid(app: &mut App<'_>, tag: &str) -> u32 {
     run(app, &format!("echo {tag}$$q"));
     let label = format!("the shell to print its process id as {tag}<pid>q");
     app.wait_within(&label, LONG, |app| {
@@ -760,7 +793,7 @@ fn shell_pid(app: &mut App<'_>, tag: &str) -> u32 {
 /// Real/02 step 1: the VM's machine page's Open a shell starts a Terminal
 /// session on the VM; returns it once its prompt shows. Keys typed before
 /// the first screen are refused (never queued), so it waits for a prompt.
-fn open_a_shell_on_the_vm(app: &mut App<'_>, vm: &MachineId) -> SessionId {
+pub(super) fn open_a_shell_on_the_vm(app: &mut App<'_>, vm: &MachineId) -> SessionId {
     app.wait_within("the VM to load online in the app", LONG, |app| {
         app.ui
             .read(|state| state.workspace.machines.iter().any(|m| &m.id == vm && m.online))

@@ -27,7 +27,7 @@ enum Glyph {
 /// End for good's, which is Archive's, keeps the archive.
 fn glyph(action: Option<&ToastAction>, status_of: impl Fn(&SessionId) -> Option<Status>) -> Glyph {
     match action {
-        None => Glyph::Info,
+        None | Some(ToastAction::OpenAgentSettings) => Glyph::Info,
         Some(ToastAction::Close(CloseThen::ResumeAgent(_) | CloseThen::ResumeShell { .. })) => {
             Glyph::Status(Status::AgentStopped)
         }
@@ -43,6 +43,7 @@ fn glyph(action: Option<&ToastAction>, status_of: impl Fn(&SessionId) -> Option<
 fn action_label(action: Option<&ToastAction>, working: bool) -> &'static str {
     match action {
         Some(ToastAction::OpenReport(_)) => "Add details",
+        Some(ToastAction::OpenAgentSettings) => "Open Settings",
         Some(ToastAction::Close(CloseThen::Open { .. })) => "Open",
         Some(ToastAction::Close(CloseThen::ResumeAgent(_) | CloseThen::ResumeShell { .. })) => "Resume",
         _ if working => "Restoring…",

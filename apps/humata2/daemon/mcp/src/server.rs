@@ -288,9 +288,13 @@ impl<D: Daemon> Shared<D> {
                     if method == "tools/list" {
                         let _ = self.ensure_bound().await;
                     }
-                    let reply = match answer(&method, &params, self.list_changed, |operation| {
-                        self.daemon.serves(operation)
-                    }) {
+                    let reply = match answer(
+                        &method,
+                        &params,
+                        self.list_changed,
+                        fuse_root_is_mounted(),
+                        |operation| self.daemon.serves(operation),
+                    ) {
                         Ok(result) => jsonrpc::result(&id, result),
                         Err(error) => jsonrpc::error(&id, &error),
                     };
@@ -559,10 +563,11 @@ fn answer(
     method: &str,
     params: &Value,
     list_changed: bool,
+    mounted: bool,
     serves: impl Fn(Operation) -> bool,
 ) -> Result<Value, RpcError> {
     match method {
-        "initialize" => Ok(initialize(params, list_changed)),
+        "initialize" => Ok(initialize(params, list_changed, mounted)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools::list(serves)),
         _ => Err(RpcError::new(
@@ -573,7 +578,19 @@ fn answer(
     }
 }
 
-fn initialize(params: &Value, list_changed: bool) -> Value {
+/// Whether Humata's folder is mounted for this agent: the daemon launches an
+/// agent with `HUMATA_FUSE_ROOT` only while the mount is set up, and this
+/// server runs inside the agent's process tree with its environment. A
+/// missing variable or an empty folder (nothing mounted there) is "not
+/// mounted".
+fn fuse_root_is_mounted() -> bool {
+    let Some(root) = std::env::var_os("HUMATA_FUSE_ROOT") else {
+        return false;
+    };
+    std::fs::read_dir(root).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+fn initialize(params: &Value, list_changed: bool, mounted: bool) -> Value {
     let asked = params.get("protocolVersion").and_then(Value::as_str);
     let version = PROTOCOL_VERSIONS
         .iter()
@@ -584,9 +601,17 @@ fn initialize(params: &Value, list_changed: bool) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": list_changed } },
         "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
-        "instructions": INSTRUCTIONS,
+        "instructions": if mounted {
+            INSTRUCTIONS.to_owned()
+        } else {
+            format!("{INSTRUCTIONS} {NO_MOUNT}")
+        },
     })
 }
+
+/// Added to the instructions when Humata's folder isn't mounted here.
+/// It names no path or folder (D743), so it names the tools by their family.
+const NO_MOUNT: &str = "Humata's files aren't mounted on this machine: use the files tools (files_list, file_read, file_write, files_find, file_fetch and the rest) or `humata files` for shared, channel, main, other sessions, Desk and trash.";
 
 /// What every agent is told of these tools when it connects (D748): what
 /// they do, and never where the session's repos or folder are (D743). An
@@ -641,6 +666,15 @@ mod tests {
             }
             true
         }
+    }
+
+    #[test]
+    fn instructions_name_the_files_fallback_only_when_nothing_is_mounted() {
+        let params = json!({ "protocolVersion": "2025-06-18" });
+        let text = |mounted| initialize(&params, false, mounted)["instructions"].as_str().unwrap().to_owned();
+        assert!(text(false).contains(NO_MOUNT));
+        assert!(text(false).contains("files_list"));
+        assert!(!text(true).contains(NO_MOUNT));
     }
 
     #[tokio::test]

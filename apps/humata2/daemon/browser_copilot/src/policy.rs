@@ -1,12 +1,14 @@
 //! Agent Inbox Permission Policy for Humata 2 Native Browser Co-Pilot.
 //!
 //! Strictly scoped to `claude`, `codex`, `copilot`, and `agy`:
-//! - **Read actions** (`ListTabs`, `ReadTab`) may be granted `AllowOnce` or a
-//!   30-minute session grant (`AllowFor30Min`, 1,800,000 ms).
-//! - **Write actions** (`Click`, `Type`, `Navigate`, `Submit`, `HighlightGuide`)
-//!   NEVER cache or accept `AllowFor30Min` and ALWAYS emit a per-action
-//!   `BrowserInboxAsk` containing exact target URL, selector/element preview,
-//!   and action summary, offering ONLY `AllowOnce` or `Deny`.
+//! - **Read actions** (`ListTabs`, `ReadTab`, `HighlightGuide`) may be granted
+//!   `AllowOnce` or a 30-minute session grant (`AllowFor30Min`, 1,800,000 ms).
+//!   `HighlightGuide` only draws a dismissible overlay on the page and does not
+//!   change the page's state.
+//! - **Write actions** (`Click`, `Type`, `Navigate`, `Submit`) NEVER cache or
+//!   accept `AllowFor30Min` and ALWAYS emit a per-action `BrowserInboxAsk`
+//!   containing exact target URL, selector/element preview, and action summary,
+//!   offering ONLY `AllowOnce` or `Deny`.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -70,12 +72,13 @@ impl ActionClass {
     /// Classifies a `BrowserAction` into `Read` or `Write`.
     pub const fn classify(action: &BrowserAction) -> Self {
         match action {
-            BrowserAction::ListTabs | BrowserAction::ReadTab { .. } => ActionClass::Read,
+            BrowserAction::ListTabs
+            | BrowserAction::ReadTab { .. }
+            | BrowserAction::HighlightGuide { .. } => ActionClass::Read,
             BrowserAction::Click { .. }
             | BrowserAction::Type { .. }
             | BrowserAction::Navigate { .. }
-            | BrowserAction::Submit { .. }
-            | BrowserAction::HighlightGuide { .. } => ActionClass::Write,
+            | BrowserAction::Submit { .. } => ActionClass::Write,
         }
     }
 }
@@ -217,25 +220,24 @@ impl PermissionGate {
     ) -> Result<ApprovalOutcome, PolicyError> {
         let pending = self
             .pending_asks
-            .get(ask_id)
+            .remove(ask_id)
             .ok_or_else(|| PolicyError::UnknownAskId(ask_id.to_string()))?;
 
-        if pending.action_class == ActionClass::Write && decision == Decision::AllowFor30Min {
-            return Err(PolicyError::WriteRequiresPerActionApproval);
-        }
-
-        let pending = self.pending_asks.remove(ask_id).expect("checked above");
         match (pending.action_class, decision) {
             (_, Decision::Deny) => Ok(ApprovalOutcome::Denied),
-            (ActionClass::Read, Decision::AllowOnce) => Ok(ApprovalOutcome::ApprovedOnce),
+            (ActionClass::Read | ActionClass::Write, Decision::AllowOnce) => {
+                Ok(ApprovalOutcome::ApprovedOnce)
+            }
             (ActionClass::Read, Decision::AllowFor30Min) => {
                 let expires_at_ms = now_ms.saturating_add(READ_GRANT_TTL_MS);
                 self.read_grants.insert(pending.agent, expires_at_ms);
                 Ok(ApprovalOutcome::ApprovedWithSessionGrant { expires_at_ms })
             }
-            (ActionClass::Write, Decision::AllowOnce) => Ok(ApprovalOutcome::ApprovedOnce),
             (ActionClass::Write, Decision::AllowFor30Min) => {
-                unreachable!("rejected before removal")
+                // Write asks never take a session grant: put the ask back so it
+                // stays pending for the user's AllowOnce or Deny.
+                self.pending_asks.insert(ask_id.to_string(), pending);
+                Err(PolicyError::WriteRequiresPerActionApproval)
             }
         }
     }
@@ -431,5 +433,65 @@ mod tests {
             gate.check("agy", &click, t0 + 4_000).unwrap(),
             GateCheck::NeedsApproval(_)
         ));
+    }
+
+    #[test]
+    fn highlight_guide_is_a_read_and_a_read_grant_covers_it() {
+        let highlight = BrowserAction::HighlightGuide {
+            tab_id: Some(1),
+            url: "https://app.example.com/projects".to_string(),
+            selector: "button#new-project".to_string(),
+            title: "Create your project".to_string(),
+            body: "Start here.".to_string(),
+            step_label: None,
+        };
+        assert_eq!(ActionClass::classify(&highlight), ActionClass::Read);
+
+        let mut gate = PermissionGate::new();
+        let t0 = 7_000;
+        let ask = match gate.check("codex", &BrowserAction::ListTabs, t0).unwrap() {
+            GateCheck::NeedsApproval(ask) => ask,
+            GateCheck::Allowed => panic!("expected approval ask"),
+        };
+        gate.resolve_ask(&ask.ask_id, Decision::AllowFor30Min, t0)
+            .unwrap();
+
+        assert_eq!(
+            gate.check("codex", &highlight, t0 + 1_000).unwrap(),
+            GateCheck::Allowed
+        );
+    }
+
+    #[test]
+    fn click_type_navigate_and_submit_remain_writes() {
+        let actions = [
+            BrowserAction::Click {
+                tab_id: None,
+                url: "https://app.example.com".to_string(),
+                selector: "button".to_string(),
+                element_preview: None,
+            },
+            BrowserAction::Type {
+                tab_id: None,
+                url: "https://app.example.com".to_string(),
+                selector: "input".to_string(),
+                text: "hello".to_string(),
+                clear_first: false,
+                element_preview: None,
+            },
+            BrowserAction::Navigate {
+                tab_id: None,
+                url: "https://app.example.com".to_string(),
+            },
+            BrowserAction::Submit {
+                tab_id: None,
+                url: "https://app.example.com".to_string(),
+                selector: "form".to_string(),
+                element_preview: None,
+            },
+        ];
+        for action in &actions {
+            assert_eq!(ActionClass::classify(action), ActionClass::Write);
+        }
     }
 }

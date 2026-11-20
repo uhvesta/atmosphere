@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::{VfsError, VfsResult};
+use crate::error::{VfsError, VfsResult, VfsTarget};
 
 /// A strictly normalized, absolute virtual filesystem path.
 ///
@@ -178,7 +178,10 @@ impl VirtualPath {
 
 fn validate_no_nul(raw: &str) -> VfsResult<()> {
     if raw.as_bytes().contains(&0) {
-        return Err(VfsError::Einval("path contains NUL byte".to_string()));
+        return Err(VfsError::Einval {
+            op: "parse path",
+            target: VfsTarget::Path(raw.replace('\0', "\\0")),
+        });
     }
     Ok(())
 }
@@ -252,11 +255,11 @@ mod tests {
     #[test]
     fn rejects_nul_bytes() {
         let err = VirtualPath::parse("/foo/\0bar").unwrap_err();
-        assert!(matches!(err, VfsError::Einval(_)));
+        assert!(matches!(err, VfsError::Einval { .. }));
 
         let cap = VirtualPath::parse("/sandbox").unwrap();
         let err = VirtualPath::parse_clamped("foo\0bar", &cap).unwrap_err();
-        assert!(matches!(err, VfsError::Einval(_)));
+        assert!(matches!(err, VfsError::Einval { .. }));
     }
 
     #[test]

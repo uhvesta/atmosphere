@@ -9,7 +9,8 @@ use humata2_clients::DaemonError;
 use humata2_clients::model::{
     AccessRule, Answer, AskedBy, AskedWhy, CardEffect, CardFact, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
     HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
-    MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting,
+    MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting, ToDoAsk,
+    ItemId,
 };
 use crate::humata2_grpc::humata::v1 as pb;
 
@@ -200,6 +201,8 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
         pb::RequestKind::Session | pb::RequestKind::Channel | pb::RequestKind::Unspecified => {
             RequestKind::Command
         }
+        // BROWSER: Lane C gives these their own kinds.
+        pb::RequestKind::BrowserRead | pb::RequestKind::BrowserWrite => RequestKind::Command,
     }
 }
 
@@ -351,6 +354,14 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
         P::AccessAhead(ahead) => Preview::Text(ahead.target_label.clone()),
         P::Migrate(migrate) => Preview::Migrate(migrate_card(migrate)),
         P::ProviderImport(import) => Preview::Text(provider_import_text(import)),
+        P::BrowserRead(browser) | P::BrowserWrite(browser) => Preview::Text(
+            [browser.action_summary.as_str(), browser.url.as_str(), browser.target_preview.as_str()]
+                .iter()
+                .filter(|part| !part.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         P::TodoAction(action) => Preview::Text(
             [action.action.as_str(), action.details.as_str()]
                 .iter()
@@ -479,7 +490,7 @@ fn answered_ago(request: &pb::InboxRequest, now: i64) -> Option<String> {
 fn answer(request: &pb::InboxRequest) -> Option<Answer> {
     use pb::request_answer::Answer as A;
     match request.answer.as_ref().and_then(|answer| answer.answer.as_ref()) {
-        Some(A::Approve(_)) => Some(Answer::Approved),
+        Some(A::Approve(_) | A::AllowFor30Min(_)) => Some(Answer::Approved),
         Some(A::Deny(deny)) => Some(Answer::Denied {
             reply: (!deny.note.is_empty()).then(|| deny.note.clone()),
         }),
@@ -618,6 +629,23 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
             replied: why.replied_at.as_ref().map(|at| ago(now, at.seconds)),
         }),
         rule_label: request.rule_label.clone(),
+        to_do: to_do(request),
+    }
+}
+
+/// What a To-do ask is about, from its preview kind as the daemon's own
+/// Agent inbox filter reads it (D846): a change or a suggested new item.
+fn to_do(request: &pb::InboxRequest) -> Option<ToDoAsk> {
+    use pb::request_preview::Preview as P;
+    match request.preview.as_ref().and_then(|preview| preview.preview.as_ref()) {
+        Some(P::BoardChange(change)) => Some(
+            change
+                .item
+                .as_ref()
+                .map_or(ToDoAsk::NewItem, |item| ToDoAsk::Item(ItemId::new(item.value.clone()))),
+        ),
+        Some(P::NewBoardItem(_)) => Some(ToDoAsk::NewItem),
+        _ => None,
     }
 }
 

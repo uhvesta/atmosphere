@@ -14,7 +14,7 @@ pub mod path;
 pub mod types;
 pub mod volume;
 
-pub use error::{VfsError, VfsResult};
+pub use error::{VfsError, VfsResult, VfsTarget};
 pub use lease::{LeaseId, LeaseTable, WriteLease, check_generation};
 pub use path::VirtualPath;
 pub use types::{

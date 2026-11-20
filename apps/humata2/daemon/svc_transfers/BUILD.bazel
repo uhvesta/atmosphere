@@ -3,6 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # TransferService, TransferEndService, SessionCarryService, Carry driver,
 # and RemoteEnd/RouterEnd for humatad2 (SPLIT §3.2; SPLIT_PHASE3_DAEMON §2.3).
 SHARED_DEPS = [
+    "//libs/fusefs/cas",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/humatad:grpc",

@@ -553,6 +553,16 @@ async fn a_move_after_subscribing_is_pushed_as_an_item_change() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_subscription_starts_with_a_resync() {
+    let world = World::start().await;
+    let mut events = within("events", world.daemon.events())
+        .await
+        .expect("follow the daemon's changes");
+    let first = within("first event", events.recv()).await;
+    assert!(matches!(first, Some(Ok(Event::Resync))), "{first:?}");
+}
+
 // D216: an item made on a session's board comes back on that session's board,
 // with its channel, so the app can place it under BD-5–BD-8.
 #[tokio::test(flavor = "multi_thread")]

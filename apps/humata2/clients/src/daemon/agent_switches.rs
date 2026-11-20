@@ -35,3 +35,50 @@ pub struct SwitchChange {
     pub install_when_missing: Option<bool>,
     pub asks_in_inbox: Option<bool>,
 }
+
+/// Every agent is off in Settings › Agents, so nothing can be picked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Every agent is off. Turn one on in Settings › Agents, then try again.")]
+pub struct NoAgentOn;
+
+/// The agent a default takes: the first of `preferred` that is the plain
+/// shell or on (in `offered`, which never holds the shell); else the first
+/// agent that is on.
+///
+/// # Errors
+/// [`NoAgentOn`] when none of `preferred` is usable and nothing is offered.
+pub fn pick_agent(offered: &[Agent], preferred: &[Agent]) -> Result<Agent, NoAgentOn> {
+    preferred
+        .iter()
+        .copied()
+        .find(|agent| *agent == Agent::Shell || offered.contains(agent))
+        .or_else(|| offered.first().copied())
+        .ok_or(NoAgentOn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ON: [Agent; 3] = [Agent::Copilot, Agent::OpenCode, Agent::Agy];
+
+    #[test]
+    fn an_off_preference_falls_to_the_first_agent_on() {
+        assert_eq!(pick_agent(&ON, &[Agent::Claude]), Ok(Agent::Copilot));
+    }
+
+    #[test]
+    fn the_next_preference_that_is_on_wins() {
+        assert_eq!(pick_agent(&ON, &[Agent::Claude, Agent::OpenCode]), Ok(Agent::OpenCode));
+    }
+
+    #[test]
+    fn nothing_on_is_an_error() {
+        assert_eq!(pick_agent(&[], &[Agent::Claude]), Err(NoAgentOn));
+    }
+
+    #[test]
+    fn the_shell_is_always_available() {
+        assert_eq!(pick_agent(&[], &[Agent::Shell]), Ok(Agent::Shell));
+    }
+}

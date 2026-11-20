@@ -67,6 +67,7 @@ fn files_with_bridge(body: &str) -> Vec<Payload> {
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+        Payload::new(InstalledFile::FuseFs, Arc::from(&b"#!/bin/sh\nexit 4\n"[..])),
     ]
 }
 

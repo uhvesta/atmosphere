@@ -182,11 +182,14 @@ impl Overlays {
             .into_iter()
             .chain([Agent::Shell])
             .collect();
+        // The agents that are on, without the shell.
+        let on: Vec<Agent> = offered.iter().copied().filter(|a| *a != Agent::Shell).collect();
         let parent_title = parent.as_ref().map_or("this session", |s| s.title.as_str());
         let agent = fork
             .agent
             .or_else(|| parent.as_ref().map(|p| p.agent))
-            .unwrap_or(Agent::Claude);
+            .or_else(|| on.first().copied())
+            .unwrap_or(Agent::Shell);
         let machine_id = fork
             .machine
             .clone()
@@ -198,6 +201,12 @@ impl Overlays {
                 || machine_id.as_ref().map_or_else(String::new, |m| m.to_string()),
                 |m| m.name.clone(),
             );
+        // AGENTOFF: the parent's agent was turned off, so the fork starts
+        // with another one.
+        let parent_off = parent
+            .as_ref()
+            .filter(|p| p.agent != Agent::Shell && !on.contains(&p.agent) && p.agent != agent)
+            .map(|p| p.agent);
         let same_agent = parent.as_ref().is_none_or(|p| p.agent == agent);
         let agent_name = match agent {
             Agent::Claude => "Claude Code",
@@ -403,6 +412,15 @@ impl Overlays {
                 .text_color(rgb(look.secondary))
                 .child(facts),
         );
+        if let Some(off) = parent_off {
+            body = body.child(
+                div()
+                    .id("fork-agent-off-note")
+                    .test_support()
+                    .text_color(rgb(look.secondary))
+                    .child(format!("{} is off, so this fork starts with {}.", off.name(), agent.name())),
+            );
+        }
         if fork.kind != ForkKind::Shared && !same_agent {
             body = body.child(
                 row()

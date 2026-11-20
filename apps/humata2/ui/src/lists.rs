@@ -665,7 +665,7 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
         .iter()
         .enumerate()
         .filter(|(_, row)| {
-            !matches!(row, NeedsRow::Request(request) if request.operation.starts_with("board."))
+            !matches!(row, NeedsRow::Request(request) if request.is_to_do_ask() || request.operation.starts_with("board."))
         })
         .collect();
     let (stopped, ended): (Vec<_>, Vec<_>) =

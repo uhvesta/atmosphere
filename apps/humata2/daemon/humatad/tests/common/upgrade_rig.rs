@@ -35,7 +35,7 @@ pub fn pending_on_box(item: &pb::InboxRequest) -> bool {
         && upgrade::migrate_of(item).is_some_and(|migrate| migrate.machine == Some(box_id()))
 }
 
-/// Puts the CLI, the holder and the stack the tests run in `bin`, whole, as the files
+/// Puts the CLI, the holder, the stack and the FUSE helper the tests run in `bin`, whole, as the files
 /// of the release `upgrade::manifest` names: the machine's own copies from
 /// when it was added are other files, which a release that names these would
 /// call a CLI and a host tools item (D371).
@@ -44,6 +44,7 @@ fn put_release_tools(bin: &Path) {
         ("humata2_holder", "HUMATA2_HOLDER"),
         ("humata", "HUMATA"),
         ("stack", "STACK"),
+        ("humata2_fusefs", "HUMATA2_FUSEFS"),
     ] {
         let beside = bin.join(format!(".{name}.rig"));
         std::fs::copy(binary(variable), &beside)

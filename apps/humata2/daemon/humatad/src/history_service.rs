@@ -324,7 +324,7 @@ impl Shared {
     /// Saves the conversation session `id`'s agent wrote, when the session
     /// doesn't name it yet and it is there now (Codex). Blocking.
     fn learn(&self, id: &str) -> Result<(), StoreError> {
-        self.agents
+        crate::config_sync::agents_for_session(&self.agents, &self.store, id)
             .learn_conversation(&self.store, &self.agent_home, id)
             .map(|_| ())
     }

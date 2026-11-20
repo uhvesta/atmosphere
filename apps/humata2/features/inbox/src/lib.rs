@@ -7,7 +7,7 @@
 //! the app holds its own for it until the daemon does (D374).
 
 mod notice;
-pub use notice::{Notice, notification};
+pub use notice::{Notice, notification, to_do_notification};
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -172,7 +172,7 @@ pub fn waiting(workspace: &Workspace) -> usize {
     workspace
         .requests
         .iter()
-        .filter(|request| request.answer.is_none())
+        .filter(|request| request.answer.is_none() && !request.is_to_do_ask())
         .count()
 }
 
@@ -410,10 +410,18 @@ impl InboxState {
             .channels
             .iter()
             .map(|channel| channel.id.clone())
-            .filter(|id| self.workspace.requests.iter().any(|request| &request.channel == id))
+            .filter(|id| {
+                self.workspace
+                    .requests
+                    .iter()
+                    .any(|request| &request.channel == id && !request.is_to_do_ask())
+            })
             .collect();
         for request in &self.workspace.requests {
-            if request.kind != RequestKind::Migrate && !channels.contains(&request.channel) {
+            if request.kind != RequestKind::Migrate
+                && !request.is_to_do_ask()
+                && !channels.contains(&request.channel)
+            {
                 channels.push(request.channel.clone());
             }
         }
@@ -424,7 +432,11 @@ impl InboxState {
                     .workspace
                     .requests
                     .iter()
-                    .filter(|request| request.channel == id && request.answer.is_none())
+                    .filter(|request| {
+                        request.channel == id
+                            && request.answer.is_none()
+                            && !request.is_to_do_ask()
+                    })
                     .count();
                 (id, waiting)
             })
@@ -437,6 +449,7 @@ impl InboxState {
         self.own_item()
             .into_iter()
             .chain(self.workspace.requests.iter())
+            .filter(|request| !request.is_to_do_ask())
             .filter(|request| self.show_answered || request.answer.is_none())
             .filter(|request| !self.answered_only || request.answer.is_some())
             .filter(|request| match &self.filter {
@@ -785,6 +798,7 @@ fn own_request(old: &OldLocalDaemon) -> Request {
         working_on: String::new(),
         asked_why: None,
         rule_label: String::new(),
+        to_do: None,
     }
 }
 

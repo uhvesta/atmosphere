@@ -25,12 +25,20 @@ use humata2_install::{install, migrate_old_daemon, staged_release, Bundle, Launc
 use humata2_machines::{InstalledFile, Payload};
 
 /// The installed files and the staged ones, by name.
-const INSTALLED: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "bundle.json"];
-const STAGED: [&str; 5] = [
+const INSTALLED: [&str; 6] = [
+    "humatad2",
+    "humata2_holder",
+    "humata",
+    "stack",
+    "humata2_fusefs",
+    "bundle.json",
+];
+const STAGED: [&str; 6] = [
     ".humatad2.next",
     ".humata2_holder.next",
     ".humata.next",
     ".stack.next",
+    ".humata2_fusefs.next",
     ".bundle.json.next",
 ];
 
@@ -96,6 +104,7 @@ impl Fixture {
         fixture.app_file("humata2_holder", "holder v1");
         fixture.app_file("humata", "cli v1");
         fixture.app_file("stack", "stack v1");
+        fixture.app_file("humata2_fusefs", "fusefs v1");
         fixture
     }
 
@@ -113,6 +122,7 @@ impl Fixture {
             self.app().join("humata2_holder"),
             self.app().join("humata"),
             self.app().join("stack"),
+            self.app().join("humata2_fusefs"),
         )
     }
 
@@ -130,6 +140,7 @@ impl Fixture {
         install(&self.bundle(), &self.layout(), launchd).expect("release 1 installs");
         self.app_file("humatad2", "daemon v2");
         self.app_file("humata", "cli v2");
+        self.app_file("humata2_fusefs", "fusefs v2");
         install(&self.bundle(), &self.layout(), launchd).expect("release 2 is staged");
         assert!(
             staged_release(&self.layout()).expect("the staged release reads").is_some(),
@@ -162,7 +173,7 @@ fn migrating_puts_the_staged_release_in_place_and_kickstarts_the_daemon_once() {
     let platform = humata2_machines::Platform::host()
         .expect("the tests run on a platform Humata ships")
         .bundle_name();
-    for name in ["humatad2", "humata2_holder", "humata", "stack"] {
+    for name in ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"] {
         let installed = fs::read(fixture.bin(name)).unwrap_or_else(|error| panic!("{name} is installed: {error}"));
         assert_eq!(
             manifest["platforms"][platform][name]["sha256"],

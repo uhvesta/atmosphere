@@ -248,7 +248,7 @@ fn card(
     let target = offered.map(|target| guard.target_pb(target));
     let target_label =
         offered.map_or_else(|| asked.capability.label().to_owned(), super::describe);
-    let (reason, preview, details) = match board {
+    let (reason, preview, mut details) = match board {
         Some(board) => {
             let details = match (&board.preview, &asked.call) {
                 (pb::request_preview::Preview::FileAccess(access), Call::ReadFiles(place)) => {
@@ -279,6 +279,15 @@ fn card(
             ),
         },
     };
+    // A start or fork names where the new session goes (D910).
+    let start = super::facts::start_facts(&asked.call, store, names);
+    details.facts.splice(0..0, start);
+    // A Desk agent's start grant names no channel, so the option says so.
+    let always_label = if super::facts::always_covers_any_channel(asked) {
+        format!("{target_label}, in any channel")
+    } else {
+        target_label
+    };
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -298,7 +307,7 @@ fn card(
         capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, super::decision_of) as i32,
         always: target.map(|target| pb::AlwaysOption {
-            label: format!("Always allow “{}” {target_label}", agent.title),
+            label: format!("Always allow “{}” {always_label}", agent.title),
             target: Some(target),
         }),
         created_at: Some(ports::now_timestamp()),

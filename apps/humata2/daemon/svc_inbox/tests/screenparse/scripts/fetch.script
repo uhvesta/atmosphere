@@ -1,0 +1,11 @@
+# A web fetch permission, cancelled with Escape.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Fetch the page https://example.com with your web fetch tool and tell me its title in three words.
+quiet 3000
+snap fetch_permission unknown
+keys esc
+quiet 2500
+snap after_escape unknown

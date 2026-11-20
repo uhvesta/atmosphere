@@ -31,7 +31,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 const WAIT: Duration = Duration::from_secs(15);
 const FOLLOW: Duration = Duration::from_secs(90);
 

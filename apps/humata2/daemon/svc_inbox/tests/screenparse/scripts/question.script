@@ -1,0 +1,18 @@
+# A multiple-choice question and a free-text question asked with the
+# agent's ask-the-user tool, each answered.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Using your tool for asking the user a question, ask me one multiple-choice question: red or blue? Then stop.
+quiet 3000
+snap choice_question unknown
+keys enter
+quiet 3000
+snap after_choice unknown
+type Now use the same tool to ask me one open question that I answer by typing free text: what is my pet's name? Then stop.
+quiet 3000
+snap free_text_question unknown
+type otter
+quiet 3000
+snap after_free_text unknown

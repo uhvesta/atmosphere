@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::Layout;
 use humata2_transfers as tr;
+use fusefs_cas::{ChunkHash, FileManifest, hash_bytes};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tonic::{Code, Status};
 
 use crate::carry_service::SessionCarrySvc;
@@ -876,11 +876,6 @@ pub struct Copied {
     pub chunk_bytes: u64,
 }
 
-/// The chunk size is the transfer engine's: the chunks of a file the move
-/// sends in pieces line up with the engine's own.
-const CHUNK: u64 = humata2_sessions::CHUNK_SIZE;
-const _: () = assert!(tr::CHUNK as u64 == CHUNK);
-
 /// How many chunk names one `HaveChunks` call asks about.
 const HAVE_BATCH: usize = 8192;
 
@@ -889,10 +884,8 @@ struct Chunked {
     /// `folder` (`rel` is under the session's folder) or `stage`.
     at: String,
     rel: String,
-    size: u64,
-    sha256: String,
-    /// Each chunk's name and size, in order.
-    chunks: Vec<(String, u64)>,
+    /// Its chunks in order, with their hashes.
+    manifest: FileManifest,
 }
 
 /// A chunk the new machine lacks, and where the old machine has it.
@@ -900,7 +893,7 @@ struct Lacking {
     source: PathBuf,
     offset: u64,
     len: u64,
-    sha256: String,
+    hash: ChunkHash,
 }
 
 /// What a session's folder copy leaves out because the new machine builds it
@@ -917,8 +910,16 @@ struct Cheap {
     reused_bytes: u64,
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+/// Whether `manifest`'s chunks follow each other from the start and end at its size.
+fn is_whole(manifest: &FileManifest) -> bool {
+    let mut end = 0u64;
+    for chunk in &manifest.chunks {
+        if chunk.offset != end {
+            return false;
+        }
+        end += u64::from(chunk.len);
+    }
+    end == manifest.size
 }
 
 /// The router leaves `files` and `trees` out of every plan of `source`
@@ -969,44 +970,38 @@ impl Inner {
             let listed: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|error| wrong("the list of chunks", &error))?;
             let staged = self.path(from, stage);
-            // `(at, rel, size, sha256, chunk names)` of each file worth asking about.
+            // `(at, rel, manifest)` of each file worth asking about.
             let mut files = Vec::new();
             for file in listed["files"].as_array().into_iter().flatten() {
-                let (Some(at), Some(rel), Some(size), Some(sha)) =
-                    (file["at"].as_str(), file["rel"].as_str(), file["size"].as_u64(), file["sha256"].as_str())
-                else {
+                let (Some(at), Some(rel)) = (file["at"].as_str(), file["rel"].as_str()) else {
                     continue;
                 };
-                let names: Vec<&str> = file["chunks"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
-                let counted = u64::try_from(names.len()).ok() == Some(size.div_ceil(CHUNK));
-                if !matches!(at, "folder" | "stage") || !counted || (at == "folder" && left_out.contains(rel)) {
+                let Ok(manifest) = serde_json::from_value::<FileManifest>(file["manifest"].clone()) else {
+                    continue;
+                };
+                if !matches!(at, "folder" | "stage") || !is_whole(&manifest) || (at == "folder" && left_out.contains(rel)) {
                     continue;
                 }
-                files.push((at, rel, size, sha, names));
+                files.push((at, rel, manifest));
             }
-            let mut asked: Vec<String> = files.iter().flat_map(|file| file.4.iter().map(|name| (*name).to_owned())).collect();
+            let mut asked: Vec<String> =
+                files.iter().flat_map(|file| file.2.chunks.iter().map(|chunk| chunk.hash.to_hex())).collect();
             asked.sort();
             asked.dedup();
-            let store = self.path(to, humata2_sessions::HAVE_DIR);
-            let mut held: HashSet<String> = HashSet::new();
-            for batch in asked.chunks(HAVE_BATCH) {
-                held.extend(tr::End::have_chunks(&*router, &store, batch).map_err(|error| end_failure(&error))?);
-            }
+            let held = self.held_chunks_on(&router, to, &asked)?;
             let mut queued: HashSet<String> = HashSet::new();
-            for (at, rel, size, sha, names) in files {
-                if !names.iter().any(|name| held.contains(*name)) {
+            for (at, rel, manifest) in files {
+                if !manifest.chunks.iter().any(|chunk| held.contains(&chunk.hash.to_hex())) {
                     continue;
                 }
                 let source = if at == "folder" { base.join(rel) } else { staged.join(rel) };
-                let mut chunks = Vec::new();
-                for (index, name) in names.iter().enumerate() {
-                    let offset = u64::try_from(index).unwrap_or(u64::MAX).saturating_mul(CHUNK);
-                    let len = size.saturating_sub(offset).min(CHUNK);
-                    chunks.push(((*name).to_owned(), len));
-                    if held.contains(*name) {
+                for chunk in &manifest.chunks {
+                    let name = chunk.hash.to_hex();
+                    let len = u64::from(chunk.len);
+                    if held.contains(&name) {
                         plan.reused_bytes += len;
-                    } else if queued.insert((*name).to_owned()) {
-                        plan.lacking.push(Lacking { source: source.clone(), offset, len, sha256: (*name).to_owned() });
+                    } else if queued.insert(name) {
+                        plan.lacking.push(Lacking { source: source.clone(), offset: chunk.offset, len, hash: chunk.hash });
                     }
                 }
                 if at == "folder" {
@@ -1014,7 +1009,7 @@ impl Inner {
                 } else {
                     plan.stage_files.push(source);
                 }
-                plan.chunked.push(Chunked { at: at.to_owned(), rel: rel.to_owned(), size, sha256: sha.to_owned(), chunks });
+                plan.chunked.push(Chunked { at: at.to_owned(), rel: rel.to_owned(), manifest });
             }
         }
         Ok(plan)
@@ -1031,6 +1026,25 @@ impl Inner {
         std::io::Read::read_to_end(&mut reader, &mut bytes)
             .map_err(|error| copy_failure(rel, "the host", &error.to_string()))?;
         Ok(Some(bytes))
+    }
+
+    /// Which of the named chunks the new machine's chunk store holds. The
+    /// host reads its own store; another machine answers `HaveChunks`, asked
+    /// through its channel's `.carry` folder, which is made first so there
+    /// is something to ask at. Blocking.
+    fn held_chunks_on(&self, router: &Arc<RouterEnd>, to: &Place, names: &[String]) -> Result<HashSet<String>, Status> {
+        let carry = self.path(to, humata2_sessions::CARRY_DIR);
+        if self.is_host(&to.machine) {
+            let store = carry.parent().map(humata2_sessions::chunk_store_dir).unwrap_or_default();
+            return Ok(humata2_sessions::held_chunks(&store, names).into_iter().collect());
+        }
+        let failed = |error: tr::EndError| end_failure(&error);
+        tr::End::make_folder(&**router, &carry, 0o700).map_err(failed)?;
+        let mut held = HashSet::new();
+        for batch in names.chunks(HAVE_BATCH) {
+            held.extend(tr::End::have_chunks(&**router, &carry, batch).map_err(failed)?);
+        }
+        Ok(held)
     }
 }
 
@@ -1138,16 +1152,19 @@ impl Carry {
                 let mut bytes = vec![0u8; usize::try_from(chunk.len).unwrap_or(0)];
                 std::io::Read::read_exact(&mut reader, &mut bytes)
                     .map_err(|error| copy_failure(&shown, "the host", &error.to_string()))?;
-                if hex(&Sha256::digest(&bytes)) != chunk.sha256 {
+                if hash_bytes(&bytes) != chunk.hash {
                     return Err(copy_failure(
                         &shown,
                         "the new machine",
                         "it changed while it was being copied; stop what is writing to it, then move the session again",
                     ));
                 }
-                let path = folder.join(&chunk.sha256);
+                // Each chunk goes compressed as the adaptive planner picks.
+                let framed = humata2_sessions::frame_chunk(&bytes)
+                    .map_err(|error| copy_failure(&shown, "the new machine", &error.to_string()))?;
+                let path = folder.join(chunk.hash.to_hex());
                 let mut sink = tr::End::open_write(&*router, &path, 0).map_err(failed)?;
-                tr::Sink::write(&mut *sink, &bytes).map_err(failed)?;
+                tr::Sink::write(&mut *sink, &framed).map_err(failed)?;
                 tr::Sink::sync(&mut *sink).map_err(failed)?;
                 drop(sink);
                 tr::End::finish_file(&*router, &path, 0o600, now_ms()).map_err(failed)?;
@@ -1166,14 +1183,12 @@ impl Carry {
     /// Writes how the new machine rebuilds each file from chunks.
     async fn write_recipe(&self, to: &Place, relative: &str, chunked: &[Chunked]) -> Result<(), Status> {
         let path = self.path(to, relative);
-        let listed: Vec<serde_json::Value> = chunked
-            .iter()
-            .map(|file| {
-                let chunks: Vec<serde_json::Value> =
-                    file.chunks.iter().map(|(sha256, size)| json!({ "sha256": sha256, "size": size })).collect();
-                json!({ "at": file.at, "rel": file.rel, "size": file.size, "sha256": file.sha256, "chunks": chunks })
-            })
-            .collect();
+        let mut listed: Vec<serde_json::Value> = Vec::new();
+        for file in chunked {
+            let manifest = serde_json::to_value(&file.manifest)
+                .map_err(|error| copy_failure(relative, "the new machine", &error.to_string()))?;
+            listed.push(json!({ "at": file.at, "rel": file.rel, "manifest": manifest }));
+        }
         let body = serde_json::to_vec(&json!({ "files": listed }))
             .map_err(|error| copy_failure(relative, "the new machine", &error.to_string()))?;
         let inner = self.0.clone();
@@ -1294,5 +1309,33 @@ fn remove_durably(path: &std::path::Path) -> std::io::Result<()> {
     match path.parent() {
         Some(parent) => sync_dir(parent),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fusefs_cas::{ChunkRef, hash_bytes};
+
+    use super::*;
+
+    fn chunk(offset: u64, len: u32) -> ChunkRef {
+        ChunkRef { offset, len, hash: hash_bytes(&offset.to_le_bytes()) }
+    }
+
+    #[test]
+    fn a_manifest_whose_chunks_run_from_the_start_to_its_size_is_whole() {
+        let manifest = FileManifest { size: 300, generation: 1, chunks: vec![chunk(0, 100), chunk(100, 200)] };
+        assert!(is_whole(&manifest));
+        assert!(is_whole(&FileManifest { size: 0, generation: 1, chunks: Vec::new() }));
+    }
+
+    #[test]
+    fn a_manifest_with_a_gap_an_overlap_or_the_wrong_size_is_not_whole() {
+        let gap = FileManifest { size: 300, generation: 1, chunks: vec![chunk(0, 100), chunk(150, 150)] };
+        let overlap = FileManifest { size: 300, generation: 1, chunks: vec![chunk(0, 200), chunk(100, 200)] };
+        let short = FileManifest { size: 400, generation: 1, chunks: vec![chunk(0, 100), chunk(100, 200)] };
+        assert!(!is_whole(&gap));
+        assert!(!is_whole(&overlap));
+        assert!(!is_whole(&short));
     }
 }

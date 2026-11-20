@@ -47,6 +47,7 @@ Splitter "Resize the sidebar"
   Button "Reveal scripts"
 Tab "General"
 Tab "Agents"
+Tab "Sync"
 Tab "Machines" selected
 Tab "Layout"
 Tab "Agent access"

@@ -34,11 +34,12 @@ const LONG: Duration = Duration::from_secs(90);
 /// A point no run is stopped at: it only makes a start the faults build.
 const NEVER: &str = "upgrade.never.reached";
 
-const FILES: [(&str, &str); 4] = [
+const FILES: [(&str, &str); 5] = [
     ("humatad2", "HUMATAD2_FAULTS"),
     ("humata2_holder", "HUMATA2_HOLDER"),
     ("humata", "HUMATA"),
     ("stack", "STACK"),
+    ("humata2_fusefs", "HUMATA2_FUSEFS"),
 ];
 
 fn put_file(variable: &str, to: &Path) {

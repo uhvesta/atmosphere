@@ -1,4 +1,4 @@
-"""tools_bundle: humatad2, humata2_holder, humata and stack for every platform (TS-2).
+"""tools_bundle: humatad2, humata2_holder, humata, stack and humata2_fusefs for every platform (TS-2).
 
 The bundle is one folder, the one `humatad2 serve --tools` reads:
 
@@ -7,6 +7,7 @@ The bundle is one folder, the one `humatad2 serve --tools` reads:
     <platform>/humata2_holder
     <platform>/humata
     <platform>/stack
+    <platform>/humata2_fusefs
 
 Platforms are named as `uname -sm` names them, lowercased (`darwin-arm64`,
 `linux-x86_64`, `linux-aarch64`), so the daemon finds a machine's files by
@@ -28,6 +29,7 @@ _split = transition(
 
 # The file names the daemon looks for, by attribute.
 _FILES = {
+    "fusefs": "humata2_fusefs",
     "holder": "humata2_holder",
     "humata": "humata",
     "humatad2": "humatad2",
@@ -97,6 +99,9 @@ def _tools_bundle_impl(ctx):
 tools_bundle = rule(
     implementation = _tools_bundle_impl,
     attrs = {
+        # The mount's own process (//apps/humata2/daemon/fusefs_adapter), apart
+        # from humatad2 so an exec swap of the daemon never tears the mount down.
+        "fusefs": attr.label(cfg = _split, mandatory = True),
         "holder": attr.label(cfg = _split, mandatory = True),
         "humata": attr.label(cfg = _split, mandatory = True),
         "humatad2": attr.label(cfg = _split, mandatory = True),

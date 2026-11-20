@@ -120,6 +120,7 @@ fn migrate_item(
         working_on: String::new(),
         asked_why: None,
         rule_label: String::new(),
+        to_do: None,
     }
 }
 

@@ -18,8 +18,36 @@ use crate::ports::{self, Caller, TrashBinPort, UserVia, blocking, now_ms};
 
 mod review_git;
 
+/// Where a session's agent conversations live on this machine, when that is
+/// not the agent's one global dir: a session with a composed config home
+/// keeps them there. The carry reads and places conversations through the
+/// [`Starter`] it is given, so each operation asks for the one that fits
+/// its session.
+pub trait SessionHomes: Send + Sync {
+    /// `starter`, seeing `session`'s conversations where they are now.
+    fn for_session(&self, starter: &Starter, session: &str) -> Starter;
+    /// `starter` for a session arriving here, whose conversation is about
+    /// to be placed: its home is made first so the later launch, which
+    /// looks there, finds what lands.
+    fn for_incoming(&self, starter: &Starter, session: &str) -> Starter;
+}
+
+/// No composed homes: every session's conversations are in the agent's own dir.
+struct GlobalHomes;
+
+impl SessionHomes for GlobalHomes {
+    fn for_session(&self, starter: &Starter, _session: &str) -> Starter {
+        starter.clone()
+    }
+
+    fn for_incoming(&self, starter: &Starter, _session: &str) -> Starter {
+        starter.clone()
+    }
+}
+
 pub struct SessionCarrySvc {
     starter: Starter,
+    homes: Arc<dyn SessionHomes>,
     bin: Arc<dyn TrashBinPort>,
     /// What this machine takes in when a session arrives: the host already
     /// holds the session's record and place in the tree, a box doesn't.
@@ -28,8 +56,20 @@ pub struct SessionCarrySvc {
 
 impl SessionCarrySvc {
     pub fn new(starter: Starter, bin: Arc<dyn TrashBinPort>, host: bool) -> Arc<Self> {
+        Self::with_homes(starter, bin, host, Arc::new(GlobalHomes))
+    }
+
+    /// [`Self::new`] for a machine whose sessions may keep their
+    /// conversations in composed config homes.
+    pub fn with_homes(
+        starter: Starter,
+        bin: Arc<dyn TrashBinPort>,
+        host: bool,
+        homes: Arc<dyn SessionHomes>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             starter,
+            homes,
             bin,
             take: if host { Take::AgentOnly } else { Take::Everything },
         })
@@ -45,7 +85,7 @@ impl SessionCarrySvc {
         target: &str,
     ) -> Result<humata2_sessions::Packed, Status> {
         let (starter, operation, session, target) =
-            (self.starter.clone(), operation.to_owned(), session.to_owned(), target.to_owned());
+            (self.homes.for_session(&self.starter, session), operation.to_owned(), session.to_owned(), target.to_owned());
         blocking(move || {
             let target = (!target.is_empty()).then(|| std::path::PathBuf::from(&target));
             starter.pack_for(&operation, &session, target.as_deref())
@@ -72,7 +112,7 @@ impl SessionCarrySvc {
         fork: &pb::CarryFork,
     ) -> Result<pb::CarryPackResponse, Status> {
         let pack = fork_pack_of(operation, parent, fork)?;
-        let starter = self.starter.clone();
+        let starter = self.homes.for_session(&self.starter, parent);
         let staged = blocking(move || starter.pack_fork(&pack))
             .await?
             .map_err(fork_failed)?;
@@ -96,7 +136,8 @@ impl SessionCarrySvc {
         title: &str,
         typed: &str,
     ) -> Result<pb::CarryPreviewForkResponse, Status> {
-        let (starter, parent, title) = (self.starter.clone(), parent.to_owned(), title.to_owned());
+        let (starter, parent, title) =
+            (self.homes.for_session(&self.starter, parent), parent.to_owned(), title.to_owned());
         let typed = Some(typed.to_owned()).filter(|typed| !typed.is_empty());
         let plan = blocking(move || starter.preview_fork(&parent, &title, typed.as_deref()))
             .await?
@@ -127,7 +168,7 @@ impl SessionCarrySvc {
         channel: &str,
     ) -> Result<humata2_sessions::Unpacked, Status> {
         let (starter, operation, session, channel) = (
-            self.starter.clone(),
+            self.homes.for_incoming(&self.starter, session),
             operation.to_owned(),
             session.to_owned(),
             channel.to_owned(),
@@ -146,7 +187,7 @@ impl SessionCarrySvc {
         folder: &str,
     ) -> Result<(), Status> {
         let (starter, operation, session, channel, folder) = (
-            self.starter.clone(),
+            self.homes.for_session(&self.starter, session),
             operation.to_owned(),
             session.to_owned(),
             channel.to_owned(),
@@ -165,7 +206,7 @@ impl SessionCarrySvc {
         channel: &str,
     ) -> Result<humata2_sessions::Unpacked, Status> {
         let (starter, operation, session, channel, take) = (
-            self.starter.clone(),
+            self.homes.for_incoming(&self.starter, session),
             operation.to_owned(),
             session.to_owned(),
             channel.to_owned(),
@@ -187,7 +228,7 @@ impl SessionCarrySvc {
         // (D784), where the owner attaches, adopts or ends it. The move's
         // confirm names them (a UI seam).
         let (starter, bin, operation, session, channel, take) = (
-            self.starter.clone(),
+            self.homes.for_session(&self.starter, session),
             self.bin.clone(),
             operation.to_owned(),
             session.to_owned(),
@@ -237,7 +278,7 @@ impl SessionCarrySvc {
         incoming: bool,
     ) -> Result<(), Status> {
         let (starter, operation, session, channel, folder, take) = (
-            self.starter.clone(),
+            self.homes.for_session(&self.starter, session),
             operation.to_owned(),
             session.to_owned(),
             channel.to_owned(),

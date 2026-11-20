@@ -2,7 +2,7 @@
 //! (frame 209). Posting it is a later milestone; this is only its content.
 
 use humata2_clients::Workspace;
-use humata2_clients::model::{Request, RequestKind};
+use humata2_clients::model::{Preview, Request, RequestKind, ToDoAsk};
 
 /// A notification: what the person reads, never a way to answer. Opening it
 /// opens the Agent inbox on the request.
@@ -20,6 +20,7 @@ pub struct Notice {
 pub fn notification(workspace: &Workspace, request: &Request) -> Option<Notice> {
     if request.answer.is_some()
         || request.kind == RequestKind::Migrate
+        || request.is_to_do_ask()
         || request.operation.starts_with("board.")
     {
         return None;
@@ -41,4 +42,28 @@ pub fn notification(workspace: &Workspace, request: &Request) -> Option<Notice> 
         title: format!("{agent} is stopped: {}", request.title),
         body,
     })
+}
+
+/// The notification for a To-do ask: an agent's suggested item or a change
+/// to one. It says to answer on the To-do, never in the Agent inbox. None
+/// when `request` isn't a To-do ask or is already answered.
+#[must_use]
+pub fn to_do_notification(workspace: &Workspace, request: &Request) -> Option<Notice> {
+    let ask = request.to_do.as_ref()?;
+    if request.answer.is_some() {
+        return None;
+    }
+    let agent = workspace
+        .session(&request.session)
+        .map_or("An agent", |session| session.agent.command());
+    let item = match &request.preview {
+        Preview::Text(text) => text.lines().next().map(str::trim).filter(|l| !l.is_empty()),
+        _ => None,
+    }
+    .unwrap_or(request.title.as_str());
+    let title = match ask {
+        ToDoAsk::NewItem => format!("{agent} suggests a To-do: {item}"),
+        ToDoAsk::Item(_) => format!("{agent} wants to change '{item}'"),
+    };
+    Some(Notice { title, body: "Accept or dismiss it on the To-do.".to_owned() })
 }

@@ -372,6 +372,7 @@ exec {real} 0.2
             fs::write(installed.join("humata2_holder"), "").unwrap();
             fs::write(installed.join("humata"), "").unwrap();
             fs::write(installed.join("stack"), "").unwrap();
+            fs::write(installed.join("humata2_fusefs"), "").unwrap();
             fs::write(installed.join(".humata.staged"), "").unwrap();
             fs::write(installed.join(".humatad2.next"), "").unwrap();
             fs::write(installed.join("bundle.json"), "").unwrap();
@@ -579,6 +580,7 @@ exec {real} 0.2
             assert!(!machine.home.join(BIN_DIR).join("humata2_holder").exists());
             assert!(!machine.home.join(BIN_DIR).join("humata").exists());
             assert!(!machine.home.join(BIN_DIR).join("stack").exists());
+            assert!(!machine.home.join(BIN_DIR).join("humata2_fusefs").exists());
             assert!(!machine.home.join(BIN_DIR).join(".humata.staged").exists());
             // The release's manifest, what waits to replace it and what it
             // replaced go too.

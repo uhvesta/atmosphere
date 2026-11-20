@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -629,6 +630,30 @@ impl AgentKind {
             folder: folder.to_owned(),
         })
     }
+
+    /// This kind, with its conversations kept in `dir`, a session's own
+    /// config home (`CLAUDE_CONFIG_DIR` and the like), in place of the dir
+    /// the daemon uses for every session: its conversation file and its
+    /// placement name `dir`. A kind with no conversation files keeps none.
+    pub fn with_session_home(&self, dir: &Path) -> AgentKind {
+        let mut kind = self.clone();
+        if kind.conversation_format == ConversationFormat::None {
+            return kind;
+        }
+        let tail = if let Some(rest) = kind.conversation_file.strip_prefix("{home}/.") {
+            rest.split_once('/').map(|(_, tail)| tail.to_owned())
+        } else if let Some(old) = &kind.cli_home {
+            let old = format!("{}/", old.to_string_lossy());
+            kind.conversation_file.strip_prefix(old.as_str()).map(str::to_owned)
+        } else {
+            None
+        };
+        if let Some(tail) = tail {
+            kind.conversation_file = format!("{}/{tail}", dir.to_string_lossy());
+        }
+        kind.cli_home = Some(dir.to_owned());
+        kind
+    }
 }
 
 /// OpenCode, run by the `humata opencode` wrapper (D201, D201a), which
@@ -781,12 +806,30 @@ pub struct Agents {
     /// The agent switches file (`agents.toml`) this daemon reads, when it
     /// has a home to keep one in.
     settings: Option<PathBuf>,
+    /// Where a session's own config home is, when this daemon composes one
+    /// (set by the daemon; none in tests that compose nothing).
+    session_homes: Option<SessionHomes>,
+    existing_homes: Option<SessionHomes>,
+}
+
+/// Names the config home a session's agent runs in: `(session, agent)` to
+/// that folder, or None when the agent keeps its conversations in the
+/// daemon's own dir.
+#[derive(Clone)]
+struct SessionHomes(Arc<dyn Fn(&str, &str) -> Option<PathBuf> + Send + Sync>);
+
+impl std::fmt::Debug for SessionHomes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionHomes")
+    }
 }
 
 impl Agents {
     pub fn builtin() -> Self {
         Self {
             settings: None,
+            session_homes: None,
+            existing_homes: None,
             kinds: vec![
                 AgentKind {
                     name: "claude".into(),
@@ -1007,6 +1050,52 @@ impl Agents {
         Ok(Self {
             kinds,
             settings: None,
+            session_homes: None,
+            existing_homes: None,
+        })
+    }
+
+    /// Names where each session's agent keeps its conversations, so a launch
+    /// records the file in the config home the agent will run in.
+    pub fn with_session_homes(
+        mut self,
+        find: impl Fn(&str, &str) -> Option<PathBuf> + Send + Sync + 'static,
+    ) -> Self {
+        self.session_homes = Some(SessionHomes(Arc::new(find)));
+        self
+    }
+
+    /// Names the config home a session's agent already has, without making
+    /// one, so readers of an existing session find its conversation where
+    /// it ran (see [`Self::get_as_ran`]).
+    pub fn with_existing_session_homes(
+        mut self,
+        find: impl Fn(&str, &str) -> Option<PathBuf> + Send + Sync + 'static,
+    ) -> Self {
+        self.existing_homes = Some(SessionHomes(Arc::new(find)));
+        self
+    }
+
+    /// The kind `name` as an existing `session` ran it: its conversations in
+    /// the config home it already has, else as [`Self::get`]. Never makes a
+    /// home; use [`Self::get_for_session`] for a launch or a new session.
+    pub fn get_as_ran(&self, session: &str, name: &str) -> Result<AgentKind, AgentError> {
+        let kind = self.get(name)?;
+        let home = self.existing_homes.as_ref().and_then(|homes| (homes.0)(session, name));
+        Ok(match home {
+            Some(dir) => kind.with_session_home(&dir),
+            None => kind.clone(),
+        })
+    }
+
+    /// The kind `name` as `session` runs it: with its conversations in the
+    /// session's own config home when one is named, else as [`Self::get`].
+    pub fn get_for_session(&self, session: &str, name: &str) -> Result<AgentKind, AgentError> {
+        let kind = self.get(name)?;
+        let home = self.session_homes.as_ref().and_then(|homes| (homes.0)(session, name));
+        Ok(match home {
+            Some(dir) => kind.with_session_home(&dir),
+            None => kind.clone(),
         })
     }
 
@@ -1393,6 +1482,27 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_records_the_session_home_the_seam_names_and_the_global_dir_without_one() {
+        let (home, folder) = (Path::new("/home/me"), Path::new("/u/me/Humata/ch/sessions/s.1"));
+        let session_dir = PathBuf::from("/machine/.sessions/s1/config/codex");
+        let dir = session_dir.clone();
+        let agents = Agents::builtin()
+            .with_session_homes(move |session, agent| (session == "s1" && agent == "codex").then(|| dir.clone()));
+
+        let composed = agents.get_for_session("s1", "codex").unwrap().launch(home, folder, "abc").conversation_file;
+        assert!(composed.starts_with(&session_dir), "{composed:?}");
+
+        // Another session, or an agent the seam names no home for, stays global.
+        let other = agents.get_for_session("s2", "codex").unwrap().launch(home, folder, "abc").conversation_file;
+        assert!(other.starts_with(home.join(".codex")), "{other:?}");
+        let claude = agents.get_for_session("s1", "claude").unwrap().launch(home, folder, "abc").conversation_file;
+        assert!(claude.starts_with(home.join(".claude")), "{claude:?}");
+
+        let plain = Agents::builtin().get_for_session("s1", "codex").unwrap().launch(home, folder, "abc").conversation_file;
+        assert!(plain.starts_with(home.join(".codex")), "{plain:?}");
+    }
+
+    #[test]
     fn a_claude_config_dir_set_for_the_daemon_is_where_claudes_conversations_are_kept() {
         let dir = Path::new("/state/claude-config");
         // A folder under no symlink: on macOS `/home` itself is one, and the
@@ -1412,6 +1522,97 @@ mod tests {
         let plain = Agents::builtin();
         assert_eq!(plain.get("claude").unwrap().placement(home, folder).unwrap().cli_home, None);
         assert!(plain.get("opencode").unwrap().placement(home, folder).is_none(), "no adapter knows it");
+    }
+
+    #[test]
+    fn a_sessions_turns_are_read_from_its_composed_home_not_the_shared_one() {
+        const OWN: &str = "019a1e65-0000-7000-8000-000000000001";
+        const ID: &str = OWN;
+        // The Codex adapter finds a rollout only by a UUID-shaped id.
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let folder = home.join("Humata/ch/sessions/s.1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let session_codex = dir.path().join(".sessions/se_a/config/codex");
+        let find = session_codex.clone();
+        let agents = Agents::builtin()
+            .with_existing_session_homes(move |session, agent| (session == "se_a" && agent == "codex").then(|| find.clone()));
+        let file = rollout_on(&session_codex, "2026/11/16", OWN, &folder);
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        for turn in 1..=2 {
+            let line = serde_json::json!({
+                "timestamp": format!("2026-11-16T09:3{turn}:00Z"),
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "thread_id": ID, "turn_id": format!("t{turn}"),
+                    "item": {"type": "UserMessage", "id": format!("u{turn}"), "content": [{"type": "text", "text": "hi"}]}},
+            });
+            let done = serde_json::json!({
+                "timestamp": format!("2026-11-16T09:3{turn}:00Z"),
+                "type": "event_msg",
+                "payload": {"type": "task_complete", "turn_id": format!("t{turn}"), "last_agent_message": "ok"},
+            });
+            text.push_str(&format!("{line}\n{done}\n"));
+        }
+        std::fs::write(&file, text).unwrap();
+
+        let own = agents.get_as_ran("se_a", "codex").unwrap();
+        let turns = own.turns(&home, &folder, OWN, &file, None).unwrap().unwrap();
+        assert_eq!(turns.len(), 2);
+
+        // The shared kind looks in the daemon's own dir and doesn't find it.
+        let shared = agents.get("codex").unwrap();
+        assert!(shared.turns(&home, &folder, OWN, &file, None).unwrap().is_none_or(|t| t.is_empty()));
+    }
+
+    #[test]
+    fn a_session_with_no_home_of_its_own_keeps_reading_the_shared_one() {
+        const OLD: &str = "019a1e65-0000-7000-8000-000000000002";
+        const ID: &str = OLD;
+        // The Codex adapter finds a rollout only by a UUID-shaped id.
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let folder = home.join("Humata/ch/sessions/s.1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let agents = Agents::builtin().with_existing_session_homes(|_, _| None);
+        let file = rollout_on(&home.join(".codex"), "2026/11/16", OLD, &folder);
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        let line = serde_json::json!({
+            "timestamp": "2026-11-16T09:31:00Z", "type": "event_msg",
+            "payload": {"type": "item_completed", "thread_id": ID, "turn_id": "t1",
+                "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "hi"}]}},
+        });
+        let done = serde_json::json!({
+            "timestamp": "2026-11-16T09:31:00Z", "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "t1", "last_agent_message": "ok"},
+        });
+        text.push_str(&format!("{line}\n{done}\n"));
+        std::fs::write(&file, text).unwrap();
+
+        let kind = agents.get_as_ran("se_old", "codex").unwrap();
+        let turns = kind.turns(&home, &folder, OLD, &file, None).unwrap().unwrap();
+        assert_eq!(turns.len(), 1);
+    }
+
+    #[test]
+    fn a_session_home_is_where_that_sessions_conversation_is_found() {
+        let (home, folder) = (Path::new("/home/me"), Path::new("/u/me/Humata/ch/sessions/s.1"));
+        let session = Path::new("/machine/.sessions/se_a/config/claude");
+        let plain = Agents::builtin();
+        let claude = plain.get("claude").unwrap();
+        let own = claude.with_session_home(session);
+
+        assert_eq!(
+            own.launch(home, folder, "abc").conversation_file,
+            session.join("projects/-u-me-Humata-ch-sessions-s-1/abc.jsonl")
+        );
+        assert_eq!(own.placement(home, folder).unwrap().cli_home.as_deref(), Some(session));
+        assert_eq!(claude.placement(home, folder).unwrap().cli_home, None, "the shared kind is unchanged");
+        assert!(!claude.launch(home, folder, "abc").conversation_file.starts_with(session));
+
+        // Also over a kind the daemon already points at one dir.
+        let shared = Agents::builtin().with_cli_home(ConversationFormat::ClaudeJsonl, Path::new("/state/claude"));
+        let again = shared.get("claude").unwrap().with_session_home(session);
+        assert!(again.launch(home, folder, "abc").conversation_file.starts_with(session));
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# A shell-command permission: seen, cancelled with Escape, asked again,
+# answered, and the output that follows the answer.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Use your shell tool to run exactly this command and nothing else: echo screenparse > out.txt
+quiet 3000
+snap bash_permission unknown
+keys esc
+quiet 2500
+snap after_escape unknown
+type Please run that exact shell command now: echo screenparse > out.txt
+quiet 3000
+snap bash_permission_again unknown
+keys enter
+quiet 4000
+snap after_answer unknown

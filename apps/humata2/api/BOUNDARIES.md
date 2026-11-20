@@ -269,7 +269,7 @@ agent do more.
    - *Ask for a wider grant:* the card offers only the daemon's standard
      scope for that capability (§4); the agent can't name another session,
      "all sessions" or the channel.
-   - *Edit the config Humata reads:* `file_write` can't reach `.humata/`,
+   - *Edit the config Humata reads:* a file write through the mounted view can't reach `.humata/`,
      `.humatad/`, Humata's own folders or any path outside a root (§3 hard
      limits). Settings and launch commands are user-only.
    - *Act through another agent:* `session_note` and `session_type` reach

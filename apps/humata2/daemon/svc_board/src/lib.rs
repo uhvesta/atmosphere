@@ -9,6 +9,7 @@
 //! dependencies) are read and saved without another write in between.
 
 mod asks;
+mod automation;
 mod hidden;
 mod history;
 mod journaled;
@@ -17,10 +18,13 @@ mod ownership;
 mod pr_reviews;
 mod pr_reviews_gh;
 mod pr_watch;
+mod pr_watch_gh;
+mod pr_watcher;
 pub mod ports;
 mod rank;
 mod replay;
 mod scope;
+mod session_events;
 mod todo;
 mod todo_fields;
 #[cfg(test)]
@@ -60,6 +64,11 @@ pub use self::ports::{
 };
 pub use self::ports::{FoundPr, ReviewFetchError, ReviewRequestsPort};
 pub use self::pr_reviews_gh::GhReviewRequests;
+pub use self::pr_watch_gh::GhPrStatus;
+pub use self::ports::{
+    ArchiveOutcome, PrStatus, PrStatusError, PrStatusPort, SeenStatus, SessionControl,
+    SessionSeen, SyncMode, TodoAutomation, TodoAutomationSource,
+};
 use self::asks::{change_ask, field_change, new_item_ask, pending_for};
 use self::ports::{agent_caller_of, answer_key, caller_of, gate, refused, store_error};
 use self::scope::{
@@ -103,6 +112,17 @@ pub struct BoardSvc {
     /// On the host: where pull requests that ask for the user's review are
     /// read from, and when they last were.
     review_requests: Option<Arc<pr_reviews::ReviewFeed>>,
+    /// The To-do automation settings in effect (TODO2WIRE); none: Ask for all.
+    automation: Option<Arc<dyn TodoAutomationSource>>,
+    /// On the host: wakes, archives and restores sessions for the To-do list.
+    sessions_control: Option<Arc<dyn SessionControl>>,
+    /// On the host: where watched pull requests' state is read from.
+    pr_status: Option<Arc<dyn PrStatusPort>>,
+    /// What the To-do list last saw of each session (TODO2WIRE).
+    seen: Arc<Mutex<session_events::Seen>>,
+    /// What the PR watcher last signalled, so a dismissed prompt stays gone
+    /// until its PR changes.
+    pr_watch_state: Arc<Mutex<pr_watcher::WatchState>>,
 }
 
 /// A write, as asked.
@@ -284,7 +304,37 @@ impl BoardSvc {
             repos: None,
             host_calls: Arc::new(std::sync::OnceLock::new()),
             review_requests: None,
+            automation: None,
+            sessions_control: None,
+            pr_status: None,
+            seen: Arc::default(),
+            pr_watch_state: Arc::default(),
         }
+    }
+
+    /// Reads the To-do automation settings from `source` at each use.
+    pub fn with_automation(mut self, source: Arc<dyn TodoAutomationSource>) -> Self {
+        self.automation = Some(source);
+        self
+    }
+
+    /// Lets the To-do list wake, archive and restore sessions through `control`.
+    pub fn with_session_control(mut self, control: Arc<dyn SessionControl>) -> Self {
+        self.sessions_control = Some(control);
+        self
+    }
+
+    /// Checks watched pull requests through `port`.
+    pub fn with_pr_status(mut self, port: Arc<dyn PrStatusPort>) -> Self {
+        self.pr_status = Some(port);
+        self
+    }
+
+    /// The automation settings for an item in `channel`.
+    fn automation_for(&self, channel: Option<&str>) -> TodoAutomation {
+        self.automation
+            .as_ref()
+            .map_or_else(TodoAutomation::default, |source| source.settings(channel))
     }
 
     /// Turns pull requests that ask for the user's review into To-do items,

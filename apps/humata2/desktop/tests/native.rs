@@ -249,6 +249,9 @@ mod fork_move;
 // AGENTSET (D725): Settings › Agents switches.
 #[path = "native/agent_switches.rs"]
 mod agent_switches;
+// FUSEFSWIRE (D904): Settings > Sync.
+#[path = "native/settings_sync.rs"]
+mod settings_sync;
 #[path = "native/inbox_terminal.rs"]
 mod inbox_terminal;
 #[path = "native/hosts_settings.rs"]
@@ -295,6 +298,8 @@ mod targets;
 mod terminal;
 #[path = "native/todo_asks.rs"]
 mod todo_asks;
+#[path = "native/todo_step_context.rs"]
+mod todo_step_context;
 #[path = "native/views.rs"]
 mod views;
 #[path = "native/channel_desk_target.rs"]

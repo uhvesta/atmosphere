@@ -101,6 +101,16 @@ that are not your clone or your machine's `shared/`.
 | exit 8 | The machine or the Mac is away. Say what is waiting. |
 | exit 10 `disk_full` | Stop writing. Tell the owner which machine. |
 
+## With and without the mount
+
+When `$HUMATA_FUSE_ROOT` is set, every location can also be read as plain
+files under it.
+
+When it is unset, Humata's folder is not mounted on this machine. Then use
+`humata files` and the MCP files tools (`files_list`, `file_read`,
+`file_write`, `files_find`, `folder_create`, `file_fetch`, `trash_restore`)
+for shared, channel, main, other sessions, Desk and trash.
+
 ## Not in the CLI
 
 - Reading part of a large file (MCP: `file_read` with `offset` and

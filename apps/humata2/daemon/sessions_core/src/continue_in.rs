@@ -64,7 +64,6 @@ impl Starter {
         let from_agent = from_agent.ok_or_else(|| StartError::NoAgent {
             session: from.id.clone(),
         })?;
-        let kind = self.agents.get(&from.agent)?;
         let chosen = self.choose(&channel, None)?;
         let this = self.clone();
         let (picked, repos, title) = (channel.clone(), chosen.clone(), from.title.clone());
@@ -75,9 +74,13 @@ impl Starter {
             .id
             .clone()
             .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple()));
+        // The source is read where its session runs it; the copy lands in the
+        // new session's own config home, where its launch records it.
+        let from_kind = self.agents.get_as_ran(&from.id, &from.agent)?;
+        let kind = self.agents.get_for_session(&id, &from.agent)?;
         let to = kind.launch(&self.home, &folder, &conversation).conversation_file;
         let through = match (
-            kind.placement(&self.home, &from.folder),
+            from_kind.placement(&self.home, &from.folder),
             kind.placement(&self.home, &folder),
         ) {
             (Some(from_at), Some(to_at)) => Some(Through {

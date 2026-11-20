@@ -35,18 +35,20 @@ use tonic::transport::{Channel, Endpoint, Uri};
 /// expected to take.
 const LONG: Duration = Duration::from_secs(90);
 
-const RELEASE_A: [(&str, &str); 4] = [
+const RELEASE_A: [(&str, &str); 5] = [
     ("humatad2", "HUMATAD2"),
     ("humata2_holder", "HUMATA2_HOLDER"),
     ("humata", "HUMATA"),
     ("stack", "STACK"),
+    ("humata2_fusefs", "HUMATA2_FUSEFS"),
 ];
 
-const RELEASE_B: [(&str, &str); 4] = [
+const RELEASE_B: [(&str, &str); 5] = [
     ("humatad2", "HUMATAD2"),
     ("humata2_holder", "HUMATA2_HOLDER_FAULTS"),
     ("humata", "HUMATA"),
     ("stack", "STACK"),
+    ("humata2_fusefs", "HUMATA2_FUSEFS"),
 ];
 
 fn manifest_a() -> Vec<u8> {

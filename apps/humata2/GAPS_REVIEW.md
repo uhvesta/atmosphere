@@ -1362,3 +1362,18 @@ Owner's ask. Skills and docs only, no code. `render-humata-review` now prepares 
   - The board goldens for 21–24 (design and native) are now orphans.
   - These need re-recording: frame 122 (design), the session-transcript view.txt snapshots, and the channel's empty-state frame.
   - The flows/cases/board docs still describe board screens.
+
+### (uncommitted): To-dos follow their agents and pull requests (TODO2WIRE T2, T5–T8; D901–D903)
+
+- Asked: main asked to wire the To-do features that only tests had used: the stuck-agent card, the Runs ledger, Ask/Auto automation, the watched-PR watcher, and the step context editor.
+- Changed:
+  - New `svc_board` modules: `session_events`, `automation`, `pr_watcher` and `pr_watch_gh`, with ports for session control, settings and PR status.
+  - `wire_board.rs` feeds session events to the board and runs a 5-minute tick and the PR watcher, on the host only.
+  - Run cost is `Option` from the proto through the store and clients to the UI.
+  - The drawer has a step context editor.
+  - Settings › General has a To-do group (in progress).
+- Tests: `svc_board:svc_board_unit_test` (session_events, automation, pr_watcher, pr_watch_gh), `store:boards_test`, `clients:clients_unit_test`, `ui/workspace:workspace_unit_test`, `features/todo:todo2_test`, and `humatad:todo_automation_test` (the away-board profile).
+- Verified: compile-only pass at 20261120-083949; one error, fixed.
+- Open:
+  - In `wire_board::build`, `serve.rs` always passes `Some(forwarder)`, so the `else if` that sets `with_review_requests` never runs on the host. As a result, review requests aren't read on the host. This predates TODO2WIRE and is left as is per main.
+  - Auto archive can't see a live shell tab next to an exited agent, because ArchivePlan doesn't report tabs. Archiving never ends holders.

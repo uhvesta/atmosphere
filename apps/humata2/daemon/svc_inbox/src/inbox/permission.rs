@@ -576,7 +576,8 @@ pub(super) fn decide(
             }
             pb::RequestState::Answered
         }
-        A::Approve(_) | A::Always(_) | A::TodoAction(_) | A::TodoReview(_) if question => {
+        A::Approve(_) | A::Always(_) | A::AllowFor30Min(_) | A::TodoAction(_) | A::TodoReview(_)
+            if question => {
             return Err(status::invalid_field(
                 "answer",
                 Problem::NotAllowedHere,
@@ -585,7 +586,7 @@ pub(super) fn decide(
             ));
         }
         A::Approve(_) => pb::RequestState::Approved,
-        A::Always(_) | A::Reply(_) | A::TodoAction(_) | A::TodoReview(_) => {
+        A::Always(_) | A::AllowFor30Min(_) | A::Reply(_) | A::TodoAction(_) | A::TodoReview(_) => {
             return Err(status::invalid_field(
                 "answer",
                 Problem::NotAllowedHere,

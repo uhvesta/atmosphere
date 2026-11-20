@@ -748,7 +748,7 @@ impl Starter {
         self.set_step(&mut detail, StartStep::Launching).await?;
         point("sessions.start.launching");
         progress("launch");
-        let kind = self.agents.get(&session.agent)?;
+        let kind = self.agents.get_for_session(&session.id, &session.agent)?;
         let plan = kind.launch_with_model(
             &self.home,
             &session.folder,

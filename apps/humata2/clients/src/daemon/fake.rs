@@ -41,6 +41,8 @@ mod session_repos;
 mod sessions;
 mod setup;
 mod stop;
+mod sync;
+mod todo_automation;
 mod terminal_link;
 mod terminals;
 mod transfers;
@@ -64,6 +66,10 @@ pub struct FakeDaemon {
 
 struct Inner {
     workspace: Workspace,
+    /// New subscribers hear `Event::Resync` first.
+    resync_on_subscribe: bool,
+    /// The next `events()` waits for this before it answers.
+    subscribe_gate: Option<tokio::sync::oneshot::Receiver<()>>,
     /// The Desk as subscribers last heard it, to tell what changed (DESKWATCH).
     desk_told: crate::desk::DeskData,
     subscribers: Vec<Subscriber>,
@@ -108,6 +114,10 @@ struct Inner {
     codex_needs_trust: bool,
     /// AGENTSET: the agent kinds' switches.
     switches: Vec<AgentSwitch>,
+    /// FUSEFS: Settings › Sync and the mount switch.
+    sync: crate::daemon::SyncSnapshot,
+    /// TODO2WIRE: Settings › General › To-do.
+    todo_automation: crate::daemon::TodoAutomation,
     github_repos: Vec<String>,
     /// Document versions (DV-2 to DV-8).
     docs: docs::Store,
@@ -141,6 +151,8 @@ impl FakeDaemon {
                 desk_told: workspace.desk.clone(),
                 workspace,
                 subscribers: Vec::new(),
+                resync_on_subscribe: false,
+                subscribe_gate: None,
                 failures: HashMap::new(),
                 recoveries: fixture::recoveries(),
                 calls: Vec::new(),
@@ -172,6 +184,8 @@ impl FakeDaemon {
                 next_pull_request: 1,
                 codex_needs_trust: false,
                 switches: agent_switches::defaults(),
+                sync: crate::daemon::SyncSnapshot::default(),
+                todo_automation: crate::daemon::TodoAutomation::default(),
                 docs: docs::Store::default(),
                 github_repos: [
                     "acme/ledger",
@@ -213,6 +227,27 @@ impl FakeDaemon {
     pub fn fail_next(&self, operation: Operation, message: impl Into<String>) {
         let error = DaemonError::Scripted { operation, message: message.into() };
         self.inner().failures.insert(operation, error);
+    }
+
+    /// Makes every later `events()` start with `Event::Resync`, as the live
+    /// daemon's does once its subscription is up, so a follower that
+    /// resubscribes after a failed load reloads.
+    pub fn resync_on_subscribe(&self) {
+        self.inner().resync_on_subscribe = true;
+    }
+
+    /// Makes the next `events()` wait until the returned sender sends (or is
+    /// dropped), so a test orders a subscribe after other calls finish.
+    #[must_use]
+    pub fn hold_next_subscribe(&self) -> tokio::sync::oneshot::Sender<()> {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        self.inner().subscribe_gate = Some(gate);
+        release
+    }
+
+    /// Ends every open event stream, as a daemon that went away does.
+    pub fn end_events(&self) {
+        self.inner().subscribers.clear();
     }
 
     /// Holds every reply of `operation` until [`Self::release`], for tests
@@ -262,6 +297,18 @@ impl FakeDaemon {
     /// Makes the daemon say Codex's hooks still need trusting, or not (D202).
     pub fn set_codex_needs_trust(&self, on: bool) {
         self.inner().codex_needs_trust = on;
+    }
+
+    /// Presets what Settings › Sync holds (FUSEFS); the next `sync_settings` gives this.
+    pub fn set_sync_snapshot(&self, snapshot: crate::daemon::SyncSnapshot) {
+        self.inner().sync = snapshot;
+    }
+
+    /// Makes the daemon's mount state read as `status` (D908) and tells the
+    /// app, as the daemon does when the mount moves on its own.
+    pub fn set_fusefs_status(&self, status: crate::daemon::FuseMountStatus) {
+        self.inner().sync.fusefs_status = status;
+        self.emit(Event::SettingsChanged);
     }
 
     /// Presets the agents' switches (AGENTSET); the next `agent_switches` gives these.
@@ -694,6 +741,22 @@ impl Daemon for FakeDaemon {
 
     fn agent_switches(&self) -> Reply<Vec<AgentSwitch>> {
         agent_switches::agent_switches(self)
+    }
+
+    fn sync_settings(&self) -> Reply<crate::daemon::SyncSnapshot> {
+        sync::sync_settings(self)
+    }
+
+    fn set_sync_settings(&self, change: crate::daemon::SyncChange) -> Reply<crate::daemon::SyncSnapshot> {
+        sync::set_sync_settings(self, change)
+    }
+
+    fn todo_automation(&self) -> Reply<crate::daemon::TodoAutomation> {
+        todo_automation::todo_automation(self)
+    }
+
+    fn set_todo_automation(&self, section: crate::daemon::TodoAutomation) -> Reply<crate::daemon::TodoAutomation> {
+        todo_automation::set_todo_automation(self, section)
     }
 
     fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch> {

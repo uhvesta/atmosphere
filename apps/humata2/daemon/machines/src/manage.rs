@@ -40,7 +40,7 @@ use crate::known_hosts;
 use crate::link::{Link, BIN_DIR};
 use crate::name::MachineName;
 use crate::provider::{
-    self, parse_list, parse_status_report, Action, DiscoveredInstance, MachineStatus, Provider, Reach,
+    parse_list, parse_status_report, Action, DiscoveredInstance, MachineStatus, Provider, Reach,
 };
 use crate::quote;
 use crate::runner::{Exit, Invocation, Output, Purpose, Runner};

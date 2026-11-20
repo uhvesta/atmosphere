@@ -90,6 +90,7 @@ pub fn ask_in_inbox(look: Look) -> Div {
                     .border_color(c(look.line))
                     .child(nav(IconName::Settings, "General", false))
                     .child(nav(IconName::Bot, "Agents", true))
+                    .child(nav(IconName::FolderTree, "Sync", false))
                     .child(nav(IconName::Server, "Machines", false))
                     .child(nav(IconName::Columns2, "Layout", false))
                     .child(nav(IconName::ShieldCheck, "Agent access", false))

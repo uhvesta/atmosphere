@@ -2,6 +2,8 @@
 //! the sidebar's Desk. It is 5 unless changed, its pop-up picks 3, 4, 5, 8
 //! or All and closes, and a saved value out of range still gives a usable cap.
 use humata2_clients::{Clients, fixture};
+use humata2_clients::daemon::TodoAutomation;
+use humata2_settings::TodoAutomationAction;
 use humata2_settings::{
     DeskRows, Preferences, Row, Section, Settings, SettingsAction as A, SettingsState,
 };
@@ -44,6 +46,9 @@ fn switching_section_closes_the_pop_up() {
     store.send(A::Section(Section::General), |s| {
         s.section = Section::General;
         s.desk_rows_menu = false;
+    });
+    store.receive(A::Todo(TodoAutomationAction::Loaded(Ok(TodoAutomation::default()))), |s| {
+        s.todo.section = Some(TodoAutomation::default());
     });
     store.finish();
 }

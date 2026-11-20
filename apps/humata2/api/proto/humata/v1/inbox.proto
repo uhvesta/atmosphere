@@ -53,6 +53,25 @@ service InboxService {
   // INBOXHOOKS: the agent's answer to Ask why on a request its own session
   // made (MCP inbox_explain). Sets AskedWhy.reply; the card stays pending.
   rpc ExplainAsk(ExplainAskRequest) returns (InboxRequest);
+  // BROWSER: an agent (claude, codex, copilot or agy only) asks to run one
+  // action in the user's own browser. The daemon reads the card's preview,
+  // read or write, and the action key from the action itself. A read with an
+  // active 30-minute grant for the caller's session answers AllowFor30Min at
+  // once; anything else waits like any request. Write cards offer only
+  // Allow once and Deny; AllowFor30Min and AlwaysLet are refused on every
+  // write, and AlwaysLet on every browser card.
+  rpc RequestBrowserApproval(RequestBrowserApprovalRequest) returns (WaitResponse);
+}
+
+message RequestBrowserApprovalRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The browser action as JSON, in the native host's wire form
+  // (`{"type":"click","url":...,"selector":...}`); the card shows what this
+  // says, and ExecuteBrowserAction runs only an action with the same key.
+  string action_json = 2;
+  // The agent's reason, shown under WHY. At most 1000 characters.
+  string reason = 3;
+  uint32 wait_seconds = 4;
 }
 
 message AskWhyRequest {
@@ -168,6 +187,10 @@ enum RequestKind {
   // UP-1, D281: no requester, always VIP, answered only with Approve
   // (Migrate): never Deny, Always, a reply or an Approve-all.
   REQUEST_KIND_MIGRATE = 8;
+  // BROWSER: read a tab or list tabs; may be allowed for 30 minutes.
+  REQUEST_KIND_BROWSER_READ = 9;
+  // BROWSER: click, type or navigate; asked every time.
+  REQUEST_KIND_BROWSER_WRITE = 10;
 }
 
 // IN-9 item 7.
@@ -296,7 +319,31 @@ message RequestPreview {
     ProviderImportPreview provider_import = 15;
     TodoActionPreview todo_action = 16;
     TodoReviewPreview todo_review = 17;
+    BrowserPreview browser_read = 18;
+    BrowserPreview browser_write = 19;
   }
+}
+
+// BROWSER: what a browser read or write card shows, worked out by the
+// daemon from the action.
+message BrowserPreview {
+  // The exact URL a write acts on, or the tab a read reads; may be empty
+  // when a read lists tabs.
+  string url = 1;
+  // One line: what the action does.
+  string action_summary = 2;
+  // The target element (selector and visible text), the typed text, or
+  // the tab; empty when there is none.
+  string target_preview = 3;
+  // True only for reads; the server sets it, never the agent.
+  bool supports_30m_grant = 4;
+  // The action's kind as the native host names it, e.g. "click".
+  string action = 5;
+  // Hex sha256 of the action's canonical JSON; ExecuteBrowserAction must
+  // carry an action with the same key.
+  string action_key = 6;
+  // The agent's reason.
+  string reason = 7;
 }
 
 // HO-11: what a port forward card shows.
@@ -581,10 +628,15 @@ message RequestAnswer {
     TodoActionAnswer todo_action = 5;
     // An answer to a TodoReviewPreview (Approved / Changes asked).
     TodoReviewAnswer todo_review = 6;
+    // BROWSER: allow this read and every read by the same session for 30
+    // minutes. Only on a browser read card.
+    AllowFor30Min allow_for_30_min = 7;
   }
 }
 
 message Approve {}
+
+message AllowFor30Min {}
 
 message Deny {
   // "Deny and reply…" when set.

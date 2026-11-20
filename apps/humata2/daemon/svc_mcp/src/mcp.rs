@@ -28,6 +28,8 @@ mod delete_many;
 mod todo;
 // REPOS (CH-21)
 mod session_repo;
+// D910: a session start in a named channel.
+mod session_start;
 mod doc_versions;
 mod history;
 mod pull_requests;
@@ -746,8 +748,8 @@ impl GrpcDaemon {
         Ok(applied(session_json(&session), None))
     }
 
-    /// `session_fork` (flow 26.5): forks the caller's own session; the
-    /// daemon asks the user first when the rule says so.
+    /// `session_fork` (flow 26.5): forks the session named, by default the
+    /// caller's own; the daemon asks the user first when the rule says so.
     async fn session_fork(&self, call: Call) -> Result<Reply, ToolError> {
         let arguments = &call.arguments;
         let ForkChoices { kind, agent, before_turn } = fork_choices(arguments)?;
@@ -764,7 +766,7 @@ impl GrpcDaemon {
         let machine = text(arguments, "machine");
         let request = self.request(pb::ForkSessionRequest {
             idempotency_key: Some(key(&call)),
-            parent: Some(self.own_session().await?),
+            parent: Some(self.named_session(arguments).await?),
             kind: kind as i32,
             before_turn,
             agent: agent.map(|value| pb::AgentId { value }),
@@ -1327,6 +1329,7 @@ impl Daemon for GrpcDaemon {
             Operation::SessionStop |
             Operation::SessionArchive |
             Operation::SessionDelete |
+            Operation::SessionStart |
             Operation::SessionFork |
             Operation::SessionContinueInChannel |
             Operation::FileWrite |
@@ -1407,6 +1410,7 @@ impl Daemon for GrpcDaemon {
             Operation::SessionArchive => self.session_archive(call).await,
             Operation::SessionDelete => self.session_delete(call).await,
             Operation::SessionsDeleteMany => self.sessions_delete_many(call).await,
+            Operation::SessionStart => self.session_start(call).await,
             Operation::SessionFork => self.session_fork(call).await,
             Operation::SessionContinueInChannel => self.session_continue_in_channel(call).await,
             Operation::SessionAddRepo => self.session_add_repo(call).await, // REPOS (CH-21)

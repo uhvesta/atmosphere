@@ -1,7 +1,7 @@
 //! The CLI and the host tools beside the daemon (D371): which of
-//! `<bin>/humata`, `<bin>/humata2_holder` and `<bin>/stack` is not the one the
-//! release names, and the cards of the items that say so. The holder and the
-//! stack are one host tools item: it waits while either differs. Only a file
+//! `<bin>/humata`, `<bin>/humata2_holder`, `<bin>/stack` and `<bin>/humata2_fusefs` is not the one the
+//! release names, and the cards of the items that say so. The holder, the
+//! stack and the FUSEFS helper are one host tools item: it waits while any differs. Only a file
 //! that is there and differs counts: a missing one is nothing to migrate.
 
 use humata2_grpc::humata::v1 as pb;
@@ -10,10 +10,11 @@ use humata2_machines::InstalledFile;
 pub use humata2_daemon_ports::release::installed_tools as installed;
 
 /// The tools a release is checked for, each with the thing its Migrate item is.
-pub(crate) const TOOLS: [(InstalledFile, pb::MigrateThing); 3] = [
+pub(crate) const TOOLS: [(InstalledFile, pb::MigrateThing); 4] = [
     (InstalledFile::Cli, pb::MigrateThing::Cli),
     (InstalledFile::Holder, pb::MigrateThing::HostTools),
     (InstalledFile::Stack, pb::MigrateThing::HostTools),
+    (InstalledFile::FuseFs, pb::MigrateThing::HostTools),
 ];
 
 /// The Migrate things the tools are, each once.
@@ -21,8 +22,8 @@ pub(crate) const THINGS: [pb::MigrateThing; 2] =
     [pb::MigrateThing::Cli, pb::MigrateThing::HostTools];
 
 /// Whether one of the tools `thing` is for is in `differing`. A host tools
-/// item stays while the holder or the stack differs, so it is withdrawn only
-/// when neither does.
+/// item stays while the holder, the stack or the FUSEFS helper differs, so it
+/// is withdrawn only when none does.
 pub(crate) fn wants(differing: &[InstalledFile], thing: pb::MigrateThing) -> bool {
     TOOLS.iter().any(|(file, tool)| *tool == thing && differing.contains(file))
 }
@@ -87,6 +88,16 @@ mod tests {
         let there = [file("humata", "aa"), file("humata2_holder", "bb"), file("stack", "DD")];
 
         assert_eq!(differing(&named, &there), [InstalledFile::Stack]);
+        assert!(wants(&differing(&named, &there), pb::MigrateThing::HostTools));
+        assert!(!wants(&differing(&named, &there), pb::MigrateThing::Cli));
+    }
+
+    #[test]
+    fn a_fusefs_helper_that_differs_is_listed_and_wanted_as_host_tools() {
+        let named = [file("humata", "aa"), file("humata2_fusefs", "ee")];
+        let there = [file("humata", "aa"), file("humata2_fusefs", "FF")];
+
+        assert_eq!(differing(&named, &there), [InstalledFile::FuseFs]);
         assert!(wants(&differing(&named, &there), pb::MigrateThing::HostTools));
         assert!(!wants(&differing(&named, &there), pb::MigrateThing::Cli));
     }

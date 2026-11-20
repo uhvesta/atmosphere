@@ -23,6 +23,7 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Request, Response, Status};
 
+use super::automation;
 use super::asks::{change_ask, field_change, new_item_ask, pending_for};
 use super::history::{entry_pb, word_diff_pb};
 use super::ownership;
@@ -31,7 +32,7 @@ use super::pr_watch;
 use super::scope::{board_for_policy, board_pb, by_of, made_by_session};
 use super::todo_fields::{
     self as saved, BlockerGoneRow, ExternalBlockRow, Fields, FieldsError, MigrationRow,
-    SourceAnchorRow, StartRow, StepRow, TodoCommentRow, TodoHistoryRow, TodoOwnerRow, WatchedPrRow,
+    LifecyclePromptRow, SourceAnchorRow, StartRow, StepRow, TodoCommentRow, TodoHistoryRow, TodoOwnerRow, WatchedPrRow,
 };
 use super::{
     BoardSvc, DEFAULT_COLUMN, ids, item_id, item_ids, keys, merged, no_item, page_of,
@@ -395,7 +396,7 @@ pub(super) struct Entry {
 impl Entry {
     /// The channel the item shows under; empty is none. Items of a session's
     /// board show under that session's channel, which the store keeps.
-    fn channel(&self) -> String {
+    pub(super) fn channel(&self) -> String {
         self.fields
             .channel
             .clone()
@@ -403,7 +404,7 @@ impl Entry {
     }
 
     /// The sessions on it, with the session whose board it was on first.
-    fn sessions(&self) -> Vec<String> {
+    pub(super) fn sessions(&self) -> Vec<String> {
         let mut sessions = self.record.sessions.clone();
         if let BoardKey::Session(session) = &self.record.board
             && !sessions.contains(session)
@@ -432,7 +433,7 @@ impl Entry {
 
     /// The record with the list's view of it filled in, for the board item
     /// the API shows.
-    fn shown_record(&self) -> BoardItemRecord {
+    pub(super) fn shown_record(&self) -> BoardItemRecord {
         let mut record = self.record.clone();
         record.revision = self.revision();
         record.channel = self.channel();
@@ -859,6 +860,7 @@ impl BoardSvc {
         todo.lifecycle_prompts = fields
             .lifecycle_prompts
             .iter()
+            .filter(|p| !automation::is_pending(p))
             .map(|p| domain::LifecyclePrompt {
                 id: p.id.clone(),
                 kind: p.kind.clone(),
@@ -931,9 +933,10 @@ impl BoardSvc {
             .list_todo_runs(&entry.record.key)
             .unwrap_or_default();
         let run_count = u32::try_from(runs.len()).unwrap_or(u32::MAX);
-        let total_cost_micros = runs
-            .iter()
-            .fold(0u64, |acc, r| acc.saturating_add(r.cost_micros));
+        let total_cost_micros = runs.iter().fold(None::<u64>, |acc, r| match r.cost_micros {
+            Some(c) => Some(acc.unwrap_or(0).saturating_add(c)),
+            None => acc,
+        });
         let close_readiness = fields
             .close_readiness
             .as_ref()
@@ -1089,6 +1092,7 @@ impl BoardSvc {
             lifecycle_prompts: fields
                 .lifecycle_prompts
                 .iter()
+                .filter(|p| !automation::is_pending(p))
                 .map(|p| pb::LifecyclePrompt {
                     id: p.id.clone(),
                     kind: p.kind.clone(),
@@ -1110,7 +1114,7 @@ impl BoardSvc {
 
     /// `entry` for the API: the board item with the list's channel, the
     /// sessions it has and its revision, and the to-do fields.
-    fn todo_item(
+    pub(super) fn todo_item(
         &self,
         caller: &Caller,
         entry: &Entry,
@@ -1539,7 +1543,8 @@ impl BoardSvc {
         {
             return Err(revision_conflict(&fresh.shown_record(), Some(expected)));
         }
-        let planned = apply_patch(&fresh, &patch, &parsed, channel, &add, &remove, &deps_add, &deps_remove, now);
+        let mut planned = apply_patch(&fresh, &patch, &parsed, channel, &add, &remove, &deps_add, &deps_remove, now);
+        self.automate_update(&fresh, &mut planned, &by_of(caller), now)?;
         if let Some(new_deps) = &planned.depends_on {
             let edges = self.all_dependency_edges()?;
             if let Some(cycle) = ownership::find_cycle(&id, new_deps, &edges) {
@@ -1580,6 +1585,9 @@ impl BoardSvc {
                 self.notify_blocker_gone(&mut map, &id, new_state, &fields.became_keys)?;
             }
             saved::save(&self.store, &map)?;
+        }
+        if !patch.watched_prs_add.is_empty() {
+            self.poke_pr_watcher();
         }
         let entry = Entry { record, fields };
         let archived = self.archived()?;
@@ -1631,24 +1639,29 @@ impl BoardSvc {
         let applied = blocking(move || me.apply_todo(&who, &again, false, now_ms())).await??;
         match applied {
             TodoApplied::Done(done) => {
+                let done = self.settle_response(&caller, *done, now_ms()).await?;
                 if let Some(key) = key {
-                    self.finished_todo.put(key, (*done).clone());
+                    self.finished_todo.put(key, done.clone());
                 }
-                Ok(Response::new(*done))
+                Ok(Response::new(done))
             }
             TodoApplied::Ask(asked, board) => {
                 let (me, who) = (self.clone(), caller.clone());
                 let run: Run = Box::new(move |_| {
                     Box::pin(async move {
                         let (inner, who) = (me.clone(), who);
+                        let settle_as = who.clone();
                         let applied =
                             blocking(move || inner.apply_todo(&who, &op, true, now_ms()))
                                 .await??;
                         match applied {
-                            TodoApplied::Done(done) => Ok(Deferred {
-                                result: done.encode_to_vec(),
-                                result_type: "humata.v1.WriteTodoResponse".to_owned(),
-                            }),
+                            TodoApplied::Done(done) => {
+                                let done = me.settle_response(&settle_as, *done, now_ms()).await?;
+                                Ok(Deferred {
+                                    result: done.encode_to_vec(),
+                                    result_type: "humata.v1.WriteTodoResponse".to_owned(),
+                                })
+                            }
                             TodoApplied::Ask(..) => Err(internal(
                                 "an approved call was sent to Ask me a second time",
                                 "repeat the call",
@@ -1728,13 +1741,15 @@ impl Parsed {
 }
 
 /// What a patch makes of an item.
-struct Planned {
-    fields: Fields,
+pub(super) struct Planned {
+    pub(super) fields: Fields,
     title: Option<String>,
     description: Option<String>,
-    sessions: Option<Vec<String>>,
+    pub(super) sessions: Option<Vec<String>>,
     depends_on: Option<Vec<String>>,
-    column: Option<i32>,
+    pub(super) column: Option<i32>,
+    /// What the watched pull requests now say, for `apply_pr_prompts`.
+    pub(super) new_prompts: Vec<LifecyclePromptRow>,
 }
 
 impl Planned {
@@ -1898,6 +1913,7 @@ fn apply_patch(
         let trimmed = reason.trim();
         fields.wont_do_reason = (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
+    let mut new_prompts = Vec::new();
     if !patch.watched_prs_add.is_empty() {
         for pr_pb in &patch.watched_prs_add {
             let pr = watched_pr_of(pr_pb);
@@ -1911,15 +1927,7 @@ fn apply_patch(
             } else {
                 fields.watched_prs.push(pr.clone());
             }
-            for prompt in pr_watch::evaluate_watched_pr(&pr) {
-                if !fields
-                    .lifecycle_prompts
-                    .iter()
-                    .any(|existing| existing.id == prompt.id)
-                {
-                    fields.lifecycle_prompts.push(prompt);
-                }
-            }
+            new_prompts.extend(pr_watch::evaluate_watched_pr(&pr));
         }
         let commits = fields.close_readiness.as_ref().map_or(0, |cr| cr.commits);
         fields.close_readiness = Some(pr_watch::compute_close_readiness(
@@ -1945,6 +1953,7 @@ fn apply_patch(
         sessions: (sessions != record.sessions).then_some(sessions),
         depends_on: (deps != record.depends_on).then_some(deps),
         column,
+        new_prompts,
     }
 }
 
@@ -2147,11 +2156,17 @@ impl pb::todo_service_server::TodoService for BoardSvc {
         request: Request<pb::BatchUpdateTodoRequest>,
     ) -> Result<Response<pb::BatchUpdateTodoResponse>, Status> {
         let caller = self.todo_caller(&request)?;
+        let caller_in = caller.clone();
         let request = request.into_inner();
         let me = self.clone();
-        blocking(move || me.batch_update_todo_in(&caller, &request, now_ms()))
-            .await?
-            .map(Response::new)
+        let mut done = blocking(move || me.batch_update_todo_in(&caller_in, &request, now_ms()))
+            .await??;
+        for item in &mut done.updated {
+            if let Some(settled) = self.settle_item(&caller, item, now_ms()).await? {
+                *item = settled;
+            }
+        }
+        Ok(Response::new(done))
     }
 
     async fn list_todo_runs(
@@ -2197,8 +2212,11 @@ impl pb::todo_service_server::TodoService for BoardSvc {
         let caller = self.todo_caller(&request)?;
         let request = request.into_inner();
         let me = self.clone();
-        blocking(move || me.resolve_blocker_gone_in(&caller, &request, now_ms()))
-            .await?
+        let who = caller.clone();
+        let done = blocking(move || me.resolve_blocker_gone_in(&who, &request, now_ms()))
+            .await??;
+        self.settle_response(&caller, done, now_ms())
+            .await
             .map(Response::new)
     }
 
@@ -2208,9 +2226,8 @@ impl pb::todo_service_server::TodoService for BoardSvc {
     ) -> Result<Response<pb::WriteTodoResponse>, Status> {
         let caller = self.todo_caller(&request)?;
         let request = request.into_inner();
-        let me = self.clone();
-        blocking(move || me.resolve_lifecycle_prompt_in(&caller, &request, now_ms()))
-            .await?
+        self.resolve_prompt_acting(&caller, request, now_ms())
+            .await
             .map(Response::new)
     }
 }
@@ -2609,11 +2626,13 @@ impl BoardSvc {
             .store
             .list_todo_runs(&id)
             .map_err(|error| self.failed(error, "list to-do runs"))?;
-        let mut total_cost_micros = 0u64;
+        let mut total_cost_micros: Option<u64> = None;
         let runs = records
             .into_iter()
             .map(|r| {
-                total_cost_micros = total_cost_micros.saturating_add(r.cost_micros);
+                if let Some(c) = r.cost_micros {
+                    total_cost_micros = Some(total_cost_micros.unwrap_or(0).saturating_add(c));
+                }
                 let links: Vec<domain::RunLink> =
                     serde_json::from_str(&r.links_json).unwrap_or_default();
                 pb::TodoRun {
@@ -2775,6 +2794,7 @@ impl BoardSvc {
             .retain(|bg| bg.blocker_key != blocker_key);
 
         let action = request.action.trim().to_lowercase();
+        let state_before = fields.state(record.column);
         let mut new_deps = record.depends_on.clone();
         new_deps.retain(|k| k != blocker_key);
         let mut new_col = None;
@@ -2831,6 +2851,25 @@ impl BoardSvc {
             }
         }
         fields.extra_revisions += 1;
+        let entry_now = Entry { record, fields };
+        let (state_now, linked, channel) = (
+            entry_now.state(),
+            entry_now.sessions(),
+            entry_now.channel(),
+        );
+        let Entry { record, mut fields } = entry_now;
+        let rev = record.revision + fields.extra_revisions;
+        self.after_close(
+            &mut fields,
+            &id,
+            state_before,
+            state_now,
+            &linked,
+            &channel,
+            now,
+            &by_of(caller),
+            rev,
+        )?;
         map.insert(id, fields.clone());
         saved::save(&self.store, &map)?;
         let entry = Entry { record, fields };
@@ -2861,9 +2900,20 @@ impl BoardSvc {
         let mut record = self.load(caller, &id, false)?;
         let mut map = saved::load(&self.store)?;
         let mut fields = map.get(&id).cloned().unwrap_or_default();
-        fields.lifecycle_prompts.retain(|p| p.id != prompt_id);
-
         let choice = request.choice.trim();
+        let state_before = fields.state(record.column);
+        let prompt = fields
+            .lifecycle_prompts
+            .iter()
+            .find(|p| p.id == prompt_id)
+            .cloned();
+        let by = by_of(caller);
+        fields.lifecycle_prompts.retain(|p| p.id != prompt_id);
+        if let Some(prompt) = &prompt {
+            self.act_on_prompt(&mut fields, &record, prompt, choice, &by, now)?;
+        }
+        fields.prompt_sessions.remove(prompt_id);
+
         let next_state = match choice.to_lowercase().as_str() {
             "close" => Some(State::Closed),
             "won't do" | "wont_do" => Some(State::WontDo),
@@ -2902,6 +2952,27 @@ impl BoardSvc {
             if matches!(state, State::WontDo | State::Became) {
                 self.notify_blocker_gone(&mut map, &id, state, &fields.became_keys)?;
             }
+            let linked = Entry {
+                record: record.clone(),
+                fields: Fields::default(),
+            }
+            .sessions();
+            let channel = fields
+                .channel
+                .clone()
+                .unwrap_or_else(|| record.channel.clone());
+            let rev = record.revision + fields.extra_revisions + 1;
+            self.after_close(
+                &mut fields,
+                &id,
+                state_before,
+                state,
+                &linked,
+                &channel,
+                now,
+                &by,
+                rev,
+            )?;
         }
         fields.extra_revisions += 1;
         let rev = record.revision + fields.extra_revisions;
@@ -4369,7 +4440,7 @@ mod tests {
                 tool: "claude".into(),
                 model: "sonnet".into(),
                 outcome: "done".into(),
-                cost_micros: 250_000,
+                cost_micros: Some(250_000),
                 started_unix_ms: 100,
                 finished_unix_ms: 200,
                 links_json: "[]".into(),
@@ -4385,7 +4456,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(runs.runs.len(), 1);
-        assert_eq!(runs.total_cost_micros, 250_000);
+        assert_eq!(runs.total_cost_micros, Some(250_000));
 
         // ResolveTodoOwnership
         let owned = svc

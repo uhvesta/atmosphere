@@ -1,6 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-# Installs the host's own tools (humatad2, the holder, the humata and stack CLIs) from
+# Installs the host's own tools (humatad2, the holder, the humata and stack CLIs and the FUSEFS helper) from
 # the app bundle into ~/.humata2/bin with the release's bundle.json, stages a
 # newer release as .next files for Migrate (UP-1), registers the launchd
 # login item and links `humata` onto the person's PATH (TS-0, PER-20, D51).

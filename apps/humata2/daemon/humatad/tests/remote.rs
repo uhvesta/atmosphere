@@ -49,7 +49,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 const BOX: &str = "box-1";
 /// The host redials after a backoff of 5 s, then 10 s while dials fail.
 const REDIAL: Duration = Duration::from_secs(60);

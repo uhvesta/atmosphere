@@ -285,7 +285,11 @@ fn document_row(ui: &Rc<Ui>, name: &str, item: &ChannelRow<'_>, look: Look) -> A
 /// The tab: New desk session, and the open sessions as a table.
 pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyElement {
     let rows = state.desk.channel_rows(&channel.id);
-    let agent = state.settings.preferences.default_agent;
+    // With every agent off there is no default to send; the Settings pick goes
+    // along and the app's Desk handling refuses it with a toast.
+    let agent = state
+        .default_agent(Some(&channel.id))
+        .unwrap_or(state.settings.preferences.default_agent);
     let new = widgets::push_primary(
         ui,
         "channel-desk-new",

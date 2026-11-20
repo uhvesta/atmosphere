@@ -171,7 +171,7 @@ Owned files:
 4. Commit with explicit `git add -- <paths>`. No AI attribution trailers.
 
 ## Lane
-**State: paused 2026-11-20 (main: full-suite 0.9.0 release first). Release target now 0.10.0.** No repo files changed by this lane yet except this Lane section. In flight: Fable is drawing frames into `workflow/milestones/mockups/browser/` (b1 Settings › Browser, b2 Inbox browser read card, b3 Inbox browser write card); it writes only there.
+**State: resumed 2026-11-20 (0.9.0 shipped at 5e86d620); release target 0.10.0. A1 compiled (api, svc_inbox, humatad, desktop; svc_inbox:all and live_daemon:all wait on FUSEFSWIRE's vfs fix). A2 and B1 written, awaiting build.** b2 re-signed by Fable for the per-session grant (D897). Fable signed off b1–b3 in `workflow/milestones/mockups/browser/` (FRAMES.md). Picks logged as D896–D899.
 
 **Goal / exit:** the outcome sentence above holds, and the verification gate's targets pass.
 
@@ -185,9 +185,9 @@ Owned files:
 - **Remote (D891):** after local works, a machine daemon forwards bridge execute/status to the host over the peer link; card raised on the machine and mirrored as today.
 
 **Tasks (planned, none started):**
-- A1 proto (inbox.proto + browser.proto + exhaustive-match fixes) — first, alone.
-- A2 browser_copilot fixes (haiku) — parallel with A1.
-- B1 `daemon/mcp` 6 browser Operations + tools.txt + schemas (haiku; tools.rs is a seam hunk for main).
+- A1 proto — **compiled** (manager). Files: `api/proto/humata/v1/inbox.proto` (additive), `api/proto/humata/v1/browser.proto` (new), `api/proto/BUILD.bazel` (`inbox_proto` srcs line), `daemon/svc_inbox/src/inbox.rs` (mod line, `request_browser_approval` trait method, browser arms in `decide`/`fits_card`, `approving`), `daemon/svc_inbox/src/inbox/browser.rs` (new: stub RPC, `is_read`, `decide`), `daemon/svc_inbox/src/inbox/permission.rs` (AllowFor30Min in two refusal arms), `clients/live_daemon/src/inbox.rs` (kind/preview/answer arms, placeholder until Lane C).
+- A2 browser_copilot fixes (haiku) — **done, awaiting build**. Files: `daemon/browser_copilot/{BUILD.bazel (+sha2), src/policy.rs (HighlightGuide is a read; resolve_ask without expect/unreachable), src/protocol.rs (action_key = hex sha256 of canonical JSON, from_json, kind), src/mcp_tools.rs, src/lib.rs}`. Target `//apps/humata2/daemon/browser_copilot:browser_copilot_test`. Note: the crate's gate keys read grants per agent; the real per-session grant lives in svc_inbox (B3).
+- B1 `daemon/mcp` 6 browser Operations + tools.txt + schemas (haiku) — **done, awaiting build**. Files: `daemon/mcp/src/tools.rs` (seam: operations after RepoLibrary, 4 schema helpers, 6 define arms), `daemon/mcp/tests/tools.txt`, `daemon/mcp/tests/schemas.rs`. Not in svc_mcp `serves()` yet, so not listed (B2 adds them, for supported agents only). Effects: list/read/guide Read, click/type Create, navigate Change. Target `//apps/humata2/daemon/mcp:all`.
 - A5 agy MCP launch wiring (sonnet; check `agy --help`, never touch ~/.gemini).
 - After A1 builds: A3 browser_service.rs (+install with fake home), A4 browser_host.rs + main.rs argv0 + identity.rs + serve.rs hunks, B2 svc_mcp browser.rs, B3 svc_inbox browser.rs + decide/fits_card/replay/deferred/answer_all; tests browser_host_test, browser_mcp_test.
 - Lane C (clients/features/ui) after Fable signs off the frames.

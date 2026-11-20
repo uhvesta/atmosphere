@@ -1,7 +1,10 @@
 //! Typed VFS errors mapped cleanly to POSIX `errno` codes.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
 use thiserror::Error;
+
+use crate::types::{FileHandle, NodeId};
 
 /// Convenience result alias for VFS operations.
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -53,90 +56,174 @@ pub mod errno {
     pub const ESTALE: i32 = 116;
 }
 
+/// What a failed VFS call was acting on, recorded as a typed value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VfsTarget {
+    /// A node, by inode number.
+    Node(NodeId),
+    /// A file or folder, by its virtual path.
+    Path(String),
+    /// An open file or directory handle.
+    Handle(FileHandle),
+    /// A flush that made no progress on a node.
+    Flush { ino: NodeId, bytes_flushed: u64 },
+    /// A name supplied by the caller, such as a child name in a lookup.
+    Name(String),
+    /// An entry name inside a directory, by the directory's virtual path.
+    Entry { dir: String, name: String },
+    /// A capability root, by its `cap_<id>` identifier.
+    Capability(String),
+    /// An extended attribute on a path.
+    Xattr { path: String, name: String },
+    /// A kernel process, by PID.
+    Pid(u32),
+    /// The capability root a session was granted read-only.
+    ReadOnlyRoot,
+    /// A path as seen by one caller process.
+    Caller { pid: u32, path: String },
+    /// A path whose access was denied and recorded as a pending request.
+    Request { id: String, path: String },
+    /// An optimistic concurrency generation that did not match.
+    Generation { expected: u64, actual: u64 },
+    /// A record of a fixed kind, such as a JSON stub or status file.
+    Record(&'static str),
+}
+
+impl fmt::Display for VfsTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(ino) => write!(f, "node {ino}"),
+            Self::Path(path) => write!(f, "path '{path}'"),
+            Self::Handle(fh) => write!(f, "file handle {fh}"),
+            Self::Flush { ino, bytes_flushed } => write!(
+                f,
+                "node {ino} after flushing {bytes_flushed} bytes"
+            ),
+            Self::Name(name) => write!(f, "name '{name}'"),
+            Self::Entry { dir, name } => write!(f, "'{name}' in '{dir}'"),
+            Self::Capability(id) => write!(f, "capability root '{id}'"),
+            Self::Xattr { path, name } => {
+                write!(f, "extended attribute '{name}' on path '{path}'")
+            }
+            Self::Pid(pid) => write!(f, "process {pid}"),
+            Self::ReadOnlyRoot => write!(f, "the read-only capability root"),
+            Self::Caller { pid, path } => write!(f, "path '{path}' for process {pid}"),
+            Self::Request { id, path } => write!(f, "path '{path}' (request '{id}')"),
+            Self::Generation { expected, actual } => {
+                write!(f, "generation {actual} (expected {expected})")
+            }
+            Self::Record(kind) => write!(f, "the {kind} record"),
+        }
+    }
+}
+
 /// Typed VFS error enum with 1-to-1 POSIX `errno` mapping.
-#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+///
+/// Every variant records the operation that failed (`op`) and the [`VfsTarget`] it acted on.
+/// The `Json*` variants also keep the underlying `serde_json` error as their source.
+#[derive(Debug, Error)]
 pub enum VfsError {
-    #[error("operation not permitted: {0}")]
-    Eperm(String),
+    #[error(
+        "{op} is not permitted on {target}. This entry is managed by Humata; change it through the Humata app or CLI instead."
+    )]
+    Eperm { op: &'static str, target: VfsTarget },
 
-    #[error("no such file or directory: {0}")]
-    Enoent(String),
+    #[error("{op} could not find {target}. Check the path, or list its parent folder to see what exists.")]
+    Enoent { op: &'static str, target: VfsTarget },
 
-    #[error("input/output error: {0}")]
-    Eio(String),
+    #[error("{op} hit an I/O error on {target}. Retry; if it keeps failing, check the Humata daemon log for the cause.")]
+    Eio { op: &'static str, target: VfsTarget },
 
-    #[error("bad file descriptor: {0}")]
-    Ebadf(String),
+    #[error("{op} used a stale or unknown file handle for {target}. Close the file and open it again.")]
+    Ebadf { op: &'static str, target: VfsTarget },
 
-    #[error("permission denied: {0}")]
-    Eacces(String),
+    #[error("{op} was denied for {target}. Check that this path is granted to the current session; ask the owner to grant it if not.")]
+    Eacces { op: &'static str, target: VfsTarget },
 
-    #[error("file exists: {0}")]
-    Eexist(String),
+    #[error("{op} cannot create {target} because it already exists. Choose another name, or open the existing entry.")]
+    Eexist { op: &'static str, target: VfsTarget },
 
-    #[error("cross-device link: {0}")]
-    CrossDevice(String),
+    #[error("{op} cannot move {target} across volumes. Copy the data to the destination and remove the original.")]
+    CrossDevice { op: &'static str, target: VfsTarget },
 
-    #[error("not a directory: {0}")]
-    Enotdir(String),
+    #[error("{op} needs a folder but {target} is not one. Use a path to a folder.")]
+    Enotdir { op: &'static str, target: VfsTarget },
 
-    #[error("is a directory: {0}")]
-    Eisdir(String),
+    #[error("{op} needs a file but {target} is a folder. Use a path to a file.")]
+    Eisdir { op: &'static str, target: VfsTarget },
 
-    #[error("invalid argument: {0}")]
-    Einval(String),
+    #[error("{op} got an invalid argument for {target}. Fix the value and try again.")]
+    Einval { op: &'static str, target: VfsTarget },
 
-    #[error("no space left on device: {0}")]
-    Enospc(String),
+    #[error("{op} failed on {target}: the volume is full. Free space or remove unused files, then retry.")]
+    Enospc { op: &'static str, target: VfsTarget },
 
-    #[error("read-only file system: {0}")]
-    Erofs(String),
+    #[error("{op} cannot write to {target}: this location is read-only. Write under a writable session folder instead.")]
+    Erofs { op: &'static str, target: VfsTarget },
 
-    #[error("result too large: {0}")]
-    Erange(String),
+    #[error("{op} produced a result too large for {target}. Request a smaller range.")]
+    Erange { op: &'static str, target: VfsTarget },
 
-    #[error("resource temporarily unavailable: {0}")]
-    Ewouldblock(String),
+    #[error("{op} conflicts with a lock held on {target}. Wait for the other holder to release it, then retry.")]
+    Ewouldblock { op: &'static str, target: VfsTarget },
 
-    #[error("directory not empty: {0}")]
-    Enotempty(String),
+    #[error("{op} cannot remove {target} because it is not empty. Remove its contents first.")]
+    Enotempty { op: &'static str, target: VfsTarget },
 
-    #[error("function not implemented: {0}")]
-    Enosys(String),
+    #[error("{op} is not supported for {target} yet. Use an operation this entry supports.")]
+    Enosys { op: &'static str, target: VfsTarget },
 
-    #[error("no data available: {0}")]
-    Enodata(String),
+    #[error("{op} found no data for {target}: the attribute is not set. Check the name, or set it first.")]
+    Enodata { op: &'static str, target: VfsTarget },
 
-    #[error("network is unreachable: {0}")]
-    Enetunreach(String),
+    #[error("{op} could not reach the machine that holds {target}. Check that the machine is online, then retry.")]
+    Enetunreach { op: &'static str, target: VfsTarget },
 
-    #[error("stale file handle: {0}")]
-    Estale(String),
+    #[error("{op} used a file handle or lease that is out of date for {target}. Reopen the path to get a fresh one.")]
+    Estale { op: &'static str, target: VfsTarget },
+
+    #[error("{op} failed to read or write {target} as JSON. Retry; if it keeps failing, check the Humata daemon log for the cause.")]
+    JsonIo {
+        op: &'static str,
+        target: VfsTarget,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("{op} got malformed JSON for {target}. Check that the JSON is valid, or regenerate it, then retry.")]
+    JsonInvalid {
+        op: &'static str,
+        target: VfsTarget,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 impl VfsError {
     /// Returns the POSIX `errno` integer corresponding to this error.
     pub fn errno(&self) -> i32 {
         match self {
-            Self::Eperm(_) => errno::EPERM,
-            Self::Enoent(_) => errno::ENOENT,
-            Self::Eio(_) => errno::EIO,
-            Self::Ebadf(_) => errno::EBADF,
-            Self::Eacces(_) => errno::EACCES,
-            Self::Eexist(_) => errno::EEXIST,
-            Self::CrossDevice(_) => errno::EXDEV,
-            Self::Enotdir(_) => errno::ENOTDIR,
-            Self::Eisdir(_) => errno::EISDIR,
-            Self::Einval(_) => errno::EINVAL,
-            Self::Enospc(_) => errno::ENOSPC,
-            Self::Erofs(_) => errno::EROFS,
-            Self::Erange(_) => errno::ERANGE,
-            Self::Ewouldblock(_) => errno::EWOULDBLOCK,
-            Self::Enotempty(_) => errno::ENOTEMPTY,
-            Self::Enosys(_) => errno::ENOSYS,
-            Self::Enodata(_) => errno::ENODATA,
-            Self::Enetunreach(_) => errno::ENETUNREACH,
-            Self::Estale(_) => errno::ESTALE,
+            Self::Eperm { .. } => errno::EPERM,
+            Self::Enoent { .. } => errno::ENOENT,
+            Self::Eio { .. } => errno::EIO,
+            Self::Ebadf { .. } => errno::EBADF,
+            Self::Eacces { .. } => errno::EACCES,
+            Self::Eexist { .. } => errno::EEXIST,
+            Self::CrossDevice { .. } => errno::EXDEV,
+            Self::Enotdir { .. } => errno::ENOTDIR,
+            Self::Eisdir { .. } => errno::EISDIR,
+            Self::Einval { .. } => errno::EINVAL,
+            Self::Enospc { .. } => errno::ENOSPC,
+            Self::Erofs { .. } => errno::EROFS,
+            Self::Erange { .. } => errno::ERANGE,
+            Self::Ewouldblock { .. } => errno::EWOULDBLOCK,
+            Self::Enotempty { .. } => errno::ENOTEMPTY,
+            Self::Enosys { .. } => errno::ENOSYS,
+            Self::Enodata { .. } => errno::ENODATA,
+            Self::Enetunreach { .. } => errno::ENETUNREACH,
+            Self::Estale { .. } => errno::ESTALE,
+            Self::JsonIo { .. } => errno::EIO,
+            Self::JsonInvalid { .. } => errno::EINVAL,
         }
     }
 }
@@ -147,21 +234,56 @@ mod tests {
 
     #[test]
     fn errno_mapping_covers_core_posix_errors() {
-        assert_eq!(VfsError::Eperm("root".into()).errno(), errno::EPERM);
-        assert_eq!(VfsError::Enoent("missing".into()).errno(), errno::ENOENT);
-        assert_eq!(VfsError::Eacces("denied".into()).errno(), errno::EACCES);
-        assert_eq!(VfsError::Eexist("dup".into()).errno(), errno::EEXIST);
-        assert_eq!(VfsError::Enotdir("file".into()).errno(), errno::ENOTDIR);
-        assert_eq!(VfsError::Eisdir("dir".into()).errno(), errno::EISDIR);
-        assert_eq!(VfsError::Enotempty("dir".into()).errno(), errno::ENOTEMPTY);
-        assert_eq!(VfsError::Einval("bad".into()).errno(), errno::EINVAL);
-        assert_eq!(VfsError::Estale("gen".into()).errno(), errno::ESTALE);
+        let target = || VfsTarget::Path("/root".into());
+        let op = "test";
         assert_eq!(
-            VfsError::Enetunreach("offline".into()).errno(),
+            VfsError::Eperm { op, target: target() }.errno(),
+            errno::EPERM
+        );
+        assert_eq!(
+            VfsError::Enoent { op, target: target() }.errno(),
+            errno::ENOENT
+        );
+        assert_eq!(
+            VfsError::Eacces { op, target: target() }.errno(),
+            errno::EACCES
+        );
+        assert_eq!(
+            VfsError::Eexist { op, target: target() }.errno(),
+            errno::EEXIST
+        );
+        assert_eq!(
+            VfsError::Enotdir { op, target: target() }.errno(),
+            errno::ENOTDIR
+        );
+        assert_eq!(
+            VfsError::Eisdir { op, target: target() }.errno(),
+            errno::EISDIR
+        );
+        assert_eq!(
+            VfsError::Enotempty { op, target: target() }.errno(),
+            errno::ENOTEMPTY
+        );
+        assert_eq!(
+            VfsError::Einval { op, target: target() }.errno(),
+            errno::EINVAL
+        );
+        assert_eq!(
+            VfsError::Estale { op, target: target() }.errno(),
+            errno::ESTALE
+        );
+        assert_eq!(
+            VfsError::Enetunreach { op, target: target() }.errno(),
             errno::ENETUNREACH
         );
-        assert_eq!(VfsError::Eio("io".into()).errno(), errno::EIO);
-        assert_eq!(VfsError::Enosys("todo".into()).errno(), errno::ENOSYS);
-        assert_eq!(VfsError::CrossDevice("xdev".into()).errno(), errno::EXDEV);
+        assert_eq!(VfsError::Eio { op, target: target() }.errno(), errno::EIO);
+        assert_eq!(
+            VfsError::Enosys { op, target: target() }.errno(),
+            errno::ENOSYS
+        );
+        assert_eq!(
+            VfsError::CrossDevice { op, target: target() }.errno(),
+            errno::EXDEV
+        );
     }
 }

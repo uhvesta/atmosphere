@@ -1108,7 +1108,7 @@ fn visible_sessions(state: &humata2_app::AppState, surface: &Surface) -> Vec<Ses
                 .filter(|row| {
                     !matches!(
                         row,
-                        humata2_app::NeedsRow::Request(r) if r.operation.starts_with("board.")
+                        humata2_app::NeedsRow::Request(r) if r.is_to_do_ask() || r.operation.starts_with("board.")
                     )
                 })
                 .partition(|row| match row {

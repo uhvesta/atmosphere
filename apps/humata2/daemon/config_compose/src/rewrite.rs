@@ -8,12 +8,14 @@
 //!   ensures the protected `humata` MCP server entry is never deleted or hijacked.
 
 use crate::model::{AgentKind, ConfigFormat, glob_match};
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -1477,6 +1479,15 @@ pub fn validate_script_name(name: &str) -> Result<(), RewriteError> {
     Ok(())
 }
 
+/// Kills the script's whole process group. The script is spawned as its own
+/// group leader, so its pid is the group id. Children it backgrounded share
+/// that group; killing only `bash` would leave them running and holding the
+/// stdout/stderr pipes open, so draining the pipes would block past the timeout.
+fn kill_script_group(child: &Child) {
+    // ESRCH (group already gone) is not an error for a cleanup path.
+    let _ = kill_process_group(Pid::from_child(child), Signal::KILL);
+}
+
 /// Executes a target-local `bash` filter script with JSON on `stdin` and
 /// transformed JSON on `stdout`, enforcing a strict wall-clock timeout.
 pub fn run_bash_filter(
@@ -1503,6 +1514,8 @@ pub fn run_bash_filter(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Own process group, so a timeout can kill the script's children too.
+        .process_group(0)
         .spawn()
         .map_err(RewriteError::BashSpawn)?;
 
@@ -1535,7 +1548,7 @@ pub fn run_bash_filter(
             Ok(Some(st)) => break st,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
+                    kill_script_group(&child);
                     let _ = child.wait();
                     let _ = stdout_thread.join();
                     let _ = stderr_thread.join();
@@ -1544,7 +1557,7 @@ pub fn run_bash_filter(
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(e) => {
-                let _ = child.kill();
+                kill_script_group(&child);
                 let _ = child.wait();
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
@@ -1849,6 +1862,58 @@ pub fn toml_to_json(value: &toml::Value) -> JsonValue {
                 out.insert(k.clone(), toml_to_json(v));
             }
             JsonValue::Object(out)
+        }
+    }
+}
+
+#[cfg(test)]
+mod bash_filter_tests {
+    use super::{BashFilterConfig, RewriteContext, RewriteError, run_bash_filter};
+    use crate::model::AgentKind;
+    use rustix::process::{Pid, test_kill_process};
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn test_ctx() -> RewriteContext {
+        RewriteContext {
+            machine_id: "m-test".to_string(),
+            machine_name: "test-box".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            home_dir: PathBuf::from("/nonexistent-home"),
+            agent: AgentKind::Claude,
+            local_env: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn timeout_kills_children_the_script_started() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let pid_file = dir.path().join("child.pid");
+        // The backgrounded child inherits the stdout pipe, so the filter only
+        // returns once the timeout has killed the script's whole process group.
+        let script = format!("sleep 30 &\necho $! > '{}'\nsleep 30\n", pid_file.display());
+        fs::write(dir.path().join("hang.sh"), script).expect("write test script");
+        let cfg = BashFilterConfig::new(dir.path(), "hang.sh").with_timeout(Duration::from_secs(2));
+
+        let result = run_bash_filter(&cfg, &serde_json::json!({}), &test_ctx());
+        assert!(matches!(result, Err(RewriteError::BashTimeout(_))));
+
+        let raw_pid: i32 = fs::read_to_string(&pid_file)
+            .expect("script wrote the child pid before it hung")
+            .trim()
+            .parse()
+            .expect("pid file holds a number");
+        let child = Pid::from_raw(raw_pid).expect("child pid is positive");
+
+        // A killed child can linger as a zombie until its parent reaps it, so
+        // poll for it to disappear instead of checking once.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while test_kill_process(child).is_ok() {
+            assert!(Instant::now() < deadline, "child {raw_pid} survived the timeout");
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 }

@@ -97,6 +97,7 @@ fn migrate(request: &str, thing: MigrateThing, machine: &str, phase: MigratePhas
         working_on: String::new(),
         asked_why: None,
         rule_label: String::new(),
+        to_do: None,
     }
 }
 

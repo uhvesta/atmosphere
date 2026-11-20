@@ -53,22 +53,33 @@
 - The replay tests are green in the fast tier.
 
 ## Lane
-**PAUSED 2026-11-20 (main: full-suite 0.9.0 release first; this lane now targets 0.10.0).** Stopped during planning. No workers started, no corpus recorded, no isolated homes made, no repo files changed except this Lane section.
 
-Findings so far, so a fresh manager can resume:
-- **Plan item 1 (screen_ask.rs test sleep): already done** in c1d3eb09. `settle_tasks` yields until no debounce timer is due (`clear_in_flight`), and screen_ask.rs no longer contains `std::thread::sleep`.
-- **Parser today:** `daemon/runtime/src/screen_question.rs` has `asked_on` (FolderTrust/Offer) and `has_active_prompt` (bool, phrase list + `❯ 1.`/`2.` + y/n suffixes). It returns no kind and no choices for permission, plan or choice prompts. Add a `prompt_on(screen) -> Option<ScreenPrompt { kind, choices }>` only after the corpus shows the real screens.
-- **What the parser sees:** `humatad/src/holders.rs` `Link::screen_text` / `screen_at_if_changed`, which is `humata2_vt_authority::Authority::screen_text()` fed with the holder's output bytes. The recorder must use the same path: `humata2_holder::spawn(HolderSpec{cols,rows,env,..})`, then `attach`, then feed `Event` output to `Authority`, then write `Step` replies back via `Control::input`, with `Control::resize` for widths. `vt_authority` is visible only to `//apps/humata2/daemon/humatad:__pkg__`, so main must widen its visibility to the recorder's package (seam line).
-- **Installed CLIs (2026-11-20):** claude 2.1.329, codex-cli 0.169.0, copilot 1.0.115-1, agy 1.5.13.
-- **Isolation recipes:**
-  - Claude: `CLAUDE_CONFIG_DIR=<copy>` with `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, which uses the keychain login (see `daemon/contain/src/login.rs`; 2.1.329 is not yet in its verified list).
-  - Codex: `CODEX_HOME=<dir>` with a copy of auth.json.
-  - Copilot: `COPILOT_HOME=<dir>`, plus `COPILOT_GITHUB_TOKEN` passed in the environment only.
-  - agy: state is in ~/.gemini/antigravity-cli. Its home override is still unknown.
-- **agy model:** `agy models` lists `gemini-3.8-flash-low`, the likely cheap pick. Still to confirm with Fable and log in DECISIONS.
-- **Planned design (not started):**
-  - A Rust recorder binary, `screenparse_record` (testonly, `bazel run`, writes under BUILD_WORKSPACE_DIRECTORY). It reads a step script (`wait <text>`, `quiet <ms>`, `type <text>`, `keys <enter|esc|up|down|tab|shift-tab|ctrl-c|…>`, `snap <label> <none|prompt:<kind>>`). Each snap is captured at 60/80/120/200 columns by resizing the holder, to save model calls (decision to log).
-  - Snapshot files go in `tests/screens/<agent>/<version>/<script>.w<cols>.<n>-<label>.txt`, with a header (agent, cli, cols, rows, expect) above the screen text.
-  - `tests/screen_replay.rs` is the fast tier and replays every snapshot against the parser.
-  - `screenparse_live` is a slow-tier test that skips when a login is missing (writes `<skipped>` to XML_OUTPUT_FILE and logs it) and goes in slow.txt.
-- **Claims to add on resume:** `daemon/svc_inbox/tests/screenparse/**` (recorder, live test, scripts).
+**Status 2026-11-20 (resumed after 0.9.0; target 0.10.0): batch 1 written, waiting on main's build.**
+
+- **Item 1 (no thread sleep in screen_ask tests):** done in c1d3eb09.
+- **agy:** model `gemini-3.8-flash-low` (Fable). Not recorded: its sign-in is a keychain item, and a scratch HOME starts signed out. It will be recorded only with `GEMINI_API_KEY` in the environment (D900; main confirms the ID).
+- **Batch 1 (recorder + corpus runner), files:**
+  - `daemon/svc_inbox/tests/screenparse/{lib,script,snapshot,record,record_main}.rs`: crate `humata2_screenparse` and the binary `screenparse_record`. The binary runs a CLI under the real holder, feeds the daemon's `vt_authority` engine and follows a step script (wait, wait-gone, quiet, type, keys, resize, snap). Each snap writes `<script>.w<cols>.<NN>-<label>.txt` with a header (agent, cli, script, label, expect, cols, rows), then `---`, then the screen text, at the current width and at each `--widths` value by resizing the holder.
+  - `daemon/svc_inbox/tests/screenparse/scripts/*.script`: exploration scripts for bash, write, edit, fetch, question (choice + free text), plan, mcp and login. Each one opens with the trust screen. Snaps are labelled `unknown` and are labelled by hand after review.
+  - `daemon/svc_inbox/tests/screenparse/mcp_echo.py`: a stdio MCP server with one echo tool, for the MCP-permission prompt.
+  - `daemon/svc_inbox/tests/screenparse/record_corpus.sh`: sets up an isolated home per agent and run, then runs the recorder.
+    - Claude: `CLAUDE_CONFIG_DIR` with a trimmed `.claude.json` and empty settings (no hooks), plus keychain login via an empty `CLAUDE_SECURESTORAGE_CONFIG_DIR`.
+    - Codex: `CODEX_HOME` with a copy of auth.json.
+    - Copilot: `COPILOT_HOME` with a trimmed config.json; an optional `SCREENPARSE_COPILOT_TOKEN` is passed through the environment only.
+    - Afterwards it checks that the real config folders did not change.
+  - `daemon/svc_inbox/BUILD.bazel`: new targets `:screenparse`, `:screenparse_record` and `:screenparse_unit_test`.
+  - `daemon/vt_authority/BUILD.bazel`: visibility widened to `//apps/humata2/daemon/svc_inbox:__pkg__`.
+- **Workers:** the recorder (Sonnet) is done and reviewed. The `unknown` expect was allowed in snaps by the manager.
+- **Next:**
+  1. Main builds the batch 1 targets.
+  2. Run the recorder under a clean env: `env -i HOME=$HOME USER=$USER PATH=$PATH TMPDIR=$TMPDIR record_corpus.sh bazel-bin/apps/humata2/daemon/svc_inbox/screenparse_record <scratch>`.
+  3. Review the screens and set their `expect`s.
+  4. Write `tests/screen_replay.rs` (fast tier), `prompt_on` (kind + choices) in screen_question.rs, and `screenparse_live` (slow tier, skips when no login).
+
+**2026-11-20 recorder stop.** A trial Claude `bash` run worked, but it showed two recorder bugs, both now fixed in source and not yet rebuilt:
+- Steps ran after the program had exited.
+- Claude Code's trust list starts on "No, exit".
+
+The codex+copilot `probe` run was stopped by the before/after check: `~/.codex/tmp/arg0-macos/codex-arg00PsbI3/.lock` (a new dir) was written in the same second the run started, even with `CODEX_HOME` set to the scratch copy. It could also be the running Codex app-server. Waiting for main's call. Codex 0.169 also rejects `--ask-for-approval untrusted`; it accepts only on-request or never.
+
+**2026-11-20 cause found.** The runner's own `<agent> --version` call ran under the real HOME and made the `~/.codex/tmp/arg0-macos/codex-arg0*` folders (00PsbI3, wT0FaD). The app-server didn't make them: they were born a second before the run's own copies, and only its two 11-19 folders are held open. Both stay untouched. Version calls now run in `$SCRATCH/version-home`, and codex runs set `HOME` and `CODEX_HOME` to scratch. The re-probe of codex and copilot passed the check with no exclusions.

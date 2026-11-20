@@ -42,7 +42,7 @@ const PRECONDITION: i32 = 7;
 const UNREACHABLE: i32 = 8;
 const PENDING: i32 = 12;
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
 /// A tools bundle for linux-x86_64, the fake machine's default platform.
 /// Its humatad2 runs the real one, so the peer link really comes up.

@@ -56,15 +56,20 @@ fn drive(setup: &mut Setup, runner: &FakeRunner, builds: &FakeBuilds) -> (Progre
     panic!("setup didn't stop");
 }
 
+/// One successful install per file the build ships, so new shipped files
+/// need no per-test edits.
+fn answer_installs(runner: &FakeRunner) {
+    for _ in payloads() {
+        runner.ok(Purpose::Install, "");
+    }
+}
+
 fn answer_up_to_service(runner: &FakeRunner, facts: &CheckFacts) {
     runner
         .ok(Purpose::Create, "")
         .ok(Purpose::Probe, "Linux x86_64\n")
-        .ok(Purpose::Check, &facts.stdout())
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "");
+        .ok(Purpose::Check, &facts.stdout());
+    answer_installs(runner);
 }
 
 #[test]
@@ -153,11 +158,8 @@ fn connect_retries_with_growing_waits_while_the_machine_boots() {
         .answer(Purpose::Probe, Exit::Code(255), "", "Connection refused")
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
         .ok(Purpose::Service, "");
+    answer_installs(&runner);
     let mut setup = lima("box-1");
 
     let (progress, delays) = drive(&mut setup, &runner, &FakeBuilds::files());
@@ -325,7 +327,7 @@ fn a_try_again_after_a_failure_runs_the_same_step() {
 
     assert!(matches!(first, Progress::Failed(ref failure) if failure.step == Step::Service));
     assert!(matches!(second, Progress::Ready(_)), "{second:?}");
-    assert_eq!(runner.ran(Purpose::Install).len(), 4);
+    assert_eq!(runner.ran(Purpose::Install).len(), payloads().len());
 }
 
 #[test]
@@ -339,11 +341,8 @@ fn an_identity_machine_is_reached_over_ssh_with_humatas_host_keys() {
         )
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
-        .ok(Purpose::Install, "")
         .ok(Purpose::Service, "");
+    answer_installs(&runner);
     let mut setup =
         Setup::new(cloud(true), name("box-1"), BTreeMap::new(), Path::new(KNOWN_HOSTS)).unwrap();
 

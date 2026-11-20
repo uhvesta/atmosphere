@@ -14,7 +14,10 @@ pub struct TodoRunRecord {
     pub tool: String,
     pub model: String,
     pub outcome: String,
-    pub cost_micros: u64,
+    /// `None` when the agent reported no cost. Stored as -1 in the
+    /// `INTEGER NOT NULL DEFAULT 0` column (migrations are main-only);
+    /// any negative value reads back as `None`.
+    pub cost_micros: Option<u64>,
     pub started_unix_ms: i64,
     pub finished_unix_ms: i64,
     /// JSON-encoded array of `{ "label": "...", "target": "..." }` links.
@@ -27,7 +30,7 @@ impl Store {
     pub fn record_todo_run(&self, run: &TodoRunRecord) -> Result<(), StoreError> {
         check_id(&run.id)?;
         check_id(&run.item_key)?;
-        let cost = i64::try_from(run.cost_micros).unwrap_or(i64::MAX);
+        let cost = run.cost_micros.map_or(-1, |c| i64::try_from(c).unwrap_or(i64::MAX));
         let links = if run.links_json.is_empty() {
             "[]"
         } else {
@@ -88,7 +91,7 @@ impl Store {
                         tool: row.get(2)?,
                         model: row.get(3)?,
                         outcome: row.get(4)?,
-                        cost_micros: u64::try_from(cost_i64.max(0)).unwrap_or(0),
+                        cost_micros: u64::try_from(cost_i64).ok(),
                         started_unix_ms: row.get(6)?,
                         finished_unix_ms: row.get(7)?,
                         links_json: row.get(8)?,

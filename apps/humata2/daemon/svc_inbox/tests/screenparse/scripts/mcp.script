@@ -1,0 +1,11 @@
+# An MCP tool permission (the runner adds the screenparse echo server).
+quiet 4000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Call the echo tool of the screenparse MCP server with the text hi, then tell me what it returned.
+quiet 3000
+snap mcp_permission unknown
+keys enter
+quiet 4000
+snap after_answer unknown

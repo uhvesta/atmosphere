@@ -105,7 +105,9 @@ pub(crate) fn carry_svc(
     bin: Arc<Bin>,
     is_host: bool,
 ) -> Arc<SessionCarrySvc> {
-    SessionCarrySvc::new(starter, Arc::new(TrashBinAdapter(bin)), is_host)
+    // A session with a composed config home is carried from and into that
+    // home; with no composing installed the view is the agent's own dir.
+    SessionCarrySvc::with_homes(starter, Arc::new(TrashBinAdapter(bin)), is_host, Arc::new(crate::config_sync::ComposedHomes))
 }
 
 /// Construct `humata2_svc_transfers::TransferEndSvc` wired to `humatad`.

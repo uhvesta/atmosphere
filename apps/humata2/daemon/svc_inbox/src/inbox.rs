@@ -7,6 +7,7 @@
 //! the event feed.
 
 mod agent_inbox;
+mod browser;
 mod deferred;
 mod facts;
 mod forwarded;
@@ -625,8 +626,18 @@ impl Inbox {
             .and_then(|preview| preview.preview.as_ref());
         let is_todo_action = matches!(preview, Some(pb::request_preview::Preview::TodoAction(_)));
         let is_todo_review = matches!(preview, Some(pb::request_preview::Preview::TodoReview(_)));
+        // BROWSER: Allow once, Allow 30 min (reads only) or Deny; never Always.
+        if let Some(read) = browser::is_read(current) {
+            return browser::decide(id, read, answer).map(|(state, answer)| decided(state, answer, None));
+        }
         match (&entry.access, answer) {
             (_, answer @ A::Deny(_)) => Ok(decided(pb::RequestState::Denied, answer, None)),
+            (_, A::AllowFor30Min(_)) => Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is not a browser read request: Allow 30 min doesn't answer it"),
+                "allow it once, or deny it",
+            )),
             (_, answer @ A::TodoAction(_)) if is_todo_action => {
                 Ok(decided(pb::RequestState::Answered, answer, None))
             }
@@ -761,7 +772,9 @@ impl Inbox {
         let at = SystemTime::now();
         let approving = matches!(
             answer,
-            pb::request_answer::Answer::Approve(_) | pb::request_answer::Answer::Always(_)
+            pb::request_answer::Answer::Approve(_)
+                | pb::request_answer::Answer::Always(_)
+                | pb::request_answer::Answer::AllowFor30Min(_)
         );
         if let Some(refused) = self
             .deny_if_never(entry, caller, user, approving, at)
@@ -1484,6 +1497,14 @@ impl pb::inbox_service_server::InboxService for Inbox {
         }
     }
 
+    /// BROWSER: an agent asks to run one action in the user's browser.
+    async fn request_browser_approval(
+        &self,
+        request: Request<pb::RequestBrowserApprovalRequest>,
+    ) -> Result<Response<pb::WaitResponse>, Status> {
+        self.browser_approval(request).await
+    }
+
     /// The asking agent stopped waiting (TP-15). Withdrawing a request
     /// that's no longer pending changes nothing.
     async fn withdraw_request(
@@ -1701,7 +1722,11 @@ fn access_request(
         // Granting is all an approval does; nothing runs to undo.
         undo: pb::Undo::CanBeUndone as i32,
         always: target.map(|target| pb::AlwaysOption {
-            label: format!("Always allow “{}” to {target_label}", agent.title),
+            label: if facts::always_covers_any_channel(asked) {
+                format!("Always allow “{}” to {target_label}, in any channel", agent.title)
+            } else {
+                format!("Always allow “{}” to {target_label}", agent.title)
+            },
             target: Some(target),
         }),
         created_at: Some(now_timestamp()),
@@ -1978,8 +2003,17 @@ fn fits_card(
         .and_then(|preview| preview.preview.as_ref());
     let is_todo_action = matches!(preview, Some(pb::request_preview::Preview::TodoAction(_)));
     let is_todo_review = matches!(preview, Some(pb::request_preview::Preview::TodoReview(_)));
+    if let Some(read) = browser::is_read(request) {
+        return browser::decide(id, read, answer.clone()).map(|_| ());
+    }
     match answer {
         A::Deny(_) => Ok(()),
+        A::AllowFor30Min(_) => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is not a browser read request: Allow 30 min doesn't answer it"),
+            "allow it once, or deny it",
+        )),
         A::TodoAction(_) if is_todo_action => Ok(()),
         A::TodoAction(_) => Err(status::invalid_field(
             "answer",

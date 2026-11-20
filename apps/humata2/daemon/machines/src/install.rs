@@ -1,5 +1,5 @@
-//! Streaming humatad2, its holder, the `humata` CLI and the `stack` CLI onto a
-//! machine (MP-7, MP-19, TS-1, D411): the bytes go in on stdin, the far end
+//! Streaming humatad2, its holder, the `humata` CLI, the `stack` CLI and the
+//! FUSEFS helper onto a machine (MP-7, MP-19, TS-1, D411): the bytes go in on stdin, the far end
 //! checks their size and SHA-256 and only then moves them into
 //! `~/.humata2/bin`.
 //!
@@ -40,7 +40,8 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TAIL_LINES: usize = 40;
 
 /// A file Humata installs on every machine, and on the host (TS-0). The
-/// holder, `humata` and `stack` sit beside humatad2, where it looks for them.
+/// holder, `humata`, `stack` and the FUSEFS helper sit beside humatad2, where
+/// it looks for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InstalledFile {
     Humatad,
@@ -48,10 +49,13 @@ pub enum InstalledFile {
     Cli,
     /// The stacked-PR CLI (D411).
     Stack,
+    /// The FUSEFS mount's own process. It is a separate binary so that an exec
+    /// swap of humatad2 never tears the mount down.
+    FuseFs,
 }
 
 impl InstalledFile {
-    pub const ALL: [Self; 4] = [Self::Humatad, Self::Holder, Self::Cli, Self::Stack];
+    pub const ALL: [Self; 5] = [Self::Humatad, Self::Holder, Self::Cli, Self::Stack, Self::FuseFs];
 
     pub fn file_name(self) -> &'static str {
         match self {
@@ -59,6 +63,7 @@ impl InstalledFile {
             Self::Holder => "humata2_holder",
             Self::Cli => "humata",
             Self::Stack => "stack",
+            Self::FuseFs => "humata2_fusefs",
         }
     }
 
@@ -560,6 +565,19 @@ mod tests {
         let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
         assert_eq!(files_in(&home.path().join(".humata2/bin")).len(), 1);
+    }
+
+    #[test]
+    fn the_fusefs_helper_is_installed_beside_the_daemon_under_its_own_name() {
+        let home = tempfile::tempdir().unwrap();
+        let payload = Payload::new(InstalledFile::FuseFs, Arc::from(&b"fusefs build"[..]));
+
+        assert_eq!(install_here(home.path(), &payload, b"fusefs build"), Exit::Code(0));
+
+        let installed = home.path().join(".humata2/bin/humata2_fusefs");
+        assert_eq!(std::fs::read(&installed).unwrap(), b"fusefs build");
+        let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]

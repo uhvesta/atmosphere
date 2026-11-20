@@ -50,7 +50,7 @@ pub fn needs_you(workspace: &Workspace) -> NeedsYou<'_> {
     let pending: Vec<&Request> = workspace
         .requests
         .iter()
-        .filter(|request| request.answer.is_none())
+        .filter(|request| request.answer.is_none() && !request.is_to_do_ask())
         .collect();
     let shown: Vec<&Session> = workspace
         .sessions

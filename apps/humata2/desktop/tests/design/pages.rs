@@ -333,6 +333,7 @@ pub fn settings(look: Look) -> Div {
                     .border_color(c(look.line))
                     .child(nav(IconName::Settings, "General", false))
                     .child(nav(IconName::Bot, "Agents", false))
+                    .child(nav(IconName::FolderTree, "Sync", false))
                     .child(nav(IconName::Server, "Machines", false))
                     .child(nav(IconName::Columns2, "Layout", true))
                     .child(nav(IconName::ShieldCheck, "Agent access", false))

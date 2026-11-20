@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fusefs_vfs::{
-    AccessHook, CallerContext, LeaseTable, MetadataOp, VfsError, VfsResult, VirtualPath, WriteLease,
+    AccessHook, CallerContext, LeaseTable, MetadataOp, VfsError, VfsResult, VfsTarget, VirtualPath,
+    WriteLease,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +44,11 @@ impl WriteAskDescriptor {
 
     pub fn to_json_bytes(&self) -> VfsResult<Vec<u8>> {
         let mut out = serde_json::to_vec_pretty(self)
-            .map_err(|e| VfsError::Eio(format!("failed to serialize WriteAskDescriptor: {e}")))?;
+            .map_err(|source| VfsError::JsonIo {
+                op: "serialize ask descriptor",
+                target: VfsTarget::Record("write ask descriptor"),
+                source,
+            })?;
         out.push(b'\n');
         Ok(out)
     }
@@ -350,7 +355,7 @@ impl HumataAccessHook {
         &self,
         caller: &CallerContext,
         path: &VirtualPath,
-        op_name: &str,
+        op_name: &'static str,
     ) -> VfsResult<()> {
         let now_ms = (self.clock)();
         match self.leases.authorize_write(caller, path, now_ms) {
@@ -379,10 +384,13 @@ impl HumataAccessHook {
                         Some(desc.request_id.clone()),
                     );
                 }
-                Err(VfsError::Eacces(format!(
-                    "unauthorized {op_name} on '{}' (ask recorded at requests/{}.json)",
-                    path, desc.request_id
-                )))
+                Err(VfsError::Eacces {
+                    op: op_name,
+                    target: VfsTarget::Request {
+                        id: desc.request_id.clone(),
+                        path: path.to_string(),
+                    },
+                })
             }
         }
     }
@@ -401,9 +409,10 @@ impl AccessHook for HumataAccessHook {
             MetadataOp::Rmdir | MetadataOp::Unlink | MetadataOp::Rename
         ) && self.protected.is_protected(path)
         {
-            return Err(VfsError::Eperm(format!(
-                "MASSDELETE: cannot {op:?} protected Humata root '{path}'; use PlanDeleteSessions or MoveSession"
-            )));
+            return Err(VfsError::Eperm {
+                op: metadata_op_name(op),
+                target: VfsTarget::Path(path.to_string()),
+            });
         }
 
         // Mutating metadata ops require an active write lease.

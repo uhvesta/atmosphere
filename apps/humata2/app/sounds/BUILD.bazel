@@ -1,0 +1,9 @@
+# Humata 2's notification sounds, made by make_sounds.py (NOTIFY2).
+filegroup(
+    name = "sounds",
+    srcs = [
+        "humata2-inbox.wav",
+        "humata2-todo.wav",
+    ],
+    visibility = ["//apps/humata2/app:__pkg__"],
+)

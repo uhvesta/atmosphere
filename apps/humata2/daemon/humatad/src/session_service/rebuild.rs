@@ -306,6 +306,7 @@ impl SessionSvc {
                 None,
             )
         })?;
+        let kind = crate::config_sync::kind_for_session(kind, &record.id);
         let conversation_id = uuid::Uuid::new_v4().hyphenated().to_string();
         let plan = kind.launch(&starter.home, &record.folder, &conversation_id);
         let lines = replaced(&lines, old_folder.as_bytes(), record.folder.display().to_string().as_bytes());
@@ -1030,6 +1031,7 @@ impl SessionSvc {
             .agents
             .get(&record.agent)
             .map_err(|source| (RebuildError::Agent { agent: record.agent.clone(), source }, false))?;
+        let kind = crate::config_sync::kind_for_session(kind, &record.id);
         let conversation_id = uuid::Uuid::new_v4().hyphenated().to_string();
         let plan = kind.launch(&starter.home, &record.folder, &conversation_id);
         let conversation = if conversation.staged.is_empty() {

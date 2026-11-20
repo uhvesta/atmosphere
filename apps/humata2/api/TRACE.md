@@ -56,12 +56,12 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
 | FC-1 | none take a path for Humata's own folders | — | — | |
-| FC-2 | Internal (read-only main clones); FileService.WriteFile refuses | file_write refuses | — | |
+| FC-2 | Internal (read-only main clones); FileService.WriteFile refuses | — | — | a write through the mounted view is refused |
 | FC-3 | SessionService.StartSession | session_start | `humata session start` | |
 | FC-4 | StartSessionRequest repos | session_start | `--repo` | |
 | FC-5 | SessionService.PlanArchive/ArchiveSession | session_archive | `humata session archive` | |
 | FC-6, FC-7 | PeerService.PrepareClone, ReceiveBundle, CreateBundle | — | — | internal choice of path |
-| FC-8 | FileService.* on `shared/` | files_copy_in, file_write | `humata cp` | |
+| FC-8 | FileService.* on `shared/` | files_copy_in; a write through the mounted view | `humata cp` | |
 | FC-9 | none (no behind-main status) | — | — | |
 | FC-10 | MachineService.PlanChangeRoot/ChangeRoot | — (user-only) | `humata host root` | |
 | FC-11..FC-15 | SessionService.PreviewBranchNames, StartSession, PreviewFork | session_start, session_fork | `humata session start`, `fork` | |
@@ -101,7 +101,7 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | --- | --- | --- | --- | --- |
 | FK-1..FK-4 | SessionService.PreviewFork, ForkSession, ListTurns | session_fork | `humata session fork` | |
 | FK-5, FK-6 | PeerService.ExportConversation/ImportConversation | session_fork | `humata session fork` | |
-| FK-7, FK-8 | FileService.* (the parent's clones, read and written as its own; same machine only) | files_list, file_read | `humata files` | D185, D187, D208 |
+| FK-7, FK-8 | FileService.* (the parent's clones, read and written as its own; same machine only) | — | `humata files` | D185, D187, D208 |
 | FK-9 | SessionService.GiveOwnCopy | session_own_copy | `humata session own-copy` | |
 | FK-10 | Internal (first terminal line) | — | — | |
 | FK-11 | ActivityService.ListActivity | — | `humata activity` | |
@@ -148,8 +148,8 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | RV-5, RV-26, RV-27 | CommentService.SendComments | — | — | user-only (SEC-7) |
 | RV-6 | DiffService.MarkReviewed | — | `humata diff mark-reviewed` | user-only |
 | RV-8 | CommentService.ListComments | comments_list | — | |
-| RV-9..RV-12 | FileService.ListDirectory, FindFiles, ReadFile | files_list, files_find, file_read | `humata files` | |
-| RV-13 | FileService (remote), errors.host_unreachable | files_list | `humata files` | |
+| RV-9..RV-12 | FileService.ListDirectory, FindFiles, ReadFile | — | `humata files` | |
+| RV-13 | FileService (remote), errors.host_unreachable | — | `humata files` | |
 | RV-14 | UI only | — | — | |
 | RV-15..RV-19, RV-21..RV-24 | DiffService.GetFileDiff | — | — | editor modes: UI only |
 
@@ -178,7 +178,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
-| SM-3, SM-4 | FileService.ReadFile | file_read | — | rendering: UI only |
+| SM-3, SM-4 | FileService.ReadFile | — | — | rendering: UI only |
 | SM-6, SM-8 | CommentService.CreateComment, EditComment, DropComment | — | `humata comment add` | |
 | SM-7 | CommentService.ReattachComment | — | — | |
 | SM-9, SM-10, SM-14 | CommentService.SendComments | — | — | user-only |
@@ -197,13 +197,13 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
-| FM-1 | FileService.ListDirectory | files_list | `humata files ls` | |
-| FM-2 | FileService.CreateFolder, Rename, TransferService.StartTransfer | folder_create, files_copy_in | `humata cp`, `mv` | |
+| FM-1 | FileService.ListDirectory | — | `humata files ls` | |
+| FM-2 | FileService.CreateFolder, Rename, TransferService.StartTransfer | files_copy_in | `humata cp`, `mv`, `humata files mkdir` | |
 | FM-3 | FileService.MoveToTrash, TrashService.RestoreFromTrash | trash_restore | `humata files rm`, `trash` | |
 | FM-4 | TransferService.Upload | — | `humata files put` | |
 | FM-5, FM-9 | TransferService (over SSH, through the Mac) | — | — | |
 | FM-6..FM-8 | TransferService.ListTransfers, WatchTransfer, Pause/Resume/Cancel | — | `humata transfers` | |
-| FM-10, FM-11 | FileService.ListDirectory, MachineService.GetMachine | files_list | `humata files ls` | |
+| FM-10, FM-11 | FileService.ListDirectory, MachineService.GetMachine | — | `humata files ls` | |
 | FM-12, FM-13 | MachineService.ListMachines, errors.host_unreachable | — | — | |
 | FM-14 | TransferService.StartTransfer (move) | — | `humata mv` | |
 | FM-15 | UI only | — | — | |
@@ -263,10 +263,10 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
 | TP-1 | ChannelService.GetGrid, MachineService.ListMachines | topology_get, session_info | `humata topology` | |
-| TP-2 | FileService.* | files_list, file_read, files_find | `humata files` | |
-| TP-3 | FileService.* (other session/machine) | file_read | `humata files cat` | FILES_READ_OTHER_* |
+| TP-2 | FileService.* | — | `humata files` | |
+| TP-3 | FileService.* (other session/machine) | — | `humata files cat` | FILES_READ_OTHER_* |
 | DV-9 | DeskService.ListDocVersions, ReadDocVersion | doc_versions_list, doc_version_read | — | FILES_READ_OTHER_* for another session or machine; no save or restore tool |
-| TP-4 | TransferService.StartTransfer | files_copy_in, file_fetch | `humata cp` | |
+| TP-4 | TransferService.StartTransfer | files_copy_in | `humata cp` | |
 | TP-5 | SessionService.SendNote, AskSession, AnswerQuestion | session_note, session_ask, session_answer | `humata session note/ask` | |
 | TP-6 | SessionService.ForkSession | session_fork | `humata session fork` | |
 | TP-7 | BoardService.* | board_item_* | `humata board` | |

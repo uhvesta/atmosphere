@@ -29,7 +29,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
 /// A tools bundle for linux-x86_64, which the fake `uname` claims to be.
 /// Its humatad2 runs the real one, so the peer link really comes up.

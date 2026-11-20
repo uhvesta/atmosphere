@@ -103,11 +103,12 @@ impl Workspace {
         })
     }
 
-    /// Requests still waiting for an answer.
+    /// Requests still waiting for an answer. To-do asks wait on the To-do, so
+    /// they are not here.
     pub fn waiting(&self) -> impl Iterator<Item = &Request> {
         self.requests
             .iter()
-            .filter(|request| request.answer.is_none())
+            .filter(|request| request.answer.is_none() && !request.is_to_do_ask())
     }
 
     /// The forks of `id`, in order.

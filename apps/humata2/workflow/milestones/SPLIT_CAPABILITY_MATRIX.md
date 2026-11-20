@@ -91,7 +91,7 @@ Excludes `svc_review`, `svc_board`, `svc_files`, `svc_mcp`, `svc_catalog`, `svc_
 ### 3.7 Tier C — Explicit Full-Daemon E2E (`:humatad2` / `:humatad2_admin`) — 27 tests
 Require full daemon wiring, CLI auth/login, MCP stdio across all services, or full-stack release upgrades:
 - CLI / Auth: `auth`, `cli_actor`, `cli_files`, `cli_login`, `cli_waiting`
-- MCP: `mcp`, `mcp_desk_folder`, `mcp_doc_versions`, `session_delete_other`
+- MCP: `mcp`, `mcp_desk_folder`, `mcp_doc_versions`, `session_delete_other`, `files_without_mount` (moved from transfers 2026-11-20: it reads `humatad2 mcp` initialize instructions)
 - MCP tools (moved back from Tier B 2026-11-19: they run `humatad2 mcp`, which only `svc_mcp` builds): `board_tools`, `comment_tools`, `history_tools`, `matrix`, `pr_review` (`faults`), `pr_stopped` (`faults`), `repo_tools`
 - Power cuts across every service (moved back from power_cut 2026-11-19: the shared `common/power_cut.rs` scenario makes draft comments, board items and view state): `power_cut_both`, `power_cut_focus`, `power_cut_host`, `power_cut_machine`, `power_cut_start_box` (`faults`, `release`, `holder`)
 - Away view drafts (moved back from away_board 2026-11-19: it calls ViewService, which only `svc_review` builds): `away_board_journal` (`release`)

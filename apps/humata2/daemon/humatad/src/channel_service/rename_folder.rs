@@ -232,7 +232,7 @@ fn follow_or_defer(
             continue;
         }
         let Some(agent) = store.agent(&session.id).map_err(records)? else { continue };
-        let Ok(kind) = agents.get(&agent.launch.agent) else { continue };
+        let Ok(kind) = agents.get_as_ran(&session.id, &agent.launch.agent) else { continue };
         let later = pending.contains(&session.id);
         let started_under;
         let placement = match humata2_revive::read_note(&agent.launch.holder_socket) {
@@ -244,7 +244,7 @@ fn follow_or_defer(
         };
         let stage = scratch.join(&session.id);
         let mut steps = Vec::new();
-        for (id, file, from, to) in folder_moves(store, kind, &session.id, &session.folder, &agent, placement).map_err(records)? {
+        for (id, file, from, to) in folder_moves(store, &kind, &session.id, &session.folder, &agent, placement).map_err(records)? {
             if later {
                 steps.push(FollowStep {
                     agent: agent.launch.agent.clone(),
@@ -342,7 +342,7 @@ pub(crate) fn session_follows(
     to: &Path,
 ) -> Result<Vec<FollowStep>, StoreError> {
     let Some(agent) = store.agent(session)? else { return Ok(Vec::new()) };
-    let Ok(kind) = agents.get(&agent.launch.agent) else { return Ok(Vec::new()) };
+    let Ok(kind) = agents.get_as_ran(session, &agent.launch.agent) else { return Ok(Vec::new()) };
     let placement = Placement {
         name: String::new(),
         folder: String::new(),
@@ -351,7 +351,7 @@ pub(crate) fn session_follows(
         now_unix_ms: 0,
     };
     let stage = channels.join(FOLLOW_SCRATCH).join(session);
-    Ok(folder_moves(store, kind, session, from, &agent, &placement)?
+    Ok(folder_moves(store, &kind, session, from, &agent, &placement)?
         .into_iter()
         .map(|(id, file, from, to)| FollowStep {
             agent: agent.launch.agent.clone(),
@@ -710,13 +710,14 @@ impl ChannelSvc {
         let done = self.finish_move(&placement, intent.moves.clone(), &channel.id, expected, &intent.pending).await?;
         let _ = std::fs::remove_file(&note);
         self.settle_aliases(&channel.id, &placement.old_path).await;
-        let (feed, store, id, by) = (
+        let (feed, store, agents, id, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             done.id.clone(),
             identity::actor(caller),
         );
-        let _ = blocking(move || tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by))).await;
+        let _ = blocking(move || tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, Some(by))).await;
         self.resume_all(&intent.resume);
         Ok(done)
     }
@@ -999,8 +1000,9 @@ impl ChannelSvc {
             match self.finish_move(&placement, intent.moves.clone(), &intent.channel, None, &intent.pending).await {
                 Ok(done) => {
                     self.settle_aliases(&intent.channel, &placement.old_path).await;
-                    let (feed, store, id) = (self.operations.feed(), self.starter.store.clone(), done.id);
-                    let _ = blocking(move || tell_channel(&feed, &store, &id, pb::Change::Updated, None)).await;
+                    let (feed, store, agents, id) =
+                        (self.operations.feed(), self.starter.store.clone(), self.starter.agents.clone(), done.id);
+                    let _ = blocking(move || tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, None)).await;
                 }
                 Err(error) => {
                     // The note stays: the next start tries again.

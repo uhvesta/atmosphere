@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # What svc_inbox is built on that has no fault-point build.
 SVC_INBOX_SHARED_DEPS = [
@@ -51,6 +51,46 @@ rust_test(
     deps = [
         "@crates//:tempfile",
     ],
+)
+
+# Records agent CLI screens as labelled text snapshots through the real
+# holder and the daemon's terminal engine, for the prompt parser's replay
+# tests.
+SCREENPARSE_DEPS = [
+    "//apps/humata2/daemon/holder",
+    "//apps/humata2/daemon/vt_authority",
+    "//apps/humata2/testing/tmp_folder",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+]
+
+rust_library(
+    name = "screenparse",
+    testonly = True,
+    srcs = glob(
+        ["tests/screenparse/*.rs"],
+        exclude = ["tests/screenparse/record_main.rs"],
+    ),
+    crate_name = "humata2_screenparse",
+    crate_root = "tests/screenparse/lib.rs",
+    deps = SCREENPARSE_DEPS,
+)
+
+rust_binary(
+    name = "screenparse_record",
+    testonly = True,
+    srcs = ["tests/screenparse/record_main.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    deps = [
+        ":screenparse",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "screenparse_unit_test",
+    crate = ":screenparse",
 )
 
 filegroup(

@@ -33,7 +33,10 @@ impl App {
     /// New desk session, from Home, the Desk page or a command: the form
     /// starts on the agent Settings picked.
     pub(super) fn start_new_desk_session(&self, state: &mut AppState) -> Effect<AppAction> {
-        let agent = crate::new_session::default_agent(state, None);
+        let Ok(agent) = state.default_agent(None) else {
+            let clock = self.clients.clock.clone();
+            return state.toast_no_agent(&clock);
+        };
         self.child(state, AppAction::Desk(DeskAction::StartNew { agent }))
     }
 
@@ -55,7 +58,10 @@ impl App {
         else {
             return Effect::none();
         };
-        let agent = crate::new_session::default_agent(state, Some(&channel));
+        let Ok(agent) = state.default_agent(Some(&channel)) else {
+            let clock = self.clients.clock.clone();
+            return state.toast_no_agent(&clock);
+        };
         let menu = self.child(state, AppAction::Session(SessionAction::Menu(false)));
         let dialog = self.child(
             state,
@@ -94,6 +100,9 @@ impl App {
                 Effect::merge([go, show])
             }
             DeskAction::Delegate(Delegate::Toast(text)) => state.toast(text.clone(), &clock),
+            // AGENTOFF: a form opened on an agent that is off (the channel
+            // tab sends Settings' pick) starts on one that is on, or not at
+            // all when none is.
             // CD-4: closing a channel's Desk session from its own page goes
             // back to that channel's Desk tab.
             DeskAction::Changed {
@@ -152,6 +161,97 @@ impl App {
 }
 
 impl App {
+    /// Whether `agent` can be started: the shell always, others when on.
+    /// AGENTOFF (D915): a Desk form the Desk just opened on an agent that is
+    /// off moves to the default agent that is on, or closes with a toast when
+    /// none is. Runs after the Desk's reducer, once the form exists.
+    pub(super) fn desk_form_agent(&self, state: &mut AppState, action: &DeskAction) -> Effect<AppAction> {
+        let clock = self.clients.clock.clone();
+        match action {
+            DeskAction::StartNew { .. } => {
+                let off = state
+                    .desk
+                    .new
+                    .as_ref()
+                    .is_some_and(|form| !Self::agent_is_on(state, form.agent));
+                if !off {
+                    return Effect::none();
+                }
+                match state.default_agent(None) {
+                    Ok(agent) => {
+                        if let Some(form) = state.desk.new.as_mut() {
+                            form.agent = agent;
+                        }
+                        Effect::none()
+                    }
+                    Err(_) => {
+                        state.desk.new = None;
+                        state.toast_no_agent(&clock)
+                    }
+                }
+            }
+            DeskAction::StartChannelNew { channel, .. } => {
+                let off = state
+                    .desk
+                    .channel_new
+                    .as_ref()
+                    .is_some_and(|form| !Self::agent_is_on(state, form.agent));
+                if !off {
+                    return Effect::none();
+                }
+                match state.default_agent(Some(channel)) {
+                    Ok(agent) => {
+                        if let Some(form) = state.desk.channel_new.as_mut() {
+                            form.agent = agent;
+                        }
+                        Effect::none()
+                    }
+                    Err(_) => {
+                        state.desk.channel_new = None;
+                        state.toast_no_agent(&clock)
+                    }
+                }
+            }
+            _ => Effect::none(),
+        }
+    }
+
+    /// AGENTOFF (D915 5): Continue in another channel restarts the session's
+    /// own agent, so with that agent off its dialog closes and a toast points
+    /// to Settings › Agents. It runs after every action, so it covers the
+    /// dialog opening, the agent turned off while it is open, and the
+    /// daemon's refusal once that answer is in.
+    pub(super) fn continue_unless_agent_off(&self, state: &mut AppState) -> Effect<AppAction> {
+        if state.session.continuing.as_ref().is_none_or(|draft| draft.sending) {
+            return Effect::none();
+        }
+        let Some(agent) = state
+            .session
+            .open
+            .as_ref()
+            .and_then(|id| state.workspace.session(id))
+            .map(|session| session.agent)
+        else {
+            return Effect::none();
+        };
+        if Self::agent_is_on(state, agent) {
+            return Effect::none();
+        }
+        state.session.continuing = None;
+        state.session.error = None;
+        let text = format!(
+            "{} is off, so this session can't continue in another channel. Turn it on in Settings › Agents, then try again.",
+            agent.name()
+        );
+        let clock = self.clients.clock.clone();
+        state.toast_agent_off(text, &clock)
+    }
+
+    fn agent_is_on(state: &AppState, agent: humata2_clients::model::Agent) -> bool {
+        agent == humata2_clients::model::Agent::Shell
+            || state.settings.offered_agents().contains(&agent)
+    }
+
     /// The open session, when it is a Desk session.
     fn open_desk_session(state: &AppState) -> Option<SessionId> {
         state
@@ -197,6 +297,31 @@ impl App {
         if Self::open_desk_session(state).is_some() {
             return Effect::none();
         }
-        self.child(state, AppAction::Session(SessionAction::StartFork(kind)))
+        let forked = self.child(state, AppAction::Session(SessionAction::StartFork(kind)));
+        // AGENTOFF: the fork keeps the parent's agent unless it is off; then
+        // it opens on one that is on with More options showing it, or not at
+        // all when none is.
+        let parent_agent = state
+            .session
+            .open
+            .as_ref()
+            .and_then(|id| state.workspace.session(id))
+            .map(|session| session.agent);
+        if state.session.fork.is_some() && parent_agent.is_some_and(|agent| !Self::agent_is_on(state, agent)) {
+            match humata2_clients::pick_agent(&state.settings.offered_agents(), &[]) {
+                Ok(agent) => {
+                    if let Some(fork) = state.session.fork.as_mut() {
+                        fork.agent = Some(agent);
+                        fork.more = true;
+                    }
+                }
+                Err(_) => {
+                    state.session.fork = None;
+                    let clock = self.clients.clock.clone();
+                    return Effect::merge([forked, state.toast_no_agent(&clock)]);
+                }
+            }
+        }
+        forked
     }
 }

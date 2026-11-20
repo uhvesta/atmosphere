@@ -86,6 +86,7 @@ fn entry_with(platform: &str, daemon_sha: &str, holder_sha: &str) -> serde_json:
         "humata2_holder": {"path": format!("{platform}/humata2_holder"), "sha256": holder_sha},
         "humata": {"path": format!("{platform}/humata"), "sha256": sha256_of(&binary("HUMATA"))},
         "stack": {"path": format!("{platform}/stack"), "sha256": sha256_of(&binary("STACK"))},
+        "humata2_fusefs": {"path": format!("{platform}/humata2_fusefs"), "sha256": sha256_of(&binary("HUMATA2_FUSEFS"))},
     })
 }
 

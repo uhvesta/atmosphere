@@ -11,7 +11,7 @@
 //!   fixed wall-clock limits while flush progress is advancing.
 //! - [`control`]: framed Unix-domain socket [`ControlProtocol`] (`Mount`,
 //!   `Unmount`, `Remount`, `Status`, `HealthPing`, `ListCapabilityRoots`,
-//!   `RevokeTurn`).
+//!   `RevokeTurn`, plus a generic `Extension` request an application answers).
 
 pub mod capability;
 pub mod control;
@@ -21,7 +21,7 @@ pub mod supervisor;
 pub use capability::{CAPABILITY_PREFIX, CapabilityEntry, CapabilityRouter, RoutedRequest};
 pub use control::{
     ControlClient, ControlHandler, ControlProtocol, ControlRequest, ControlResponse, ControlServer,
-    ControlServerHandle,
+    ControlServerHandle, ExtensionCallback,
 };
 pub use fsync::{FsyncPolicy, FsyncProgress, FsyncResult, passthrough_fsync, progress_bounded_fsync};
 pub use supervisor::{

@@ -26,10 +26,11 @@ const MANIFEST: &str = "bundle.json";
 const CHUNK_BYTES: usize = 64 << 10;
 
 /// The tools a release is checked for in `bin`.
-const TOOLS: [InstalledFile; 3] = [
+const TOOLS: [InstalledFile; 4] = [
     InstalledFile::Cli,
     InstalledFile::Holder,
     InstalledFile::Stack,
+    InstalledFile::FuseFs,
 ];
 
 static LOG_SINK: OnceLock<fn(&str)> = OnceLock::new();
@@ -423,6 +424,7 @@ mod tests {
             "humata2_holder": {"path": "humata2_holder", "sha256": sha(b"holder")},
             "humata": {"path": "humata", "sha256": sha(b"cli")},
             "stack": {"path": "stack", "sha256": sha(b"stack")},
+            "humata2_fusefs": {"path": "humata2_fusefs", "sha256": sha(b"fusefs")},
         });
         let mut platforms = serde_json::Map::new();
         platforms.insert(platform.to_owned(), entry);
@@ -471,6 +473,7 @@ mod tests {
                 ("humata2_holder".to_owned(), sha(b"holder")),
                 ("humata".to_owned(), sha(b"cli")),
                 ("stack".to_owned(), sha(b"stack")),
+                ("humata2_fusefs".to_owned(), sha(b"fusefs")),
             ]
         );
     }
@@ -605,6 +608,7 @@ mod tests {
             (InstalledFile::Holder, sha(b"holder")),
             (InstalledFile::Cli, sha(b"cli")),
             (InstalledFile::Stack, sha(b"stack")),
+            (InstalledFile::FuseFs, sha(b"fusefs")),
         ];
         let mut mixed = whole.clone();
         mixed[2].1 = sha(b"another cli");

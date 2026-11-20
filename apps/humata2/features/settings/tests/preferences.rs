@@ -1,5 +1,7 @@
 //! Settings clamp usable sizes and retain choices independently of sections.
 use humata2_clients::{Clients, fixture};
+use humata2_clients::daemon::TodoAutomation;
+use humata2_settings::TodoAutomationAction;
 use humata2_settings::{AgentsAction, Section, Settings, SettingsAction as A, SettingsState, Theme};
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
@@ -41,6 +43,9 @@ fn switching_section_closes_an_open_font_list() {
     store.send(A::Section(Section::General), |s| {
         s.section = Section::General;
         s.font_menu = false;
+    });
+    store.receive(A::Todo(TodoAutomationAction::Loaded(Ok(TodoAutomation::default()))), |s| {
+        s.todo.section = Some(TodoAutomation::default());
     });
     store.finish();
 }

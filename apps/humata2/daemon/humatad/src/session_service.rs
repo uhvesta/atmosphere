@@ -1046,6 +1046,7 @@ impl SessionSvc {
             let launch = agent.launch.clone();
             let learned = blocking(move || -> Result<Option<humata2_store::AgentLaunch>, StoreError> {
                 let until = std::time::Instant::now() + grace;
+                let agents = crate::config_sync::agents_for_session(&agents, &store, &key);
                 loop {
                     if file.is_file() {
                         return Ok(Some(launch));
@@ -1506,9 +1507,10 @@ impl SessionSvc {
         }
     }
 
-    /// The agent a start would run: the one asked for, else the channel's
-    /// own default agent, else the one in Settings (ST-15), else the one the
-    /// channel was made with.
+    /// The agent a start would run: the one asked for. When none is asked,
+    /// the first that is on of the channel's own default agent, the one in
+    /// Settings (ST-15) and the one the channel was made with, else the
+    /// first agent that is on (AGENTOFF); every agent off is refused.
     fn agent_for(
         &self,
         wanted: Option<&pb::AgentId>,
@@ -1517,9 +1519,12 @@ impl SessionSvc {
         let asked = wanted.map(|agent| agent.value.clone()).filter(|agent| !agent.is_empty());
         let name = match asked {
             Some(name) => name,
-            None => crate::settings_service::default_agent_for(&self.starter.store, &channel.id)
-                .map_err(|error| status::store(error, "", "read the default agent"))?
-                .unwrap_or_else(|| channel.default_agent.clone()),
+            None => {
+                let mut preferred = crate::settings_service::default_agent_chain(&self.starter.store, &channel.id)
+                    .map_err(|error| status::store(error, "", "read the default agent"))?;
+                preferred.push(channel.default_agent.clone());
+                crate::agent_gate::pick(&self.starter.agents, &preferred).map_err(Status::from)?
+            }
         };
         agent_known(&self.starter.agents, &name)?;
         Ok(name)
@@ -2273,6 +2278,7 @@ pub(crate) async fn run_resume(
     let saved = tokio::task::spawn_blocking(move || -> Result<AgentRecord, StoreError> {
         // D670: resume the conversation the CLI wrote, once it is known,
         // not the placeholder it was started with.
+        let agents = crate::config_sync::agents_for_session(&agents, &store, &saving.session);
         if agents.learn_conversation(&store, &home, &saving.session)?
             && let Some(found) = store.agent(&saving.session)?
         {

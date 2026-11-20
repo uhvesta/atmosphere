@@ -69,7 +69,7 @@ pub(crate) enum LiveStartError {
 }
 
 /// Where the app finds the host tools it carries:
-/// `<App>.app/Contents/Helpers/{humatad2,humata2_holder,humata,stack}` when the
+/// `<App>.app/Contents/Helpers/{humatad2,humata2_holder,humata,stack,humata2_fusefs}` when the
 /// running executable is `<App>.app/Contents/MacOS/<exe>`; None otherwise (a
 /// bazel-run dev binary). The release they belong to is named by
 /// `Contents/Resources/manifest.json` when the app ships one (UP-1, D281);
@@ -93,6 +93,7 @@ pub(crate) fn bundled_tools(exe: &Path) -> Option<Bundle> {
         helpers.join("humata2_holder"),
         helpers.join("humata"),
         helpers.join("stack"),
+        helpers.join("humata2_fusefs"),
     );
     let manifest = contents.join("Resources").join("manifest.json");
     if !manifest.is_file() {
@@ -395,6 +396,7 @@ mod tests {
             PathBuf::from(format!("{helpers}/humata2_holder")),
             PathBuf::from(format!("{helpers}/humata")),
             PathBuf::from(format!("{helpers}/stack")),
+            PathBuf::from(format!("{helpers}/humata2_fusefs")),
         );
         assert_eq!(format!("{bundle:?}"), format!("{:?}", Some(want)));
     }
@@ -417,6 +419,7 @@ mod tests {
                 helpers.join("humata2_holder"),
                 helpers.join("humata"),
                 helpers.join("stack"),
+                helpers.join("humata2_fusefs"),
             )
         };
         assert_eq!(format!("{without:?}"), format!("{:?}", tools()));
@@ -441,6 +444,7 @@ mod tests {
                 helpers.join("humata2_holder"),
                 helpers.join("humata"),
                 helpers.join("stack"),
+                helpers.join("humata2_fusefs"),
             )
             .with_manifest(manifest.clone())
         };
@@ -489,6 +493,7 @@ mod tests {
             holder: humata2_install::BinaryChange::Unchanged,
             humata: humata2_install::BinaryChange::Unchanged,
             stack: humata2_install::BinaryChange::Unchanged,
+            fusefs: humata2_install::BinaryChange::Unchanged,
             agent: humata2_install::AgentChange::Unchanged,
             path_hint: None,
             path_clash: None,

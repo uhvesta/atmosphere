@@ -630,3 +630,161 @@ pub trait ReviewRequestsPort: Send + Sync {
     /// Every open pull request whose review the user was asked for.
     async fn fetch(&self) -> Result<Vec<FoundPr>, ReviewFetchError>;
 }
+
+// ---------------------------------------------------------------------------
+// Live session events, To-do automation and PR watching (TODO2WIRE)
+// ---------------------------------------------------------------------------
+
+/// What the To-do list sees of a session's status. The wiring maps the
+/// daemon's `SessionStatus` onto it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SeenStatus {
+    #[default]
+    Unknown,
+    Starting,
+    Working,
+    NeedsInput,
+    Idle,
+    /// The output went quiet; the turn has probably ended (SE-22).
+    ProbablyIdle,
+    Exited,
+    /// The person stopped the agent (D784).
+    Stopped,
+    ResumeFailed,
+    Archived,
+    /// Its machine can't be reached or is stopped: nothing is known.
+    Offline,
+}
+
+/// One session as the To-do list sees it, after a change on the feed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionSeen {
+    pub id: String,
+    pub title: String,
+    /// The agent kind, such as `claude`; empty for a plain shell.
+    pub agent: String,
+    pub model: String,
+    pub status: SeenStatus,
+    pub exit_code: i32,
+    /// The board item the session was started for, if any.
+    pub board_item: Option<String>,
+    /// When the agent last printed something, in Unix milliseconds.
+    pub last_output_ms: Option<i64>,
+}
+
+/// Ask (a quiet 1-click prompt) or Auto (done, with Undo where it can be).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SyncMode {
+    #[default]
+    Ask,
+    Auto,
+}
+
+/// The To-do automation settings in effect (Settings, or a channel's own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TodoAutomation {
+    pub on_pr_merged: SyncMode,
+    pub on_todo_closed_archive_sessions: SyncMode,
+    pub auto_wake_on_ci_fail: bool,
+    pub auto_wake_on_review_comments: bool,
+    /// Days of inactivity before the idle nudge.
+    pub idle_nudge_days: u32,
+}
+
+/// The idle nudge's default, when Settings leave it at 0.
+pub const IDLE_NUDGE_DAYS: u32 = 3;
+
+impl Default for TodoAutomation {
+    fn default() -> Self {
+        Self {
+            on_pr_merged: SyncMode::Ask,
+            on_todo_closed_archive_sessions: SyncMode::Ask,
+            auto_wake_on_ci_fail: false,
+            auto_wake_on_review_comments: false,
+            idle_nudge_days: IDLE_NUDGE_DAYS,
+        }
+    }
+}
+
+/// Where the To-do automation settings are read from. Read at each use, so
+/// a change in Settings applies with no restart.
+pub trait TodoAutomationSource: Send + Sync {
+    /// The settings for an item in `channel` (none: not in a channel).
+    fn settings(&self, channel: Option<&str>) -> TodoAutomation;
+}
+
+/// What archiving a session that may hold unsaved work came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveOutcome {
+    Archived,
+    /// Left running; `reason` says why, for the person, such as
+    /// "has 2 unpushed commits".
+    Kept { reason: String },
+}
+
+/// The session actions the To-do list takes for the person: wake an agent
+/// with a note, archive clean sessions when an item closes, undo that.
+#[tonic::async_trait]
+pub trait SessionControl: Send + Sync {
+    /// Types `text` into the session as one message when its turn ends.
+    async fn send_note(&self, session: &str, text: &str) -> Result<(), Status>;
+    /// Archives the session only if that loses nothing.
+    async fn archive_if_clean(&self, session: &str) -> Result<ArchiveOutcome, Status>;
+    /// Brings an archived session back.
+    async fn restore(&self, session: &str) -> Result<(), Status>;
+}
+
+/// A watched pull request as GitHub has it now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrStatus {
+    pub title: String,
+    pub merged: bool,
+    pub closed_without_merge: bool,
+    /// "passing", "failing", "pending" or empty when it has no checks.
+    pub ci_state: String,
+    pub unresolved_comments: u32,
+    pub has_conflicts: bool,
+    /// The pull request below it in its stack was merged, so it needs a rebase.
+    pub upstream_merged: bool,
+}
+
+/// Why a watched pull request couldn't be read.
+#[derive(Debug, thiserror::Error)]
+pub enum PrStatusError {
+    #[error(
+        "Humata couldn't run {program} to check watched pull requests ({source}). Install the GitHub CLI on this host (brew install gh); if it already runs in your terminal, put its folder on PATH in your login profile (~/.zprofile), because the daemon reads your login shell's PATH when it starts. Watched pull requests keep their last state until then"
+    )]
+    GhMissing {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "the GitHub CLI on this host is signed out, so watched pull requests can't be checked. In a terminal on this host, run `gh auth login`"
+    )]
+    SignedOut { stderr: String },
+    #[error(
+        "GitHub is limiting requests, so watched pull requests weren't checked. Wait {wait}; they are checked again on their own after that, and signing in again doesn't lift the limit",
+        wait = wait_text(*wait_seconds)
+    )]
+    RateLimited { wait_seconds: Option<u64> },
+    #[error("pull request {repo_pr} wasn't found. Check it still exists and that `gh` on this host can see its repository; remove it from the item if it was deleted")]
+    NotFound { repo_pr: String },
+    #[error(
+        "GitHub couldn't be reached to check watched pull requests ({first_line}). Nothing on this machine fixes it: they are checked again when the host is online"
+    )]
+    Unreachable { first_line: String },
+    #[error(
+        "GitHub's answer about a watched pull request isn't one this Humata can read. Update the GitHub CLI on the host (brew upgrade gh); if it keeps failing, report it"
+    )]
+    Unreadable {
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// Where watched pull requests' state is read from.
+#[tonic::async_trait]
+pub trait PrStatusPort: Send + Sync {
+    async fn fetch(&self, owner: &str, name: &str, number: u32) -> Result<PrStatus, PrStatusError>;
+}

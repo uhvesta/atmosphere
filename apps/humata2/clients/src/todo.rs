@@ -280,7 +280,22 @@ pub struct TodoHistoryEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TodoRunsResult {
     pub runs: Vec<RunEntry>,
-    pub total_cost_micros: u64,
+    /// `None` when no run has a known cost.
+    pub total_cost_micros: Option<u64>,
+}
+
+impl TodoRunsResult {
+    /// Builds a ledger whose total sums the known costs only.
+    #[must_use]
+    pub fn from_runs(runs: Vec<RunEntry>) -> Self {
+        let total_cost_micros = known_cost_total(runs.iter().map(|r| r.cost_micros));
+        Self { runs, total_cost_micros }
+    }
+}
+
+/// Sums the known costs; `None` when none is known.
+pub(crate) fn known_cost_total(costs: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    costs.into_iter().flatten().fold(None, |acc, c| Some(acc.unwrap_or(0).saturating_add(c)))
 }
 
 /// How to resolve a BlockerGone notice.
@@ -418,4 +433,26 @@ fn unsupported<T: Send + 'static>(what: &str) -> Reply<T> {
         what: what.to_owned(),
         reason: "not supported by this client".to_owned(),
     })))
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    fn run(cost: Option<u64>) -> RunEntry {
+        RunEntry { cost_micros: cost, ..RunEntry::default() }
+    }
+
+    #[test]
+    fn total_sums_known_costs_and_skips_unknown() {
+        let res = TodoRunsResult::from_runs(vec![run(Some(1_250_000)), run(None)]);
+        assert_eq!(res.total_cost_micros, Some(1_250_000));
+    }
+
+    #[test]
+    fn total_is_unknown_when_no_cost_is_known() {
+        let res = TodoRunsResult::from_runs(vec![run(None), run(None)]);
+        assert_eq!(res.total_cost_micros, None);
+        assert_eq!(TodoRunsResult::from_runs(vec![]).total_cost_micros, None);
+    }
 }

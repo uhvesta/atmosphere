@@ -1,5 +1,5 @@
 {
-  "checksum": "fc454173c983393a1e2ec49592f5fd9ed3121a7174cd3b4846e774ecef0b6916",
+  "checksum": "18d68878a78336ba0641ba2cb151681e451df52d3dd8a6c180e215eda21c056e",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -11915,6 +11915,12 @@
       "package_url": "https://github.com/zed-industries/zed",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/engine/patches:gpui-notification-sound.patch"
+          ],
           "sha256": "29db89613527079737f53752eab27fb65c9a7dd94979256c65a0e590c9fd34d8",
           "url": "https://static.crates.io/crates/gpui-pre/0.3.12/download"
         }
@@ -12727,6 +12733,12 @@
       "package_url": "https://github.com/zed-industries/zed",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/engine/patches:gpui-macos-notification-sound.patch"
+          ],
           "sha256": "2de7d3f4ad51ac387e822495db363fcc1188d349793365731d054444c4cb06ee",
           "url": "https://static.crates.io/crates/gpui-pre-macos/0.3.12/download"
         }
@@ -22057,6 +22069,7 @@
           "UNNotificationContent",
           "UNNotificationRequest",
           "UNNotificationResponse",
+          "UNNotificationSound",
           "UNNotificationTrigger",
           "UNUserNotificationCenter",
           "alloc",

@@ -7,7 +7,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fusefs_vfs::{CallerContext, FileHandle, NodeId, VfsError, VfsResult, Volume};
+use fusefs_vfs::{CallerContext, FileHandle, NodeId, VfsError, VfsResult, VfsTarget, Volume};
 
 /// Policy governing progress-bounded `fsync` execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,10 +90,13 @@ where
             });
         }
         if last_progress_at.elapsed() >= policy.stall_timeout {
-            return Err(VfsError::Eio(format!(
-                "fsync stalled on {ino} after flushing {last_bytes} bytes with no progress for {:?}",
-                policy.stall_timeout
-            )));
+            return Err(VfsError::Eio {
+                op: "fsync (no progress)",
+                target: VfsTarget::Flush {
+                    ino,
+                    bytes_flushed: last_bytes,
+                },
+            });
         }
         if !policy.poll_interval.is_zero() {
             thread::sleep(policy.poll_interval);
@@ -163,6 +166,6 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(err, VfsError::Eio(_)));
+        assert!(matches!(err, VfsError::Eio { .. }));
     }
 }

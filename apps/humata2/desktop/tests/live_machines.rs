@@ -38,7 +38,7 @@ use tca::{MemoryStorage, SystemClock};
 use tokio::runtime::Runtime;
 
 const DEADLINE: Duration = Duration::from_secs(90);
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 /// What the person types; the daemon names the machine `box-1` from it.
 const HOST: &str = "box-1.internal";
 const NAME: &str = "box-1";

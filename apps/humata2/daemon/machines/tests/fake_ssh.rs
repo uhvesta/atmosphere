@@ -455,6 +455,7 @@ fn a_file_the_machine_lacks_is_put_back_and_the_others_are_not_touched() {
     let machine = FakeMachine::new();
     add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
     std::fs::remove_file(machine.bin().join("humata2_holder")).unwrap();
+    std::fs::remove_file(machine.bin().join("humata2_fusefs")).unwrap();
     let old = Files(1).payloads();
     let new = Files(2).payloads();
 
@@ -463,8 +464,11 @@ fn a_file_the_machine_lacks_is_put_back_and_the_others_are_not_touched() {
     let (entry, _) = drive(&runner, &Files(2), |drive| machines.reconnect("box-1", drive));
 
     assert_eq!(entry.unwrap().state, EntryState::Ready);
-    assert_eq!(runner.ran(Purpose::Install), 1);
+    // One install per missing file: the holder and the FUSEFS helper.
+    assert_eq!(runner.ran(Purpose::Install), 2);
     assert_eq!(machine.installed("humata2_holder").as_deref(), Some(&new[1].bytes()[..]));
+    // The FUSEFS helper is one of the files a machine can lack, and is put back too.
+    assert_eq!(machine.installed("humata2_fusefs").as_deref(), Some(&new[4].bytes()[..]));
     assert_eq!(machine.installed("humatad2").as_deref(), Some(&old[0].bytes()[..]));
     assert_eq!(machine.installed("humata").as_deref(), Some(&old[2].bytes()[..]));
     assert_eq!(machine.installed("stack").as_deref(), Some(&old[3].bytes()[..]));

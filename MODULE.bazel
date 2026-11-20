@@ -217,6 +217,24 @@ crate.annotation(
     patches = ["//apps/humata2/engine/patches:gpui-scheduler-lock-order.patch"],
 )
 
+# GPUI's system notifications, patched: the app can ask for notification
+# permission explicitly and post a notification that plays a bundled sound;
+# see apps/humata2/engine/patches. In every crate repository.
+crate.annotation(
+    crate = "gpui-pre",
+    patch_args = ["-p1"],
+    patches = ["//apps/humata2/engine/patches:gpui-notification-sound.patch"],
+)
+crate.annotation(
+    crate = "gpui-pre-macos",
+    patch_args = ["-p1"],
+    patches = ["//apps/humata2/engine/patches:gpui-macos-notification-sound.patch"],
+)
+crate.annotation(
+    crate = "objc2-user-notifications",
+    crate_features = ["UNNotificationSound"],
+)
+
 # GPUI's dev build derives inspector reflection under debug_assertions.
 # Bazel compiles proc macros in the optimized exec configuration, so enable
 # the macro explicitly to keep that API available to the target crate.

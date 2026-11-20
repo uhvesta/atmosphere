@@ -433,7 +433,7 @@ mod rig {
     /// most, `common::WAIT`). This is more than twice the two together.
     pub const LONG: Duration = Duration::from_secs(120);
 
-    const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+    const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
     /// The gate is a perl script until the harness has a helper of its own
     /// (harness-needs.md).

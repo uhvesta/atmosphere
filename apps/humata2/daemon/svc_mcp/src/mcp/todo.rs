@@ -379,8 +379,7 @@ fn report_run_request(
     let model = text(arguments, "model");
     let cost_micros = arguments
         .get("cost_micros")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+        .and_then(Value::as_u64);
     let links: Vec<(String, String)> = arguments
         .get("links")
         .and_then(Value::as_array)
@@ -399,8 +398,9 @@ fn report_run_request(
     } else {
         format!("Run: {tool} ({model}) — {outcome_text}")
     };
-    if cost_micros > 0 {
-        header.push_str(&format!(" · {}", format_cost_micros(cost_micros)));
+    // T6: a cost the agent didn't report stays unknown (null), never $0.
+    if let Some(cost) = cost_micros.filter(|c| *c > 0) {
+        header.push_str(&format!(" · {}", format_cost_micros(cost)));
     }
     let mut lines = vec![header];
     for (label, target) in &links {

@@ -7,14 +7,19 @@
 //! - [`fuse_abi`]: portable FUSE 7.x ABI opcodes, wire headers, and typed request/reply messages.
 //! - [`dispatcher`]: generic [`FuseDispatcher`] translating FUSE requests into
 //!   [`fusefs_vfs::Volume`] calls with kernel PID caller binding.
+//! - [`wire`]: kernel FUSE wire codec (request body decoding, reply encoding, INIT).
+//! - `mount` (Linux only): unprivileged `fusermount3` mounting and the `/dev/fuse` serve loop.
 //! - [`degraded`]: explicit degraded native-symlink skeleton writer with `.degraded.json`
 //!   markers, atomic refresh, and safe cleanup when `/dev/fuse` is unavailable.
 
 pub mod degraded;
 pub mod dispatcher;
 pub mod fuse_abi;
+#[cfg(target_os = "linux")]
+pub mod mount;
 pub mod pid_bind;
 pub mod probe;
+pub mod wire;
 
 pub use degraded::{
     DEGRADED_MARKER_FILENAME, DegradedMaterialization, DegradedNotice, DegradedSkeletonError,

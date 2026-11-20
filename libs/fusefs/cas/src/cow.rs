@@ -441,6 +441,12 @@ impl Default for FsyncConfig {
 /// - On stall (`elapsed >= stall_timeout`), returns `FsyncError::Enetunreach`
 ///   (or `FsyncError::Eio` on hard I/O error) while preserving all un-uploaded
 ///   chunks in `journal`.
+///
+/// **Blocking:** this runs on the calling thread and sleeps `retry_backoff`
+/// between retries. With the default config it can block for up to 5 s with no
+/// progress before it fails, and longer while chunks keep draining. Do not call
+/// it from a session's I/O path (a FUSE read, write or fsync served to a
+/// session, or a daemon RPC handler). Run it on a background worker instead.
 pub fn fsync_journal<F>(
     journal: &mut CommitJournal,
     transport: &dyn ChunkTransport,

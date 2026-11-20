@@ -172,7 +172,12 @@ impl SessionSvc {
                 checked.before_turn,
                 handover_file(&fork),
             );
-            let kind = self.starter.agents.get(&agent).ok().cloned();
+            let kind = self
+                .starter
+                .agents
+                .get(&agent)
+                .ok()
+                .map(|kind| crate::config_sync::kind_for_session(kind, &checked.parent.record.id));
             let (home, folder) = (self.starter.home.clone(), checked.parent.record.folder.clone());
             let id = checked
                 .parent
@@ -328,7 +333,11 @@ impl SessionSvc {
             self.starter.home.clone(),
             parent_id.clone(),
         );
-        if let Err(error) = blocking(move || agents.learn_conversation(&store, &home, &key)).await? {
+        if let Err(error) = blocking(move || {
+            crate::config_sync::agents_for_session(&agents, &store, &key).learn_conversation(&store, &home, &key)
+        })
+        .await?
+        {
             return Err(status::store(error, &self.machine, "learn the parent's conversation"));
         }
         let parent = self.load(&parent_id).await?;
@@ -353,12 +362,13 @@ impl SessionSvc {
                 "fork with CODE_AND_CONTEXT or CONTEXT_ONLY, or set before_turn to 0 to fork from now",
             ));
         }
-        let agent = request
+        let named = request
             .agent
             .as_ref()
             .map(|agent| agent.value.clone())
-            .filter(|agent| !agent.is_empty())
-            .unwrap_or_else(|| parent.record.agent.clone());
+            .filter(|agent| !agent.is_empty());
+        let names_none = named.is_none();
+        let agent = named.unwrap_or_else(|| parent.record.agent.clone());
         if agent != parent.record.agent && self.starter.agents.get(&agent).is_err() {
             return Err(status::invalid_field(
                 "agent",
@@ -370,6 +380,12 @@ impl SessionSvc {
         // SEAM: AGENTSET: a fork that changes agent starts one, so it must be on.
         if agent != parent.record.agent {
             crate::agent_gate::enabled(&self.starter.agents, &agent)?;
+        } else if names_none {
+            // AGENTOFF: a fork that names none runs the parent's agent, which
+            // may have been turned off since the parent started.
+            crate::agent_gate::enabled_or(&self.starter.agents, &agent, |display| {
+                crate::agent_gate::GateError::ForkAgentOff { display }
+            })?;
         }
         let handover = self
             .starter

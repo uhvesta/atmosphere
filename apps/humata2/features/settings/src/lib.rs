@@ -9,6 +9,14 @@ mod agents;
 pub use access::{AccessAction, AccessState};
 pub use access_rows::{AccessGroup, AccessRow, AskLands, GROUPS as ACCESS_GROUPS, RowSetting};
 pub use agents::{AgentsAction, AgentsState};
+// FUSEFS: Settings › Sync.
+mod sync;
+
+pub use sync::{SyncAction, SyncCategory, SyncColumn, SyncState};
+// TODO2WIRE (D902): Settings › General › To-do.
+mod todo_automation;
+
+pub use todo_automation::{TodoAutomationAction, TodoAutomationState};
 // REPOS (ST-21): Settings › General › Repositories.
 mod repositories;
 
@@ -180,11 +188,13 @@ pub enum Section {
     Storage,
     Notifications,
     Keyboard,
+    /// FUSEFS: which agent config sessions share, and the mount.
+    Sync,
 }
 
 impl Section {
     /// Every section, in the order the sidebar lists them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::General,
         Self::Agents,
         Self::Machines,
@@ -193,6 +203,7 @@ impl Section {
         Self::Storage,
         Self::Notifications,
         Self::Keyboard,
+        Self::Sync,
     ];
 
     /// Its name in the sidebar.
@@ -207,6 +218,7 @@ impl Section {
             Self::Storage => "Storage",
             Self::Notifications => "Notifications",
             Self::Keyboard => "Keyboard",
+            Self::Sync => "Sync",
         }
     }
 }
@@ -238,11 +250,15 @@ pub enum Row {
     OptionAsAlt,
     /// Less CPU and fewer redraws (D787).
     FastMode,
+    /// The Sync master switch (FUSEFS).
+    SyncEnabled,
+    /// The cross-machine mount (FUSEFS).
+    FuseFsEnabled,
 }
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
@@ -255,6 +271,8 @@ impl Row {
         Self::FreeHiddenTerminals,
         Self::OptionAsAlt,
         Self::FastMode,
+        Self::SyncEnabled,
+        Self::FuseFsEnabled,
     ];
 
     /// Its label on the page.
@@ -274,6 +292,8 @@ impl Row {
             Self::FreeHiddenTerminals => "Free memory of hidden terminals",
             Self::OptionAsAlt => "Option acts as Alt",
             Self::FastMode => "Fast mode",
+            Self::SyncEnabled => "Sync agent config",
+            Self::FuseFsEnabled => "Mount the cross-machine view",
         }
     }
 
@@ -292,6 +312,7 @@ impl Row {
             Self::DefaultAgent => Section::Agents,
             Self::DesktopNotifications | Self::PermissionRequestAlerts => Section::Notifications,
             Self::OptionAsAlt => Section::Keyboard,
+            Self::SyncEnabled | Self::FuseFsEnabled => Section::Sync,
         }
     }
 }
@@ -315,6 +336,10 @@ pub struct SettingsState {
     pub repos: RepositoriesState,
     /// AGENTSET (D725): which agents Humata offers.
     pub agents: AgentsState,
+    /// FUSEFS: Settings › Sync.
+    pub sync: SyncState,
+    /// TODO2WIRE (D902): Settings › General › To-do.
+    pub todo: TodoAutomationState,
     /// Whether the terminal font size list is open.
     pub font_menu: bool,
     /// Whether the Desk sessions in sidebar list is open (D793).
@@ -384,6 +409,10 @@ pub enum SettingsAction {
     Repos(RepositoriesAction),
     /// AGENTSET (D725): Settings › Agents › Agents.
     Agents(AgentsAction),
+    /// FUSEFS: Settings › Sync.
+    Sync(SyncAction),
+    /// TODO2WIRE (D902): Settings › General › To-do.
+    Todo(TodoAutomationAction),
     /// MACHINESCRIPTS: the host answered the read of the rules and script names, or couldn't.
     ScriptsShown(Result<MachineScripts, DaemonError>),
     /// Edit rules: open the rules file in the editor, making it first when it isn't there.
@@ -426,6 +455,22 @@ impl Settings {
         Effect::future(async move { SettingsAction::ScriptsShown(call.await) })
     }
 
+    /// Reads the To-do automation section, as General opens (TODO2WIRE).
+    fn read_todo(&self) -> Effect<SettingsAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            SettingsAction::Todo(TodoAutomationAction::Loaded(daemon.todo_automation().await))
+        })
+    }
+
+    /// Reads the Sync settings, as the Sync section opens (FUSEFS).
+    fn read_sync(&self) -> Effect<SettingsAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            SettingsAction::Sync(SyncAction::Loaded(daemon.sync_settings().await))
+        })
+    }
+
     /// Reads whether Codex's hooks need trusting, then the agents' switches
     /// (with where each one asks, D782), as the Agents section opens.
     fn read_asks(&self) -> Effect<SettingsAction> {
@@ -463,6 +508,14 @@ impl Reducer for Settings {
             return agents::reduce(&self.clients, &mut state.agents, &mut state.error, action)
                 .map(SettingsAction::Agents);
         }
+        if let SettingsAction::Sync(action) = action {
+            return sync::reduce(&self.clients, &mut state.sync, &mut state.error, action)
+                .map(SettingsAction::Sync);
+        }
+        if let SettingsAction::Todo(action) = action {
+            return todo_automation::reduce(&self.clients, &mut state.todo, &mut state.error, action)
+                .map(SettingsAction::Todo);
+        }
         let preferences = &mut state.preferences;
         match action {
             SettingsAction::Restore(restored) => {
@@ -476,6 +529,12 @@ impl Reducer for Settings {
                 state.revealed = None;
                 if section == Section::Agents {
                     return self.read_asks();
+                }
+                if section == Section::Sync {
+                    return self.read_sync();
+                }
+                if section == Section::General {
+                    return self.read_todo();
                 }
                 // SEAM (MACHINESCRIPTS): the Scripts block of Machines reads the rules,
                 // and the Providers block above it the providers (PROVIDERS).
@@ -494,6 +553,12 @@ impl Reducer for Settings {
                 state.desk_rows_menu = false;
                 if section == Section::Agents {
                     return self.read_asks();
+                }
+                if section == Section::Sync {
+                    return self.read_sync();
+                }
+                if section == Section::General {
+                    return self.read_todo();
                 }
             }
 
@@ -553,6 +618,8 @@ impl Reducer for Settings {
             SettingsAction::Access(_) => {}
             SettingsAction::Repos(_) => {}
             SettingsAction::Agents(_) => {}
+            SettingsAction::Sync(_) => {}
+            SettingsAction::Todo(_) => {}
             SettingsAction::Providers(_) => {}
             SettingsAction::ScriptsShown(result) => match result {
                 Ok(scripts) => {

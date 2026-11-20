@@ -324,6 +324,16 @@ impl Overlays {
                     .child(error.clone()),
             );
         }
+        if let Some(note) = &sheet_state.note {
+            content = content.child(
+                div()
+                    .id("new-session-note")
+                    .test_support()
+                    .text_size(px(12.))
+                    .text_color(rgb(look.secondary))
+                    .child(note.clone()),
+            );
+        }
         content
             .child(
                 row()

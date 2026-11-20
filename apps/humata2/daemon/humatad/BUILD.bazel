@@ -74,6 +74,7 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/agent_hooks",
     "//apps/humata2/daemon/app_peer",
+    "//apps/humata2/daemon/config_compose",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/marks",
     "//apps/humata2/daemon/ports",
@@ -82,11 +83,13 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/mcp",
     "//apps/humata2/daemon/mirror",
     "//apps/humata2/daemon/contain",
+    "//apps/humata2/daemon/fusefs_adapter",
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/rpc_kit",
     "//apps/humata2/daemon/vt_authority",
     "//apps/humata2/terminal/vt:ghostty_vt",
+    "//libs/fusefs/host",
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:http-body",
@@ -243,6 +246,7 @@ rust_library(
         ":humatad_core",
         "//apps/humata2/daemon/access",
         "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
         "//apps/humata2/daemon/store",
         "//apps/humata2/daemon/svc_away",
         "//apps/humata2/daemon/svc_board",
@@ -250,6 +254,7 @@ rust_library(
         "//apps/humata2/daemon/svc_machines",
         "//apps/humata2/daemon/svc_peer",
         "//apps/humata2/daemon/svc_transfers",
+        "@crates//:tokio",
         "@crates//:tonic",
     ],
 )
@@ -266,6 +271,7 @@ rust_library(
         ":humatad_core_faults",
         "//apps/humata2/daemon/access",
         "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
         "//apps/humata2/daemon/store:store_faults",
         "//apps/humata2/daemon/svc_away:svc_away_faults",
         "//apps/humata2/daemon/svc_board:svc_board_faults",
@@ -273,6 +279,7 @@ rust_library(
         "//apps/humata2/daemon/svc_machines:svc_machines_faults",
         "//apps/humata2/daemon/svc_peer:svc_peer_faults",
         "//apps/humata2/daemon/svc_transfers:svc_transfers_faults",
+        "@crates//:tokio",
         "@crates//:tonic",
     ],
 )
@@ -356,12 +363,13 @@ rust_binary(
     ],
 )
 
-# TS-2: humatad2, the holder, the humata CLI and the stack CLI for every
+# TS-2: humatad2, the holder, the humata CLI, the stack CLI and the FUSEFS helper for every
 # platform a machine may be, with a manifest of their SHA-256s, as one folder
 # for the app to carry and `humatad2 serve --tools` to read. The Linux
 # platforms are the static musl ones (bazel/platforms), cross-built here.
 tools_bundle(
     name = "tools",
+    fusefs = "//apps/humata2/daemon/fusefs_adapter:humata2_fusefs",
     holder = "//apps/humata2/daemon/holder:humata2_holder",
     humata = "//apps/humata2/cli:humata",
     humatad2 = ":humatad2",
@@ -379,6 +387,7 @@ tools_bundle(
 # Contents/Helpers (//apps/humata2/app). Remote machines get `:tools`.
 tools_bundle(
     name = "tools_mac",
+    fusefs = "//apps/humata2/daemon/fusefs_adapter:humata2_fusefs",
     holder = "//apps/humata2/daemon/holder:humata2_holder",
     humata = "//apps/humata2/cli:humata",
     humatad2 = ":humatad2",
@@ -395,6 +404,7 @@ tools_bundle(
 # needs codesigning.
 tools_bundle(
     name = "tools_linux",
+    fusefs = "//apps/humata2/daemon/fusefs_adapter:humata2_fusefs",
     holder = "//apps/humata2/daemon/holder:humata2_holder",
     humata = "//apps/humata2/cli:humata",
     humatad2 = ":humatad2",
@@ -961,6 +971,7 @@ TEST_NEEDS = {
     ],
     "continue_in_journal": [
         "FAULTS",
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -968,6 +979,7 @@ TEST_NEEDS = {
     ],
     "continue_in_remote": [
         "FAULTS",
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -1025,6 +1037,7 @@ TEST_NEEDS = {
         "SETSID",
     ],
     "desk_roam_upgrade": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -1069,7 +1082,13 @@ TEST_NEEDS = {
         "FAULTS",
         "HUMATA",
     ],
+    "files_without_mount": ["HUMATA"],
     "fork_channel": ["HUMATA"],
+    "fusefs_restart": [
+        "FUSEFS",
+        "HUMATA",
+        "STACK",
+    ],
     "fork_remote": [
         "FAULTS",
         "RELEASE",
@@ -1141,6 +1160,7 @@ TEST_NEEDS = {
         "SETSID",
     ],
     "own_copy_remote": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -1299,6 +1319,7 @@ TEST_NEEDS = {
     "session_notes": ["HUMATA"],
     "sessions": ["HUMATA"],
     "settings_sections": ["HUMATA"],
+    "settings_sync": ["HUMATA"],
     "skills": [
         "HUMATA",
         "RELEASE",
@@ -1347,6 +1368,7 @@ TEST_NEEDS = {
         "SETSID",
     ],
     "upgrade_box": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -1354,47 +1376,56 @@ TEST_NEEDS = {
     ],
     "upgrade_cut": [
         "FAULTS",
+        "FUSEFS",
         "HUMATA",
         "STACK",
     ],
     "upgrade_holders": [
         "FAULTS",
+        "FUSEFS",
         "HUMATA",
         "STACK",
     ],
     "upgrade_holders_move": [
         "FAULTS",
+        "FUSEFS",
         "HUMATA",
         "STACK",
     ],
     "upgrade_identity": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "STACK",
     ],
     "upgrade_inbox": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
         "STACK",
     ],
     "upgrade_kinds": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
         "STACK",
     ],
     "upgrade_local": [
+        "FUSEFS",
         "HUMATA",
         "STACK",
     ],
     "upgrade_refusals": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
         "STACK",
     ],
     "upgrade_remote_holders": [
+        "FUSEFS",
         "HUMATA",
         "RELEASE",
         "SETSID",
@@ -1469,6 +1500,7 @@ POWER_CUT_SCOPED_TESTS = [
     "faults",
     "fork",
     "fork_channel",
+    "fusefs_restart",
     "gh_repos",
     "holder_gone",
     "holder_swap_identity",
@@ -1598,6 +1630,8 @@ CATALOG_SCOPED_TESTS = [
 # Proven Tier-B away / board tests routed onto `:humatad2_test_away_board`
 # (+ `_release`) (SPLIT_CAPABILITY_MATRIX.md §3.5).
 AWAY_BOARD_SCOPED_TESTS = [
+    # TODO2WIRE: the To-do automation event feed.
+    "todo_automation",
     "agent_send_machine",
     "away_approved_board",
     "away_boundary",
@@ -1705,6 +1739,7 @@ NEED_DATA = {
         ":humatad2_faults",
         "//apps/humata2/daemon/holder:humata2_holder_faults",
     ],
+    "FUSEFS": ["//apps/humata2/daemon/fusefs_adapter:humata2_fusefs"],
     "HUMATA": ["//apps/humata2/cli:humata"],
     "MACH_BASE": [
         ":humatad2_test_machines",
@@ -1755,6 +1790,7 @@ NEED_ENV = {
         "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
         "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
     },
+    "FUSEFS": {"HUMATA2_FUSEFS": "$(rootpath //apps/humata2/daemon/fusefs_adapter:humata2_fusefs)"},
     "HUMATA": {"HUMATA": "$(rootpath //apps/humata2/cli:humata)"},
     "MACH_BASE": {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",

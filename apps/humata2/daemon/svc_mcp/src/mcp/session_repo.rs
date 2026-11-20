@@ -9,7 +9,7 @@ use serde_json::{Map, json};
 use super::{GrpcDaemon, applied, key, text};
 
 /// `owner/name` as the tool takes it.
-fn parse_repo(repo: &str) -> Result<pb::RepoRef, ToolError> {
+pub(super) fn parse_repo(repo: &str) -> Result<pb::RepoRef, ToolError> {
     match repo.trim().split_once('/') {
         Some((owner, name)) if !owner.is_empty() && !name.is_empty() && !name.contains('/') => {
             Ok(pb::RepoRef { owner: owner.to_owned(), name: name.to_owned() })

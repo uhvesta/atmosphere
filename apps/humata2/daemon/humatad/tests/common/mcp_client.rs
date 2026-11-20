@@ -14,6 +14,7 @@ pub struct Mcp {
     _child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
+    instructions: Option<String>,
 }
 
 impl Mcp {
@@ -33,15 +34,22 @@ impl Mcp {
             .unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap()).lines();
-        let mut mcp = Self { _child: child, stdin, stdout };
+        let mut mcp = Self { _child: child, stdin, stdout, instructions: None };
         let init = json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": { "name": "test", "version": "0" },
         });
-        mcp.request(0, "initialize", init).await;
+        let reply = mcp.request(0, "initialize", init).await;
+        mcp.instructions = reply["instructions"].as_str().map(str::to_owned);
         mcp.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await;
         mcp
+    }
+
+    /// The instructions the server gave in its `initialize` reply.
+    #[allow(dead_code)]
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
     }
 
     async fn send(&mut self, message: Value) {

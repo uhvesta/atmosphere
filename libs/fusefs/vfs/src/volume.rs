@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use crate::error::{VfsError, VfsResult};
+use crate::error::{VfsError, VfsResult, VfsTarget};
 use crate::lease::{LeaseTable, check_generation};
 use crate::path::VirtualPath;
 use crate::types::{
@@ -208,6 +208,25 @@ pub trait Volume: Send + Sync {
         data: &[u8],
         expected_generation: Option<u64>,
     ) -> VfsResult<u32>;
+
+    /// Creates an empty regular file `name` under `parent` and opens it, or
+    /// opens the existing file when `flags.exclusive` is not set.
+    ///
+    /// The default answers `ENOSYS`, so volumes that cannot make files keep
+    /// compiling and report that plainly.
+    fn create(
+        &self,
+        _caller: &CallerContext,
+        parent: NodeId,
+        _name: &str,
+        _mode: u32,
+        _flags: OpenFlags,
+    ) -> VfsResult<(FileAttr, FileHandle)> {
+        Err(VfsError::Enosys {
+            op: "create",
+            target: VfsTarget::Node(parent),
+        })
+    }
 }
 
 // =============================================================================
@@ -442,7 +461,10 @@ impl InMemoryVolume {
             .nodes
             .get(&ino)
             .map(|n| n.path.clone())
-            .ok_or_else(|| VfsError::Enoent(format!("unknown node {ino}")))
+            .ok_or_else(|| VfsError::Enoent {
+                op: "resolve node path",
+                target: VfsTarget::Node(ino),
+            })
     }
 
     fn now_ms(&self) -> u64 {
@@ -466,12 +488,16 @@ impl InMemoryVolume {
 
     fn validate_name(name: &str) -> VfsResult<()> {
         if name.is_empty() || name.contains('/') || name.as_bytes().contains(&0) {
-            return Err(VfsError::Einval(format!("invalid entry name '{name}'")));
+            return Err(VfsError::Einval {
+                op: "validate entry name",
+                target: VfsTarget::Name(name.to_string()),
+            });
         }
         if name == "." || name == ".." {
-            return Err(VfsError::Einval(format!(
-                "cannot create or modify special entry '{name}'"
-            )));
+            return Err(VfsError::Einval {
+                op: "validate entry name (special entry)",
+                target: VfsTarget::Name(name.to_string()),
+            });
         }
         Ok(())
     }
@@ -500,22 +526,25 @@ impl InMemoryVolume {
 impl Volume for InMemoryVolume {
     fn lookup(&self, caller: &CallerContext, parent: NodeId, name: &str) -> VfsResult<FileAttr> {
         if name.is_empty() || name.contains('/') || name.as_bytes().contains(&0) {
-            return Err(VfsError::Einval(format!("invalid lookup name '{name}'")));
+            return Err(VfsError::Einval {
+                op: "lookup",
+                target: VfsTarget::Name(name.to_string()),
+            });
         }
 
         let (target_ino, target_path) = {
             let state = self.state.read().expect("volume lock poisoned");
-            let parent_node = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let parent_node = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "lookup (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             let (parent_of_parent, children) = match &parent_node.data {
                 NodeData::Directory { parent, children } => (*parent, children),
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{}' is not a directory",
-                        parent_node.path
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "lookup (parent)",
+                        target: VfsTarget::Path(parent_node.path.to_string()),
+                    });
                 }
             };
 
@@ -531,15 +560,19 @@ impl Volume for InMemoryVolume {
                         parent_of_parent
                     }
                 }
-                _ => *children.get(name).ok_or_else(|| {
-                    VfsError::Enoent(format!("'{name}' not found in '{}'", parent_node.path))
+                _ => *children.get(name).ok_or_else(|| VfsError::Enoent {
+                    op: "lookup",
+                    target: VfsTarget::Entry {
+                        dir: parent_node.path.to_string(),
+                        name: name.to_string(),
+                    },
                 })?,
             };
 
-            let target_node = state
-                .nodes
-                .get(&target_ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {target_ino} not found")))?;
+            let target_node = state.nodes.get(&target_ino).ok_or_else(|| VfsError::Enoent {
+                op: "lookup",
+                target: VfsTarget::Node(target_ino),
+            })?;
             (target_ino, target_node.path.clone())
         };
 
@@ -551,7 +584,10 @@ impl Volume for InMemoryVolume {
             .nodes
             .get(&target_ino)
             .map(|n| n.attr.clone())
-            .ok_or_else(|| VfsError::Enoent(format!("node {target_ino} not found")))
+            .ok_or_else(|| VfsError::Enoent {
+                op: "lookup",
+                target: VfsTarget::Node(target_ino),
+            })
     }
 
     fn getattr(&self, caller: &CallerContext, ino: NodeId) -> VfsResult<FileAttr> {
@@ -560,7 +596,10 @@ impl Volume for InMemoryVolume {
             let node = state
                 .nodes
                 .get(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+                .ok_or_else(|| VfsError::Enoent {
+                    op: "getattr",
+                    target: VfsTarget::Node(ino),
+                })?;
             (node.path.clone(), node.attr.clone())
         };
         self.access_hook
@@ -579,7 +618,10 @@ impl Volume for InMemoryVolume {
         let node = state
             .nodes
             .get_mut(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+            .ok_or_else(|| VfsError::Enoent {
+                op: "setattr",
+                target: VfsTarget::Node(ino),
+            })?;
 
         check_generation(attr.expected_generation, node.attr.generation)?;
 
@@ -601,16 +643,16 @@ impl Volume for InMemoryVolume {
                     node.attr.mtime = now;
                 }
                 NodeData::Directory { .. } => {
-                    return Err(VfsError::Eisdir(format!(
-                        "cannot truncate directory '{}'",
-                        node.path
-                    )));
+                    return Err(VfsError::Eisdir {
+                        op: "setattr (truncate)",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
                 NodeData::Symlink { .. } => {
-                    return Err(VfsError::Einval(format!(
-                        "cannot truncate symlink '{}'",
-                        node.path
-                    )));
+                    return Err(VfsError::Einval {
+                        op: "setattr (truncate)",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
             }
         }
@@ -631,14 +673,17 @@ impl Volume for InMemoryVolume {
             let node = state
                 .nodes
                 .get(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+                .ok_or_else(|| VfsError::Enoent {
+                    op: "readdir",
+                    target: VfsTarget::Node(ino),
+                })?;
             let (parent_ino, children) = match &node.data {
                 NodeData::Directory { parent, children } => (*parent, children),
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{}' is not a directory",
-                        node.path
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "readdir",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
             };
 
@@ -683,14 +728,17 @@ impl Volume for InMemoryVolume {
             let node = state
                 .nodes
                 .get(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+                .ok_or_else(|| VfsError::Enoent {
+                    op: "readlink",
+                    target: VfsTarget::Node(ino),
+                })?;
             match &node.data {
                 NodeData::Symlink { target } => (node.path.clone(), target.clone()),
                 _ => {
-                    return Err(VfsError::Einval(format!(
-                        "'{}' is not a symlink",
-                        node.path
-                    )));
+                    return Err(VfsError::Einval {
+                        op: "readlink",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
             }
         };
@@ -715,21 +763,24 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         {
-            let parent_node = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let parent_node = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "mkdir (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             match &parent_node.data {
                 NodeData::Directory { children, .. } => {
                     if children.contains_key(name) {
-                        return Err(VfsError::Eexist(format!("'{child_path}' already exists")));
+                        return Err(VfsError::Eexist {
+                            op: "mkdir",
+                            target: VfsTarget::Path(child_path.to_string()),
+                        });
                     }
                 }
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{}' is not a directory",
-                        parent_node.path
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "mkdir (parent)",
+                        target: VfsTarget::Path(parent_node.path.to_string()),
+                    });
                 }
             }
         }
@@ -773,6 +824,108 @@ impl Volume for InMemoryVolume {
         Ok(attr)
     }
 
+    fn create(
+        &self,
+        caller: &CallerContext,
+        parent: NodeId,
+        name: &str,
+        mode: u32,
+        flags: OpenFlags,
+    ) -> VfsResult<(FileAttr, FileHandle)> {
+        Self::validate_name(name)?;
+        let child_path = self.node_path(parent)?.join(name)?;
+
+        let existing = {
+            let state = self.state.read().expect("volume lock poisoned");
+            let parent_node = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "create (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
+            match &parent_node.data {
+                NodeData::Directory { children, .. } => children.get(name).copied(),
+                _ => {
+                    return Err(VfsError::Enotdir {
+                        op: "create (parent)",
+                        target: VfsTarget::Path(parent_node.path.to_string()),
+                    });
+                }
+            }
+        };
+        if let Some(ino) = existing {
+            if flags.exclusive {
+                return Err(VfsError::Eexist {
+                    op: "create",
+                    target: VfsTarget::Path(child_path.to_string()),
+                });
+            }
+            let fh = self.open(
+                caller,
+                ino,
+                OpenFlags {
+                    create: false,
+                    exclusive: false,
+                    ..flags
+                },
+            )?;
+            return Ok((self.getattr(caller, ino)?, fh));
+        }
+
+        self.access_hook
+            .before_write(caller, &child_path, 0, 0)?;
+        self.authorize_write(caller, &child_path)?;
+
+        let now = self.now_ts();
+        let mut state = self.state.write().expect("volume lock poisoned");
+        if let Some(parent_node) = state.nodes.get(&parent)
+            && let NodeData::Directory { children, .. } = &parent_node.data
+            && children.contains_key(name)
+        {
+            return Err(VfsError::Eexist {
+                op: "create",
+                target: VfsTarget::Path(child_path.to_string()),
+            });
+        }
+
+        let ino = NodeId(state.next_ino);
+        state.next_ino = state.next_ino.saturating_add(1);
+        let attr = FileAttr {
+            ino,
+            kind: FileKind::Regular,
+            size: 0,
+            blocks: 0,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            mode: mode & 0o7777,
+            nlink: 1,
+            uid: caller.uid,
+            gid: caller.gid,
+            generation: 1,
+        };
+        state.nodes.insert(
+            ino,
+            Node {
+                attr: attr.clone(),
+                path: child_path,
+                xattrs: BTreeMap::new(),
+                data: NodeData::Regular {
+                    content: FileContent::Inline(Vec::new()),
+                },
+            },
+        );
+        if let Some(parent_node) = state.nodes.get_mut(&parent) {
+            if let NodeData::Directory { children, .. } = &mut parent_node.data {
+                children.insert(name.to_string(), ino);
+            }
+            parent_node.attr.mtime = now;
+            parent_node.attr.ctime = now;
+        }
+        let fh = FileHandle(state.next_fh);
+        state.next_fh = state.next_fh.saturating_add(1);
+        state.handles.insert(fh, OpenHandle { ino, flags });
+        Ok((attr, fh))
+    }
+
     fn rmdir(&self, caller: &CallerContext, parent: NodeId, name: &str) -> VfsResult<()> {
         Self::validate_name(name)?;
         let child_path = self.node_path(parent)?.join(name)?;
@@ -783,47 +936,50 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         let target_ino = {
-            let parent_node = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let parent_node = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "rmdir (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             match &parent_node.data {
-                NodeData::Directory { children, .. } => *children
-                    .get(name)
-                    .ok_or_else(|| VfsError::Enoent(format!("'{child_path}' not found")))?,
+                NodeData::Directory { children, .. } => *children.get(name).ok_or_else(|| {
+                    VfsError::Enoent {
+                        op: "rmdir",
+                        target: VfsTarget::Path(child_path.to_string()),
+                    }
+                })?,
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{}' is not a directory",
-                        parent_node.path
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "rmdir (parent)",
+                        target: VfsTarget::Path(parent_node.path.to_string()),
+                    });
                 }
             }
         };
 
-        let target_node = state
-            .nodes
-            .get(&target_ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {target_ino} not found")))?;
+        let target_node = state.nodes.get(&target_ino).ok_or_else(|| VfsError::Enoent {
+            op: "rmdir",
+            target: VfsTarget::Node(target_ino),
+        })?;
         if Self::is_protected(&state, &target_node.path) {
-            return Err(VfsError::Eperm(format!(
-                "cannot rmdir protected root '{}'",
-                target_node.path
-            )));
+            return Err(VfsError::Eperm {
+                op: "rmdir",
+                target: VfsTarget::Path(target_node.path.to_string()),
+            });
         }
         match &target_node.data {
             NodeData::Directory { children, .. } => {
                 if !children.is_empty() {
-                    return Err(VfsError::Enotempty(format!(
-                        "directory '{}' is not empty",
-                        target_node.path
-                    )));
+                    return Err(VfsError::Enotempty {
+                        op: "rmdir",
+                        target: VfsTarget::Path(target_node.path.to_string()),
+                    });
                 }
             }
             _ => {
-                return Err(VfsError::Enotdir(format!(
-                    "'{}' is not a directory",
-                    target_node.path
-                )));
+                return Err(VfsError::Enotdir {
+                    op: "rmdir",
+                    target: VfsTarget::Path(target_node.path.to_string()),
+                });
             }
         }
 
@@ -849,38 +1005,41 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         let target_ino = {
-            let parent_node = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let parent_node = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "unlink (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             match &parent_node.data {
-                NodeData::Directory { children, .. } => *children
-                    .get(name)
-                    .ok_or_else(|| VfsError::Enoent(format!("'{child_path}' not found")))?,
+                NodeData::Directory { children, .. } => *children.get(name).ok_or_else(|| {
+                    VfsError::Enoent {
+                        op: "unlink",
+                        target: VfsTarget::Path(child_path.to_string()),
+                    }
+                })?,
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{}' is not a directory",
-                        parent_node.path
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "unlink (parent)",
+                        target: VfsTarget::Path(parent_node.path.to_string()),
+                    });
                 }
             }
         };
 
-        let target_node = state
-            .nodes
-            .get(&target_ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {target_ino} not found")))?;
+        let target_node = state.nodes.get(&target_ino).ok_or_else(|| VfsError::Enoent {
+            op: "unlink",
+            target: VfsTarget::Node(target_ino),
+        })?;
         if Self::is_protected(&state, &target_node.path) {
-            return Err(VfsError::Eperm(format!(
-                "cannot unlink protected root '{}'",
-                target_node.path
-            )));
+            return Err(VfsError::Eperm {
+                op: "unlink",
+                target: VfsTarget::Path(target_node.path.to_string()),
+            });
         }
         if matches!(target_node.data, NodeData::Directory { .. }) {
-            return Err(VfsError::Eisdir(format!(
-                "cannot unlink directory '{}'",
-                target_node.path
-            )));
+            return Err(VfsError::Eisdir {
+                op: "unlink",
+                target: VfsTarget::Path(target_node.path.to_string()),
+            });
         }
 
         if let Some(parent_node) = state.nodes.get_mut(&parent) {
@@ -927,16 +1086,22 @@ impl Volume for InMemoryVolume {
         let mut state = self.state.write().expect("volume lock poisoned");
 
         let src_ino = {
-            let p = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let p = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "rename (source parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             match &p.data {
-                NodeData::Directory { children, .. } => *children
-                    .get(name)
-                    .ok_or_else(|| VfsError::Enoent(format!("'{src_path}' not found")))?,
+                NodeData::Directory { children, .. } => *children.get(name).ok_or_else(|| {
+                    VfsError::Enoent {
+                        op: "rename (source)",
+                        target: VfsTarget::Path(src_path.to_string()),
+                    }
+                })?,
                 _ => {
-                    return Err(VfsError::Enotdir(format!("'{}' is not a directory", p.path)));
+                    return Err(VfsError::Enotdir {
+                        op: "rename (source parent)",
+                        target: VfsTarget::Path(p.path.to_string()),
+                    });
                 }
             }
         };
@@ -944,34 +1109,39 @@ impl Volume for InMemoryVolume {
         let src_actual_path = state
             .nodes
             .get(&src_ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {src_ino} not found")))?
+            .ok_or_else(|| VfsError::Enoent {
+                op: "rename (source)",
+                target: VfsTarget::Node(src_ino),
+            })?
             .path
             .clone();
         if Self::is_protected(&state, &src_actual_path) {
-            return Err(VfsError::Eperm(format!(
-                "cannot rename protected root '{src_actual_path}'"
-            )));
+            return Err(VfsError::Eperm {
+                op: "rename (source)",
+                target: VfsTarget::Path(src_actual_path.to_string()),
+            });
         }
 
         let dst_parent_path = {
-            let np = state
-                .nodes
-                .get(&new_parent)
-                .ok_or_else(|| VfsError::Enoent(format!("new_parent {new_parent} not found")))?;
+            let np = state.nodes.get(&new_parent).ok_or_else(|| VfsError::Enoent {
+                op: "rename (destination parent)",
+                target: VfsTarget::Node(new_parent),
+            })?;
             if !matches!(np.data, NodeData::Directory { .. }) {
-                return Err(VfsError::Enotdir(format!(
-                    "'{}' is not a directory",
-                    np.path
-                )));
+                return Err(VfsError::Enotdir {
+                    op: "rename (destination parent)",
+                    target: VfsTarget::Path(np.path.to_string()),
+                });
             }
             np.path.clone()
         };
 
         // Prevent moving a directory into itself or its own descendant.
         if dst_parent_path.is_within(&src_actual_path) {
-            return Err(VfsError::Einval(format!(
-                "cannot move '{src_actual_path}' into its own descendant '{dst_parent_path}'"
-            )));
+            return Err(VfsError::Einval {
+                op: "rename (move into own descendant)",
+                target: VfsTarget::Path(src_actual_path.to_string()),
+            });
         }
 
         // Check if destination already exists.
@@ -985,18 +1155,18 @@ impl Volume for InMemoryVolume {
             }
             let dst_node = state.nodes.get(&dst_ino).unwrap();
             if Self::is_protected(&state, &dst_node.path) {
-                return Err(VfsError::Eperm(format!(
-                    "cannot overwrite protected root '{}'",
-                    dst_node.path
-                )));
+                return Err(VfsError::Eperm {
+                    op: "rename (overwrite)",
+                    target: VfsTarget::Path(dst_node.path.to_string()),
+                });
             }
             if let NodeData::Directory { children, .. } = &dst_node.data
                 && !children.is_empty()
             {
-                return Err(VfsError::Enotempty(format!(
-                    "destination directory '{}' is not empty",
-                    dst_node.path
-                )));
+                return Err(VfsError::Enotempty {
+                    op: "rename (overwrite)",
+                    target: VfsTarget::Path(dst_node.path.to_string()),
+                });
             }
         }
 
@@ -1058,18 +1228,24 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         {
-            let p = state
-                .nodes
-                .get(&parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {parent} not found")))?;
+            let p = state.nodes.get(&parent).ok_or_else(|| VfsError::Enoent {
+                op: "symlink (parent)",
+                target: VfsTarget::Node(parent),
+            })?;
             match &p.data {
                 NodeData::Directory { children, .. } => {
                     if children.contains_key(name) {
-                        return Err(VfsError::Eexist(format!("'{link_path}' already exists")));
+                        return Err(VfsError::Eexist {
+                            op: "symlink",
+                            target: VfsTarget::Path(link_path.to_string()),
+                        });
                     }
                 }
                 _ => {
-                    return Err(VfsError::Enotdir(format!("'{}' is not a directory", p.path)));
+                    return Err(VfsError::Enotdir {
+                        op: "symlink (parent)",
+                        target: VfsTarget::Path(p.path.to_string()),
+                    });
                 }
             }
         }
@@ -1128,30 +1304,36 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         {
-            let target = state
-                .nodes
-                .get(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+            let target = state.nodes.get(&ino).ok_or_else(|| VfsError::Enoent {
+                op: "link (source)",
+                target: VfsTarget::Node(ino),
+            })?;
             if matches!(target.data, NodeData::Directory { .. }) {
-                return Err(VfsError::Eperm(format!(
-                    "hard links to directories are not permitted: '{}'",
-                    target.path
-                )));
+                return Err(VfsError::Eperm {
+                    op: "link (directory source)",
+                    target: VfsTarget::Path(target.path.to_string()),
+                });
             }
         }
         {
-            let p = state
-                .nodes
-                .get(&new_parent)
-                .ok_or_else(|| VfsError::Enoent(format!("parent {new_parent} not found")))?;
+            let p = state.nodes.get(&new_parent).ok_or_else(|| VfsError::Enoent {
+                op: "link (parent)",
+                target: VfsTarget::Node(new_parent),
+            })?;
             match &p.data {
                 NodeData::Directory { children, .. } => {
                     if children.contains_key(new_name) {
-                        return Err(VfsError::Eexist(format!("'{link_path}' already exists")));
+                        return Err(VfsError::Eexist {
+                            op: "link",
+                            target: VfsTarget::Path(link_path.to_string()),
+                        });
                     }
                 }
                 _ => {
-                    return Err(VfsError::Enotdir(format!("'{}' is not a directory", p.path)));
+                    return Err(VfsError::Enotdir {
+                        op: "link (parent)",
+                        target: VfsTarget::Path(p.path.to_string()),
+                    });
                 }
             }
         }
@@ -1174,14 +1356,20 @@ impl Volume for InMemoryVolume {
         self.access_hook
             .before_metadata(caller, MetadataOp::GetXattr, &path)?;
         let state = self.state.read().expect("volume lock poisoned");
-        let node = state
-            .nodes
-            .get(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+        let node = state.nodes.get(&ino).ok_or_else(|| VfsError::Enoent {
+            op: "getxattr",
+            target: VfsTarget::Node(ino),
+        })?;
         node.xattrs
             .get(name)
             .cloned()
-            .ok_or_else(|| VfsError::Enodata(format!("xattr '{name}' not found on '{path}'")))
+            .ok_or_else(|| VfsError::Enodata {
+                op: "getxattr",
+                target: VfsTarget::Xattr {
+                    path: path.to_string(),
+                    name: name.to_string(),
+                },
+            })
     }
 
     fn listxattr(&self, caller: &CallerContext, ino: NodeId) -> VfsResult<Vec<String>> {
@@ -1189,10 +1377,10 @@ impl Volume for InMemoryVolume {
         self.access_hook
             .before_metadata(caller, MetadataOp::ListXattr, &path)?;
         let state = self.state.read().expect("volume lock poisoned");
-        let node = state
-            .nodes
-            .get(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+        let node = state.nodes.get(&ino).ok_or_else(|| VfsError::Enoent {
+            op: "listxattr",
+            target: VfsTarget::Node(ino),
+        })?;
         Ok(node.xattrs.keys().cloned().collect())
     }
 
@@ -1210,10 +1398,10 @@ impl Volume for InMemoryVolume {
 
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
-        let node = state
-            .nodes
-            .get_mut(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+        let node = state.nodes.get_mut(&ino).ok_or_else(|| VfsError::Enoent {
+            op: "setxattr",
+            target: VfsTarget::Node(ino),
+        })?;
         node.xattrs.insert(name.to_string(), value.to_vec());
         node.attr.ctime = now;
         Ok(())
@@ -1227,14 +1415,18 @@ impl Volume for InMemoryVolume {
 
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
-        let node = state
-            .nodes
-            .get_mut(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+        let node = state.nodes.get_mut(&ino).ok_or_else(|| VfsError::Enoent {
+            op: "removexattr",
+            target: VfsTarget::Node(ino),
+        })?;
         if node.xattrs.remove(name).is_none() {
-            return Err(VfsError::Enodata(format!(
-                "xattr '{name}' not found on '{path}'"
-            )));
+            return Err(VfsError::Enodata {
+                op: "removexattr",
+                target: VfsTarget::Xattr {
+                    path: path.to_string(),
+                    name: name.to_string(),
+                },
+            });
         }
         node.attr.ctime = now;
         Ok(())
@@ -1273,23 +1465,23 @@ impl Volume for InMemoryVolume {
 
         // Snapshot source metadata/reference without reading lazy chunk bytes.
         let (actual_len, overlay_source) = {
-            let src = state
-                .nodes
-                .get(&ino_in)
-                .ok_or_else(|| VfsError::Enoent(format!("source node {ino_in} not found")))?;
+            let src = state.nodes.get(&ino_in).ok_or_else(|| VfsError::Enoent {
+                op: "copy_file_range (source)",
+                target: VfsTarget::Node(ino_in),
+            })?;
             let content = match &src.data {
                 NodeData::Regular { content } => content,
                 NodeData::Directory { .. } => {
-                    return Err(VfsError::Eisdir(format!(
-                        "copy_file_range source '{}' is a directory",
-                        src.path
-                    )));
+                    return Err(VfsError::Eisdir {
+                        op: "copy_file_range (source)",
+                        target: VfsTarget::Path(src.path.to_string()),
+                    });
                 }
                 NodeData::Symlink { .. } => {
-                    return Err(VfsError::Einval(format!(
-                        "copy_file_range source '{}' is a symlink",
-                        src.path
-                    )));
+                    return Err(VfsError::Einval {
+                        op: "copy_file_range (source)",
+                        target: VfsTarget::Path(src.path.to_string()),
+                    });
                 }
             };
             if offset_in >= src.attr.size || len == 0 {
@@ -1314,10 +1506,10 @@ impl Volume for InMemoryVolume {
             (avail, source)
         };
 
-        let dst = state
-            .nodes
-            .get_mut(&ino_out)
-            .ok_or_else(|| VfsError::Enoent(format!("dest node {ino_out} not found")))?;
+        let dst = state.nodes.get_mut(&ino_out).ok_or_else(|| VfsError::Enoent {
+            op: "copy_file_range (destination)",
+            target: VfsTarget::Node(ino_out),
+        })?;
         match &mut dst.data {
             NodeData::Regular { content } => {
                 match (content, overlay_source) {
@@ -1376,14 +1568,14 @@ impl Volume for InMemoryVolume {
                 dst.attr.generation = dst.attr.generation.saturating_add(1);
                 Ok(actual_len)
             }
-            NodeData::Directory { .. } => Err(VfsError::Eisdir(format!(
-                "copy_file_range dest '{}' is a directory",
-                dst.path
-            ))),
-            NodeData::Symlink { .. } => Err(VfsError::Einval(format!(
-                "copy_file_range dest '{}' is a symlink",
-                dst.path
-            ))),
+            NodeData::Directory { .. } => Err(VfsError::Eisdir {
+                op: "copy_file_range (destination)",
+                target: VfsTarget::Path(dst.path.to_string()),
+            }),
+            NodeData::Symlink { .. } => Err(VfsError::Einval {
+                op: "copy_file_range (destination)",
+                target: VfsTarget::Path(dst.path.to_string()),
+            }),
         }
     }
 
@@ -1398,15 +1590,15 @@ impl Volume for InMemoryVolume {
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
         {
-            let node = state
-                .nodes
-                .get_mut(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+            let node = state.nodes.get_mut(&ino).ok_or_else(|| VfsError::Enoent {
+                op: "open",
+                target: VfsTarget::Node(ino),
+            })?;
             if matches!(node.data, NodeData::Directory { .. }) && flags.requires_write() {
-                return Err(VfsError::Eisdir(format!(
-                    "cannot open directory '{}' for writing",
-                    node.path
-                )));
+                return Err(VfsError::Eisdir {
+                    op: "open (write)",
+                    target: VfsTarget::Path(node.path.to_string()),
+                });
             }
             if flags.truncate
                 && let NodeData::Regular { content } = &mut node.data
@@ -1431,14 +1623,15 @@ impl Volume for InMemoryVolume {
         self.access_hook
             .before_metadata(caller, MetadataOp::Release, &path)?;
         let mut state = self.state.write().expect("volume lock poisoned");
-        let handle = state
-            .handles
-            .remove(&fh)
-            .ok_or_else(|| VfsError::Ebadf(format!("unknown handle {fh}")))?;
+        let handle = state.handles.remove(&fh).ok_or_else(|| VfsError::Ebadf {
+            op: "release (unknown handle)",
+            target: VfsTarget::Handle(fh),
+        })?;
         if handle.ino != ino {
-            return Err(VfsError::Ebadf(format!(
-                "handle {fh} does not belong to {ino}"
-            )));
+            return Err(VfsError::Ebadf {
+                op: "release (wrong node)",
+                target: VfsTarget::Handle(fh),
+            });
         }
         if let Some(lock_state) = state.locks.get_mut(&ino) {
             lock_state.shared.remove(&fh);
@@ -1462,7 +1655,10 @@ impl Volume for InMemoryVolume {
         let state = self.state.read().expect("volume lock poisoned");
         match state.handles.get(&fh) {
             Some(h) if h.ino == ino => Ok(()),
-            _ => Err(VfsError::Ebadf(format!("invalid handle {fh} for {ino}"))),
+            _ => Err(VfsError::Ebadf {
+                op: "fsync",
+                target: VfsTarget::Handle(fh),
+            }),
         }
     }
 
@@ -1480,7 +1676,12 @@ impl Volume for InMemoryVolume {
         let mut state = self.state.write().expect("volume lock poisoned");
         match state.handles.get(&fh) {
             Some(h) if h.ino == ino => {}
-            _ => return Err(VfsError::Ebadf(format!("invalid handle {fh} for {ino}"))),
+            _ => {
+                return Err(VfsError::Ebadf {
+                    op: "flock",
+                    target: VfsTarget::Handle(fh),
+                });
+            }
         }
         let lock = state.locks.entry(ino).or_default();
         match op {
@@ -1495,9 +1696,10 @@ impl Volume for InMemoryVolume {
                 if let Some(holder) = lock.exclusive
                     && holder != fh
                 {
-                    return Err(VfsError::Ewouldblock(format!(
-                        "exclusive lock held on '{path}'"
-                    )));
+                    return Err(VfsError::Ewouldblock {
+                        op: "flock (shared)",
+                        target: VfsTarget::Path(path.to_string()),
+                    });
                 }
                 lock.exclusive = None;
                 lock.shared.insert(fh);
@@ -1507,7 +1709,10 @@ impl Volume for InMemoryVolume {
                 let other_shared = lock.shared.iter().any(|h| *h != fh);
                 let other_excl = lock.exclusive.is_some_and(|h| h != fh);
                 if other_shared || other_excl {
-                    return Err(VfsError::Ewouldblock(format!("lock conflict on '{path}'")));
+                    return Err(VfsError::Ewouldblock {
+                        op: "flock (exclusive)",
+                        target: VfsTarget::Path(path.to_string()),
+                    });
                 }
                 lock.shared.remove(&fh);
                 lock.exclusive = Some(fh);
@@ -1530,37 +1735,39 @@ impl Volume for InMemoryVolume {
     ) -> VfsResult<Vec<u8>> {
         let (path, content, file_size) = {
             let state = self.state.read().expect("volume lock poisoned");
-            let handle = state
-                .handles
-                .get(&fh)
-                .ok_or_else(|| VfsError::Ebadf(format!("unknown handle {fh}")))?;
+            let handle = state.handles.get(&fh).ok_or_else(|| VfsError::Ebadf {
+                op: "read (unknown handle)",
+                target: VfsTarget::Handle(fh),
+            })?;
             if handle.ino != ino {
-                return Err(VfsError::Ebadf(format!(
-                    "handle {fh} does not belong to {ino}"
-                )));
+                return Err(VfsError::Ebadf {
+                    op: "read (wrong node)",
+                    target: VfsTarget::Handle(fh),
+                });
             }
             if !handle.flags.read {
-                return Err(VfsError::Eacces(format!(
-                    "handle {fh} was not opened for reading"
-                )));
+                return Err(VfsError::Eacces {
+                    op: "read (handle not opened for reading)",
+                    target: VfsTarget::Handle(fh),
+                });
             }
-            let node = state
-                .nodes
-                .get(&ino)
-                .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+            let node = state.nodes.get(&ino).ok_or_else(|| VfsError::Enoent {
+                op: "read",
+                target: VfsTarget::Node(ino),
+            })?;
             let content = match &node.data {
                 NodeData::Regular { content } => content.clone(),
                 NodeData::Directory { .. } => {
-                    return Err(VfsError::Eisdir(format!(
-                        "cannot read directory '{}'",
-                        node.path
-                    )));
+                    return Err(VfsError::Eisdir {
+                        op: "read",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
                 NodeData::Symlink { .. } => {
-                    return Err(VfsError::Einval(format!(
-                        "cannot read symlink '{}'",
-                        node.path
-                    )));
+                    return Err(VfsError::Einval {
+                        op: "read",
+                        target: VfsTarget::Path(node.path.to_string()),
+                    });
                 }
             };
             (node.path.clone(), content, node.attr.size)
@@ -1586,25 +1793,27 @@ impl Volume for InMemoryVolume {
 
         let now = self.now_ts();
         let mut state = self.state.write().expect("volume lock poisoned");
-        let handle = *state
-            .handles
-            .get(&fh)
-            .ok_or_else(|| VfsError::Ebadf(format!("unknown handle {fh}")))?;
+        let handle = *state.handles.get(&fh).ok_or_else(|| VfsError::Ebadf {
+            op: "write (unknown handle)",
+            target: VfsTarget::Handle(fh),
+        })?;
         if handle.ino != ino {
-            return Err(VfsError::Ebadf(format!(
-                "handle {fh} does not belong to {ino}"
-            )));
+            return Err(VfsError::Ebadf {
+                op: "write (wrong node)",
+                target: VfsTarget::Handle(fh),
+            });
         }
         if !handle.flags.write && !handle.flags.append {
-            return Err(VfsError::Eacces(format!(
-                "handle {fh} was not opened for writing"
-            )));
+            return Err(VfsError::Eacces {
+                op: "write (handle not opened for writing)",
+                target: VfsTarget::Handle(fh),
+            });
         }
 
-        let node = state
-            .nodes
-            .get_mut(&ino)
-            .ok_or_else(|| VfsError::Enoent(format!("node {ino} not found")))?;
+        let node = state.nodes.get_mut(&ino).ok_or_else(|| VfsError::Enoent {
+            op: "write",
+            target: VfsTarget::Node(ino),
+        })?;
         check_generation(expected_generation, node.attr.generation)?;
 
         let write_offset = if handle.flags.append {
@@ -1626,14 +1835,14 @@ impl Volume for InMemoryVolume {
                 node.attr.generation = node.attr.generation.saturating_add(1);
                 Ok(data.len() as u32)
             }
-            NodeData::Directory { .. } => Err(VfsError::Eisdir(format!(
-                "cannot write directory '{}'",
-                node.path
-            ))),
-            NodeData::Symlink { .. } => Err(VfsError::Einval(format!(
-                "cannot write symlink '{}'",
-                node.path
-            ))),
+            NodeData::Directory { .. } => Err(VfsError::Eisdir {
+                op: "write",
+                target: VfsTarget::Path(node.path.to_string()),
+            }),
+            NodeData::Symlink { .. } => Err(VfsError::Einval {
+                op: "write",
+                target: VfsTarget::Path(node.path.to_string()),
+            }),
         }
     }
 }
@@ -1777,11 +1986,17 @@ impl TreeBuilder {
             }
         };
         let Some(parent_path) = parsed.parent() else {
-            self.record_err(VfsError::Einval("cannot create symlink at root".into()));
+            self.record_err(VfsError::Einval {
+                op: "builder symlink (root)",
+                target: VfsTarget::Path(path.to_string()),
+            });
             return self;
         };
         let Some(name) = parsed.file_name().map(str::to_string) else {
-            self.record_err(VfsError::Einval("missing symlink name".into()));
+            self.record_err(VfsError::Einval {
+                op: "builder symlink (name)",
+                target: VfsTarget::Path(path.to_string()),
+            });
             return self;
         };
         let parent_ino = match self.ensure_dir(&parent_path) {
@@ -1877,11 +2092,17 @@ impl TreeBuilder {
             }
         };
         let Some(parent_path) = parsed.parent() else {
-            self.record_err(VfsError::Einval("cannot create file at root".into()));
+            self.record_err(VfsError::Einval {
+                op: "builder file (root)",
+                target: VfsTarget::Path(path.to_string()),
+            });
             return;
         };
         let Some(name) = parsed.file_name().map(str::to_string) else {
-            self.record_err(VfsError::Einval("missing file name".into()));
+            self.record_err(VfsError::Einval {
+                op: "builder file (name)",
+                target: VfsTarget::Path(path.to_string()),
+            });
             return;
         };
         let parent_ino = match self.ensure_dir(&parent_path) {
@@ -1930,9 +2151,10 @@ impl TreeBuilder {
             let existing = match &self.state.nodes.get(&current).unwrap().data {
                 NodeData::Directory { children, .. } => children.get(seg).copied(),
                 _ => {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{cur_path}' parent is not a directory"
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "ensure directory (parent)",
+                        target: VfsTarget::Path(cur_path.to_string()),
+                    });
                 }
             };
             if let Some(ino) = existing {
@@ -1940,9 +2162,10 @@ impl TreeBuilder {
                     self.state.nodes.get(&ino).unwrap().data,
                     NodeData::Directory { .. }
                 ) {
-                    return Err(VfsError::Enotdir(format!(
-                        "'{cur_path}' already exists as non-directory"
-                    )));
+                    return Err(VfsError::Enotdir {
+                        op: "ensure directory (existing entry)",
+                        target: VfsTarget::Path(cur_path.to_string()),
+                    });
                 }
                 current = ino;
             } else {
@@ -2036,19 +2259,19 @@ mod tests {
 
         assert!(matches!(
             vol.rmdir(&caller, mount_ino, "protected_dir"),
-            Err(VfsError::Eperm(_))
+            Err(VfsError::Eperm { .. })
         ));
         assert!(matches!(
             vol.unlink(&caller, mount_ino, "protected_file"),
-            Err(VfsError::Eperm(_))
+            Err(VfsError::Eperm { .. })
         ));
         assert!(matches!(
             vol.rename(&caller, mount_ino, "protected_dir", other_ino, "moved"),
-            Err(VfsError::Eperm(_))
+            Err(VfsError::Eperm { .. })
         ));
         assert!(matches!(
             vol.rename(&caller, mount_ino, "protected_file", other_ino, "moved"),
-            Err(VfsError::Eperm(_))
+            Err(VfsError::Eperm { .. })
         ));
     }
 
@@ -2080,7 +2303,7 @@ mod tests {
         // Opening denied path for write fails with EACCES.
         assert!(matches!(
             vol.open(&caller, denied_attr.ino, OpenFlags::read_write()),
-            Err(VfsError::Eacces(_))
+            Err(VfsError::Eacces { .. })
         ));
 
         // Allowed path succeeds with matching generation, fails with ESTALE on stale generation.
@@ -2097,7 +2320,7 @@ mod tests {
                 Some(allowed_attr.generation + 99),
             )
             .unwrap_err();
-        assert!(matches!(stale_err, VfsError::Estale(_)));
+        assert!(matches!(stale_err, VfsError::Estale { .. }));
 
         let written = vol
             .write(
@@ -2116,7 +2339,7 @@ mod tests {
         let revoked_err = vol
             .write(&caller, allowed_attr.ino, fh, 0, b"again", None)
             .unwrap_err();
-        assert!(matches!(revoked_err, VfsError::Eacces(_)));
+        assert!(matches!(revoked_err, VfsError::Eacces { .. }));
 
         // Re-grant and verify expiry.
         leases.grant(55, VirtualPath::parse("/work/allowed").unwrap(), 6_000, None);
@@ -2124,7 +2347,7 @@ mod tests {
         let expired_err = vol
             .write(&caller, allowed_attr.ino, fh, 0, b"late", None)
             .unwrap_err();
-        assert!(matches!(expired_err, VfsError::Eacces(_)));
+        assert!(matches!(expired_err, VfsError::Eacces { .. }));
 
         vol.release(&caller, allowed_attr.ino, fh).unwrap();
     }
@@ -2250,7 +2473,7 @@ mod tests {
         vol.removexattr(&caller, file_ino, "user.tag").unwrap();
         assert!(matches!(
             vol.getxattr(&caller, file_ino, "user.tag"),
-            Err(VfsError::Enodata(_))
+            Err(VfsError::Enodata { .. })
         ));
 
         let fh1 = vol.open(&caller, file_ino, OpenFlags::read_only()).unwrap();
@@ -2261,11 +2484,54 @@ mod tests {
             .unwrap();
         assert!(matches!(
             vol.flock(&caller, file_ino, fh1, FlockOp::Exclusive, true),
-            Err(VfsError::Ewouldblock(_))
+            Err(VfsError::Ewouldblock { .. })
         ));
         vol.release(&caller, file_ino, fh2).unwrap();
         vol.flock(&caller, file_ino, fh1, FlockOp::Exclusive, true)
             .unwrap();
         vol.release(&caller, file_ino, fh1).unwrap();
+    }
+
+    #[test]
+    fn create_makes_a_file_and_respects_exclusive() {
+        let vol = InMemoryVolume::builder()
+            .file("/dir/old.txt", b"old")
+            .build()
+            .unwrap();
+        let caller = CallerContext::new(1, 1000, 1000);
+        let dir = vol.lookup(&caller, ROOT_NODE_ID, "dir").unwrap().ino;
+
+        let flags = OpenFlags {
+            read: false,
+            write: true,
+            create: true,
+            exclusive: true,
+            ..OpenFlags::default()
+        };
+        let (attr, fh) = vol.create(&caller, dir, "new.txt", 0o644, flags).unwrap();
+        assert_eq!(attr.kind, FileKind::Regular);
+        assert_eq!(attr.size, 0);
+        assert_eq!(attr.mode, 0o644);
+        assert_eq!(vol.lookup(&caller, dir, "new.txt").unwrap().ino, attr.ino);
+        vol.write(&caller, attr.ino, fh, 0, b"hi", None).unwrap();
+        vol.release(&caller, attr.ino, fh).unwrap();
+        assert_eq!(vol.getattr(&caller, attr.ino).unwrap().size, 2);
+
+        assert!(matches!(
+            vol.create(&caller, dir, "old.txt", 0o644, flags),
+            Err(VfsError::Eexist { .. })
+        ));
+        let non_exclusive = OpenFlags {
+            exclusive: false,
+            ..flags
+        };
+        let (existing, _) = vol
+            .create(&caller, dir, "old.txt", 0o644, non_exclusive)
+            .unwrap();
+        assert_eq!(existing.size, 3);
+        assert!(matches!(
+            vol.create(&caller, existing.ino, "x", 0o644, flags),
+            Err(VfsError::Enotdir { .. })
+        ));
     }
 }

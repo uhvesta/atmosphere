@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{RequestId, SessionId};
+use crate::model::{ItemId, RequestId, SessionId};
 
 /// Where clicking a desktop notification opens the app.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +22,33 @@ pub enum NotifyTarget {
     Inbox,
     /// The Home view.
     Home,
+    /// The To-do, with the item an agent's To-do ask is about selected, or
+    /// only the To-do when the ask suggests a new item (NOTIFY2).
+    Todo {
+        /// The item to select.
+        item: Option<ItemId>,
+    },
+}
+
+/// The sound a notification plays, when Play a sound is on (NOTIFY2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoticeSound {
+    /// Two rising notes: an agent waits on you in the Inbox.
+    Inbox,
+    /// One lower, softer note: something to look at on the To-do.
+    Todo,
+}
+
+impl NoticeSound {
+    /// The sound file's name in the app bundle's Resources
+    /// (`app/sounds/make_sounds.py` writes them).
+    #[must_use]
+    pub const fn file_name(self) -> &'static str {
+        match self {
+            Self::Inbox => "humata2-inbox.wav",
+            Self::Todo => "humata2-todo.wav",
+        }
+    }
 }
 
 /// A desktop notification ready to hand to the platform notifier.
@@ -35,6 +62,8 @@ pub struct DesktopNotice {
     pub body: String,
     /// Where clicking the notification navigates.
     pub target: NotifyTarget,
+    /// The sound it plays, or `None` for a silent one.
+    pub sound: Option<NoticeSound>,
 }
 
 /// Platform seam for posting and withdrawing desktop notifications.

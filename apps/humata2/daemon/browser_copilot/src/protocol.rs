@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Maximum allowed Native Messaging payload size (1 MiB, per browser spec).
@@ -26,6 +27,10 @@ pub enum ProtocolError {
     Io(#[from] std::io::Error),
     #[error("JSON codec error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(
+        "browser action JSON is malformed or names an unknown action type; expected a JSON object with \"type\" set to one of list_tabs, read_tab, click, type, navigate, submit, highlight_guide: {0}"
+    )]
+    InvalidAction(#[source] serde_json::Error),
 }
 
 /// Encodes `message` as JSON and writes a 4-byte native-endian length-prefixed frame.
@@ -227,6 +232,44 @@ impl BrowserAction {
     }
 }
 
+impl BrowserAction {
+    /// Parses one browser action from its wire JSON.
+    ///
+    /// Malformed JSON and unknown `"type"` tags both return
+    /// `ProtocolError::InvalidAction`.
+    pub fn from_json(json: &str) -> Result<BrowserAction, ProtocolError> {
+        serde_json::from_str(json).map_err(ProtocolError::InvalidAction)
+    }
+
+    /// Serde tag name of this action, as written in the wire JSON `"type"` field.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            BrowserAction::ListTabs => "list_tabs",
+            BrowserAction::ReadTab { .. } => "read_tab",
+            BrowserAction::Click { .. } => "click",
+            BrowserAction::Type { .. } => "type",
+            BrowserAction::Navigate { .. } => "navigate",
+            BrowserAction::Submit { .. } => "submit",
+            BrowserAction::HighlightGuide { .. } => "highlight_guide",
+        }
+    }
+
+    /// Stable identity of this action: the lowercase hex SHA-256 of its canonical JSON.
+    ///
+    /// Equal actions produce equal keys. If the canonical JSON cannot be produced,
+    /// the key falls back to hashing the `Debug` representation.
+    pub fn action_key(&self) -> String {
+        let input = match serde_json::to_vec(self) {
+            Ok(bytes) => bytes,
+            Err(_) => format!("{self:?}").into_bytes(),
+        };
+        Sha256::digest(&input)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
 fn format_selector_preview(selector: &str, preview: Option<&str>) -> String {
     match preview {
         Some(p) if !p.trim().is_empty() => format!("{selector} ({})", p.trim()),
@@ -420,5 +463,132 @@ mod tests {
             read_frame::<_, BrowserRequest>(&mut Cursor::new(truncated)),
             Err(ProtocolError::UnexpectedEof)
         ));
+    }
+
+    fn one_of_each_action() -> Vec<BrowserAction> {
+        vec![
+            BrowserAction::ListTabs,
+            BrowserAction::ReadTab {
+                tab_id: Some(3),
+                max_chars: Some(200),
+            },
+            BrowserAction::Click {
+                tab_id: Some(3),
+                url: "https://app.example.com/billing".to_string(),
+                selector: "button#upgrade".to_string(),
+                element_preview: Some("Upgrade".to_string()),
+            },
+            BrowserAction::Type {
+                tab_id: None,
+                url: "https://app.example.com/search".to_string(),
+                selector: "input[name=q]".to_string(),
+                text: "quarterly report".to_string(),
+                clear_first: true,
+                element_preview: None,
+            },
+            BrowserAction::Navigate {
+                tab_id: Some(3),
+                url: "https://app.example.com/home".to_string(),
+            },
+            BrowserAction::Submit {
+                tab_id: None,
+                url: "https://app.example.com/form".to_string(),
+                selector: "form#signup".to_string(),
+                element_preview: None,
+            },
+            BrowserAction::HighlightGuide {
+                tab_id: Some(3),
+                url: "https://app.example.com/projects".to_string(),
+                selector: "button#new-project".to_string(),
+                title: "Create your project".to_string(),
+                body: "Start here.".to_string(),
+                step_label: Some("Step 1".to_string()),
+            },
+        ]
+    }
+
+    fn type_action(url: &str, selector: &str, text: &str) -> BrowserAction {
+        BrowserAction::Type {
+            tab_id: Some(1),
+            url: url.to_string(),
+            selector: selector.to_string(),
+            text: text.to_string(),
+            clear_first: false,
+            element_preview: None,
+        }
+    }
+
+    #[test]
+    fn equal_actions_have_equal_action_keys() {
+        let a = type_action("https://example.com/a", "input#q", "hello");
+        let b = type_action("https://example.com/a", "input#q", "hello");
+        assert_eq!(a.action_key(), b.action_key());
+    }
+
+    #[test]
+    fn changing_url_selector_or_text_changes_action_key() {
+        let base = type_action("https://example.com/a", "input#q", "hello");
+        let new_url = type_action("https://example.com/b", "input#q", "hello");
+        let new_selector = type_action("https://example.com/a", "input#r", "hello");
+        let new_text = type_action("https://example.com/a", "input#q", "goodbye");
+
+        assert_ne!(base.action_key(), new_url.action_key());
+        assert_ne!(base.action_key(), new_selector.action_key());
+        assert_ne!(base.action_key(), new_text.action_key());
+    }
+
+    #[test]
+    fn action_key_is_64_lowercase_hex_characters() {
+        for action in one_of_each_action() {
+            let key = action.action_key();
+            assert_eq!(key.len(), 64);
+            assert!(
+                key.chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+            );
+        }
+    }
+
+    #[test]
+    fn from_json_round_trips_every_action() {
+        for action in one_of_each_action() {
+            let wire = serde_json::to_string(&action).expect("serialize action");
+            let parsed = BrowserAction::from_json(&wire).expect("parse action");
+            assert_eq!(parsed, action);
+        }
+    }
+
+    #[test]
+    fn from_json_rejects_malformed_json_and_unknown_types() {
+        let malformed = [r#"{"type":"click","url":"#, "not json", ""];
+        for input in malformed {
+            assert!(matches!(
+                BrowserAction::from_json(input),
+                Err(ProtocolError::InvalidAction(_))
+            ));
+        }
+
+        let unknown = [
+            r#"{"type":"explode"}"#,
+            r#"{"type":"CLICK","url":"https://example.com","selector":"a"}"#,
+            r#"{"url":"https://example.com"}"#,
+        ];
+        for input in unknown {
+            assert!(matches!(
+                BrowserAction::from_json(input),
+                Err(ProtocolError::InvalidAction(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn kind_matches_json_type_tag() {
+        for action in one_of_each_action() {
+            let value = serde_json::to_value(&action).expect("serialize action to value");
+            assert_eq!(
+                value.get("type").and_then(serde_json::Value::as_str),
+                Some(action.kind())
+            );
+        }
     }
 }

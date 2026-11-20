@@ -185,7 +185,7 @@ esac
 
 /// The files of the tools bundle the host installs on a machine, for
 /// linux-x86_64, the fake machine's platform.
-const BUNDLE_FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const BUNDLE_FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
 /// A tools bundle whose `humatad2` runs the real release binary. The
 /// link's copy (`serve --stdio`) is told the state folder and socket of the

@@ -50,7 +50,7 @@ pub const LONG: Duration = Duration::from_secs(120);
 const PEER_RETRY: (&str, &str) = ("HUMATA2_PEER_RETRY_MS", "20");
 const REVIVE_SETTLE: (&str, &str) = ("HUMATA2_REVIVE_SETTLE_MS", "50");
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
 /// `humatad2` as a machine gets it from the tools bundle.
 const WRAPPER: &str = r##"#!/bin/sh

@@ -16,6 +16,8 @@
 
 pub mod access;
 pub mod layout;
+#[cfg(target_os = "linux")]
+pub mod linux_mount;
 pub mod materialize;
 pub mod transport;
 
@@ -435,7 +437,7 @@ mod tests {
         let estale_err = vol
             .write(&caller, updated_lib.ino, fh2, 0, b"conflict", Some(stale_gen))
             .unwrap_err();
-        assert!(matches!(estale_err, VfsError::Estale(_)));
+        assert!(matches!(estale_err, VfsError::Estale { .. }));
         vol.release(&caller, updated_lib.ino, fh2).unwrap();
 
         // 4. Write outside leased subtree fails < 50ms with EACCES + writes requests/<id>.json.
@@ -443,7 +445,7 @@ mod tests {
         let t0 = Instant::now();
         let denied = vol.mkdir(&caller, other_repo.ino, "evil", 0o755).unwrap_err();
         let deny_elapsed = t0.elapsed();
-        assert!(matches!(denied, VfsError::Eacces(_)));
+        assert!(matches!(denied, VfsError::Eacces { .. }));
         assert!(
             deny_elapsed < Duration::from_millis(50),
             "EACCES denial took {deny_elapsed:?}"
@@ -467,7 +469,7 @@ mod tests {
         // 5. Turn-end revokes lease; subsequent writes inside /s/sess-a/repo fail EACCES.
         assert_eq!(hook.on_turn_end("turn-42"), 1);
         let after_revoke = vol.mkdir(&caller, repo_dir.ino, "after-turn", 0o755).unwrap_err();
-        assert!(matches!(after_revoke, VfsError::Eacces(_)));
+        assert!(matches!(after_revoke, VfsError::Eacces { .. }));
     }
 
     // -------------------------------------------------------------------------
@@ -518,14 +520,14 @@ mod tests {
             let parent = vol.resolve_path(&caller, parent_path).unwrap();
             let rmdir_err = vol.rmdir(&caller, parent.ino, child).unwrap_err();
             assert!(
-                matches!(rmdir_err, VfsError::Eperm(_)),
+                matches!(rmdir_err, VfsError::Eperm { .. }),
                 "expected EPERM for rmdir {parent_path}/{child}, got {rmdir_err:?}"
             );
             let rename_err = vol
                 .rename(&caller, parent.ino, child, parent.ino, "moved-away")
                 .unwrap_err();
             assert!(
-                matches!(rename_err, VfsError::Eperm(_)),
+                matches!(rename_err, VfsError::Eperm { .. }),
                 "expected EPERM for rename {parent_path}/{child}, got {rename_err:?}"
             );
         }
@@ -540,14 +542,14 @@ mod tests {
             let parent = vol.resolve_path(&caller, parent_path).unwrap();
             let unlink_err = vol.unlink(&caller, parent.ino, child).unwrap_err();
             assert!(
-                matches!(unlink_err, VfsError::Eperm(_)),
+                matches!(unlink_err, VfsError::Eperm { .. }),
                 "expected EPERM for unlink {parent_path}/{child}, got {unlink_err:?}"
             );
             let rename_err = vol
                 .rename(&caller, parent.ino, child, parent.ino, "renamed-alias")
                 .unwrap_err();
             assert!(
-                matches!(rename_err, VfsError::Eperm(_)),
+                matches!(rename_err, VfsError::Eperm { .. }),
                 "expected EPERM for rename {parent_path}/{child}, got {rename_err:?}"
             );
         }

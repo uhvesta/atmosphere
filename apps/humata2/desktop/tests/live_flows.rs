@@ -90,6 +90,8 @@ mod leftovers;
 mod world;
 #[path = "live_flows/real_vm.rs"]
 mod real_vm;
+#[path = "live_flows/fuse_vm.rs"]
+mod fuse_vm;
 
 use std::collections::VecDeque;
 use std::rc::Rc;

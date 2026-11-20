@@ -236,7 +236,7 @@ impl Starter {
         })
         .await??;
 
-        let kind = self.agents.get(&agent_name)?;
+        self.agents.get(&agent_name)?;
         // A context-only fork launches where its parent's clones are (D187).
         let (folder, repos) = match &branch {
             None => (parent.folder.clone(), parent_detail.repos.clone()),
@@ -263,6 +263,7 @@ impl Starter {
             .id
             .clone()
             .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple()));
+        let kind = self.agents.get_for_session(&id, &agent_name)?;
         // A handed-over conversation goes beside the clones; one the agent
         // resumes, where the agent keeps it.
         let new_conversation = if handover {
@@ -275,7 +276,7 @@ impl Starter {
         // Copilot rollout through its adapter).
         let handed_start = match (&source_conversation, &parent_conversation) {
             (Some(file), Some(from_id)) if handover && request.before_turn != 0 => {
-                let kind = self.agents.get(&parent.agent).ok().cloned();
+                let kind = self.agents.get_as_ran(&parent.id, &parent.agent).ok();
                 let (home, folder) = (self.home.clone(), parent.folder.clone());
                 let (file, from_id) = (file.clone(), from_id.clone());
                 let turn = request.before_turn;
@@ -287,7 +288,7 @@ impl Starter {
         // so the copy is named for its new id and folder (MV-16).
         let through = match parent_conversation {
             Some(from_id) if !handover && with_context => {
-                let parent_kind = self.agents.get(&parent.agent)?;
+                let parent_kind = self.agents.get_as_ran(&parent.id, &parent.agent)?;
                 match (parent_kind.placement(&self.home, &parent.folder), kind.placement(&self.home, &folder)) {
                     (Some(from), Some(to)) => Some(Through {
                         format: kind.conversation_format,

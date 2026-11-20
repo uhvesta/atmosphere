@@ -596,6 +596,7 @@ fn fresh_launch(
             agent: agent.to_owned(),
             source,
         })?;
+    let kind = crate::config_sync::kind_for_session(kind, session);
     let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
     let plan = kind.launch(&starter.home, &old.launch.folder, &conversation);
     let marker = format!(

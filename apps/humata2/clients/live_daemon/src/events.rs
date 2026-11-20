@@ -127,6 +127,10 @@ impl Shared {
     /// A new subscriber, starting the daemon subscription if none runs.
     pub(crate) async fn subscribe(self: &Arc<Self>) -> Result<Events, DaemonError> {
         let (events, receiver) = mpsc::channel(EVENT_QUEUE);
+        // Told once the subscription is up, so a load that missed the daemon
+        // while it was restarting is redone: a fresh subscription replays
+        // nothing of its own.
+        let announce = events.clone();
         let start = {
             let mut state = self.state();
             state.subscribers.push(Subscriber {
@@ -147,6 +151,7 @@ impl Shared {
                     pb::Topic::Inbox as i32,
                     pb::Topic::Boards as i32,
                     pb::Topic::Access as i32,
+                    pb::Topic::Settings as i32,
                 ],
             };
             match self.event_stream().subscribe(request).await {
@@ -159,6 +164,8 @@ impl Shared {
                 }
             }
         }
+        // The queue is new and empty, so there is always room.
+        let _ = announce.try_send(Ok(Event::Resync));
         Ok(receiver)
     }
 }
@@ -293,6 +300,8 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
             let machine = changed.machine.map(|machine| machine.value).unwrap_or_default();
             shared.publish(Event::MachineScriptRun(humata2_clients::model::MachineId::new(machine)));
         }
+        // D908: the mount state (and any other setting) changed; Settings reads again.
+        Some(Payload::Settings(_)) => shared.publish(Event::SettingsChanged),
         // The app has no channel event yet: reload instead.
         Some(Payload::Channel(_) | Payload::Resync(_)) => shared.publish(Event::Resync),
         _ => {}

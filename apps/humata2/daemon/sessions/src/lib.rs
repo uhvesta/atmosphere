@@ -8,9 +8,9 @@ use humata2_revive::{Env, ReviveConfig};
 use humata2_store::{SessionDetail, SessionRecord, Store, Take};
 
 pub use humata2_sessions_carry::{
-    Brought, CARRY_DIR, CHUNK_SIZE, CHUNKS_DIR, CHUNKS_FILE, CLONES_FILE, CarryError,
-    CarryStarter, Discard, ForkPack, ForkPackError, ForkPacked, HAVE_DIR, Landing, Packed,
-    REUSE_FILE, Unpacked, check_brought,
+    Brought, CARRY_DIR, CHUNKED_FROM, CHUNKS_DIR, CHUNKS_FILE, CLONES_FILE, CarryError,
+    CarryStarter, Discard, ForkPack, ForkPackError, ForkPacked, Landing, Packed,
+    REUSE_FILE, Unpacked, check_brought, chunk_store_dir, frame_chunk, held_chunks,
 };
 pub use humata2_sessions_core::{
     AddedRepo, AgentError, AgentKind, Agents, BRANCH_PREFIX_KEY, Boxed, Branch, BranchRename,

@@ -65,13 +65,12 @@ impl SessionSvc {
         &self,
         loaded: &Loaded,
     ) -> Result<SessionTurns, Status> {
-        let Ok(kind) = self.starter.agents.get(&loaded.record.agent) else {
+        let Ok(kind) = self.starter.agents.get_as_ran(&loaded.record.id, &loaded.record.agent) else {
             return Ok(Ok(None));
         };
         let Some(record) = loaded.agent.as_ref() else {
             return Ok(Ok(Some(Vec::new())));
         };
-        let kind = kind.clone();
         let home = self.starter.home.clone();
         let folder = loaded.record.folder.clone();
         let id = record.launch.conversation_id.clone();

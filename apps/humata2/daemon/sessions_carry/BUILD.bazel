@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 SESSIONS_CARRY_DEPS = [
+    "//libs/fusefs/cas",
     "@crates//:serde",
     "@crates//:serde_json",
     "@crates//:sha2",

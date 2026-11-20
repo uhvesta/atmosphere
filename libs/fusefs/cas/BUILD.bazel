@@ -10,7 +10,10 @@ rust_library(
     name = "cas",
     srcs = glob(["src/*.rs"]),
     crate_name = "fusefs_cas",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//libs/fusefs:__subpackages__",
+    ],
     deps = [
         "@crates//:lz4_flex",
         "@crates//:serde",

@@ -48,6 +48,8 @@ mod resume;
 mod roam;
 #[path = "design/session.rs"]
 mod session;
+#[path = "design/settings_sync.rs"]
+mod settings_sync;
 #[path = "design/sidebar.rs"]
 mod sidebar;
 #[path = "design/archive.rs"]
@@ -318,13 +320,18 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("121-diff-stack-skim-drift", DARK, stack::skim_drift),
     // PROGRESS T7: the Diff panel's loading sweep (Fable approved 2026-11-19).
     ("126-diff-loading", LIGHT, session::diff_loading),
+    // FUSEFSWIRE (D904): Settings > Sync, signed off by Fable with edits.
+    ("211-settings-sync", LIGHT, settings_sync::page),
+    // FUSEFSWIRE (D908): the mount card's live states, approved by Fable
+    // 2026-11-20. 211 itself is Off.
+    ("211b-settings-sync-mount-cannot", LIGHT, settings_sync::mount_cannot),
+    ("211c-settings-sync-mounted", LIGHT, settings_sync::mounted),
 ];
 
 /// Frames not yet approved: drawn into the test's undeclared outputs
 /// (`candidates/<name>.png`) for review, never checked against a golden.
 /// Move one into [`FRAMES`] and record it once it is approved.
-const CANDIDATES: &[(&str, Look, Draw)] = &[
-];
+const CANDIDATES: &[(&str, Look, Draw)] = &[];
 
 /// Frames drawn at the signed-off mockups' size, 1600 by 950 (the
 /// `milestones/mockups/*` frames). Same rules as [`FRAMES`].

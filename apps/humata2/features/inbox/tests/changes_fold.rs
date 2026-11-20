@@ -57,6 +57,7 @@ fn migrate(id: &str, machine: &str, changes: Vec<String>, phase: MigratePhase) -
         working_on: String::new(),
         asked_why: None,
         rule_label: String::new(),
+        to_do: None,
     }
 }
 

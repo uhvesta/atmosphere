@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use fusefs_vfs::{CallerContext, VfsError, VfsResult, VirtualPath};
+use fusefs_vfs::{CallerContext, VfsError, VfsResult, VfsTarget, VirtualPath};
 use serde::{Deserialize, Serialize};
 
 /// Maximum ancestor hops walked when resolving a child process to a registered parent PID.
@@ -261,9 +261,10 @@ impl PidRegistry {
     /// 5. **Fail closed**: returns [`VfsError::Eacces`].
     pub fn resolve(&self, pid: u32, uid: u32, gid: u32) -> VfsResult<CallerContext> {
         if pid == 0 {
-            return Err(VfsError::Eacces(
-                "kernel pid 0 is not bound to any capability root".to_string(),
-            ));
+            return Err(VfsError::Eacces {
+                op: "resolve caller (kernel pid 0)",
+                target: VfsTarget::Pid(pid),
+            });
         }
 
         let state = self.state.read().expect("pid registry lock poisoned");
@@ -306,9 +307,10 @@ impl PidRegistry {
         }
 
         // 3. Fail closed for unknown PIDs.
-        Err(VfsError::Eacces(format!(
-            "unregistered kernel pid {pid}: access denied (fail-closed)"
-        )))
+        Err(VfsError::Eacces {
+            op: "resolve caller (unregistered pid, fail closed)",
+            target: VfsTarget::Pid(pid),
+        })
     }
 }
 
@@ -331,10 +333,10 @@ mod tests {
         );
 
         let err = registry.resolve(9999, 1000, 1000).unwrap_err();
-        assert!(matches!(err, VfsError::Eacces(_)));
+        assert!(matches!(err, VfsError::Eacces { .. }));
 
         let zero_err = registry.resolve(0, 0, 0).unwrap_err();
-        assert!(matches!(zero_err, VfsError::Eacces(_)));
+        assert!(matches!(zero_err, VfsError::Eacces { .. }));
     }
 
     #[test]
@@ -427,6 +429,6 @@ mod tests {
 
         let registry = PidRegistry::with_lineage_resolver(lineage);
         let err = registry.resolve(10, 1000, 1000).unwrap_err();
-        assert!(matches!(err, VfsError::Eacces(_)));
+        assert!(matches!(err, VfsError::Eacces { .. }));
     }
 }

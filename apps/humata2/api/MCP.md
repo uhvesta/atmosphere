@@ -263,8 +263,8 @@ rule named until the user changes the rule (IN-18).
 | `session_note` | `session.note` / SendNote | SESSION_NOTE (Ask) | `{session, text, when?: "now"\|"turn_end"}` → `{delivered: "typed"\|"queued"}` | typed into the target's terminal as one message naming the sender (TP-5) | host for another machine; per away rule here |
 | `session_ask` | `session.ask` / AskSession | SESSION_NOTE (Ask) | `{session, question, wait_seconds?}` → `{answer}` | the target is asked; its `session_answer` returns here | as note |
 | `session_type` | `session.type` / Type | SESSION_TYPE (Ask) | `{session, text, submit?: boolean (default true), when?: "now"\|"turn_end"}` → `{typed, submitted, agent_busy, queued_id?}` (`agent_busy`: written while the agent was mid-turn, so the agent decides whether to queue it) | types the text and presses Enter; `submit: false` leaves it in the input; for one paste wrap the text in ESC[200~ and ESC[201~ yourself | as note |
-| `session_start` | `session.start` / StartSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask) | `{machine, agent?, model?, repos?: string[], title?, first_message?, reason}` → `{operation_id, session}` | a new session in its channel | per away rule / host |
-| `session_fork` | `session.fork` / ForkSession(self) | as start (Ask) | `{machine, kind: "code_and_context"\|"code_only"\|"context_only", agent?, before_turn?, repos?, title?, first_message?, reason}` → `{operation_id, session}` | a fork of itself (TP-6); the card shows agent, machine, kind, repos, cost | as start |
+| `session_start` | `session.start` / StartSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask) | `{channel?, machine, agent?, model?, repos?: string[], title?, first_message?, reason}` → `{operation_id, session}` | a new session in `channel`, default its own; a Desk agent has none and must name one (D910); the card shows the channel and machine | per away rule / host |
+| `session_fork` | `session.fork` / ForkSession | as start (Ask) | `{session?, machine, kind: "code_and_context"\|"code_only"\|"context_only", agent?, before_turn?, repos?, title?, first_message?, reason}` → `{operation_id, session}` | a fork of `session`, default itself (TP-6, D910), in that session's channel; the card shows channel, agent, machine, kind, repos, cost | as start |
 | `session_continue_in_channel` | `session.continue_in_channel` / ContinueInChannel(self) | as start (Ask) | `{channel, before_turn?, reason}` → `{operation, session}` | a new session in another channel of its own conversation copied (CV-8); itself untouched; the card shows the channel and the turn | as start |
 | `network_connect` | `bridge.connect` / BridgeService.OpenPortForward | NETWORK_REACH (Ask; Ask me or Never only, D20) | `{host, port, reason, wait_seconds?}` → `{forward_id, socket_path}` (a unix socket in its session folder, bridged through the Mac) | HO-11: the card shows its machine, host and port and that it stays open until the session stops; it closes then. Never low-risk; can't be approved while the Mac is away. Nothing else crosses the bridge (HO-10) | host: waits for the Mac, or fails under Skip |
 | `session_rename`, `session_add_repo`, `session_drop_repo`, `session_own_copy` | `session.*` (self) | OWN_SESSION_MANAGE (Ask) | `{title}`, `{repo}`, `{repo}` (+ plan), `{}` (every repo, FK-9) | change its own session | host |
@@ -318,12 +318,13 @@ rule named until the user changes the rule (IN-18).
 ```json
 {
   "name": "session_fork",
-  "description": "Start a fork of this session. Usually asks the user first; the card shows agent, machine, kind, repos and cost.",
+  "description": "Start a fork of a session, by default this one. Usually asks the user first; the card shows the channel, agent, machine, kind, repos and cost.",
   "inputSchema": {
     "type": "object",
     "required": ["machine", "kind", "reason"],
     "additionalProperties": false,
     "properties": {
+      "session": { "type": "string", "description": "The session to fork; default: your session. The fork joins that session's channel" },
       "machine": { "type": "string", "description": "A machine id or name from topology_get" },
       "kind": { "enum": ["code_and_context", "code_only", "context_only"] },
       "agent": { "type": "string", "description": "The fork's agent; default: this session's agent" },

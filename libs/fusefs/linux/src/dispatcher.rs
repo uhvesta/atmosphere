@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use fusefs_vfs::{FileHandle, FileKind, NodeId, VfsError, VfsResult, Volume};
+use fusefs_vfs::{CallerContext, FileHandle, FileKind, NodeId, OpenFlags, VfsError, VfsResult, VfsTarget, Volume};
 
 use crate::fuse_abi::{FuseHeader, FuseReply, FuseRequest, FuseResponse};
 use crate::pid_bind::PidRegistry;
@@ -25,10 +25,14 @@ impl DirHandleTable {
     fn validate(&self, fh: FileHandle, ino: NodeId) -> VfsResult<()> {
         match self.handles.get(&fh) {
             Some(&bound_ino) if bound_ino == ino => Ok(()),
-            Some(_) => Err(VfsError::Ebadf(format!(
-                "directory handle {fh} does not belong to {ino}"
-            ))),
-            None => Err(VfsError::Ebadf(format!("unknown directory handle {fh}"))),
+            Some(_) => Err(VfsError::Ebadf {
+                op: "validate directory handle (wrong node)",
+                target: VfsTarget::Handle(fh),
+            }),
+            None => Err(VfsError::Ebadf {
+                op: "validate directory handle (unknown)",
+                target: VfsTarget::Handle(fh),
+            }),
         }
     }
 
@@ -47,6 +51,7 @@ impl DirHandleTable {
 pub struct FuseDispatcher<V: Volume> {
     volume: Arc<V>,
     pid_registry: Arc<PidRegistry>,
+    owner_uid: Option<u32>,
     dir_handles: RwLock<DirHandleTable>,
 }
 
@@ -55,6 +60,22 @@ impl<V: Volume> FuseDispatcher<V> {
         Self {
             volume,
             pid_registry,
+            owner_uid: None,
+            dir_handles: RwLock::new(DirHandleTable::default()),
+        }
+    }
+
+    /// Creates a dispatcher for a mount that is private to one user.
+    ///
+    /// Any caller whose header uid is `owner_uid` is accepted as a
+    /// [`fusefs_vfs::CallerContext`] without a capability root. Callers of any
+    /// other uid fail with `EACCES`. Use this only when the kernel already
+    /// restricts the mount to that uid (`default_permissions`, no `allow_other`).
+    pub fn for_owner(volume: Arc<V>, owner_uid: u32) -> Self {
+        Self {
+            volume,
+            pid_registry: Arc::new(PidRegistry::new()),
+            owner_uid: Some(owner_uid),
             dir_handles: RwLock::new(DirHandleTable::default()),
         }
     }
@@ -77,9 +98,20 @@ impl<V: Volume> FuseDispatcher<V> {
 
     /// Dispatches a [`FuseRequest`] and returns a typed [`VfsResult<FuseReply>`].
     pub fn dispatch_result(&self, header: &FuseHeader, request: FuseRequest) -> VfsResult<FuseReply> {
-        let caller = self
-            .pid_registry
-            .resolve(header.pid, header.uid, header.gid)?;
+        let caller = match self.owner_uid {
+            Some(owner) if header.uid == owner => {
+                CallerContext::new(header.pid, header.uid, header.gid)
+            }
+            Some(_) => {
+                return Err(VfsError::Eacces {
+                    op: "resolve caller (not the mount owner)",
+                    target: VfsTarget::Pid(header.pid),
+                });
+            }
+            None => self
+                .pid_registry
+                .resolve(header.pid, header.uid, header.gid)?,
+        };
 
         match request {
             FuseRequest::Lookup { parent, name } => {
@@ -100,6 +132,27 @@ impl<V: Volume> FuseDispatcher<V> {
             }
             FuseRequest::MkDir { parent, name, mode } => {
                 let attr = self.volume.mkdir(&caller, parent, &name, mode)?;
+                Ok(FuseReply::Entry(attr))
+            }
+            FuseRequest::Create {
+                parent,
+                name,
+                mode,
+                flags,
+            } => {
+                let (attr, fh) = self.volume.create(&caller, parent, &name, mode, flags)?;
+                Ok(FuseReply::Created { attr, fh })
+            }
+            FuseRequest::MkNod { parent, name, mode } => {
+                let flags = OpenFlags {
+                    read: false,
+                    write: true,
+                    create: true,
+                    exclusive: true,
+                    ..OpenFlags::default()
+                };
+                let (attr, fh) = self.volume.create(&caller, parent, &name, mode, flags)?;
+                self.volume.release(&caller, attr.ino, fh)?;
                 Ok(FuseReply::Entry(attr))
             }
             FuseRequest::Unlink { parent, name } => {
@@ -176,7 +229,10 @@ impl<V: Volume> FuseDispatcher<V> {
             FuseRequest::OpenDir { ino } => {
                 let attr = self.volume.getattr(&caller, ino)?;
                 if attr.kind != FileKind::Directory {
-                    return Err(VfsError::Enotdir(format!("{ino} is not a directory")));
+                    return Err(VfsError::Enotdir {
+                        op: "open directory",
+                        target: VfsTarget::Node(ino),
+                    });
                 }
                 let fh = self
                     .dir_handles

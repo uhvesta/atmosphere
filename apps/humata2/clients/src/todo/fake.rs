@@ -350,7 +350,12 @@ impl FakeTodo {
         inner.runs.entry(key.to_owned()).or_default().push(run);
         if let Some(entry) = inner.entry_mut(key) {
             entry.todo.run_count = entry.todo.run_count.saturating_add(1);
-            entry.todo.total_cost_micros = entry.todo.total_cost_micros.saturating_add(cost);
+            // Unknown costs stay unknown; the total sums the known ones.
+            entry.todo.total_cost_micros = match (entry.todo.total_cost_micros, cost) {
+                (Some(total), Some(cost)) => Some(total.saturating_add(cost)),
+                (total, None) => total,
+                (None, cost) => cost,
+            };
             entry.revision += 1;
             inner.changed();
         }
@@ -728,8 +733,7 @@ impl TodoClient for FakeTodo {
     fn runs(&self, key: &str) -> Reply<TodoRunsResult> {
         self.call(Call::Runs(key.to_owned()), |inner| {
             let runs = inner.runs.get(key).cloned().unwrap_or_default();
-            let total_cost_micros = runs.iter().map(|r| r.cost_micros).sum();
-            Ok(TodoRunsResult { runs, total_cost_micros })
+            Ok(TodoRunsResult::from_runs(runs))
         })
     }
 
@@ -1284,7 +1288,7 @@ mod tests {
                 tool: "claude".to_owned(),
                 model: "opus".to_owned(),
                 outcome: "ok".to_owned(),
-                cost_micros: 1_250_000,
+                cost_micros: Some(1_250_000),
                 started: Some(fake.today()),
                 links: vec![RunLink { label: "PR #1".to_owned(), target: "pr:1".to_owned() }],
                 session: Some("s-1".to_owned()),
@@ -1292,7 +1296,7 @@ mod tests {
         );
         let runs = fake.runs(&a.todo.key).await.expect("runs");
         assert_eq!(runs.runs.len(), 1);
-        assert_eq!(runs.total_cost_micros, 1_250_000);
+        assert_eq!(runs.total_cost_micros, Some(1_250_000));
 
         // Structured asks & resolution methods.
         let mut q = Todo::new("Q-1", "Needs answer", fake.today());

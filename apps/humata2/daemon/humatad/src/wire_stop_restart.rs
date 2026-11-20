@@ -4,10 +4,12 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use humata2_access::{AccessRequest, Call};
+use humata2_config_compose::{AgentKind, ProtectedHumataMcp};
 use humata2_daemon_ports::{Caller, Deferred, Gated, PeerLinkState, Run, TabIdentity};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{Invocation, ManageError};
@@ -31,6 +33,7 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::away::Uplinks;
+use crate::config_sync::ConfigSync;
 use crate::guard::{Checked as HumatadChecked, Guard};
 use humata2_svc_machines::ports::LinkState;
 use crate::host_vars::HostVars;
@@ -173,6 +176,174 @@ impl TabEnvPort for Identities {
     fn tools_path(&self, host_path: Option<OsString>) -> Option<OsString> {
         identity::tools_path(host_path)
     }
+
+    fn session_compose_env(&self, session: &SessionRecord, agent: &str) -> Result<Vec<(OsString, OsString)>, String> {
+        match installed_compose() {
+            Some(compose) => compose.env(session, agent),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn session_home(&self, session: &str, agent: &str) -> Option<std::path::PathBuf> {
+        let compose = installed_compose()?;
+        crate::config_sync::composed_home_of(compose.sync.machine_root(), session, agent).map(|(_, dir)| dir)
+    }
+}
+
+/// D895: gives a local agent tab its session's composed config home. The
+/// real dotfiles are only read; a tab already running is never touched.
+pub(crate) struct ComposeEnv {
+    sync: Arc<ConfigSync>,
+    protected: ProtectedHumataMcp,
+    /// The FUSE tree is mounted; without it agents get no `HUMATA_FUSE_ROOT`
+    /// and use the files tools instead.
+    fuse_mounted: Arc<AtomicBool>,
+}
+
+/// The agent a session's agent name stands for, if it has a config home to
+/// compose.
+fn compose_kind(agent: &str) -> Option<AgentKind> {
+    match agent {
+        "claude" => Some(AgentKind::Claude),
+        "codex" => Some(AgentKind::Codex),
+        "copilot" => Some(AgentKind::Copilot),
+        "agy" => Some(AgentKind::Agy),
+        _ => None,
+    }
+}
+
+/// Whether a launch records the agent's conversation file in its config home.
+fn records_conversations(kind: AgentKind) -> bool {
+    !matches!(kind, AgentKind::Agy)
+}
+
+impl ComposeEnv {
+    /// `humatad` and `socket` make the `humata` MCP entry no composing may
+    /// change, the same one the session's MCP config files hold.
+    pub(crate) fn new(
+        sync: Arc<ConfigSync>,
+        humatad: &Path,
+        socket: &Path,
+        fuse_mounted: Arc<AtomicBool>,
+    ) -> Self {
+        let protected = ProtectedHumataMcp::new(
+            humatad.to_string_lossy().into_owned(),
+            vec!["mcp".to_owned(), "--socket".to_owned(), socket.to_string_lossy().into_owned()],
+        );
+        Self { sync, protected, fuse_mounted }
+    }
+
+    /// Decides where `session`'s `agent` keeps its config home, once, for
+    /// the launch record: composes it and returns it, or None when composing
+    /// failed, so the record names the agent's usual (global) home. None too
+    /// for a session whose agent has no conversations to record there.
+    /// A home that was already there is kept when its refresh fails; one this
+    /// plan began making is removed (that folder only), so the record and
+    /// what [`Self::env`] finds on disk agree. [`Self::env`] follows the disk.
+    fn plan_home(&self, session: &str, agent: &str) -> Option<PathBuf> {
+        let kind = compose_kind(agent).filter(|kind| records_conversations(*kind))?;
+        let dir = crate::config_sync::session_home(self.sync.machine_root(), session, kind);
+        let existed = dir.is_dir();
+        match self.sync.compose(session, kind, self.protected.clone()) {
+            Ok(report) => Some(report.session_config_dir),
+            Err(error) if existed => {
+                crate::log::say!(
+                    "humatad2: session {session}'s {agent} keeps its config home as it was: {}",
+                    status::chain(&error)
+                );
+                Some(dir)
+            }
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: session {session}'s {agent} is recorded in its usual config home: {}",
+                    status::chain(&error)
+                );
+                if let Err(removal) = std::fs::remove_dir_all(&dir)
+                    && dir.exists()
+                {
+                    crate::log::say!(
+                        "humatad2: couldn't clear the half-made config home {}, so it is used: {removal}",
+                        dir.display()
+                    );
+                    return Some(dir);
+                }
+                None
+            }
+        }
+    }
+
+    /// The variables for `session`'s agent tab: its home variable pointing
+    /// at the composed folder, the FUSE root and the machine's name. None
+    /// for a session on another machine, or an agent with no config home.
+    /// An agent whose conversations are recorded follows its record: it gets
+    /// a home only if [`Self::plan_home`] made one (refreshed here, and kept
+    /// if the refresh fails), else it runs in its usual home.
+    fn env(&self, session: &SessionRecord, agent: &str) -> Result<Vec<(OsString, OsString)>, String> {
+        let Some(kind) = compose_kind(agent) else {
+            return Ok(Vec::new());
+        };
+        if !session.machine.is_empty() && session.machine != self.sync.machine_name() {
+            return Ok(Vec::new());
+        }
+        let existing = crate::config_sync::composed_home_of(self.sync.machine_root(), &session.id, agent).map(|(_, dir)| dir);
+        let mut env = Vec::new();
+        if existing.is_some() || !records_conversations(kind) {
+            let dir = match self.sync.compose(&session.id, kind, self.protected.clone()) {
+                Ok(report) => report.session_config_dir,
+                Err(error) => match existing {
+                    Some(dir) => {
+                        crate::log::say!(
+                            "humatad2: session {}'s {agent} keeps its config home as it was: {}",
+                            session.id,
+                            status::chain(&error)
+                        );
+                        dir
+                    }
+                    None => return Err(status::chain(&error)),
+                },
+            };
+            env.push((OsString::from(kind.config_env_var()), dir.into_os_string()));
+        }
+        if self.fuse_mounted.load(Ordering::SeqCst) {
+            env.push((OsString::from("HUMATA_FUSE_ROOT"), self.sync.fuse_root().as_os_str().to_owned()));
+        }
+        env.push((OsString::from("HUMATA_MACHINE_NAME"), OsString::from(self.sync.machine_name())));
+        Ok(env)
+    }
+
+    #[allow(dead_code, reason = "called once archive and delete have one place to say a session is gone")]
+    fn forget(&self, session: &str) {
+        self.sync.unregister(session);
+    }
+}
+
+/// The composing this daemon does, set once at its start, before any tab is
+/// brought back.
+static COMPOSE: Mutex<Option<Arc<ComposeEnv>>> = Mutex::new(None);
+
+pub(crate) fn use_compose_env(compose: Arc<ComposeEnv>) {
+    crate::config_sync::use_machine_root(compose.sync.machine_root().to_path_buf());
+    *COMPOSE.lock().unwrap_or_else(PoisonError::into_inner) = Some(compose);
+}
+
+/// The seam a launch records its conversation file through: the composed
+/// home of `session`'s `agent`, made now, or None when composing failed or
+/// this daemon composes nothing, so the record names the global home.
+pub(crate) fn launch_home(session: &str, agent: &str) -> Option<PathBuf> {
+    installed_compose()?.plan_home(session, agent)
+}
+
+fn installed_compose() -> Option<Arc<ComposeEnv>> {
+    COMPOSE.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// A session that is archived or deleted stops following the sync settings;
+/// its folder is left as it is.
+#[allow(dead_code, reason = "called once archive and delete have one place to say a session is gone")]
+pub(crate) fn forget_session_home(session: &str) {
+    if let Some(compose) = installed_compose() {
+        compose.forget(session);
+    }
 }
 
 /// Adapter implementing [`TabEnvPort`] over `humatad::identity::Identities` and `HostVars`.
@@ -199,6 +370,14 @@ impl TabEnvPort for TabEnvAdapter {
 
     fn tools_path(&self, host_path: Option<OsString>) -> Option<OsString> {
         TabEnvPort::tools_path(self.0.as_ref(), host_path)
+    }
+
+    fn session_compose_env(&self, session: &SessionRecord, agent: &str) -> Result<Vec<(OsString, OsString)>, String> {
+        TabEnvPort::session_compose_env(self.0.as_ref(), session, agent)
+    }
+
+    fn session_home(&self, session: &str, agent: &str) -> Option<std::path::PathBuf> {
+        TabEnvPort::session_home(self.0.as_ref(), session, agent)
     }
 }
 
@@ -409,4 +588,196 @@ pub(crate) fn restart_in_background(
 
 pub(crate) fn new_daemon(machine: String, role: pb::DaemonRole) -> Daemon {
     Daemon::new(machine, role)
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::*;
+
+    struct Rig {
+        dir: tempfile::TempDir,
+        compose: ComposeEnv,
+    }
+
+    fn rig() -> Rig {
+        rig_mounted(true)
+    }
+
+    fn rig_mounted(mounted: bool) -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex/auth.json"), "{\"token\":\"x\"}").unwrap();
+        let state = dir.path().join("humata/state");
+        std::fs::create_dir_all(&state).unwrap();
+        let sync = Arc::new(ConfigSync::new(
+            &state,
+            dir.path().join("machine"),
+            home,
+            "box".to_owned(),
+            dir.path().join("mnt"),
+        ));
+        let compose = ComposeEnv::new(sync, Path::new("/opt/humata/humatad2"), &dir.path().join("d.sock"), Arc::new(AtomicBool::new(mounted)));
+        Rig { dir, compose }
+    }
+
+    fn session(machine: &str, agent: &str) -> SessionRecord {
+        SessionRecord {
+            id: "se_a".to_owned(),
+            channel: "ch_a".to_owned(),
+            machine: machine.to_owned(),
+            title: "t".to_owned(),
+            agent: agent.to_owned(),
+            folder: PathBuf::from("/unused"),
+            created_unix_ms: 0,
+        }
+    }
+
+    fn value<'a>(env: &'a [(OsString, OsString)], name: &str) -> Option<&'a OsString> {
+        env.iter().find(|(var, _)| var == name).map(|(_, value)| value)
+    }
+
+    #[test]
+    fn a_local_agent_runs_in_a_composed_home_under_its_session_and_the_real_home_is_unchanged() {
+        let rig = rig();
+        let real = rig.dir.path().join("home/.codex/auth.json");
+        let before = std::fs::read(&real).unwrap();
+
+        rig.compose.plan_home("se_a", "codex").unwrap();
+        let env = rig.compose.env(&session("", "codex"), "codex").unwrap();
+
+        let composed = PathBuf::from(value(&env, "CODEX_HOME").expect("the home variable"));
+        assert_eq!(composed, rig.dir.path().join("machine/.sessions/se_a/config/codex"));
+        assert!(composed.is_dir());
+        assert_eq!(value(&env, "HUMATA_FUSE_ROOT"), Some(&rig.dir.path().join("mnt").into_os_string()));
+        assert_eq!(value(&env, "HUMATA_MACHINE_NAME"), Some(&OsString::from("box")));
+        assert_eq!(std::fs::read(&real).unwrap(), before);
+        let real_home: Vec<_> = std::fs::read_dir(rig.dir.path().join("home/.codex")).unwrap().collect();
+        assert_eq!(real_home.len(), 1, "composing adds nothing to the real home");
+    }
+
+    #[test]
+    fn an_unmounted_tree_leaves_the_fuse_root_out_of_the_env() {
+        let rig = rig_mounted(false);
+        rig.compose.plan_home("se_a", "codex").unwrap();
+        let env = rig.compose.env(&session("", "codex"), "codex").unwrap();
+        assert!(value(&env, "HUMATA_FUSE_ROOT").is_none());
+        assert!(value(&env, "CODEX_HOME").is_some());
+        assert!(value(&env, "HUMATA_MACHINE_NAME").is_some());
+    }
+
+    #[test]
+    fn each_agent_gets_its_own_home_variable() {
+        let rig = rig();
+        for (agent, var) in [
+            ("claude", "CLAUDE_CONFIG_DIR"),
+            ("codex", "CODEX_HOME"),
+            ("copilot", "COPILOT_HOME"),
+            ("agy", "GEMINI_CLI_HOME"),
+        ] {
+            rig.compose.plan_home("se_a", agent);
+            let env = rig.compose.env(&session("box", agent), agent).unwrap();
+            assert!(value(&env, var).is_some(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn a_session_on_another_machine_and_an_agent_with_no_home_get_nothing() {
+        let rig = rig();
+        assert!(rig.compose.env(&session("elsewhere", "codex"), "codex").unwrap().is_empty());
+        assert!(rig.compose.env(&session("", "opencode"), "opencode").unwrap().is_empty());
+        assert!(rig.compose.env(&session("", "zsh"), "zsh").unwrap().is_empty());
+        assert!(!rig.dir.path().join("machine/.sessions").exists());
+    }
+
+    /// A rig whose machine root is a file, so composing a session home fails.
+    fn broken_rig() -> Rig {
+        let rig = rig();
+        let root = rig.dir.path().join("machine");
+        std::fs::write(&root, "not a folder").unwrap();
+        rig
+    }
+
+    fn conversation_file(compose: &Arc<ComposeEnv>, session: &str) -> PathBuf {
+        let compose = compose.clone();
+        let agents = humata2_sessions::Agents::builtin()
+            .with_session_homes(move |session, agent| compose.plan_home(session, agent));
+        agents
+            .get_for_session(session, "codex")
+            .unwrap()
+            .launch(Path::new("/home/me"), Path::new("/u/me/folder"), "abc")
+            .conversation_file
+    }
+
+    #[test]
+    fn a_failed_compose_records_the_global_home_and_the_agent_gets_no_home_variable() {
+        let rig = broken_rig();
+        let compose = Arc::new(rig.compose);
+
+        let recorded = conversation_file(&compose, "se_a");
+        assert!(recorded.starts_with("/home/me/.codex"), "{recorded:?}");
+
+        let env = compose.env(&session("", "codex"), "codex").unwrap_or_default();
+        assert!(value(&env, "CODEX_HOME").is_none());
+    }
+
+    #[test]
+    fn a_compose_that_would_only_work_at_spawn_does_not_move_the_agent_off_its_record() {
+        let rig = broken_rig();
+        let compose = Arc::new(rig.compose);
+        let recorded = conversation_file(&compose, "se_a");
+        assert!(recorded.starts_with("/home/me/.codex"), "{recorded:?}");
+
+        // The root is fixed before the tab starts: composing would now work.
+        let root = rig.dir.path().join("machine");
+        std::fs::remove_file(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let env = compose.env(&session("", "codex"), "codex").unwrap();
+        assert!(value(&env, "CODEX_HOME").is_none());
+        assert!(!root.join(".sessions").exists());
+    }
+
+    #[test]
+    fn a_compose_that_works_names_the_same_home_in_the_record_and_the_env() {
+        let rig = rig();
+        let compose = Arc::new(rig.compose);
+
+        let recorded = conversation_file(&compose, "se_a");
+        let env = compose.env(&session("", "codex"), "codex").unwrap();
+
+        let home = PathBuf::from(value(&env, "CODEX_HOME").expect("the home variable"));
+        assert_eq!(home, rig.dir.path().join("machine/.sessions/se_a/config/codex"));
+        assert!(recorded.starts_with(&home), "{recorded:?}");
+    }
+
+    #[test]
+    fn a_compose_that_fails_after_making_its_folder_records_global_and_leaves_no_folder() {
+        let rig = rig();
+        std::fs::write(rig.dir.path().join("home/.codex/config.toml"), "= not [toml").unwrap();
+        let compose = Arc::new(rig.compose);
+
+        let recorded = conversation_file(&compose, "se_a");
+        assert!(recorded.starts_with("/home/me/.codex"), "{recorded:?}");
+        let session_home = rig.dir.path().join("machine/.sessions/se_a/config/codex");
+        assert!(!session_home.exists());
+
+        let env = compose.env(&session("", "codex"), "codex").unwrap();
+        assert!(value(&env, "CODEX_HOME").is_none());
+    }
+
+    #[test]
+    fn a_refresh_that_fails_keeps_the_record_and_the_env_on_the_existing_folder() {
+        let rig = rig();
+        let compose = Arc::new(rig.compose);
+        let first = conversation_file(&compose, "se_a");
+        let session_home = rig.dir.path().join("machine/.sessions/se_a/config/codex");
+        assert!(first.starts_with(&session_home), "{first:?}");
+
+        std::fs::write(rig.dir.path().join("home/.codex/config.toml"), "= not [toml").unwrap();
+        let again = conversation_file(&compose, "se_a");
+        let env = compose.env(&session("", "codex"), "codex").unwrap();
+
+        assert!(again.starts_with(&session_home), "{again:?}");
+        assert_eq!(value(&env, "CODEX_HOME"), Some(&session_home.into_os_string()));
+    }
 }

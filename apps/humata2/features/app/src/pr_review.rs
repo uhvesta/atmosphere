@@ -82,7 +82,10 @@ impl App {
             .iter()
             .find(|channel| channel.name == PR_REVIEWS_CHANNEL)
             .map(|channel| channel.id.clone());
-        let agent = crate::new_session::default_agent(state, reviews.as_ref());
+        let Ok(agent) = state.default_agent(reviews.as_ref()) else {
+            let clock = self.clients.clock.clone();
+            return state.toast_no_agent(&clock);
+        };
         // This Mac when it answers, else the first machine that does, as New
         // channel picks; none leaves Start waiting for a pick.
         let machine = state

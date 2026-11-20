@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fusefs_host::{CAPABILITY_PREFIX, CapabilityRouter};
 use fusefs_vfs::{
     CallerContext, FileAttr, FileHandle, NodeId, OpenFlags, ROOT_NODE_ID, VfsError, VfsResult,
-    VirtualPath, Volume,
+    VfsTarget, VirtualPath, Volume,
 };
 
 use crate::credentials::PeerCredentials;
@@ -81,9 +81,10 @@ impl<V: Volume> FsKitAdapter<V> {
                 let (caller, _root, read_only) = router.resolve_cap_id(id, base)?;
                 Ok((caller, read_only))
             }
-            (Some(id), None) => Err(VfsError::Eacces(format!(
-                "capability root '{id}' requested but no capability router is configured"
-            ))),
+            (Some(id), None) => Err(VfsError::Eacces {
+                op: "resolve capability (no router configured)",
+                target: VfsTarget::Capability(id.to_string()),
+            }),
             (None, _) => Ok((base, false)),
         }
     }
@@ -97,11 +98,12 @@ impl<V: Volume> FsKitAdapter<V> {
         self.volume.getattr(caller, current)
     }
 
-    fn require_writable(read_only: bool, op: &str) -> VfsResult<()> {
+    fn require_writable(read_only: bool, op: &'static str) -> VfsResult<()> {
         if read_only {
-            return Err(VfsError::Erofs(format!(
-                "capability root is read-only; '{op}' denied"
-            )));
+            return Err(VfsError::Erofs {
+                op,
+                target: VfsTarget::ReadOnlyRoot,
+            });
         }
         Ok(())
     }
@@ -204,15 +206,17 @@ impl<V: Volume> FsKitAdapter<V> {
                 let attr = match kind {
                     FsItemKind::Directory => self.volume.mkdir(&caller, parent, &name, mode)?,
                     FsItemKind::Symlink => {
-                        let target = symlink_target.ok_or_else(|| {
-                            VfsError::Einval("symlink creation requires symlink_target".into())
+                        let target = symlink_target.ok_or_else(|| VfsError::Einval {
+                            op: "create symlink (missing symlink_target)",
+                            target: VfsTarget::Name(name.clone()),
                         })?;
                         self.volume.symlink(&caller, parent, &name, &target)?
                     }
                     FsItemKind::Regular => {
-                        return Err(VfsError::Enosys(
-                            "regular file creation is not exposed on generic Volume trait".into(),
-                        ));
+                        return Err(VfsError::Enosys {
+                            op: "create regular file",
+                            target: VfsTarget::Name(name.clone()),
+                        });
                     }
                 };
                 Ok(FsKitResponse::ItemAttributes { attr })

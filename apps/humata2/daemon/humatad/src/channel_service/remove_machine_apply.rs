@@ -325,6 +325,7 @@ impl ChannelSvc {
         tell_channel(
             &self.operations.feed(),
             &self.starter.store,
+            &self.starter.agents,
             &id,
             pb::Change::Updated,
             Some(identity::actor(&caller)),
@@ -508,7 +509,7 @@ impl ChannelSvc {
             }
         }
         if channel.machines.contains(machine) {
-            tell_channel(&self.operations.feed(), &self.starter.store, id, pb::Change::Updated, None);
+            tell_channel(&self.operations.feed(), &self.starter.store, &self.starter.agents, id, pb::Change::Updated, None);
         }
         self.end_note(path).await;
         record("dropped the machine", OperationState::Finished);

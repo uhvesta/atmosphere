@@ -349,11 +349,17 @@ pub fn in_background(
 /// D670: before bringing agents back, each whose CLI picked its own
 /// conversation id and wrote it learns it, so it resumes that conversation.
 /// One that can't be read is resumed as saved, and says why.
-async fn learn_conversations(store: &Arc<Store>, starter: &Starter) {
+async fn learn_conversations(store: &Arc<Store>, tab_env: &Arc<dyn TabEnvPort>, starter: &Starter) {
     let (store, agents, home) = (store.clone(), starter.agents.clone(), starter.home.clone());
+    let tab_env = tab_env.clone();
     let learned = tokio::task::spawn_blocking(move || -> Result<(), StoreError> {
         for agent in store.agents()? {
-            if let Err(error) = agents.learn_conversation(&store, &home, &agent.session) {
+            // A session with a composed home keeps its conversation there.
+            let own = match (tab_env.session_home(&agent.session, &agent.launch.agent), agents.get(&agent.launch.agent)) {
+                (Some(dir), Ok(kind)) => agents.clone().with_cli_home(kind.conversation_format, &dir),
+                _ => agents.clone(),
+            };
+            if let Err(error) = own.learn_conversation(&store, &home, &agent.session) {
                 humata2_rpc_kit::log::say!(
                     "humatad2: couldn't learn session {}'s conversation, so it resumes as saved: {}",
                     agent.session,
@@ -404,7 +410,7 @@ async fn bring_back(
     }
     // The operations' lines go into the report before its restart.json: a
     // reader that finds restart.json takes the report as whole (D432).
-    learn_conversations(store, starter).await;
+    learn_conversations(store, tab_env, starter).await;
     let ops = operations.clone();
     let before_json = Box::new(move |folder: &Path| ops.set_folder(folder));
     match humata2_revive::reconcile_then(store, &starter.revive, &env, restored, before_json).await
@@ -812,6 +818,7 @@ impl Tokens {
     /// replace them.
     pub fn env(&self, tab: &TabRecord) -> Vec<(OsString, OsString)> {
         let mut env = self.host_variables(tab);
+        let compose = self.compose_env(tab);
         let mut token = self.token_env(tab);
         // D748: a PATH among the host variables keeps Humata's tools first.
         const PATH_VAR: &str = "PATH";
@@ -821,8 +828,43 @@ impl Tokens {
             token.retain(|(name, _)| name != PATH_VAR);
             token.push((OsString::from(PATH_VAR), path));
         }
+        env.extend(compose);
         env.extend(token);
         env
+    }
+
+    /// D895: the composed config home an agent tab of a local session runs
+    /// in. Shells and machine shells get none. When it can't be made the
+    /// agent starts in its usual home, and the log says why.
+    fn compose_env(&self, tab: &TabRecord) -> Vec<(OsString, OsString)> {
+        let Some(session) = &tab.session else {
+            return Vec::new();
+        };
+        if !matches!(tab.kind, TabKind::Agent) {
+            return Vec::new();
+        }
+        let record = match self.store.session(session) {
+            Ok(Some(record)) => record,
+            Ok(None) => return Vec::new(),
+            Err(error) => {
+                humata2_rpc_kit::log::say!(
+                    "humatad2: couldn't read session {session} to give tab {} its config home, so its agent starts in its usual one: {}",
+                    tab.id,
+                    ports::chain(&error)
+                );
+                return Vec::new();
+            }
+        };
+        match self.tab_env.session_compose_env(&record, &record.agent) {
+            Ok(env) => env,
+            Err(error) => {
+                humata2_rpc_kit::log::say!(
+                    "humatad2: tab {}'s agent starts in its usual config home: {error}",
+                    tab.id,
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// The host variables a session's agent is started with. When they
@@ -1043,13 +1085,17 @@ mod fix_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    use humata2_daemon_ports::TabIdentity;
     use humata2_sessions::Recovery;
+    use humata2_store::{Store, TabKind, TabRecord};
 
     use super::{
-        OperationState, Operations, Revived, Started, note_cut_launches, note_cut_starts,
-        note_ended, note_relaunched, pending_in, pretty_name,
+        OperationState, Operations, Revived, Started, TabEnvPort, Tokens, note_cut_launches,
+        note_cut_starts, note_ended, note_relaunched, pending_in, pretty_name,
     };
     use crate::pb;
 
@@ -1262,5 +1308,83 @@ mod tests {
             matches!(state("se_unseen"), Some(OperationState::Stuck { .. })),
             "a start recovery never reported is not left pending"
         );
+    }
+
+    /// A [`TabEnvPort`] whose composed home is a folder under the session,
+    /// and whose token and host variables are empty.
+    struct Composing;
+
+    impl TabEnvPort for Composing {
+        fn host_variables(&self, _tab_id: &str) -> Result<Vec<(OsString, OsString)>, String> {
+            Ok(Vec::new())
+        }
+        fn revoke(&self, _tab_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn mint_tab_env(
+            &self,
+            _tab_id: &str,
+            _session: &humata2_store::SessionRecord,
+            _kind: TabIdentity,
+            _socket: &Path,
+        ) -> Result<Vec<(OsString, OsString)>, String> {
+            Ok(vec![(OsString::from("HUMATA_SESSION_TOKEN"), OsString::from("t"))])
+        }
+        fn tools_path(&self, _host_path: Option<OsString>) -> Option<OsString> {
+            None
+        }
+        fn session_compose_env(
+            &self,
+            session: &humata2_store::SessionRecord,
+            agent: &str,
+        ) -> Result<Vec<(OsString, OsString)>, String> {
+            Ok(vec![(
+                OsString::from("COMPOSED_HOME"),
+                session.folder.join("config").join(agent).into_os_string(),
+            )])
+        }
+        fn session_home(&self, _session: &str, _agent: &str) -> Option<std::path::PathBuf> {
+            None
+        }
+    }
+
+    fn tab(id: &str, session: Option<&str>, kind: TabKind) -> TabRecord {
+        TabRecord {
+            id: id.to_owned(),
+            session: session.map(str::to_owned),
+            kind,
+            title: String::new(),
+            holder_socket: PathBuf::new(),
+            holder_pid: 0,
+            created_unix_ms: 0,
+            holder_generation: 0,
+        }
+    }
+
+    #[test]
+    fn only_an_agent_tab_of_a_session_is_started_in_its_composed_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        store
+            .put_session(&humata2_store::SessionRecord {
+                id: "se_a".to_owned(),
+                channel: "ch_a".to_owned(),
+                machine: String::new(),
+                title: "t".to_owned(),
+                agent: "codex".to_owned(),
+                folder: dir.path().join("folder"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let tokens = Tokens::new(store, Arc::new(Composing), dir.path().join("d.sock"));
+        let has_home = |tab: &TabRecord| tokens.env(tab).iter().any(|(name, _)| name == "COMPOSED_HOME");
+
+        let agent = tokens.env(&tab("tab_agent", Some("se_a"), TabKind::Agent));
+        assert!(agent.contains(&(
+            OsString::from("COMPOSED_HOME"),
+            dir.path().join("folder/config/codex").into_os_string()
+        )));
+        assert!(!has_home(&tab("tab_shell", Some("se_a"), TabKind::Shell)));
+        assert!(!has_home(&tab("tab_machine_shell", None, TabKind::Shell)));
     }
 }

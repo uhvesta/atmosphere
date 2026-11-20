@@ -285,6 +285,8 @@ pub(super) struct Fields {
     pub close_readiness: Option<CloseReadinessRow>,
     pub session_signals: Vec<SessionSignalRow>,
     pub lifecycle_prompts: Vec<LifecyclePromptRow>,
+    /// The sessions a lifecycle prompt acts on, by prompt id.
+    pub prompt_sessions: BTreeMap<String, Vec<String>>,
     pub wont_do_reason: Option<String>,
     pub extra_history: Vec<TodoHistoryRow>,
 }

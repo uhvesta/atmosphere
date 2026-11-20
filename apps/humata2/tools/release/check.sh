@@ -79,7 +79,7 @@ set -e
 [ ! -e "$probe_home/.humata2" ] ||
   fail "\`humata2 --version\` installed tools into HOME, so opening the app to check it would change the Mac it runs on. Fix desktop/src/main.rs so --version returns before anything else, then release again."
 
-for name in humata humatad2 humata2_holder stack; do
+for name in humata humatad2 humata2_holder stack humata2_fusefs; do
   binary="$name-darwin-arm64"
   echo "Checking ${binary}…"
   [ -f "$binary" ] || fail "$tag has no $binary."
@@ -100,4 +100,5 @@ echo "Running the downloaded binaries…"
 ./humatad2-darwin-arm64 --help >/dev/null || fail "the downloaded humatad2 doesn't run."
 ./humata-darwin-arm64 --help >/dev/null || fail "the downloaded humata doesn't run."
 ./stack-darwin-arm64 --help >/dev/null || fail "the downloaded stack doesn't run."
+./humata2_fusefs-darwin-arm64 --help >/dev/null || fail "the downloaded humata2_fusefs doesn't run."
 echo "$tag checks out: Gatekeeper accepts it, the app starts, and its binaries run."

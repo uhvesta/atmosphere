@@ -1,0 +1,11 @@
+# Plan approval: the runner starts the agent in plan mode where it has a flag.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Make a two-step plan to add a README.md with one line, then present the plan for my approval. Do not write anything yet.
+quiet 4000
+snap plan_approval unknown
+keys esc
+quiet 2500
+snap after_escape unknown

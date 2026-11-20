@@ -665,7 +665,7 @@ impl SessionSvc {
         let read = blocking(move || -> Result<Option<(AgentState, Option<(i32, i64)>)>, StoreError> {
             // D670: a kind whose CLI picks its own conversation id has
             // written it by its first turn; learn it so resume finds it.
-            agents.learn_conversation(&store, &home, &key)?;
+            crate::config_sync::agents_for_session(&agents, &store, &key).learn_conversation(&store, &home, &key)?;
             let Some(agent) = store.agent(&key)? else {
                 return Ok(None);
             };

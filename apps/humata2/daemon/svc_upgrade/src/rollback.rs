@@ -17,7 +17,7 @@
 //!
 //! Undoing is the same either way and every step can be run again after a
 //! cut: the store copy goes back first (an older daemon must never meet a
-//! newer schema), then the four kept files, the bundle before the daemon
+//! newer schema), then the five kept files, the bundle before the daemon
 //! last, then the record ends. A daemon that ended up running a file that
 //! is no longer the installed one starts the installed one.
 //!

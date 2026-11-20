@@ -108,7 +108,14 @@ fn staging_again_with_another_release_replaces_the_files_whole() {
     left.sort();
     assert_eq!(
         left,
-        [".bundle.json.next", ".humata.next", ".humata2_holder.next", ".humatad2.next", ".stack.next"]
+        [
+            ".bundle.json.next",
+            ".humata.next",
+            ".humata2_fusefs.next",
+            ".humata2_holder.next",
+            ".humatad2.next",
+            ".stack.next"
+        ]
     );
 }
 

@@ -74,7 +74,7 @@ pub enum RunError {
     },
 
     #[error(
-        "the staged {} names no humatad2, humata2_holder, humata and stack for this platform, so nothing was changed. This release can't be installed here; update the Humata app to one that ships this platform",
+        "the staged {} names no humatad2, humata2_holder, humata, stack and humata2_fusefs for this platform, so nothing was changed. This release can't be installed here; update the Humata app to one that ships this platform",
         .path.display()
     )]
     Incomplete { path: PathBuf },
@@ -557,7 +557,7 @@ struct Staged {
 }
 
 /// Checks the staged release against the bundle id `to_bundle`: the staged
-/// `bundle.json` must hash to it and name all four files for this
+/// `bundle.json` must hash to it and name all five files for this
 /// platform, and the staged files must be what it names for this platform,
 /// or one other platform's whole entry (staging over SSH picks the files by
 /// the machine's `uname`). In `InstalledFile::ALL` order.
@@ -654,7 +654,7 @@ pub(crate) fn staged(bin: &Path, verified: Option<&str>) -> Result<Option<pb::Bu
     }))
 }
 
-/// Keeps each file now installed (the four tools and `bundle.json`) as a
+/// Keeps each file now installed (the five tools and `bundle.json`) as a
 /// second name for its file, so the old release can come back whole. A file
 /// not installed yet is nothing to keep.
 fn link_previous(bin: &Path) -> Result<(), RunError> {
@@ -726,17 +726,19 @@ mod tests {
         dir: tempfile::TempDir,
     }
 
-    const OLD: [(&str, &[u8]); 4] = [
+    const OLD: [(&str, &[u8]); 5] = [
         ("humatad2", b"old daemon"),
         ("humata2_holder", b"old holder"),
         ("humata", b"old cli"),
         ("stack", b"old stack"),
+        ("humata2_fusefs", b"old fusefs"),
     ];
-    const NEW: [(&str, &[u8]); 4] = [
+    const NEW: [(&str, &[u8]); 5] = [
         ("humatad2", b"new daemon"),
         ("humata2_holder", b"new holder"),
         ("humata", b"new cli"),
         ("stack", b"new stack"),
+        ("humata2_fusefs", b"new fusefs"),
     ];
 
     fn sha(bytes: &[u8]) -> String {
@@ -948,7 +950,7 @@ mod tests {
     #[test]
     fn staged_files_that_are_no_one_platform_s_entry_change_nothing() {
         let bin = Bin::installed();
-        let there = [NEW[0], NEW[1], ("humata", &b"another cli"[..]), NEW[3]];
+        let there = [NEW[0], NEW[1], ("humata", &b"another cli"[..]), NEW[3], NEW[4]];
         let id = stage(&bin, &two_platforms(&OLD, &there));
 
         let refused = bin.runner().swap(&id, "up_1");

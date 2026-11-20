@@ -340,8 +340,10 @@ impl pb::transfer_end_service_server::TransferEndService for TransferEndSvc {
         Ok(Response::new(pb::ExistsResponse { exists }))
     }
 
-    /// Which of the named chunks a chunk folder holds (MV-17); a folder
-    /// that isn't there holds none.
+    /// Which of the named chunks (BLAKE3 hashes in hex) this machine's chunk
+    /// store holds (MV-17). The location is a folder in the channel whose
+    /// store is asked: the store is beside the channel folders, so one that
+    /// isn't there, like a location that isn't, holds none.
     async fn have_chunks(
         &self,
         request: Request<pb::HaveChunksRequest>,
@@ -350,17 +352,18 @@ impl pb::transfer_end_service_server::TransferEndService for TransferEndSvc {
         Self::user_only(&who)?;
         let request = request.into_inner();
         let target = self.target(&who, request.location, "location", Entry::Folder, true)?;
-        let machine = self.machine.clone();
         let names = request.sha256;
-        let sha256 = self
-            .on_disk(move |disk| match target.unfollowed() {
-                Ok(path) => disk
-                    .have_chunks(&path, &names)
-                    .map_err(|err| end_failure(err, &machine, "location", &target.shown)),
+        let sha256 = blocking(move || -> Result<Vec<String>, Status> {
+            match target.unfollowed() {
+                Ok(path) => Ok(path
+                    .parent()
+                    .map(|channel| humata2_sessions::held_chunks(&humata2_sessions::chunk_store_dir(channel), &names))
+                    .unwrap_or_default()),
                 Err(err) if err.code() == Code::NotFound => Ok(Vec::new()),
                 Err(err) => Err(err),
-            })
-            .await?;
+            }
+        })
+        .await??;
         Ok(Response::new(pb::HaveChunksResponse { sha256 }))
     }
 

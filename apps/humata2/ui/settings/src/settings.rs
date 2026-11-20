@@ -9,7 +9,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
+use humata2_clients::daemon::{IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode};
 use humata2_clients::model::Agent;
+use humata2_settings::TodoAutomationAction as TodoAction;
 use humata2_settings::{AgentsAction, DeskRows, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
 
@@ -363,6 +365,188 @@ fn desk_rows_menu(ui: &Rc<Ui>, current: DeskRows, look: Look) -> impl IntoElemen
                 .test_support()
         }))
 }
+/// Settings › General › To-do (TODO2WIRE, D902): what Humata does by itself
+/// when pull requests and items change. Shows the defaults until the daemon
+/// has said.
+fn todo_automation_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let section: TodoAutomation = state.settings.todo.section.unwrap_or_default();
+    let send = |action: TodoAction| AppAction::Settings(A::Todo(action));
+    let ask_auto = |id: &'static str, current: TodoMode, set: fn(TodoMode) -> TodoAction| {
+        segmented(
+            ui,
+            look,
+            [(TodoMode::Ask, "Ask"), (TodoMode::Auto, "Auto")].into_iter().map(|(mode, name)| {
+                (format!("{id}-{name}"), name, current == mode, send(set(mode)))
+            }),
+        )
+    };
+    let wake = |id: &str, on: bool, action: TodoAction| {
+        toggle(ui, id, on, A::Todo(action), look).into_any_element()
+    };
+    col()
+        .gap(px(8.))
+        .child(dim(look, "To-do").font_weight(FontWeight::SEMIBOLD))
+        .child(dim(
+            look,
+            "What Humata does by itself when pull requests and items change. Ask puts a one-click question on the item in To-do and never stops an agent.",
+        ))
+        .child(
+            open_card(look)
+                .child(setting(
+                    look,
+                    "When a pull request merges",
+                    "Ask: its item asks whether to close. Auto: Humata closes the item and shows Undo.",
+                    ask_auto("settings-todo-pr-merged", section.on_pr_merged, TodoAction::SetOnPrMerged),
+                ))
+                .child(setting(
+                    look,
+                    "When an item closes",
+                    "Ask: the item offers to archive its sessions. Auto: Humata archives them and shows Undo. A session with unsaved work or a running terminal is kept either way.",
+                    ask_auto(
+                        "settings-todo-close-archive",
+                        section.on_todo_closed_archive_sessions,
+                        TodoAction::SetOnClosedArchive,
+                    ),
+                ))
+                .child(setting(
+                    look,
+                    "Wake the agent when checks fail",
+                    "Sends the failing checks to the item’s session as a note when its turn ends. Off: the item shows Needs attention and you send it.",
+                    wake("settings-todo-wake-ci", section.auto_wake_on_ci_fail, TodoAction::ToggleWakeOnCiFail),
+                ))
+                .child(setting(
+                    look,
+                    "Wake the agent on review comments",
+                    "Sends new review comments to the item’s session the same way. Off: the item offers Send comments to session.",
+                    wake(
+                        "settings-todo-wake-comments",
+                        section.auto_wake_on_review_comments,
+                        TodoAction::ToggleWakeOnReviewComments,
+                    ),
+                ))
+                .child(setting(
+                    look,
+                    "Nudge about idle items",
+                    "An In progress item with no activity for this long asks whether to carry on, take it back or close it.",
+                    idle_nudge_popup(ui, section.idle_nudge_days, state.settings.todo.idle_menu, look)
+                        .into_any_element(),
+                )),
+        )
+}
+/// The segmented control the Long lines row uses, for any labelled choices.
+fn segmented(
+    ui: &Rc<Ui>,
+    look: Look,
+    options: impl Iterator<Item = (String, &'static str, bool, AppAction)>,
+) -> AnyElement {
+    row()
+        .flex_shrink_0()
+        .p(px(2.))
+        .rounded(px(7.))
+        .bg(rgb(look.fill))
+        .children(options.map(|(id, name, on, action)| {
+            let ui = ui.clone();
+            div()
+                .id(SharedString::from(id))
+                .role(Role::Tab)
+                .aria_label(name)
+                .aria_selected(on)
+                .test_support()
+                .px(px(12.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(11.5))
+                .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
+                .child(name)
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    if !on {
+                        ui.send(action.clone(), cx)
+                    }
+                })
+        }))
+        .into_any_element()
+}
+fn idle_days_label(days: u32) -> String {
+    if days == 1 { "1 day".to_owned() } else { format!("{days} days") }
+}
+/// The Nudge about idle items pop-up: the closed control, and the choices
+/// under it while open.
+fn idle_nudge_popup(ui: &Rc<Ui>, days: u32, open: bool, look: Look) -> Div {
+    let label = SharedString::from(idle_days_label(days));
+    let toggle = {
+        let ui = ui.clone();
+        row()
+            .id("settings-todo-idle-nudge")
+            .role(Role::Button)
+            .aria_label(format!("Nudge about idle items: {label}"))
+            .flex_shrink_0()
+            .gap(px(6.))
+            .h(px(24.))
+            .pl(px(9.))
+            .pr(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(look.fill))
+            .border_1()
+            .border_color(rgb(look.line))
+            .text_size(px(12.))
+            .cursor_pointer()
+            .child(label)
+            .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+            .on_click(move |_, _, cx| {
+                ui.send(AppAction::Settings(A::Todo(TodoAction::IdleMenu)), cx)
+            })
+            .test_support()
+    };
+    div()
+        .relative()
+        .flex_shrink_0()
+        .child(toggle)
+        .when(open, |wrap| wrap.child(deferred(idle_nudge_menu(ui, days, look))))
+}
+fn idle_nudge_menu(ui: &Rc<Ui>, current: u32, look: Look) -> impl IntoElement {
+    col()
+        .id("settings-todo-idle-nudge-menu")
+        .role(Role::ListBox)
+        .aria_label("Nudge about idle items")
+        .absolute()
+        .top(px(28.))
+        .right(px(0.))
+        .w(px(120.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.))
+        .children(IDLE_NUDGE_CHOICES.map(|days| {
+            let ui = ui.clone();
+            let label = idle_days_label(days);
+            let picked = days == current;
+            row()
+                .id(SharedString::from(format!("settings-todo-idle-nudge-{days}")))
+                .role(Role::ListBoxOption)
+                .aria_label(label.clone())
+                .aria_selected(picked)
+                .gap(px(8.))
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .hover(move |x| x.bg(rgb(look.fill)))
+                .child(div().w(px(12.)).flex_shrink_0().children(
+                    picked.then(|| chrome::icon(IconName::Check, look.accent, 12.)),
+                ))
+                .child(label)
+                .on_click(move |_, _, cx| {
+                    ui.send(AppAction::Settings(A::Todo(TodoAction::SetIdleNudgeDays(days))), cx)
+                })
+                .test_support()
+        }))
+}
 pub fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
@@ -475,6 +659,7 @@ pub fn page(
             [
                 (Section::General, IconName::Settings, "General"),
                 (Section::Agents, IconName::Bot, "Agents"),
+                (Section::Sync, IconName::FolderTree, "Sync"),
                 (Section::Machines, IconName::Server, "Machines"),
                 (Section::Layout, IconName::Columns2, "Layout"),
                 (Section::Access, IconName::ShieldCheck, "Agent access"),
@@ -667,6 +852,7 @@ pub fn page(
                 )
                 .into_any_element(),
             )));
+            body = body.child(todo_automation_block(ui, state, look));
             // REPOS (ST-21): the repo library and the default scope.
             body = body.child(crate::settings_repositories::section(
                 ui,
@@ -848,6 +1034,10 @@ pub fn page(
                     )
                     .into_any_element(),
                 )));
+        }
+        // FUSEFSWIRE (D904): frame 211.
+        Section::Sync => {
+            body = body.child(crate::sync::body(ui, state, look));
         }
     }
     row()

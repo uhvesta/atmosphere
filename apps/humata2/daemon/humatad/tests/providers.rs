@@ -22,7 +22,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request};
 
-const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
+const FILES: [&str; 5] = ["humatad2", "humata2_holder", "humata", "stack", "humata2_fusefs"];
 
 /// A tools bundle for linux-x86_64, the fake machine's default platform.
 fn bundle(dir: &Path) -> PathBuf {

@@ -1,0 +1,11 @@
+# A new-file permission, answered.
+quiet 3000
+snap launch unknown
+keys @trust@
+quiet 2500
+type Create a new file named notes2.txt that contains the single word hi. Do nothing else.
+quiet 3000
+snap write_permission unknown
+keys enter
+quiet 4000
+snap after_answer unknown

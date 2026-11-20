@@ -61,7 +61,7 @@ pub use cheap::CLONES_FILE;
 
 #[path = "carry_chunks.rs"]
 mod chunks;
-pub use chunks::{CHUNKS_DIR, CHUNKS_FILE, CHUNK_SIZE, HAVE_DIR, REUSE_FILE};
+pub use chunks::{CHUNKED_FROM, CHUNKS_DIR, CHUNKS_FILE, REUSE_FILE, chunk_store_dir, frame_chunk, held_chunks};
 
 #[path = "carry_placed.rs"]
 mod placed;
@@ -184,6 +184,16 @@ pub enum CarryError {
         doing: &'static str,
         #[source]
         source: StoreError,
+    },
+
+    #[error(
+        "couldn't use this machine's chunk store for {file}: {source}; check that the disk has free space and the \
+         folder is yours. Nothing was deleted; try the move again"
+    )]
+    ChunkStore {
+        file: String,
+        #[source]
+        source: fusefs_cas::StoreError,
     },
 }
 
@@ -603,7 +613,7 @@ impl crate::CarryOps<'_> {
         record: &humata2_store::SessionRecord,
         agent: &humata2_store::AgentRecord,
     ) -> Result<Option<Conversation>, ConversationError> {
-        let Ok(kind) = self.agents.get(&record.agent) else {
+        let Ok(kind) = self.agents.get_as_ran(&record.id, &record.agent) else {
             return Ok(None);
         };
         let Some(format) = kind.conversation_format.adapter_format() else {
@@ -707,7 +717,7 @@ impl crate::CarryOps<'_> {
     /// The conversation `id` of `record`'s agent as its adapter finds it
     /// here; `None` when it isn't there.
     fn locate_by_id(&self, record: &humata2_store::SessionRecord, id: &str) -> Option<Conversation> {
-        let kind = self.agents.get(&record.agent).ok()?;
+        let kind = self.agents.get_as_ran(&record.id, &record.agent).ok()?;
         let format = kind.conversation_format.adapter_format()?;
         let at = kind.placement(&self.home, &record.folder)?;
         adapter(format).locate(&at, id).ok()
@@ -732,7 +742,7 @@ impl crate::CarryOps<'_> {
                 (Some(packed), old_home, old_cli_home, previous)
             }
             AgentFiles::None => {
-                let Ok(kind) = self.agents.get(&record.agent) else {
+                let Ok(kind) = self.agents.get_as_ran(&record.id, &record.agent) else {
                     return Ok(AgentFiles::None);
                 };
                 let Some(at) = kind.placement(&self.home, &record.folder) else {
@@ -1907,5 +1917,96 @@ mod tests {
         assert_eq!(String::from_utf8(text).unwrap(), r#"{"cwd":"/new/x","project":"-new-x/c"}"#);
         assert!(rewritten(b"nothing here", &pairs).is_none());
         assert!(replacements("/same", "/same").is_empty());
+    }
+
+    /// Bytes that don't repeat, so each chunk is its own.
+    fn noise(seed: u64, len: usize) -> Vec<u8> {
+        let mut x = seed;
+        let mut out = Vec::with_capacity(len + 8);
+        while out.len() < len {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            out.extend_from_slice(&(x >> 7).to_le_bytes());
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// What the host does for the big files an operation lists: copies the
+    /// session's folder without them, sends each chunk the new machine's
+    /// store lacks, and writes the recipe. How many chunks it sent.
+    fn host_sends(old: &Starter, new: &Starter, operation: &str, folder: &Path, target: &Path) -> usize {
+        let staged = old.layout.channel("payments").join(CARRY_DIR).join(operation).join(STAGE);
+        let new_ops = crate::CarryOps(new);
+        let incoming = new_ops.incoming(&new_ops.carry_channel("ch_1").unwrap(), operation);
+        copy_tree(folder, target).unwrap();
+        copy_tree(&staged, &incoming).unwrap();
+        let listed = fs::read(staged.join(CHUNKS_FILE)).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+        let store = chunk_store_dir(&new.layout.channel("payments"));
+        let mut sent = 0;
+        for file in value["files"].as_array().unwrap() {
+            let manifest: fusefs_cas::FileManifest = serde_json::from_value(file["manifest"].clone()).unwrap();
+            let rel = file["rel"].as_str().unwrap();
+            let names: Vec<String> = manifest.chunks.iter().map(|chunk| chunk.hash.to_hex()).collect();
+            let held = held_chunks(&store, &names);
+            let data = fs::read(folder.join(rel)).unwrap();
+            for chunk in manifest.chunks.iter().filter(|chunk| !held.contains(&chunk.hash.to_hex())) {
+                let bytes = &data[chunk.offset as usize..chunk.end() as usize];
+                fs::create_dir_all(incoming.join(CHUNKS_DIR)).unwrap();
+                fs::write(incoming.join(CHUNKS_DIR).join(chunk.hash.to_hex()), frame_chunk(bytes).unwrap()).unwrap();
+                sent += 1;
+            }
+            fs::remove_file(target.join(rel)).unwrap();
+        }
+        fs::write(incoming.join(REUSE_FILE), listed).unwrap();
+        sent
+    }
+
+    #[test]
+    fn a_big_file_carried_as_chunks_arrives_identical_and_a_second_carry_sends_only_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (machine(&dir.path().join("old"), false), machine(&dir.path().join("new"), false));
+        let folder = session(&old);
+        let mut data = noise(41, 5 << 20);
+        fs::write(folder.join("big.bin"), &data).unwrap();
+        let target = new.layout.sessions("payments").join("fix");
+
+        old.pack("op_1", "se_1").unwrap();
+        let first = host_sends(&old, &new, "op_1", &folder, &target);
+        new.unpack("op_1", "se_1", "ch_1", Take::Everything).unwrap();
+
+        assert!(first >= 5, "the new machine held nothing, yet only {first} chunks were sent");
+        assert_eq!(fs::read(target.join("big.bin")).unwrap(), data, "the file arrived identical");
+
+        old.pack("op_2", "se_1").unwrap();
+        let again = host_sends(&old, &new, "op_2", &folder, &new.layout.sessions("payments").join("again"));
+        assert_eq!(again, 0, "the new machine holds every chunk of the unchanged file");
+
+        let middle = data.len() / 2;
+        data[middle..middle + 100].fill(0x5A);
+        fs::write(folder.join("big.bin"), &data).unwrap();
+        old.pack("op_3", "se_1").unwrap();
+        let changed = host_sends(&old, &new, "op_3", &folder, &new.layout.sessions("payments").join("changed"));
+        assert!(changed >= 1 && changed <= 3, "{changed} chunks sent for a 100 byte edit");
+    }
+
+    #[test]
+    fn a_chunk_the_new_machine_lost_fails_the_move_with_nothing_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (machine(&dir.path().join("old"), false), machine(&dir.path().join("new"), false));
+        let folder = session(&old);
+        fs::write(folder.join("big.bin"), noise(43, 3 << 20)).unwrap();
+        let target = new.layout.sessions("payments").join("fix");
+        old.pack("op_1", "se_1").unwrap();
+        host_sends(&old, &new, "op_1", &folder, &target);
+        let new_ops = crate::CarryOps(&new);
+        let incoming = new_ops.incoming(&new_ops.carry_channel("ch_1").unwrap(), "op_1");
+        let lost = fs::read_dir(incoming.join(CHUNKS_DIR)).unwrap().next().unwrap().unwrap().path();
+        fs::remove_file(lost).unwrap();
+
+        let refused = new.unpack("op_1", "se_1", "ch_1", Take::Everything).unwrap_err();
+
+        assert!(matches!(refused, CarryError::Missing { .. }), "{refused:?}");
+        assert!(folder.exists(), "the old machine's copy is untouched");
     }
 }

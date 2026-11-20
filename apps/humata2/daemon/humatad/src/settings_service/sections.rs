@@ -91,6 +91,8 @@ impl SectionsError {
 pub(super) struct File {
     // Plain values before tables, as TOML writes them.
     #[serde(skip_serializing_if = "Option::is_none")]
+    fusefs_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     long_lines: Option<LongLines>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_agent: Option<Agent>,
@@ -100,6 +102,76 @@ pub(super) struct File {
     retention: Option<Retention>,
     #[serde(skip_serializing_if = "Option::is_none")]
     notifications: Option<Notifications>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    todo_automation: Option<TodoAutomation>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TodoMode {
+    #[default]
+    Ask,
+    Auto,
+}
+
+/// The To-do automation settings, in the settings file and, as JSON, in a
+/// channel's own override.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+struct TodoAutomation {
+    on_pr_merged: TodoMode,
+    on_todo_closed_archive_sessions: TodoMode,
+    auto_wake_on_ci_fail: bool,
+    auto_wake_on_review_comments: bool,
+    /// 0 reads as the board's default.
+    idle_nudge_days: u32,
+}
+
+impl Default for TodoAutomation {
+    fn default() -> Self {
+        Self {
+            on_pr_merged: TodoMode::Ask,
+            on_todo_closed_archive_sessions: TodoMode::Ask,
+            auto_wake_on_ci_fail: false,
+            auto_wake_on_review_comments: false,
+            idle_nudge_days: 0,
+        }
+    }
+}
+
+fn todo_mode_of(mode: i32) -> TodoMode {
+    match pb::TodoSyncMode::try_from(mode) {
+        Ok(pb::TodoSyncMode::Auto) => TodoMode::Auto,
+        _ => TodoMode::Ask,
+    }
+}
+
+impl From<&pb::TodoAutomationSettings> for TodoAutomation {
+    fn from(settings: &pb::TodoAutomationSettings) -> Self {
+        Self {
+            on_pr_merged: todo_mode_of(settings.on_pr_merged),
+            on_todo_closed_archive_sessions: todo_mode_of(settings.on_todo_closed_archive_sessions),
+            auto_wake_on_ci_fail: settings.auto_wake_on_ci_fail,
+            auto_wake_on_review_comments: settings.auto_wake_on_review_comments,
+            idle_nudge_days: settings.idle_nudge_days,
+        }
+    }
+}
+
+impl From<TodoAutomation> for pb::TodoAutomationSettings {
+    fn from(settings: TodoAutomation) -> Self {
+        let mode = |mode| match mode {
+            TodoMode::Ask => pb::TodoSyncMode::Ask,
+            TodoMode::Auto => pb::TodoSyncMode::Auto,
+        } as i32;
+        Self {
+            on_pr_merged: mode(settings.on_pr_merged),
+            on_todo_closed_archive_sessions: mode(settings.on_todo_closed_archive_sessions),
+            auto_wake_on_ci_fail: settings.auto_wake_on_ci_fail,
+            auto_wake_on_review_comments: settings.auto_wake_on_review_comments,
+            idle_nudge_days: settings.idle_nudge_days,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -208,10 +280,13 @@ impl Places {
             scrollback_lines: if terminal.scrollback_lines > 0 { terminal.scrollback_lines } else { SCROLLBACK_LINES },
         });
         shown.retention_defaults = Some(retention_of(file.retention.unwrap_or_default()));
+        // D895: the FUSE mount is off until Settings turns it on.
+        shown.fusefs_enabled = file.fusefs_enabled.unwrap_or(false);
         shown.long_lines = match file.long_lines {
             Some(LongLines::Scroll) => pb::LongLines::Scroll,
             Some(LongLines::Wrap) | None => pb::LongLines::Wrap,
         } as i32;
+        shown.todo_automation = Some(file.todo_automation.unwrap_or_default().into());
         shown.skills = Some(pb::SkillsSettings {
             auto_sync: skills.auto_sync,
             opted_out: skills.auto_off.into_iter().map(|value| pb::MachineId { value }).collect(),
@@ -285,6 +360,9 @@ impl Places {
         if let Some(notifications) = &request.notifications {
             check_quiet_hours(notifications)?;
         }
+        if let Some(todo) = &request.todo_automation {
+            check_todo_automation("todo_automation", todo)?;
+        }
         Ok(())
     }
 
@@ -336,6 +414,9 @@ impl Places {
                 archive_idle_sessions_after_days: retention.archive_idle_sessions_after_days,
             });
         }
+        if let Some(enabled) = request.fusefs_enabled {
+            file.fusefs_enabled = Some(enabled);
+        }
         if let Some(long_lines) = request.long_lines {
             file.long_lines = Some(match pb::LongLines::try_from(long_lines) {
                 Ok(pb::LongLines::Scroll) => LongLines::Scroll,
@@ -348,6 +429,9 @@ impl Places {
                 quiet_until: notifications.quiet_until.clone(),
                 vip_breaks_quiet_hours: notifications.vip_breaks_quiet_hours,
             });
+        }
+        if let Some(todo) = &request.todo_automation {
+            file.todo_automation = Some(todo.into());
         }
         let text = toml::to_string(&file).unwrap_or_default();
         write_whole(&self.config, &text)
@@ -365,6 +449,15 @@ fn sets_file(request: &pb::UpdateSettingsRequest) -> bool {
         || request.retention_defaults.is_some()
         || request.long_lines.is_some()
         || request.notifications.is_some()
+        || request.fusefs_enabled.is_some()
+        || request.todo_automation.is_some()
+}
+
+/// Whether the FUSE mount is saved as on in the settings file under the
+/// humata home `state` is in. False when unset or unreadable (D895).
+pub(crate) fn fusefs_enabled_in(state: &Path) -> bool {
+    let config = state.parent().unwrap_or(state).join("config").join("settings.toml");
+    read_file(&config).ok().and_then(|file| file.fusefs_enabled).unwrap_or(false)
 }
 
 fn read_file(path: &Path) -> Result<File, SectionsError> {
@@ -423,6 +516,31 @@ pub(super) fn check_retention(section: &str, retention: &pb::RetentionRules) -> 
     Ok(())
 }
 
+/// Both sync modes are ones Settings offers, and the nudge is a sane number of days.
+pub(super) fn check_todo_automation(section: &str, todo: &pb::TodoAutomationSettings) -> Result<(), Status> {
+    for (field, mode) in [
+        ("on_pr_merged", todo.on_pr_merged),
+        ("on_todo_closed_archive_sessions", todo.on_todo_closed_archive_sessions),
+    ] {
+        if pb::TodoSyncMode::try_from(mode).is_err() {
+            return Err(status::invalid_field(
+                &format!("{section}.{field}"),
+                pb::invalid_field::Problem::UnknownValue,
+                format!("{mode} isn't a way for the To-do list to follow a change"),
+                "pick Ask or Auto",
+            ));
+        }
+    }
+    if todo.idle_nudge_days > MOST_DAYS {
+        return Err(out_of_range(
+            &format!("{section}.idle_nudge_days"),
+            format!("{} days is longer than Humata keeps anything waiting", todo.idle_nudge_days),
+            "pick at most 3650 days, or 0 for the default",
+        ));
+    }
+    Ok(())
+}
+
 /// Quiet hours are both HH:MM on a 24-hour clock, or both empty.
 fn check_quiet_hours(notifications: &pb::NotificationSettings) -> Result<(), Status> {
     let (from, until) = (notifications.quiet_from.as_str(), notifications.quiet_until.as_str());
@@ -469,6 +587,19 @@ pub(super) fn channel_retention_key(channel: &str) -> String {
     format!("channel.{channel}.retention")
 }
 
+pub(super) fn channel_todo_key(channel: &str) -> String {
+    format!("channel.{channel}.todo_automation")
+}
+
+/// A channel's own To-do automation, saved as JSON; empty when cleared.
+pub(super) fn todo_value(todo: &pb::TodoAutomationSettings) -> String {
+    serde_json::to_string(&TodoAutomation::from(todo)).unwrap_or_default()
+}
+
+pub(super) fn parse_todo(value: &str) -> Option<pb::TodoAutomationSettings> {
+    serde_json::from_str::<TodoAutomation>(value).ok().map(Into::into)
+}
+
 /// A channel's own retention, saved as `pr,idle` days.
 pub(super) fn parse_retention(value: &str) -> Option<pb::RetentionRules> {
     let (pr, idle) = value.split_once(',')?;
@@ -486,15 +617,46 @@ pub(super) fn retention_value(retention: &pb::RetentionRules) -> String {
 /// channel's own default agent, else the one set in Settings. None leaves
 /// the channel's record to say.
 pub(crate) fn default_agent_for(store: &Store, channel: &str) -> Result<Option<String>, StoreError> {
+    Ok(default_agent_chain(store, channel)?.into_iter().next())
+}
+
+/// The agents a start that names none prefers in `channel`, best first: the
+/// channel's own saved default, then the one set in Settings (each only when
+/// set). The caller picks the first that is turned on.
+pub(crate) fn default_agent_chain(store: &Store, channel: &str) -> Result<Vec<String>, StoreError> {
+    let mut chain = Vec::new();
     if let Some(saved) = store.setting(&channel_agent_key(channel))?
         && !saved.value.is_empty()
     {
-        return Ok(Some(saved.value));
+        chain.push(saved.value);
     }
-    Ok(CONFIG
+    if let Some(agent) = CONFIG
         .get()
         .and_then(|path| read_file(path).ok())
         .and_then(|file| file.default_agent)
         .map(|agent| agent.agent)
-        .filter(|agent| !agent.is_empty()))
+        .filter(|agent| !agent.is_empty())
+    {
+        chain.push(agent);
+    }
+    Ok(chain)
+}
+
+/// The To-do automation settings in effect for `channel`: its own override,
+/// else Settings, else the defaults (every mode Ask, no auto-wake, nudge 0).
+/// Reads the settings file on each call; it is small and the board asks only
+/// when an event arrives, so nothing is cached and a change applies at once.
+pub fn todo_automation_for(store: &Store, channel: Option<&str>) -> pb::TodoAutomationSettings {
+    if let Some(channel) = channel
+        && let Ok(Some(saved)) = store.setting(&channel_todo_key(channel))
+        && let Some(own) = parse_todo(&saved.value)
+    {
+        return own;
+    }
+    CONFIG
+        .get()
+        .and_then(|path| read_file(path).ok())
+        .and_then(|file| file.todo_automation)
+        .unwrap_or_default()
+        .into()
 }

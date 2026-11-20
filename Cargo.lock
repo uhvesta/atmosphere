@@ -4076,6 +4076,7 @@ dependencies = [
  "humata2-hosts",
  "humata2-inbox",
  "humata2-mass-delete",
+ "humata2-notify",
  "humata2-palette",
  "humata2-pr-review",
  "humata2-review",
@@ -4393,6 +4394,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-notify"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "humata2-opencode"
 version = "0.0.0"
 dependencies = [
@@ -4519,6 +4529,7 @@ name = "humata2-settings"
 version = "0.0.0"
 dependencies = [
  "humata2-clients",
+ "humata2-notify",
  "serde",
  "tca-rust",
 ]

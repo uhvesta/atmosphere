@@ -461,7 +461,8 @@ fn next_section(at: Option<Section>) -> Option<Section> {
         Some(Section::Access) => Section::Storage,
         Some(Section::Storage) => Section::Notifications,
         Some(Section::Notifications) => Section::Keyboard,
-        Some(Section::Keyboard) => return None,
+        Some(Section::Keyboard) => Section::Sync,
+        Some(Section::Sync) => return None,
     })
 }
 

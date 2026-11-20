@@ -259,6 +259,21 @@ operations! {
     RepoSearch => "repo_search", "repo.search";
     /// `RepoService.ListRepoLibrary`.
     RepoLibrary => "repo_library", "repo.library";
+    // BROWSER
+    /// The Native Browser Co-Pilot's `ListTabs` action, in the user's own
+    /// browser.
+    BrowserListTabs => "browser_list_tabs", "browser.list_tabs";
+    /// The Co-Pilot's `ReadTab` action.
+    BrowserReadTab => "browser_read_tab", "browser.read_tab";
+    /// The Co-Pilot's `HighlightGuide` action: draws a callout, changes
+    /// nothing on the page.
+    BrowserGuideHighlight => "browser_guide_highlight", "browser.guide_highlight";
+    /// The Co-Pilot's `Click` action.
+    BrowserClick => "browser_click", "browser.click";
+    /// The Co-Pilot's `Type` action.
+    BrowserType => "browser_type", "browser.type";
+    /// The Co-Pilot's `Navigate` action.
+    BrowserNavigate => "browser_navigate", "browser.navigate";
 }
 
 impl Operation {
@@ -809,6 +824,34 @@ fn session_end(description: &'static str) -> Definition {
 
 fn machine_only(description: &'static str, effect: Effect) -> Definition {
     define(description, effect, asks(vec![req("machine", machine())]))
+}
+
+/// A tab of the user's own browser; the active tab when left out.
+fn tab_id() -> Schema {
+    integer()
+        .at_least(0)
+        .describe("A tab id from browser_list_tabs; default: the active tab")
+}
+
+/// The exact address of the page a browser action acts on.
+fn page_url() -> Schema {
+    string()
+        .max_length(2048)
+        .describe("The page's exact address, as its tab shows it")
+}
+
+/// A CSS selector for one element of that page.
+fn css_selector() -> Schema {
+    string()
+        .max_length(500)
+        .describe("A CSS selector for one element of that page")
+}
+
+/// The visible text of the element a browser action acts on, for the card.
+fn element_preview() -> Schema {
+    string()
+        .max_length(200)
+        .describe("The element's visible text, shown on the Inbox card")
 }
 
 fn definition(operation: Operation) -> Definition {
@@ -1396,6 +1439,84 @@ fn definition(operation: Operation) -> Definition {
                 opt("on_existing", on_existing()),
             ]),
         ),
+        Op::BrowserListTabs => define(
+            "List the tabs open in the user's own browser, with each tab's id, title and address. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Read,
+            asks(vec![]),
+        ),
+        Op::BrowserReadTab => define(
+            "Read the text of one tab in the user's own browser; the active tab when tab_id is left out. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Read,
+            asks(vec![
+                opt("tab_id", tab_id()),
+                opt(
+                    "max_chars",
+                    integer()
+                        .at_least(1)
+                        .describe("At most this many characters of the page's text"),
+                ),
+            ]),
+        ),
+        Op::BrowserGuideHighlight => define(
+            "Draw a callout over one element of a page in the user's own browser, with a title and a short body, to guide the user through steps. Only the overlay is drawn; nothing on the page is clicked or changed. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Read,
+            asks(vec![
+                req("url", page_url()),
+                req("selector", css_selector()),
+                req("title", title()),
+                req(
+                    "body",
+                    string()
+                        .max_length(1000)
+                        .describe("A short explanation of this step"),
+                ),
+                opt("tab_id", tab_id()),
+                opt(
+                    "step_label",
+                    string()
+                        .max_length(40)
+                        .describe("A short label for the step, such as Step 2"),
+                ),
+            ]),
+        ),
+        Op::BrowserClick => define(
+            "Click one element of a page in the user's own browser. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Create,
+            asks(vec![
+                req("url", page_url()),
+                req("selector", css_selector()),
+                opt("tab_id", tab_id()),
+                opt("element_preview", element_preview()),
+            ]),
+        ),
+        Op::BrowserType => define(
+            "Type text into one input of a page in the user's own browser; clear_first empties the input before typing. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Create,
+            asks(vec![
+                req("url", page_url()),
+                req("selector", css_selector()),
+                req(
+                    "text",
+                    string()
+                        .max_length(10_000)
+                        .describe("The text to type"),
+                ),
+                opt("tab_id", tab_id()),
+                opt(
+                    "clear_first",
+                    boolean().describe("Clear the input before typing; default: false"),
+                ),
+                opt("element_preview", element_preview()),
+            ]),
+        ),
+        Op::BrowserNavigate => define(
+            "Open an address in a tab of the user's own browser. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            Effect::Change,
+            asks(vec![
+                req("url", page_url().describe("The address to open")),
+                opt("tab_id", tab_id()),
+            ]),
+        ),
         Op::InboxAsk => define(
             "Ask the user a question in their Inbox, with up to 4 choices, and wait for the reply.",
             Effect::Create,
@@ -1496,9 +1617,13 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::SessionStart => define(
-            "Start a new session in your channel. Usually asks the user first.",
+            "Start a new session in a channel. Usually asks the user first; the card shows the channel and machine.",
             Effect::Create,
             asks(vec![
+                opt(
+                    "channel",
+                    string().describe("A channel id from channels_list; default: your channel. A Desk session has none, so it must name one"),
+                ),
                 req("machine", machine()),
                 opt("agent", string()),
                 opt("model", string()),
@@ -1509,9 +1634,13 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::SessionFork => define(
-            "Start a fork of this session. Usually asks the user first; the card shows agent, machine, kind, repos and cost.",
+            "Start a fork of a session, by default this one. Usually asks the user first; the card shows the channel, agent, machine, kind, repos and cost.",
             Effect::Create,
             asks(vec![
+                opt(
+                    "session",
+                    session().describe("The session to fork; default: your session. The fork joins that session's channel"),
+                ),
                 req("machine", machine()),
                 req(
                     "kind",

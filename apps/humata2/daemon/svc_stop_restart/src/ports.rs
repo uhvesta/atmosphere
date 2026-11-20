@@ -145,6 +145,20 @@ pub trait TabEnvPort: Send + Sync {
         socket: &std::path::Path,
     ) -> Result<Vec<(OsString, OsString)>, String>;
     fn tools_path(&self, host_path: Option<OsString>) -> Option<OsString>;
+    /// The variables that point a local agent tab at its session's composed
+    /// config home (D895): the agent's own home variable, the FUSE root and
+    /// the machine name. Empty for an agent with no composed home (a remote
+    /// session, or an agent that has none), and then its home is as it was.
+    fn session_compose_env(
+        &self,
+        session: &humata2_store::SessionRecord,
+        agent: &str,
+    ) -> Result<Vec<(OsString, OsString)>, String>;
+    /// The composed config home of `session`'s `agent`, where that agent's
+    /// own conversations are kept; None unless the folder exists, so a
+    /// session launched before composing, or an agent with none, is read
+    /// from the agent's usual dir.
+    fn session_home(&self, session: &str, agent: &str) -> Option<std::path::PathBuf>;
 }
 
 /// Relay authentication port implemented by `humatad::relay_auth::RelayAuth`.

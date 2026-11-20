@@ -6,6 +6,47 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **2026-11-20 ~09:45 (Claude Code main): current state. Read this first; a /dag-walk or /dag-walk-gemini resume starts here.**
+  - **Released and installed:** 0.9.0 (5e86d620 is the last commit). Everything below is **uncommitted** lane work in the tree; don't stash, revert or `add -A` it.
+  - **Open lanes, all targeting 0.10.0** (full suite + launch check):
+    - FUSEFSWIRE
+    - SCREENPARSE
+    - TODO2WIRE
+    - BROWSER
+
+    Each milestone file's Lane section (`milestones/<ID>.md`) records where it stopped, its claims and its worker batches. A resumed main gives each lane a fresh manager pointed at its file; the old Claude agent IDs don't carry over.
+  - **Gate in progress:** a fast-tier run of `//apps/humata2/... //libs/fusefs/...` with `--test_tag_filters=-slow,-manual` (log `.bq/logs/20261120-085749-4f75d8.log`). It had 12 failures at 499/831 tests, all routed to FUSEFSWIRE:
+    - the fifth helper (humata2_fusefs) was missing from test rigs: continue_in_remote, desk_roam_upgrade, upgrade_box, machines fake_ssh, lifecycle_restoration, svc_upgrade unit;
+    - fork_remote and move_cheap can't find the conversation file (composed vs global home, A3d);
+    - live_flows shard 3 stop_and_start times out;
+    - cli:codex_test timed out, not yet triaged.
+
+    Fixes are written, unbuilt, and queued for rerun (see FUSEFSWIRE.md Lane): G1, G2, FB1. Still running: A3e, G3 and FB2.
+  - **Main hunk:** `ui/settings/src/lib.rs` has `#![recursion_limit = "256"]`, fixing a C2b compile error.
+  - **Owner additions today:**
+    - FUSEFSWIRE gains a fallback to the files CLI and MCP tools when FUSE **can't be set up** on a machine. A single failed operation is not a trigger. See the FUSEFSWIRE.md section "Owner addition", and D907, which restores the MCP files tools B2 had retired.
+    - Queued after 0.10.0, in order:
+      - PROVIDERCLI, 0.10.1: read-only provider helper commands; anyone can ask to import and only the owner approves; full-path e2e check (D906).
+      - NEWCHCLOSE, 0.10.2: the Create channel sheet stays open about 10 s.
+      - WEBTODO, 0.11.0, last of all: the host serves the To-do UI at a local URL with a Settings switch (D905).
+
+      See RESUME.md rows 21a, 21b and 22.
+  - **Next steps:**
+    1. Finish the gate.
+    2. Rerun the fixed targets.
+    3. Route the remaining failures by claims.
+    4. Have Fable judge the design 211 / native settings-sync candidates, then record goldens (211, 29-settings, 117, native settings-sync).
+    5. Run FUSEFSWIRE T12 (`presubmit.sh --with-slow` and `--full`, `bq --build //apps/humata2/app:app`).
+    6. Commit each lane's claimed paths and push.
+    7. Release 0.10.0 and install it.
+  - **State machine sweep (owner, 2026-11-20):**
+    - 9 Haiku finders write to the session scratchpad `smb/0N-*.md`, following the brief `smb/BRIEF.md`.
+    - Next, a strong-model judge verifies the findings and writes the big report to `workflow/STATE_MACHINE_BUGS.md`. The fixes are then triaged into releases before WEBTODO (RESUME row 21d).
+    - If the scratchpad is gone, rerun the sweep from the brief text recorded in that row.
+  - **New bug:** MACHINEARCHIVE, RESUME row 21c, ships in 0.10.2. Archive from a machine's page sometimes does nothing. Main's reading: errors land in state.session.error, which only the session page draws.
+  - **Tell the owner:** SCREENPARSE runs left two folders under `~/.codex/tmp/arg0-macos/` (codex-arg00PsbI3, codex-arg0wT0FaD). They were left untouched; it's since fixed to use scratch HOMEs.
+  - **Never commit:** apps/humata/proto/plugin/BUILD.bazel and desktop/tests/__snapshots__/native/away-left-out-before.png. Set them aside by SHA-tagged stash during releases.
+
 - **2026-11-19 19:53 — `0.4.0` full-suite fixes & power-cut trim verified GREEN.**
   - Fixed all 4 failures from `presubmit.sh --full`: CLI `SessionCommand::Delete` clap `--channel`/`--machine` collision (`cli/src/args.rs`, `cli/src/commands/sessions.rs`), `desktop/tests/report.rs` `"Inbox"` → `"Agent inbox"`, `terminal/lab:app_test` verified passing, and `common/power_cut.rs` `settle()` race (now waits for host `list_operations(running_only: true)` empty + box store `session_details()` having no in-progress `StartStep`).
   - Applied power-cut audit & trim (`D888`, P1–P9): deleted redundant `power_cut_focus.rs` (10 tests), promoted `store:power_cut_test` out of `slow.txt` (`11.7s`), fixed `upgrade_cut.rs` Test 4 rollback binary distinction (`16.2s`), and halved the slowest suites: `power_cut_both_test` **1,642s → 814.4s**, `power_cut_host_test` **1,379s → 664.2s**, `power_cut_machine_test` **FAIL → 410.5s**, `delete_sessions_cut_test` **9.9s**, `desk_start_host_cut_test` **12.8s**, `restore_channel_cut_test` **6.5s**, `power_cut_start_box_test` **39.1s**, `remove_machine_cut_test` **119.7s**, `transfers:power_cut_test` **12.2s**, `holder:power_cut_test` **1.4s**.
@@ -61,7 +102,7 @@ Files a lane is editing. No two lanes claim the same file. Each lane keeps detai
 | Lane | Paths |
 |---|---|
 | FUSEFSWIRE | `api/proto/humata/v1/settings.proto` (Step 0 only, then released to BROWSER), `daemon/fusefs*/**`, `config_compose` wiring, `daemon/humatad` helper supervision files named in its Lane A, `daemon/humatad/src/settings_service.rs` (sync/fusefs fields; then handed to TODO2WIRE, then BROWSER), session move → `fusefs_cas` files of its Lane B, Settings › Sync in `clients/`, `features/settings`, `ui/settings` (new sync files; shared files only by hand-over), `milestones/FUSEFSWIRE.md` |
-| SCREENPARSE | `daemon/svc_inbox/src/screen_ask.rs`, `daemon/svc_inbox/tests/screens/**` (new), `daemon/svc_inbox/tests/screen_replay*.rs` (new), `daemon/svc_inbox/BUILD.bazel` (its targets only), a new `screenparse_live` target, `daemon/runtime/src/screen_question.rs`, `milestones/SCREENPARSE.md` |
+| SCREENPARSE | `daemon/svc_inbox/src/screen_ask.rs`, `daemon/svc_inbox/tests/screens/**` (new), `daemon/svc_inbox/tests/screen_replay*.rs` (new), `daemon/svc_inbox/BUILD.bazel` (its targets only), a new `screenparse_live` target, `daemon/runtime/src/screen_question.rs`, `daemon/svc_inbox/tests/screenparse/**` (new, approved 2026-11-20), the visibility line in `daemon/vt_authority/BUILD.bazel` (approved), `milestones/SCREENPARSE.md` |
 | TODO2WIRE | `daemon/svc_board/**`, `daemon/store/src/todo_runs.rs`, `features/todo/**`, `ui/workspace/src/todo.rs`, the session-event hooks it needs in `daemon/humatad/src/session_service/**` (not `hooks.rs`), new PR/CI watcher crate or module, `milestones/TODO2WIRE.md`, `milestones/TODO2.md` |
 | BROWSER | `daemon/browser_copilot/**`, `browser_extension/**`, `api/proto/humata/v1/inbox.proto` (additive), `daemon/humatad/src/{browser_host,browser_service}.rs` (new), `daemon/humatad/tests/browser_host.rs` (new), `daemon/humatad/src/{main.rs,identity.rs,serve.rs,error.rs,lib.rs}`, `daemon/agent_hooks/src/mcp.rs`, `daemon/sessions_core/src/agents.rs`, `daemon/humatad/src/session_service/hooks.rs`, `daemon/svc_mcp/**`, `daemon/svc_inbox/**` except SCREENPARSE's files, browser UI files in `clients/`, `features/`, `ui/` (new files; shared files by hand-over); `settings.proto` and `settings_service.rs` only after hand-over; `milestones/BROWSER.md` |
 
@@ -469,3 +510,18 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
 - 2026-11-20 ~06:45 main: TODO2 checkbox audit (read-only): T1, T3, T4 done; T2, T5–T8 partly done, each with a Status line in milestones/TODO2.md. Gaps that look done but are unwired: nothing sets `stuck_agent` (T5); `record_todo_run` only from tests (T6); `todo_automation` never read, idle/last-archived prompts only in tests (T7); no PR/CI watcher (T8); no editor for step Markdown (T2). Queued after the 0.8.0 release as milestone TODO2WIRE.
 - 2026-11-20 ~07:45 main: **humata2-v0.8.0 released and installed** (06ce33bd; release.sh's launch check OK). Presubmit fixes on the way: identity unit test for D893, desk form live flow on the repo picker, look_test frames 12 (design redrawn for TODO2, Fable D894) and 44 (repo rows back on the golden), To-do day from `TodoClient::today` (fakes: fixture day; 31-new-session re-recorded). machines_test failure was load (passes alone). Next: TODO2WIRE, 64-yield negative checks, FUSEFSWIRE, SCREENPARSE corpus, BROWSER (D891); next release 0.9.0 = full suite.
 - 2026-11-20 ~08:40 main: **humata2-v0.9.0 released and installed** (82a7e9a3). Full suite (`presubmit.sh --full`): 837/838; `upgrade_cut_test` failed 3/3 — the read-only open of the last-good source (c1d3eb09) stalled the rollback relaunch's ready; back to a plain open, test green. Launch check OK. Lanes resume for 0.10.0.
+- 2026-11-20 ~10:30 main: native todo_step_context (TODO2WIRE's test, lane paused): the test now hovers the step row before clicking the hover-only '+ Context' link (desktop/tests/native/todo_step_context.rs). The FUSEFSWIRE fixes are in: the fusefs Rig drop order, files_without_mount waits for running and checks the no-mount instructions, and pick_menu .test_support(). The native view snapshots change only by the added Tab "Sync" line and wait on Fable. The V1, V2 and V3 verifiers are done; a writer is building workflow/STATE_MACHINE_BUGS.md.
+- 2026-11-20 ~10:50 main: owner asked to make the FUSE resilience tests part of the milestones and to use Lima VMs as the remotes. Added FUSEFSWIRE T13 (6 cases, rig on real_vm.rs; new dedicated VM h2-fuse-r1 for the power-cut and real-mount cases; h2-terminal-c1 only for link-down cases, never stopped). It is part of the 0.10.0 exit (RESUME row 21, DAG).
+- 2026-11-20 ~11:00 main: STATE_MACHINE_BUGS.md written: 82 kept (3 P0, 17 P1, 62 P2), 5 in flight, 15 rejected. RESUME row 21d: SMFIX-P0+P1 ships as 0.10.3 before WEBTODO. Ordering notes: SMB-033 lands on top of FUSEFSWIRE's subscribe change; SMB-078/079/081 come after FUSEFSWIRE closes.
+- 2026-11-20 ~11:20 main: owner added two milestones: HIGHLIGHT (all-language syntax highlighting, 0.10.2) and STACKGH (stack CLI 1:1 with gh stack, plus remote stack import and interleave, 0.10.4). Files in milestones/, RESUME rows 21e/21f, D909. Lead for HIGHLIGHT: Language::from_path is never used by diff view.rs.
+- 2026-11-20 ~10:35 main: goldens recorded. The approved set plus native 07 and 12 board frames: their due word changed today→tomorrow, now correct against the fake's fixed Thu 19 Nov (frame 191). fusefs_restart_test PASS, humatad2_unit PASS, codex_test PASS, power_cut_machine PASS. Sent to FUSEFSWIRE: setup_test (fusefs install answers), ports release whole-entry, files_without_mount (profile lacks mcp), continue_in (agent never wrote rollout file). settings recursion_limit raised to 1024. todo_step_context: scroll the drawer to the step before hovering. Rerun in bi2ysr4cc.
+- 2026-11-20 ~10:45 main: SMB follow-up (not FUSEFSWIRE): MCP oneOf validation names the last branch's error rather than the closest one (mcp/src/tools.rs). Slot SMFIX-P2.
+- 2026-11-20 ~10:50 main: ui/settings recursion error: the cause was 'use gpui_kit::*' bringing gpui's test macro into sync.rs tests via 'use super::*'. The test module now uses explicit imports. Main's git checkout of ui/settings/src/lib.rs briefly dropped the lane's 4 uncommitted lines (recursion_limit 256 and 'mod sync;'); they are restored by hand. todo drawer now has .test_support() so tests can scroll it (worker). Lima T13 build green; run started.
+- 2026-11-20 ~10:58 main: Lima T13 first run: 1/6 passed (no-FUSE case). The other 5 failed at add-machine 'check': h2-fuse-r1 had no git. Installed git 2.47.3 in the VM (apt). The VM setup doc/script must list git (FUSEFSWIRE to add). Rerun started.
+- 2026-11-20 ~11:10 owner: 'can we let the global desk make sessions in addition to channels if I approve them?' Today the policy refuses a global Desk agent's session start in any channel (in_channel, OtherChannel). Worker adf5cf9b: Desk start or fork in any channel → normal Start rule (Ask me by default), Never still wins, DK-4 switch does not auto-allow; tests, DK-10 and D910. Ships in 0.10.1 with PROVIDERCLI.
+- 2026-11-20 ~11:20 owner: To-do asks (status changes) must not go to Inbox; Mac notifications feel broken; optional gentle short sounds, different for Inbox and To-do. New milestone NOTIFY2 (0.10.2), manager spawned. Release plan updated: 0.10.1 = PROVIDERCLI + Desk starts sessions with approval (D910); 0.10.2 = NEWCHCLOSE, MACHINEARCHIVE, HIGHLIGHT, NOTIFY2.
+- 2026-11-20 ~11:35 main: native_test 381/381 (todo_step_context fixed). continue_in_remote + humatad2_unit PASS; continue_in 22/26 → asserts updated to the per-session home (FUSEFSWIRE); sessions_core agents tests fixed (UUID ids). Rerun bmdu4g0ze. Desk D910 MCP+cards done (adf5cf9b) incl. MCP.md; testing b2ubno4ma. Lima T13 rerun b2l4xgbak pending.
+- 2026-11-20 ~11:45 main: owner bug: disabling Claude/Codex still defaults to them and fails. New milestone AGENTOFF (ships 0.10.1, with PROVIDERCLI + D910); manager a9c8358a documents every default site in milestones/AGENTOFF.md, failing-first tests, one 'first enabled agent' helper. NOTIFY2 batch 1 in (diagnosis, Fable rulings, sounds); batch 2 claims granted except settings/todo files held by 0.10.0 lanes.
+- 2026-11-20 ~11:55 main: T13 root cause: Linux FUSE mount never written (PosixMountBackend runs mount -t linux). FUSEFSWIRE now writes fusermount3 + wire codec + serve loop (libs/fusefs/linux) + LinuxFuseBackend. macOS FSKit serve split to new FSKITSERVE (0.10.5, before WEBTODO); macOS uses the files-tools fallback until then (reversible D).
+- 2026-11-20 ~12:10 main: STACKGH outcome 5 added (owner): native GitHub stack mode writes no comments; PR = stack of commits, stacked PR = stack of PRs; comments only as fallback. NOTIFY2 batch 2 landed unbuilt (gpui sound+permission patches); repinned crates; its D911–D913 renumbered D912–D914 (FSKITSERVE took D911). Testing b6txftenl.
+- 2026-11-20 ~12:25 main: AGENTOFF batch 1 landed unbuilt (B1–B18 in milestones/AGENTOFF.md; D915). Claims: see AGENTOFF.md Lane. B15 settings-row hunk at scratchpad/agentoff-settings-row.patch, apply when ui/settings frees. Gaps 1–3 sent back. Testing b9n5r396j. FUSE libs + linux_test PASS; Mac builds rerun bhb7irhof (bq merged a --config=linux_arm64 request with Mac targets → incompatible; run cross-builds alone).

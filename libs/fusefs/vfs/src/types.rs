@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{VfsError, VfsResult};
+use crate::error::{VfsError, VfsResult, VfsTarget};
 use crate::path::VirtualPath;
 
 /// Reserved inode number for the volume root directory (`"/"`).
@@ -296,16 +296,22 @@ impl SyntheticStub {
 
     /// Serializes the stub to deterministic pretty-printed JSON bytes with a trailing newline.
     pub fn to_json_bytes(&self) -> VfsResult<Vec<u8>> {
-        let mut out = serde_json::to_vec_pretty(self)
-            .map_err(|err| VfsError::Eio(format!("failed to serialize synthetic stub: {err}")))?;
+        let mut out = serde_json::to_vec_pretty(self).map_err(|source| VfsError::JsonIo {
+            op: "serialize stub",
+            target: VfsTarget::Record("synthetic stub"),
+            source,
+        })?;
         out.push(b'\n');
         Ok(out)
     }
 
     /// Deserializes a stub from JSON bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> VfsResult<Self> {
-        serde_json::from_slice(bytes)
-            .map_err(|err| VfsError::Einval(format!("invalid synthetic stub JSON: {err}")))
+        serde_json::from_slice(bytes).map_err(|source| VfsError::JsonInvalid {
+            op: "parse stub",
+            target: VfsTarget::Record("synthetic stub"),
+            source,
+        })
     }
 }
 

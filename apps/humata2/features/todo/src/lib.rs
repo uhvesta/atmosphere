@@ -278,6 +278,8 @@ pub enum EditField {
     Description,
     /// A typed due date ("fri", "nov 28", "2026-12-01").
     Due,
+    /// The Markdown context of the step at this index.
+    StepContext(usize),
 }
 
 /// The field being typed into.
@@ -1104,6 +1106,12 @@ impl Reducer for Todo {
                             let (y, m, day) = d.ymd();
                             format!("{y:04}-{m:02}-{day:02}")
                         }),
+                    (EditField::StepContext(i), Some(at)) => state.items[at]
+                        .todo
+                        .steps
+                        .get(i)
+                        .and_then(|s| s.markdown_context.clone())
+                        .unwrap_or_default(),
                     _ => String::new(),
                 };
                 state.editing = Some(Editing { key, field, text });
@@ -1147,6 +1155,22 @@ impl Reducer for Todo {
                         }
                     };
                 }
+                if let EditField::StepContext(index) = editing.field {
+                    let Some(at) = state.position(&editing.key) else {
+                        return Effect::none();
+                    };
+                    let had = state.items[at]
+                        .todo
+                        .steps
+                        .get(index)
+                        .and_then(|s| s.markdown_context.as_deref())
+                        .unwrap_or_default();
+                    if had.trim() == text {
+                        return Effect::none();
+                    }
+                    let markdown = (!text.is_empty()).then_some(text);
+                    return self.reduce(state, TodoAction::SetStepMarkdown(editing.key, index, markdown));
+                }
                 // A description may be cleared; the other fields need text.
                 if text.is_empty() && editing.field != EditField::Description {
                     return Effect::none();
@@ -1180,7 +1204,7 @@ impl Reducer for Todo {
                             TodoPatch { steps: Some(steps), ..TodoPatch::default() },
                         )
                     }
-                    EditField::Due => unreachable!("handled above"),
+                    EditField::Due | EditField::StepContext(_) => unreachable!("handled above"),
                 }
             }
             TodoAction::CancelEdit => {
@@ -1657,6 +1681,7 @@ impl Reducer for Todo {
                 let Some(at) = state.position(&key) else {
                     return Effect::none();
                 };
+                cancel_step_context_edit(state, &key);
                 let mut steps = state.items[at].todo.steps.clone();
                 if from >= steps.len() || from == to {
                     return Effect::none();
@@ -1670,6 +1695,7 @@ impl Reducer for Todo {
                 let Some(at) = state.position(&key) else {
                     return Effect::none();
                 };
+                cancel_step_context_edit(state, &key);
                 let mut steps = state.items[at].todo.steps.clone();
                 let Some(step) = steps.get_mut(index) else {
                     return Effect::none();
@@ -1936,5 +1962,17 @@ impl Reducer for Todo {
             }
             TodoAction::NavigateAnchor(_) => Effect::none(),
         }
+    }
+}
+
+/// Steps moving or dropping shift the indices an open step-context editor
+/// points at, so the editor closes without saving.
+fn cancel_step_context_edit(state: &mut TodoState, key: &str) {
+    if state
+        .editing
+        .as_ref()
+        .is_some_and(|e| e.key == key && matches!(e.field, EditField::StepContext(_)))
+    {
+        state.editing = None;
     }
 }

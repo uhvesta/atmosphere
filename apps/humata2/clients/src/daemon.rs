@@ -158,6 +158,9 @@ pub enum Event {
     /// PROGRESS: an operation the app is waiting on moved on (its running
     /// step and how far it is). Sent only when what it shows changed.
     Operation(crate::progress::OpUpdate),
+    /// The daemon's settings changed, or its mount state did (D908): read the
+    /// open Settings section again.
+    SettingsChanged,
     /// Events were dropped because the subscriber fell behind: reload.
     Resync,
 }
@@ -222,6 +225,10 @@ pub enum Operation {
 
     /// [`Daemon::set_agent_switch`].
     SetAgentSwitch,
+    /// [`Daemon::set_sync_settings`].
+    SetSyncSettings,
+    /// [`Daemon::set_todo_automation`] (TODO2WIRE).
+    SetTodoAutomation,
     /// [`Daemon::rename_session`].
     RenameSession,
     /// [`Daemon::add_repo_to_session`].
@@ -865,6 +872,17 @@ pub trait Daemon: Send + Sync + 'static {
     /// Changes one agent kind's switches (`kind` is its id); gives what the
     /// daemon holds after.
     fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch>;
+    /// What Settings › Sync holds: the Sync section and whether the
+    /// cross-machine view is mounted (FUSEFS).
+    fn sync_settings(&self) -> Reply<SyncSnapshot>;
+    /// Changes the Sync section and/or the mount switch; gives what the
+    /// daemon holds after. Running sessions follow at once.
+    fn set_sync_settings(&self, change: SyncChange) -> Reply<SyncSnapshot>;
+    /// What Settings › General › To-do holds (TODO2WIRE, D902).
+    fn todo_automation(&self) -> Reply<TodoAutomation>;
+    /// Replaces the whole To-do automation section; gives what the daemon
+    /// holds after. It applies with no restart.
+    fn set_todo_automation(&self, section: TodoAutomation) -> Reply<TodoAutomation>;
 }
 
 /// The terminals of sessions. What a tab draws, and what is typed into it,
@@ -1011,6 +1029,12 @@ pub enum ImageKind {
 
 mod agent_switches;
 mod running;
+mod sync;
+mod todo_automation;
 
-pub use agent_switches::{AgentSwitch, SwitchChange};
+pub use agent_switches::{AgentSwitch, NoAgentOn, SwitchChange, pick_agent};
+pub use sync::{FuseMountStatus, MachineSyncSettings, SyncChange, SyncSettings, SyncSkillsMode, SyncSnapshot};
+pub use todo_automation::{
+    DEFAULT_IDLE_NUDGE_DAYS, IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode,
+};
 pub use running::{HolderTab, RunningHolder, agent_of_kind};

@@ -1,0 +1,96 @@
+diff --git a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1100,6 +1100,24 @@
+         let mut state = self.0.lock();
+         let executor = state.foreground_executor.clone();
+         state.system_notifications.show(&executor, notification);
++    }
++
++    fn request_system_notification_permission(&self) {
++        let mut state = self.0.lock();
++        let executor = state.foreground_executor.clone();
++        state.system_notifications.request_permission(&executor);
++    }
++
++    fn show_system_notification_with_sound(
++        &self,
++        notification: gpui::SystemNotification,
++        sound: Option<gpui::SharedString>,
++    ) {
++        let mut state = self.0.lock();
++        let executor = state.foreground_executor.clone();
++        state
++            .system_notifications
++            .show_with_sound(&executor, notification, sound);
+     }
+ 
+     fn dismiss_system_notification(&self, tag: &str) {
+diff --git a/src/system_notifications.rs b/src/system_notifications.rs
+--- a/src/system_notifications.rs
++++ b/src/system_notifications.rs
+@@ -24,7 +24,7 @@
+     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
+     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
+     UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
+-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
++    UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
+     UNUserNotificationCenterDelegate,
+ };
+ 
+@@ -48,9 +48,25 @@
+     }
+ 
+     pub(crate) fn show(&mut self, executor: &ForegroundExecutor, notification: SystemNotification) {
++        self.show_with_sound(executor, notification, None);
++    }
++
++    pub(crate) fn show_with_sound(
++        &mut self,
++        executor: &ForegroundExecutor,
++        notification: SystemNotification,
++        sound: Option<SharedString>,
++    ) {
+         self.initialize(executor);
+         if let Some(center) = &self.center {
+-            center.show(notification);
++            center.show(notification, sound);
++        }
++    }
++
++    pub(crate) fn request_permission(&mut self, executor: &ForegroundExecutor) {
++        self.initialize(executor);
++        if let Some(center) = &self.center {
++            center.request_authorization();
+         }
+     }
+ 
+@@ -161,12 +177,17 @@
+             );
+     }
+ 
+-    fn show(&self, notification: SystemNotification) {
++    fn show(&self, notification: SystemNotification, sound: Option<SharedString>) {
+         self.request_authorization();
+ 
+         let content = UNMutableNotificationContent::new();
+         content.setTitle(&NSString::from_str(&notification.title));
+         content.setBody(&NSString::from_str(&notification.body));
++        if let Some(sound) = sound {
++            content.setSound(Some(&UNNotificationSound::soundNamed(&NSString::from_str(
++                &sound,
++            ))));
++        }
+         if !notification.actions.is_empty() {
+             let category_identifier = self.register_category(&notification.actions);
+             content.setCategoryIdentifier(&NSString::from_str(&category_identifier));
+@@ -295,7 +316,8 @@
+         ) {
+             completion_handler
+                 .call((UNNotificationPresentationOptions::Banner
+-                    | UNNotificationPresentationOptions::List,));
++                    | UNNotificationPresentationOptions::List
++                    | UNNotificationPresentationOptions::Sound,));
+         }
+     }
+ );

@@ -91,13 +91,14 @@ impl Builds for FakeBuilds {
     }
 }
 
-/// A fake humatad2, holder, `humata` and `stack`.
+/// A fake humatad2, holder, `humata`, `stack` and FUSEFS helper.
 pub fn payloads() -> Vec<Payload> {
     vec![
         Payload::new(InstalledFile::Humatad, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 1\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 2\n"[..])),
         Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 3\n"[..])),
+        Payload::new(InstalledFile::FuseFs, Arc::from(&b"#!/bin/sh\nexit 4\n"[..])),
     ]
 }
 

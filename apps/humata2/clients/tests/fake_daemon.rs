@@ -129,6 +129,32 @@ fn a_subscriber_that_falls_behind_is_told_to_reload() {
 }
 
 #[test]
+fn a_subscription_can_start_with_a_resync_and_an_ended_stream_closes() {
+    let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));
+    let mut plain = block_on(daemon.events()).expect("events open");
+    assert!(plain.try_recv().is_err(), "nothing is said before something happens");
+    daemon.resync_on_subscribe();
+    let mut told = block_on(daemon.events()).expect("events open");
+    assert_eq!(told.try_recv().ok(), Some(Ok(Event::Resync)));
+    daemon.end_events();
+    assert!(block_on(told.recv()).is_none(), "an ended stream closes");
+}
+
+#[test]
+fn a_held_subscribe_answers_only_once_released() {
+    let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));
+    let release = daemon.hold_next_subscribe();
+    let runtime = Builder::new_current_thread().enable_all().build().expect("a runtime starts");
+    let opened = runtime.spawn(daemon.events());
+    runtime.block_on(async {
+        tokio::task::yield_now().await;
+        assert!(!opened.is_finished(), "the subscribe waits for the release");
+        drop(release);
+        assert!(opened.await.expect("the task ran").is_ok());
+    });
+}
+
+#[test]
 fn a_fork_starts_with_its_parents_clone_listing() {
     use humata2_clients::model::ForkKind;
     let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));

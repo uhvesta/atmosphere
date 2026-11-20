@@ -49,6 +49,9 @@ pub struct BoardContext {
     pub tell: Option<Tell>,
     pub repos: Option<RepoSvc>,
     pub forwarder: Option<Arc<Forwarder>>,
+    /// TODO2WIRE: the session service, set once it exists (it is built after
+    /// the board), so To-do automation can wake, archive and restore sessions.
+    pub sessions: Arc<std::sync::OnceLock<SessionSvc>>,
 }
 
 /// A live `BoardSvc` instance wired by `humatad_plugin_board`.

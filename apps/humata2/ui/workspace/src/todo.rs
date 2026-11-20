@@ -14,7 +14,7 @@ use crate::{
 use gpui_kit::component::{
     Sizable as _,
     button::Button,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
 };
 use gpui_kit::{prelude::*, *};
 use humata2_clients::todo::{BlockerGoneResolution, Entry, TodoHistoryEntry, TodoRunsResult};
@@ -306,7 +306,10 @@ pub(crate) fn runs_ledger_label(todo: &Todo, loaded: Option<&TodoRunsResult>) ->
         _ if todo.run_count > 0 => (todo.run_count, todo.total_cost_micros),
         _ => return None,
     };
-    Some(format!("Runs {count} · {}", format_cost_usd(cost)))
+    Some(match cost {
+        Some(cost) => format!("Runs {count} · {}", format_cost_usd(cost)),
+        None => format!("Runs {count}"),
+    })
 }
 
 /// Compact close-readiness summary line if present on `todo`.
@@ -580,6 +583,7 @@ pub struct Inputs {
     pub(crate) quick_add: Entity<InputState>,
     search: Entity<InputState>,
     pub(crate) edit: Entity<InputState>,
+    step_context: Entity<TextareaState>,
     comment_input: Entity<InputState>,
     ext_block_input: Entity<InputState>,
     split_input: Entity<InputState>,
@@ -598,9 +602,16 @@ pub struct Inputs {
     fold_open: Rc<Cell<bool>>,
     ext_block_open: Rc<Cell<bool>>,
     editing: Cell<bool>,
+    step_context_at: Cell<Option<usize>>,
+    /// The store's text last put in quick add, search, edit and the step
+    /// context, in that order. A field is written only when the store's text
+    /// changes, because a field's change event arrives after the frame that
+    /// follows the keystroke, and writing the older store text then would
+    /// erase what was just typed.
+    synced: RefCell<[String; 4]>,
     placeholder: RefCell<String>,
     scroll: ScrollHandle,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl Inputs {
@@ -609,13 +620,18 @@ impl Inputs {
         let quick_add = cx.new(|cx| InputState::new(window, cx).placeholder("Add an item…"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let edit = cx.new(|cx| InputState::new(window, cx));
+        let step_context = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Context for this step. Markdown is fine.")
+                .auto_grow(3, 8)
+        });
         let comment_input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a comment…"));
         let ext_block_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Waiting on vendor / external reason…"));
         let split_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Titles separated by commas…"));
         let ask_input = cx.new(|cx| InputState::new(window, cx).placeholder("Write an answer or note…"));
-        let (one, two, three) = (send.clone(), send.clone(), send.clone());
+        let (one, two, three, four) = (send.clone(), send.clone(), send.clone(), send.clone());
         let subs = [
             cx.subscribe(&quick_add, move |_, input, event: &InputEvent, cx| match event {
                 InputEvent::Change => one(A::QuickAddChanged(input.read(cx).value().to_string()), cx),
@@ -632,11 +648,21 @@ impl Inputs {
                 InputEvent::PressEnter { .. } => three(A::CommitEdit, cx),
                 _ => {}
             }),
+            // Return is a new line here; Cmd+Return saves.
+            cx.subscribe(&step_context, move |_, input, event: &InputEvent, cx| match event {
+                InputEvent::Change => four(A::EditChanged(input.read(cx).value().to_string()), cx),
+                InputEvent::PressEnter { secondary: true, .. } => {
+                    four(A::EditChanged(input.read(cx).value().to_string()), cx);
+                    four(A::CommitEdit, cx);
+                }
+                _ => {}
+            }),
         ];
         Self {
             quick_add,
             search,
             edit,
+            step_context,
             comment_input,
             ext_block_input,
             split_input,
@@ -655,6 +681,8 @@ impl Inputs {
             fold_open: Rc::new(Cell::new(false)),
             ext_block_open: Rc::new(Cell::new(false)),
             editing: Cell::new(false),
+            step_context_at: Cell::new(None),
+            synced: RefCell::new(Default::default()),
             placeholder: RefCell::new(String::new()),
             scroll: ScrollHandle::new(),
             _subscriptions: subs,
@@ -665,18 +693,50 @@ impl Inputs {
     /// drawer field when typing into it starts.
     pub fn sync(&self, state: &TodoState, window: &mut Window, cx: &mut App) {
         let editing = state.editing.as_ref();
-        for (input, value) in [
+        let step_at = editing.and_then(|e| match e.field {
+            EditField::StepContext(i) => Some(i),
+            _ => None,
+        });
+        // The one-line edit field and the step-context box share the edit's
+        // text; each shows it only while it is the one editing.
+        let edit_text = editing.filter(|_| step_at.is_none()).map_or("", |e| e.text.as_str());
+        let ctx_text = editing.filter(|_| step_at.is_some()).map_or("", |e| e.text.as_str());
+        let mut synced = self.synced.borrow_mut();
+        let one_line = [
             (&self.quick_add, state.quick_add.line.as_str()),
             (&self.search, state.view.filter.search.as_str()),
-            (&self.edit, editing.map_or("", |e| e.text.as_str())),
-        ] {
-            if input.read(cx).value().as_ref() != value {
-                input.update(cx, |i, cx| i.set_value(value.to_owned(), window, cx));
+            (&self.edit, edit_text),
+        ];
+        for ((input, value), seen) in one_line.into_iter().zip(synced.iter_mut()) {
+            if seen.as_str() != value {
+                if input.read(cx).value().as_ref() != value {
+                    input.update(cx, |i, cx| i.set_value(value.to_owned(), window, cx));
+                }
+                value.clone_into(seen);
             }
         }
-        if editing.is_some() && !self.editing.get() {
+        if synced[3] != ctx_text {
+            if self.step_context.read(cx).value().as_ref() != ctx_text {
+                let text = ctx_text.to_owned();
+                self.step_context.update(cx, |i, cx| i.set_value(text, window, cx));
+            }
+            ctx_text.clone_into(&mut synced[3]);
+        }
+        drop(synced);
+        if step_at.is_some() {
+            // A box opens with its caret after the text, as any editor
+            // does; a multi-line field's `set_value` leaves it at the start.
+            if self.step_context_at.get() != step_at {
+                self.step_context.update(cx, |i, cx| {
+                    let end = i.text().len();
+                    i.set_selected_range(end..end, cx);
+                    i.focus(window, cx);
+                });
+            }
+        } else if editing.is_some() && !self.editing.get() {
             self.edit.update(cx, |i, cx| i.focus(window, cx));
         }
+        self.step_context_at.set(step_at);
         self.editing.set(editing.is_some());
         let want = add_placeholder(state);
         if *self.placeholder.borrow() != want {
@@ -841,6 +901,7 @@ pub fn page(
     let search_input = inputs.search.clone();
     let quick_add_input = inputs.quick_add.clone();
     let edit_input = inputs.edit.clone();
+    let step_context_input = inputs.step_context.clone();
     let comment_input = inputs.comment_input.clone();
     let ext_block_input = inputs.ext_block_input.clone();
     let split_input = inputs.split_input.clone();
@@ -860,7 +921,8 @@ pub fn page(
                 &ask_input,
             ]
             .into_iter()
-            .any(|inp| inp.focus_handle(cx).is_focused(window));
+            .any(|inp| inp.focus_handle(cx).is_focused(window))
+                || step_context_input.focus_handle(cx).is_focused(window);
             let key = event.keystroke.key.as_str();
             let shift = event.keystroke.modifiers.shift;
             if let Some(cmd) =
@@ -899,6 +961,7 @@ pub fn page(
                         .px(px(14.))
                         .py(px(12.))
                         .child(drawer(send, state, e, inputs, sessions, look, true))
+                        .test_support()
                 })),
         )
         .children((!state.selected.is_empty()).then(|| bulk_action_bar(send, state, inputs, look)))
@@ -2469,11 +2532,15 @@ pub(crate) fn drawer(
                 .border_1()
                 .border_color(if s.done { teal(look) } else { tone(look, 0xb9b9c0, 0x55555a) })
                 .when(s.done, |b| b.bg(teal(look)).text_color(rgb(0xffffff)).text_size(px(10.)).child("✓"));
+            let row_group = SharedString::from(format!("todo-step-row-{i}"));
+            let has_context = s.markdown_context.as_ref().is_some_and(|m| !m.is_empty());
+            let editing_context = editing(EditField::StepContext(i));
             col()
                 .py(px(3.))
                 .gap(px(2.))
                 .child(
                     row()
+                        .group(row_group.clone())
                         .gap(px(8.))
                         .child(clickable(
                             send,
@@ -2487,6 +2554,19 @@ pub(crate) fn drawer(
                             ),
                         ))
                         .child(div().flex_1())
+                        .children((!narrow && !has_context && !s.dropped).then(|| {
+                            div()
+                                .id(SharedString::from(format!("todo-step-context-add-wrap-{i}")))
+                                .opacity(0.)
+                                .group_hover(row_group.clone(), |style| style.opacity(1.))
+                                .child(link(
+                                    send,
+                                    SharedString::from(format!("todo-step-context-add-{i}")),
+                                    "+ Context",
+                                    A::StartEdit(key.clone(), EditField::StepContext(i)),
+                                    look,
+                                ))
+                        }))
                         .children((!narrow && i > 0).then(|| {
                             link(
                                 send,
@@ -2515,12 +2595,29 @@ pub(crate) fn drawer(
                             )
                         })),
                 )
-                .children(s.markdown_context.as_ref().filter(|m| !m.is_empty()).map(|md| {
-                    div()
+                .children(editing_context.then(|| step_context_editor(send, inputs, has_context, look)))
+                .children(s.markdown_context.as_ref().filter(|m| !m.is_empty() && !editing_context).map(|md| {
+                    let line = div()
                         .pl(px(24.))
                         .text_size(px(11.5))
                         .text_color(rgb(look.secondary))
-                        .child(md.clone())
+                        .child(md.clone());
+                    if narrow {
+                        return line.into_any_element();
+                    }
+                    let send = send.clone();
+                    let action = A::StartEdit(key.clone(), EditField::StepContext(i));
+                    line.id(SharedString::from(format!("todo-step-context-{i}")))
+                        .role(Role::Button)
+                        .aria_label("Edit the step's context")
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(soft(look)))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            send(action.clone(), cx);
+                        })
+                        .test_support()
+                        .into_any_element()
                 }))
                 .children(s.source_anchor.as_ref().map(|anchor| {
                     let label = anchor.display();
@@ -2609,6 +2706,47 @@ pub(crate) fn drawer(
         .children((!narrow).then(|| runs_ledger_section(send, state, inputs, t, look)).flatten())
         .children((!narrow).then(|| history_section(send, state, inputs, t, look)))
         .children((!narrow).then(|| footer(send, state, t, look, true).mt(px(12.)).pt(px(10.))))
+}
+
+/// The box that edits a step's Markdown context, under the step's row
+/// (frames t2-1 and t2-2).
+fn step_context_editor(send: &Send, inputs: &Inputs, had_context: bool, look: Look) -> Div {
+    let hint = if had_context {
+        "⌘↩ saves · Esc cancels · empty removes it"
+    } else {
+        "⌘↩ saves · Esc cancels"
+    };
+    let cancel = send.clone();
+    col()
+        // Escape is the app's Dismiss, which a key binding sends before any
+        // key listener runs, and the Shell's Dismiss closes the drawer. On
+        // its way up from the box it cancels only the edit.
+        .on_action(move |_: &humata2_ui_core::keys::Dismiss, _, cx| cancel(A::CancelEdit, cx))
+        .pl(px(24.))
+        .mt(px(4.))
+        .mb(px(4.))
+        .child(
+            div()
+                .id("todo-step-context-edit")
+                .text_size(px(12.))
+                .child(
+                    Textarea::new(&inputs.step_context)
+                        .small()
+                        .rounded(px(6.))
+                        .bg(rgb(look.card))
+                        .text_size(px(12.)),
+                )
+                .test_support(),
+        )
+        .child(
+            row()
+                .mt(px(6.))
+                .gap(px(10.))
+                .child(primary(send, "todo-step-context-save", "Save", A::CommitEdit, look).small())
+                .child(link(send, "todo-step-context-cancel", "Cancel", A::CancelEdit, look))
+                .child(div().flex_1())
+                .child(div().text_size(px(11.5)).text_color(rgb(look.secondary)).child(hint)),
+        )
 }
 
 /// What the drawer's start-session button says (frames b1-2 and b4-2).
@@ -3181,7 +3319,7 @@ fn runs_ledger_section(
                                 look,
                             )
                         }))
-                        .child(small(format_cost_usd(run.cost_micros), look))
+                        .children(run.cost_micros.map(|c| small(format_cost_usd(c), look)))
                 }))
             }))
             .test_support(),
@@ -4078,11 +4216,22 @@ mod tests {
     }
 
     #[test]
+    fn runs_ledger_has_no_amount_when_cost_is_unknown() {
+        let s = state();
+        let mut t = Todo::new("RUN-2", "Ship API", s.today);
+        t.run_count = 2;
+        t.total_cost_micros = None;
+        let label = runs_ledger_label(&t, None).expect("label");
+        assert!(label.contains('2'));
+        assert!(!label.contains('$'));
+    }
+
+    #[test]
     fn runs_ledger_and_structured_asks_format_cleanly() {
         let s = state();
         let mut t = Todo::new("RUN-1", "Ship API", s.today);
         t.run_count = 3;
-        t.total_cost_micros = 1_450_000;
+        t.total_cost_micros = Some(1_450_000);
         assert_eq!(runs_ledger_label(&t, None), Some("Runs 3 · $1.45".to_owned()));
 
         t.close_readiness = Some(humata2_todo::CloseReadiness {

@@ -73,6 +73,7 @@ fn release_b(host: Platform, platform: Platform) -> StagedRelease {
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\n# holder b\nexit 0\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\n# humata b\nexit 0\n"[..])),
         Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\n# stack b\nexit 0\n"[..])),
+        Payload::new(InstalledFile::FuseFs, Arc::from(&b"#!/bin/sh\n# fusefs b\nexit 0\n"[..])),
     ];
     let mut entries: Vec<(Platform, InstalledFile, String)> = files
         .iter()
@@ -82,6 +83,7 @@ fn release_b(host: Platform, platform: Platform) -> StagedRelease {
     entries.push((host, InstalledFile::Holder, files[1].sha256().to_owned()));
     entries.push((host, InstalledFile::Cli, files[2].sha256().to_owned()));
     entries.push((host, InstalledFile::Stack, files[3].sha256().to_owned()));
+    entries.push((host, InstalledFile::FuseFs, files[4].sha256().to_owned()));
     StagedRelease::new(platform, manifest_json(&entries), files).expect("release b agrees with its manifest")
 }
 
@@ -128,7 +130,7 @@ async fn a_release_staged_over_ssh_becomes_the_machines_release_once_migrated() 
     assert_eq!(id, upgrade::bundle_id(release.bundle_json()));
     assert_eq!(
         staged_names(&bin),
-        [".bundle.json.next", ".humata.next", ".humata2_holder.next", ".humatad2.next", ".stack.next"]
+        [".bundle.json.next", ".humata.next", ".humata2_fusefs.next", ".humata2_holder.next", ".humatad2.next", ".stack.next"]
     );
     assert_eq!(std::fs::read(bin.join(".bundle.json.next")).unwrap(), release.bundle_json().to_vec());
     assert_eq!(upgrade::bundle_id(&std::fs::read(bin.join("bundle.json")).unwrap()), release_a);

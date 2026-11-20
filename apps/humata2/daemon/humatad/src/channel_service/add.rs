@@ -340,14 +340,15 @@ impl ChannelSvc {
             Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
         )));
 
-        let (feed, store, id, by) = (
+        let (feed, store, agents, id, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             channel.id.clone(),
             identity::actor(caller),
         );
         let _ = blocking(move || {
-            tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by));
+            tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, Some(by));
         })
         .await;
 
@@ -386,9 +387,10 @@ impl ChannelSvc {
         // The operation ends once, when the local clones and every machine's
         // part have: the first failure fails it; a machine removed while its
         // setup waited counts as done.
-        let (feed, store, id, by) = (
+        let (feed, store, agents, id, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             channel.id.clone(),
             identity::actor(caller),
         );
@@ -417,7 +419,7 @@ impl ChannelSvc {
                 }
             }
             let _ = blocking(move || {
-                tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by));
+                tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, Some(by));
             })
             .await;
         });

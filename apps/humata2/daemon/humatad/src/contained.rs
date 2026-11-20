@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use humata2_config_compose::AgentKind;
 use humata2_contain::{
     Agent, Containment, Login, TOKEN_VARIABLES, choose_login, flow_back, hide_from_git, home_rules, parse_version,
     seed_claude_copy,
@@ -84,6 +85,33 @@ fn agent_of(name: &str) -> Agent {
     }
 }
 
+/// The config home a session's `agent` was composed into (D895), if it has
+/// one: a session launched before composing existed has none, and runs as it
+/// did.
+fn composed_home(machine_root: &Path, session: &str, agent: Agent) -> Option<(AgentKind, PathBuf)> {
+    let kind = match agent {
+        Agent::ClaudeCode => AgentKind::Claude,
+        Agent::Codex => AgentKind::Codex,
+        Agent::CopilotCli => AgentKind::Copilot,
+        Agent::Agy => AgentKind::Agy,
+        Agent::OpenCode | Agent::Other => return None,
+    };
+    let dir = crate::config_sync::session_home(machine_root, session, kind);
+    dir.is_dir().then_some((kind, dir))
+}
+
+/// The real auth files a composed home links to, which the agent may read
+/// and never write.
+fn auth_sources(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
+    let spec = kind.spec();
+    let own = home.join(kind.default_home_rel_path());
+    spec.auth_passthrough_files
+        .iter()
+        .map(|file| own.join(file))
+        .chain(spec.extra_home_auth_sources.iter().map(|(source, _)| home.join(source)))
+        .collect()
+}
+
 /// Runs agents contained when their session's setting says so.
 pub(crate) struct Contained {
     store: Arc<Store>,
@@ -129,7 +157,8 @@ impl Contained {
         // must not show as the session's changes.
         hide_from_git(&session.folder)?;
         let agent = agent_of(&session.agent);
-        let own = own_state(agent, &self.home, &self.state, &session.folder, login)?;
+        let composed = composed_home(&self.channels.root(), &session.id, agent);
+        let own = own_state(agent, &self.home, &self.state, &session.folder, login, composed.as_ref())?;
         let mut hidden = own.hidden;
         hidden.push(self.channels.root());
         hidden.extend(self.channels.older_roots());
@@ -227,6 +256,7 @@ fn own_state(
     state: &Path,
     folder: &Path,
     login: Login,
+    composed: Option<&(AgentKind, PathBuf)>,
 ) -> Result<OwnState, ContainRefused> {
     let rules = home_rules(agent, home)?;
     let mut own = OwnState {
@@ -235,6 +265,14 @@ fn own_state(
         read_only: rules.read_only,
         env: Vec::new(),
     };
+    // D895: a composed home is the agent's own state, so nothing is copied
+    // and nothing flows back; the real auth files stay read-only.
+    if let Some((kind, dir)) = composed {
+        own.env = vec![(OsString::from(kind.config_env_var()), dir.clone().into_os_string())];
+        own.agent_state = vec![dir.clone()];
+        own.read_only = auth_sources(*kind, home);
+        return Ok(own);
+    }
     match agent {
         Agent::ClaudeCode => {
             let copy = seed_claude_copy(home, &folder.join(".humata").join("claude"), folder)?;
@@ -282,7 +320,7 @@ impl Contain for Contained {
         let claude = matches!(agent_of(&session.agent), Agent::ClaudeCode);
         if !applies(&self.store, &session.channel).map_err(setting)? {
             // D217: the mirror of seeding, at an uncontained start.
-            if claude {
+            if claude && composed_home(&self.channels.root(), &session.id, Agent::ClaudeCode).is_none() {
                 self.flow_back(&session.folder, &record.launch.conversation_id);
             }
             return Ok(argv.to_vec());
@@ -325,7 +363,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let state = directory.path().join("state");
 
-        let own = own_state(Agent::ClaudeCode, &home, &state, &folder, Login::Keychain).unwrap();
+        let own = own_state(Agent::ClaudeCode, &home, &state, &folder, Login::Keychain, None).unwrap();
 
         let copy = folder.join(".humata/claude");
         assert!(own.env.contains(&("CLAUDE_CONFIG_DIR".into(), copy.clone().into_os_string())));
@@ -336,6 +374,56 @@ mod tests {
         for path in &own.agent_state {
             assert!(path.starts_with(home.join(".claude/projects")), "{}", path.display());
         }
+    }
+
+    #[test]
+    fn a_session_with_a_composed_home_is_not_copied_and_keeps_its_auth_read_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude.json"), "{}\n").unwrap();
+        let folder = directory.path().join("channels/acme/fix-login");
+        std::fs::create_dir_all(&folder).unwrap();
+        let state = directory.path().join("state");
+        let machine_root = directory.path().join("machine");
+        let composed = crate::config_sync::session_home(&machine_root, "se_a", AgentKind::Claude);
+        std::fs::create_dir_all(&composed).unwrap();
+
+        let found = composed_home(&machine_root, "se_a", Agent::ClaudeCode);
+        let own = own_state(Agent::ClaudeCode, &home, &state, &folder, Login::Keychain, found.as_ref()).unwrap();
+
+        assert_eq!(own.env, vec![("CLAUDE_CONFIG_DIR".into(), composed.clone().into_os_string())]);
+        assert_eq!(own.agent_state, vec![composed]);
+        assert!(own.read_only.contains(&home.join(".claude/.credentials.json")));
+        assert!(!folder.join(".humata/claude").exists(), "nothing is seeded");
+    }
+
+    #[test]
+    fn every_agent_with_a_composed_home_gets_its_auth_files_read_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let machine_root = directory.path().join("machine");
+        for (agent, kind) in [
+            (Agent::Codex, AgentKind::Codex),
+            (Agent::CopilotCli, AgentKind::Copilot),
+            (Agent::Agy, AgentKind::Agy),
+        ] {
+            let composed = crate::config_sync::session_home(&machine_root, "se_a", kind);
+            std::fs::create_dir_all(&composed).unwrap();
+            let found = composed_home(&machine_root, "se_a", agent);
+            let own = own_state(agent, &home, directory.path(), directory.path(), Login::Keychain, found.as_ref()).unwrap();
+            assert_eq!(own.agent_state, vec![composed]);
+            assert!(!own.read_only.is_empty());
+            assert!(own.read_only.iter().all(|path| path.starts_with(&home)));
+        }
+    }
+
+    #[test]
+    fn a_session_launched_before_composing_has_no_composed_home_and_keeps_the_old_way() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(composed_home(directory.path(), "se_old", Agent::ClaudeCode), None);
+        assert_eq!(composed_home(directory.path(), "se_old", Agent::OpenCode), None);
     }
 
     fn agent_of_session(session: &str) -> AgentRecord {
@@ -410,12 +498,12 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let state = directory.path().join("state");
 
-        let own = own_state(Agent::Codex, &home, &state, directory.path(), Login::Keychain).unwrap();
+        let own = own_state(Agent::Codex, &home, &state, directory.path(), Login::Keychain, None).unwrap();
         assert!(own.agent_state.contains(&home.join(".codex")));
         assert!(own.env.is_empty());
-        let own = own_state(Agent::OpenCode, &home, &state, directory.path(), Login::Keychain).unwrap();
+        let own = own_state(Agent::OpenCode, &home, &state, directory.path(), Login::Keychain, None).unwrap();
         assert!(own.agent_state.contains(&state.join("opencode")));
-        let own = own_state(Agent::Agy, &home, &state, directory.path(), Login::Keychain).unwrap();
+        let own = own_state(Agent::Agy, &home, &state, directory.path(), Login::Keychain, None).unwrap();
         assert!(own.agent_state.contains(&home.join(".gemini/antigravity-cli")));
         assert!(own.read_only.contains(&home.join(".gemini/antigravity-cli/settings.json")));
         assert!(own.read_only.contains(&home.join(".gemini/config")));

@@ -9,7 +9,10 @@ rust_library(
     name = "fskit",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "fusefs_fskit",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//libs/fusefs:__subpackages__",
+    ],
     deps = [
         "//libs/fusefs/host",
         "//libs/fusefs/vfs",

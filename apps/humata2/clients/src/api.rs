@@ -46,6 +46,7 @@ pub use daemon::{
     DeleteChannelRequest, DeleteChannelResponse, EVENT_QUEUE, Event, Events, FileChange,
     ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError, fair_share,
     RunningHolder, SwitchChange, TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork,
+    NoAgentOn, pick_agent,
 };
 pub use comments::CommentsClient;
 pub use desk::DeskClient;
@@ -58,7 +59,7 @@ pub use file_manager::{
 pub use files::{FileError, FileSystem};
 pub use keychain::{Keychain, KeychainError};
 pub use local_daemon::LocalDaemon;
-pub use notifier::{DesktopNotice, NoopNotifier, Notifier, NotifyTarget};
+pub use notifier::{DesktopNotice, NoopNotifier, NoticeSound, Notifier, NotifyTarget};
 pub use reveal::{FinderReveal, Reveal, RevealError, is_this_mac};
 pub use tca::{Clock, MemoryStorage, Storage};
 pub use workspace::Workspace;

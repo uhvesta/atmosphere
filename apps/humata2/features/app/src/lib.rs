@@ -1010,8 +1010,10 @@ impl Reducer for App {
         } else {
             self.child(state, AppAction::Sidebar(SidebarAction::SetDeskLimit(limit)))
         };
+        // AGENTOFF (D915 5): a Continue dialog whose agent is off closes.
+        let continuing = self.continue_unless_agent_off(state);
         let save = self.persist(state);
-        effect.and(hits).and(page).and(refusal).and(add).and(desk).and(save)
+        effect.and(hits).and(page).and(refusal).and(add).and(desk).and(continuing).and(save)
     }
 }
 
@@ -1088,6 +1090,13 @@ impl App {
                 Effect::merge([restore, self.load(), self.follow(), pinned, agents])
             }
             AppAction::StartNewDeskSession => self.start_new_desk_session(state),
+            // AGENTOFF (D915): the form's agent is checked once the Desk opened it.
+            AppAction::Desk(action @ (DeskAction::StartNew { .. } | DeskAction::StartChannelNew { .. })) => {
+                let delegated = self.delegate(state, &AppAction::Desk(action.clone()));
+                let effect = self.child(state, AppAction::Desk(action.clone()));
+                let agent = self.desk_form_agent(state, &action);
+                effect.and(delegated).and(agent)
+            }
             AppAction::Session(SessionAction::Archive) => self.archive_or_close(state),
             AppAction::Session(SessionAction::StartFork(kind)) => {
                 self.fork_unless_desk(state, kind)
@@ -1211,6 +1220,19 @@ impl App {
                     }
                     humata2_clients::NotifyTarget::Inbox => self.navigate(state, Route::Inbox),
                     humata2_clients::NotifyTarget::Home => self.navigate(state, Route::Home),
+                    humata2_clients::NotifyTarget::Todo { item } => {
+                        let go = self.navigate(state, Route::Todo);
+                        match item {
+                            Some(item) => {
+                                let open = self.child(
+                                    state,
+                                    AppAction::Todo(TodoAction::Open(item.as_str().to_owned())),
+                                );
+                                Effect::merge([go, open])
+                            }
+                            None => go,
+                        }
+                    }
                 };
                 let cleared = self.clear_visible_notices(state);
                 Effect::merge([nav, cleared])

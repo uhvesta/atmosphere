@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{GitError, NameError, NewChannel, SetupError, Starter, clone_mains_with, create_channel};
+use humata2_sessions::{Agents, GitError, NameError, NewChannel, SetupError, Starter, clone_mains_with, create_channel};
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, Store, StoreError};
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -51,6 +51,7 @@ pub(crate) mod rename_folder;
 async fn readable_channels(
     guard: &Guard,
     store: &Arc<Store>,
+    agents: &Agents,
     machine: &str,
     caller: &Caller,
 ) -> Result<pb::ListChannelsResponse, Status> {
@@ -67,9 +68,9 @@ async fn readable_channels(
         if !matches!(guard.check(caller, &read), Ok(Checked::Allowed)) {
             continue;
         }
-        let (counting, record) = (store.clone(), channel.clone());
+        let (counting, record, kinds) = (store.clone(), channel.clone(), agents.clone());
         let (live, agent) = blocking(move || -> Result<_, StoreError> {
-            Ok((live_sessions(&counting, &record.id)?, effective_agent(&counting, &record)))
+            Ok((live_sessions(&counting, &record.id)?, effective_agent(&kinds, &counting, &record)))
         })
         .await?
         .map_err(|error| status::store(error, machine, "count the channel's sessions"))?;
@@ -87,6 +88,7 @@ async fn readable_channels(
 pub(crate) fn tell_channel(
     feed: &Feed,
     store: &Store,
+    agents: &Agents,
     channel: &str,
     change: pb::Change,
     by: Option<pb::Actor>,
@@ -97,7 +99,7 @@ pub(crate) fn tell_channel(
     let Ok(live) = live_sessions(store, channel) else {
         return;
     };
-    let agent = effective_agent(store, &record);
+    let agent = effective_agent(agents, store, &record);
     feed.publish_in(
         change,
         pb::event::Payload::Channel(channel_pb(&record, live, &agent)),
@@ -107,6 +109,15 @@ pub(crate) fn tell_channel(
         },
         by,
     );
+}
+
+/// Puts every channel on the feed again, as GetChannel shows it now: a
+/// change to the default agents or the agent switches can change each
+/// one's start agent (D770, AGENTOFF D915). Blocking.
+pub(crate) fn tell_every_channel(feed: &Feed, store: &Store, agents: &Agents, by: Option<&pb::Actor>) {
+    for channel in store.channels().unwrap_or_default() {
+        tell_channel(feed, store, agents, &channel.id, pb::Change::Updated, by.cloned());
+    }
 }
 
 /// The longest channel name taken.
@@ -321,9 +332,10 @@ impl ChannelSvc {
     /// `channel` as the API shows it.
     async fn show(&self, channel: ChannelRecord) -> Result<pb::Channel, Status> {
         let store = self.starter.store.clone();
+        let agents = self.starter.agents.clone();
         let record = channel.clone();
         let (live, agent) = blocking(move || -> Result<_, StoreError> {
-            Ok((live_sessions(&store, &record.id)?, effective_agent(&store, &record)))
+            Ok((live_sessions(&store, &record.id)?, effective_agent(&agents, &store, &record)))
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "count the channel's sessions"))?;
@@ -460,14 +472,15 @@ impl ChannelSvc {
             channel: Some(self.show(channel.clone()).await?),
             setup: Some(setup),
         };
-        let (feed, store, id, by) = (
+        let (feed, store, agents, id, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             channel.id.clone(),
             identity::actor(caller),
         );
         let _ = blocking(move || {
-            tell_channel(&feed, &store, &id, pb::Change::Created, Some(by));
+            tell_channel(&feed, &store, &agents, &id, pb::Change::Created, Some(by));
         })
         .await;
         let (starter, record, local, locks) =
@@ -494,9 +507,10 @@ impl ChannelSvc {
         // The operation ends once, when the local clones and every machine's setup
         // have: the first failure fails it; a machine that was removed while its
         // setup waited counts as done (D150).
-        let (feed, store, id, by) = (
+        let (feed, store, agents, id, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             channel.id.clone(),
             identity::actor(caller),
         );
@@ -534,7 +548,7 @@ impl ChannelSvc {
             }
             // The clones' outcome is part of how the channel shows.
             let _ = blocking(move || {
-                tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by));
+                tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, Some(by));
             })
             .await;
         });
@@ -593,14 +607,15 @@ impl ChannelSvc {
         let (store, renaming, shown) = (self.starter.store.clone(), id.clone(), name.clone());
         let renamed = blocking(move || store.rename_channel(&renaming, &shown, expected)).await?;
         let channel = renamed.map_err(|error| self.rename_failed(error, &id))?;
-        let (feed, store, named, by) = (
+        let (feed, store, agents, named, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
+            self.starter.agents.clone(),
             channel.id.clone(),
             identity::actor(caller),
         );
         let _ = blocking(move || {
-            tell_channel(&feed, &store, &named, pb::Change::Updated, Some(by));
+            tell_channel(&feed, &store, &agents, &named, pb::Change::Updated, Some(by));
         })
         .await;
         self.rename_on_machines(&channel, request.confirm_running || approved).await?;
@@ -735,13 +750,17 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32, agent: &str) -> pb::C
 pub(super) const PR_REVIEWS_FOLDER: &str = "pr-reviews";
 
 /// The agent a start that names none runs in `channel`, as `agent_for` picks
-/// it: the channel's own default, then Settings', then the one it was made
-/// with. A store that can't answer leaves the one it was made with.
-pub(crate) fn effective_agent(store: &Store, channel: &ChannelRecord) -> String {
-    crate::settings_service::default_agent_for(store, &channel.id)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| channel.default_agent.clone())
+/// it (AGENTOFF, D915): the first that is on of the channel's own default,
+/// Settings' and the one it was made with, else the first agent that is on.
+/// A store that can't answer, or every agent off, leaves the one it was
+/// made with.
+fn effective_agent(agents: &Agents, store: &Store, channel: &ChannelRecord) -> String {
+    let fallback = || channel.default_agent.clone();
+    let Ok(mut preferred) = crate::settings_service::default_agent_chain(store, &channel.id) else {
+        return fallback();
+    };
+    preferred.push(channel.default_agent.clone());
+    crate::agent_gate::pick(agents, &preferred).unwrap_or_else(|_| fallback())
 }
 
 /// A channel name: not empty, not absurdly long.
@@ -1054,15 +1073,15 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
             Checked::Allowed => {
                 let store = self.starter.store.clone();
                 Ok(Response::new(
-                    readable_channels(&self.guard, &store, &self.machine, &caller).await?,
+                    readable_channels(&self.guard, &store, &self.starter.agents, &self.machine, &caller).await?,
                 ))
             }
             Checked::Ask(asked) => {
-                let (guard, store) = (self.guard.clone(), self.starter.store.clone());
+                let (guard, store, agents) = (self.guard.clone(), self.starter.store.clone(), self.starter.agents.clone());
                 let (machine, who) = (self.machine.clone(), caller.clone());
                 let run: crate::inbox::Run = Box::new(move |_| {
                     Box::pin(async move {
-                        let listed = readable_channels(&guard, &store, &machine, &who).await?;
+                        let listed = readable_channels(&guard, &store, &agents, &machine, &who).await?;
                         Ok(Deferred {
                             result: listed.encode_to_vec(),
                             result_type: "humata.v1.ListChannelsResponse".to_owned(),

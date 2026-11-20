@@ -10,8 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humata2_clients::model::{ChannelId, MachineId, RequestId, RequestKind, SessionId};
-use humata2_clients::{DesktopNotice, NotifyTarget};
+use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, RequestKind, SessionId};
+use humata2_clients::{DesktopNotice, NoticeSound, NotifyTarget};
 use serde::{Deserialize, Serialize};
 
 /// User configuration for desktop notifications (D889).
@@ -39,6 +39,8 @@ pub struct NotifyConfig {
     /// Cooldown window in seconds for per-session and per-channel burst
     /// collapsing.
     pub cooldown_secs: u64,
+    /// Play a bundled sound with each notification (NOTIFY2). Off by default.
+    pub play_sound: bool,
 }
 
 impl Default for NotifyConfig {
@@ -52,6 +54,7 @@ impl Default for NotifyConfig {
             migrate_items: false,
             quiet_when_frontmost: true,
             cooldown_secs: 30,
+            play_sound: false,
         }
     }
 }
@@ -74,6 +77,8 @@ pub struct FrontmostContext {
     /// The channel whose Inbox tab is currently open (`Route::Channel(c)` on
     /// its `Inbox` tab), if any.
     pub viewing_channel_inbox: Option<ChannelId>,
+    /// Whether the user is viewing the To-do (`Route::Todo`).
+    pub viewing_todo: bool,
 }
 
 /// A live state transition that may produce a desktop notification.
@@ -183,6 +188,30 @@ pub enum NotifyEvent {
         /// Whether `request.answer.is_some()`.
         answered: bool,
     },
+    /// A To-do ask: the agent suggests a new item or asks about one. Posts
+    /// under the master switch only.
+    TodoAsk {
+        /// The request's identifier.
+        request_id: RequestId,
+        /// The session asking.
+        session_id: SessionId,
+        /// The session's channel, or `None` for Desk.
+        channel_id: Option<ChannelId>,
+        /// The item it is about; None when it suggests a new item.
+        item: Option<ItemId>,
+        /// Whether `request.answer.is_some()`.
+        answered: bool,
+        /// Notification title.
+        title: String,
+        /// Notification body.
+        body: String,
+    },
+}
+
+/// Stable notification identifier for a To-do ask.
+#[must_use]
+pub fn todo_notice_id(request_id: &RequestId) -> String {
+    format!("humata.todo.{}", request_id.as_str())
 }
 
 /// Stable notification identifier for a session.
@@ -247,6 +276,7 @@ enum SessionEpisodeKind {
 enum RequestOwner {
     Session(SessionId),
     Migrate(String),
+    Todo(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -284,12 +314,38 @@ pub struct BurstState {
     channels: BTreeMap<ChannelBucket, ChannelBurst>,
     request_index: BTreeMap<RequestId, RequestOwner>,
     restarts: BTreeMap<MachineId, RestartBurst>,
+    last_sound_secs: Option<u64>,
 }
 
 /// Evaluates `event` against `config`, `frontmost`, and `burst` at `now_secs`,
 /// returning a [`DesktopNotice`] to post if the event should notify.
 #[must_use]
 pub fn evaluate(
+    config: &NotifyConfig,
+    frontmost: &FrontmostContext,
+    burst: &mut BurstState,
+    event: NotifyEvent,
+    now_secs: u64,
+) -> Option<DesktopNotice> {
+    let is_todo = matches!(event, NotifyEvent::TodoAsk { .. });
+    let mut notice = evaluate_silent(config, frontmost, burst, event, now_secs)?;
+    if config.play_sound {
+        let recent = burst
+            .last_sound_secs
+            .is_some_and(|last| now_secs.saturating_sub(last) < config.cooldown_secs);
+        if !recent {
+            burst.last_sound_secs = Some(now_secs);
+            notice.sound = Some(if is_todo {
+                NoticeSound::Todo
+            } else {
+                NoticeSound::Inbox
+            });
+        }
+    }
+    Some(notice)
+}
+
+fn evaluate_silent(
     config: &NotifyConfig,
     frontmost: &FrontmostContext,
     burst: &mut BurstState,
@@ -509,6 +565,7 @@ pub fn evaluate(
                     title: format!("{machine_name} restarted: 1 session couldn't resume"),
                     body: "Open the session to recover it.".to_owned(),
                     target: NotifyTarget::Session(session_id),
+                    sound: None,
                 });
             }
 
@@ -533,6 +590,7 @@ pub fn evaluate(
                 title: format!("{machine_name} restarted: {count} {noun} couldn't resume"),
                 body: "Open Home to review and recover them.".to_owned(),
                 target: NotifyTarget::Home,
+                sound: None,
             })
         }
 
@@ -602,6 +660,38 @@ pub fn evaluate(
                 title,
                 body,
                 target: NotifyTarget::Inbox,
+                sound: None,
+            })
+        }
+
+        NotifyEvent::TodoAsk {
+            request_id,
+            session_id: _,
+            channel_id: _,
+            item,
+            answered,
+            title,
+            body,
+        } => {
+            if answered {
+                return None;
+            }
+            if config.quiet_when_frontmost && frontmost.app_active && frontmost.viewing_todo {
+                return None;
+            }
+            if burst.request_index.contains_key(&request_id) {
+                return None;
+            }
+            let id = todo_notice_id(&request_id);
+            burst
+                .request_index
+                .insert(request_id, RequestOwner::Todo(id.clone()));
+            Some(DesktopNotice {
+                id,
+                title,
+                body,
+                target: NotifyTarget::Todo { item },
+                sound: None,
             })
         }
     }
@@ -646,7 +736,7 @@ pub fn clear_request(burst: &mut BurstState, request_id: &RequestId) -> Vec<Stri
     };
 
     match owner {
-        RequestOwner::Migrate(notice_id) => {
+        RequestOwner::Migrate(notice_id) | RequestOwner::Todo(notice_id) => {
             withdraw.push(notice_id);
         }
         RequestOwner::Session(session_id) => {
@@ -838,6 +928,7 @@ fn record_session_event(
             title,
             body: "Open the Agent inbox to answer.".to_owned(),
             target: NotifyTarget::Inbox,
+            sound: None,
         };
     }
 
@@ -850,6 +941,7 @@ fn record_session_event(
             title: format!("{} items need you in {}", session.burst_count, meta.session_title),
             body: meta.body,
             target: NotifyTarget::Session(meta.session_id),
+            sound: None,
         };
     }
 
@@ -858,5 +950,6 @@ fn record_session_event(
         title: meta.title,
         body: meta.body,
         target: meta.target,
+        sound: None,
     }
 }

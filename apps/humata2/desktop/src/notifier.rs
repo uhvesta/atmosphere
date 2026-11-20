@@ -112,7 +112,10 @@ mod platform {
                     match command {
                         NotifierCommand::Post(notice) => {
                             let notification = to_system_notification(&notice);
-                            cx.update(|cx| cx.show_system_notification(notification));
+                            let sound = notice.sound.map(|s| SharedString::from(s.file_name()));
+                            cx.update(|cx| {
+                                cx.show_system_notification_with_sound(notification, sound);
+                            });
                         }
                         NotifierCommand::Withdraw(ids) => {
                             cx.update(|cx| {
@@ -122,9 +125,7 @@ mod platform {
                             });
                         }
                         NotifierCommand::RequestPermission => {
-                            // GPUI's macOS backend requests Alert | Sound
-                            // authorization lazily on first post and degrades
-                            // cleanly to no-op when running unbundled.
+                            cx.update(|cx| cx.request_system_notification_permission());
                         }
                     }
                 }
@@ -172,6 +173,9 @@ mod platform {
         if tag.starts_with("humata.restart.") {
             return Some(NotifyTarget::Home);
         }
+        if tag.starts_with("humata.todo.") {
+            return Some(NotifyTarget::Todo { item: None });
+        }
         None
     }
 
@@ -187,6 +191,7 @@ mod platform {
                 title: "Agent needs you".to_owned(),
                 body: "Allow shell command".to_owned(),
                 target,
+                sound: None,
             }
         }
 
@@ -255,6 +260,10 @@ mod platform {
             );
             assert_eq!(resolve_target(&empty, "humata.channel.c1"), Some(NotifyTarget::Inbox));
             assert_eq!(resolve_target(&empty, "humata.restart.m1"), Some(NotifyTarget::Home));
+            assert_eq!(
+                resolve_target(&empty, "humata.todo.r1"),
+                Some(NotifyTarget::Todo { item: None })
+            );
             assert_eq!(resolve_target(&empty, "humata.session."), None);
             assert_eq!(resolve_target(&empty, "other"), None);
         }

@@ -16,10 +16,12 @@ pub const FUSE_OUT_HEADER_SIZE: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FuseOpcode {
     Lookup = 1,
+    Forget = 2,
     GetAttr = 3,
     SetAttr = 4,
     ReadLink = 5,
     Symlink = 6,
+    MkNod = 8,
     MkDir = 9,
     Unlink = 10,
     RmDir = 11,
@@ -35,10 +37,18 @@ pub enum FuseOpcode {
     GetXattr = 22,
     ListXattr = 23,
     RemoveXattr = 24,
+    Flush = 25,
+    Init = 26,
     OpenDir = 27,
     ReadDir = 28,
     ReleaseDir = 29,
     Flock = 32,
+    Access = 34,
+    Create = 35,
+    Interrupt = 36,
+    Destroy = 38,
+    BatchForget = 42,
+    Rename2 = 45,
     CopyFileRange = 47,
 }
 
@@ -47,10 +57,12 @@ impl FuseOpcode {
     pub fn from_raw(raw: u32) -> Option<Self> {
         match raw {
             1 => Some(Self::Lookup),
+            2 => Some(Self::Forget),
             3 => Some(Self::GetAttr),
             4 => Some(Self::SetAttr),
             5 => Some(Self::ReadLink),
             6 => Some(Self::Symlink),
+            8 => Some(Self::MkNod),
             9 => Some(Self::MkDir),
             10 => Some(Self::Unlink),
             11 => Some(Self::RmDir),
@@ -66,10 +78,18 @@ impl FuseOpcode {
             22 => Some(Self::GetXattr),
             23 => Some(Self::ListXattr),
             24 => Some(Self::RemoveXattr),
+            25 => Some(Self::Flush),
+            26 => Some(Self::Init),
             27 => Some(Self::OpenDir),
             28 => Some(Self::ReadDir),
             29 => Some(Self::ReleaseDir),
             32 | 33 => Some(Self::Flock),
+            34 => Some(Self::Access),
+            35 => Some(Self::Create),
+            36 => Some(Self::Interrupt),
+            38 => Some(Self::Destroy),
+            42 => Some(Self::BatchForget),
+            45 => Some(Self::Rename2),
             47 => Some(Self::CopyFileRange),
             _ => None,
         }
@@ -232,6 +252,19 @@ pub enum FuseRequest {
         name: String,
         mode: u32,
     },
+    /// `CREATE`: makes a regular file and opens it.
+    Create {
+        parent: NodeId,
+        name: String,
+        mode: u32,
+        flags: OpenFlags,
+    },
+    /// `MKNOD` of a regular file: makes it without leaving it open.
+    MkNod {
+        parent: NodeId,
+        name: String,
+        mode: u32,
+    },
     Unlink {
         parent: NodeId,
         name: String,
@@ -337,6 +370,8 @@ impl FuseRequest {
             Self::SetAttr { .. } => FuseOpcode::SetAttr,
             Self::ReadLink { .. } => FuseOpcode::ReadLink,
             Self::MkDir { .. } => FuseOpcode::MkDir,
+            Self::Create { .. } => FuseOpcode::Create,
+            Self::MkNod { .. } => FuseOpcode::MkNod,
             Self::Unlink { .. } => FuseOpcode::Unlink,
             Self::RmDir { .. } => FuseOpcode::RmDir,
             Self::Symlink { .. } => FuseOpcode::Symlink,
@@ -365,6 +400,8 @@ impl FuseRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FuseReply {
     Entry(FileAttr),
+    /// Reply to `CREATE`: the new entry and its open handle.
+    Created { attr: FileAttr, fh: FileHandle },
     Attr(FileAttr),
     ReadLink(String),
     Empty,

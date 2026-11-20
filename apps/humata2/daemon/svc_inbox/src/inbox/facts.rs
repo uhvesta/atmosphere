@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use humata2_access::{Capability, Entry, Place, Root};
+use humata2_access::{AccessRequest, Call, Capability, Entry, GrantTarget, Place, Root, Target};
 use humata2_daemon_ports::Names;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{BoardItemRecord, Store};
@@ -128,6 +128,41 @@ pub(super) fn file_read_details(
         undo_text,
     }
 }
+
+/// The Channel and Machine rows of a session start or fork: where the new
+/// session goes (D910). None for any other call.
+pub(super) fn start_facts(call: &Call, store: &Store, names: &Names) -> Vec<pb::CardFact> {
+    start_rows(call, |id| channel_name(store, id), names)
+}
+
+fn start_rows(
+    call: &Call,
+    channel_name: impl Fn(&str) -> String,
+    names: &Names,
+) -> Vec<pb::CardFact> {
+    let Call::Use {
+        target: Target::Start { channel, machine, .. },
+        ..
+    } = call
+    else {
+        return Vec::new();
+    };
+    vec![
+        fact("Channel", channel_name(channel.as_str()), String::new()),
+        fact("Machine", names.of(machine.as_str()), String::new()),
+    ]
+}
+
+/// True when "Always allow" on this request lets its Desk agent start that
+/// agent on that machine in any channel: a Desk agent's asks are filed under
+/// the Desk channel id, and its start grant names no channel (D910).
+pub(super) fn always_covers_any_channel(asked: &AccessRequest) -> bool {
+    asked.channel.as_str() == DESK_CHANNEL
+        && matches!(asked.always_let, Some(GrantTarget::AgentOnMachine { .. }))
+}
+
+/// The channel id every Desk agent's asks are filed under (D182.3).
+const DESK_CHANNEL: &str = "desk";
 
 fn channel_name(store: &Store, id: &str) -> String {
     store
@@ -484,6 +519,71 @@ mod tests {
             sessions: sessions.iter().map(|s| (*s).to_owned()).collect(),
             depends_on: Vec::new(),
         }
+    }
+
+    fn start_in(channel: &str, machine: &str) -> Call {
+        Call::Use {
+            capability: Capability::SessionStartOtherMachine,
+            target: Target::Start {
+                channel: humata2_access::ChannelId::new(channel),
+                machine: humata2_access::MachineId::new(machine),
+                agent: humata2_access::AgentId::new("claude"),
+                fork_of: None,
+            },
+        }
+    }
+
+    fn ask(channel: &str, call: Call, always_let: Option<GrantTarget>) -> AccessRequest {
+        AccessRequest {
+            capability: Capability::SessionStartOtherMachine,
+            channel: humata2_access::ChannelId::new(channel),
+            requester: humata2_access::SessionId::new("dk"),
+            call,
+            always_let,
+            ahead: false,
+            answer_at: humata2_access::AnswerAt::Host,
+        }
+    }
+
+    fn agent_on(machine: &str) -> Option<GrantTarget> {
+        Some(GrantTarget::AgentOnMachine {
+            machine: humata2_access::MachineId::new(machine),
+            agent: humata2_access::AgentId::new("claude"),
+        })
+    }
+
+    #[test]
+    fn a_start_card_names_the_target_channel_and_machine() {
+        let names = Names::of_host("host").naming("devbox-1", "devbox-1");
+        let rows = start_rows(
+            &start_in("ch_pay", "devbox-1"),
+            |id| if id == "ch_pay" { "payments".to_owned() } else { id.to_owned() },
+            &names,
+        );
+        let channel = rows.iter().find(|f| f.label == "Channel").unwrap();
+        let machine = rows.iter().find(|f| f.label == "Machine").unwrap();
+        assert_eq!(channel.lead, "payments");
+        assert_eq!(machine.lead, "devbox-1");
+    }
+
+    #[test]
+    fn other_calls_get_no_start_rows() {
+        let call = Call::Use {
+            capability: Capability::ChannelCreate,
+            target: Target::Global,
+        };
+        assert!(start_rows(&call, str::to_owned, &Names::of_host("host")).is_empty());
+    }
+
+    #[test]
+    fn only_a_desk_start_grant_covers_any_channel() {
+        let call = start_in("ch_pay", "devbox-1");
+        let desk = ask(DESK_CHANNEL, call.clone(), agent_on("devbox-1"));
+        assert!(always_covers_any_channel(&desk));
+        // A channel session's start stays in its own channel.
+        let channel = ask("ch_pay", call.clone(), agent_on("devbox-1"));
+        assert!(!always_covers_any_channel(&channel));
+        assert!(!always_covers_any_channel(&ask(DESK_CHANNEL, call, None)));
     }
 
     #[test]

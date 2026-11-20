@@ -179,6 +179,27 @@ message Settings {
   // FUSEFS: humatad2 mounts the cross-machine view at HUMATA_FUSE_ROOT.
   // Local session folders stay on native disk either way.
   bool fusefs_enabled = 15;
+  // D908, output only (writes ignore it): what the daemon's mount is doing
+  // now, so Settings can say where it is or why it isn't there.
+  FuseMountStatus fusefs_status = 16;
+}
+
+// D908: the daemon's live FUSE mount state.
+message FuseMountStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    // The mount isn't wanted.
+    STATE_OFF = 1;
+    STATE_STARTING = 2;
+    STATE_MOUNTED = 3;
+    // Wanted but can't run; `reason` says why and how to fix it.
+    STATE_CANNOT_SET_UP = 4;
+  }
+  State state = 1;
+  // Where the tree is mounted; set when mounted.
+  string mount_root = 2;
+  // A sentence for the person; set when the state is CANNOT_SET_UP.
+  string reason = 3;
 }
 
 // D199, kept for older callers (D782): `permissions_in_agent` reads true

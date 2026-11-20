@@ -2,6 +2,8 @@
 //! `HUMATA2_FAST_MODE` turns it off, toggles, and is found by the palette
 //! in General.
 use humata2_clients::fixture;
+use humata2_clients::daemon::TodoAutomation;
+use humata2_settings::TodoAutomationAction;
 use humata2_settings::{
     Preferences, Row, Section, Settings, SettingsAction as A, SettingsState, fast_mode_default,
 };
@@ -53,6 +55,9 @@ fn the_row_is_in_general_and_reachable_from_the_palette() {
     store.send(A::Reveal(Row::FastMode), |s| {
         s.section = Section::General;
         s.revealed = Some(Row::FastMode);
+    });
+    store.receive(A::Todo(TodoAutomationAction::Loaded(Ok(TodoAutomation::default()))), |s| {
+        s.todo.section = Some(TodoAutomation::default());
     });
     store.finish();
 }

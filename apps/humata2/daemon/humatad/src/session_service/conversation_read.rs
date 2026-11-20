@@ -67,6 +67,7 @@ pub(super) fn read(
         session: session.to_owned(),
         source,
     };
+    let agents = &crate::config_sync::agents_for_session(agents, store, session);
     agents
         .learn_conversation(store, home, session)
         .map_err(stored)?;

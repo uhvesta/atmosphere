@@ -303,9 +303,10 @@ impl SessionSvc {
     /// Adds `machine` to the PR reviews channel's machines, once it has the
     /// channel there.
     pub(super) async fn add_machine_to(&self, channel: &ChannelRecord, machine: &str, caller: &Caller) -> Result<(), Status> {
-        let (store, feed, by) = (
+        let (store, feed, agents, by) = (
             self.starter.store.clone(),
             self.tell.feed.clone(),
+            self.starter.agents.clone(),
             identity::actor(caller),
         );
         let (id, machine, held) = (channel.id.clone(), machine.to_owned(), self.machine.clone());
@@ -318,7 +319,7 @@ impl SessionSvc {
                 current.machines.push(machine);
                 current.revision += 1;
                 store.put_channel(&current)?;
-                tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by));
+                tell_channel(&feed, &store, &agents, &id, pb::Change::Updated, Some(by));
             }
             Ok(())
         })

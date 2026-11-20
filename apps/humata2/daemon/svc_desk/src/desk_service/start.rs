@@ -224,12 +224,16 @@ impl DeskSvc {
     /// The agent a start runs: the one named, else `--default-agent`, which
     /// must be one Settings › Agents knows.
     fn agent(&self, wanted: Option<&pb::AgentId>) -> Result<String, Status> {
-        let name = wanted
-            .map(|agent| agent.value.clone())
-            .filter(|agent| !agent.is_empty())
-            .unwrap_or_else(|| self.default_agent.clone());
-        // SEAM: AGENTSET: a Desk start of a kind that is off is refused.
-        self.sessions.agent_enabled(&self.starter.agents, &name)?;
+        let asked = wanted.map(|agent| agent.value.clone()).filter(|agent| !agent.is_empty());
+        let name = match asked {
+            Some(name) => {
+                // SEAM: AGENTSET: a Desk start of a kind that is off is refused.
+                self.sessions.agent_enabled(&self.starter.agents, &name)?;
+                name
+            }
+            // AGENTOFF: none named lands on an agent that is on.
+            None => self.sessions.pick_agent(&self.starter.agents, &[self.default_agent.clone()])?,
+        };
         self.starter.agents.get(&name).map(|_| name.clone()).map_err(|error| {
             failed(
                 Code::InvalidArgument,

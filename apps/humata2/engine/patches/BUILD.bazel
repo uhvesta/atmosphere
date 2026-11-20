@@ -4,8 +4,17 @@
 # its tasks hung for good. Applied to gpui-pre-scheduler in every crate
 # repository by a crate annotation in MODULE.bazel. Keep it in `git diff`
 # form, with a `diff --git` line per file.
+#
+# The notification patches let the desktop app ask for notification permission
+# on its own and play a bundled sound with a notification: the first adds two
+# defaulted methods to gpui's Platform trait and App, the second implements
+# them for macOS.
 exports_files(
-    ["gpui-scheduler-lock-order.patch"],
+    [
+        "gpui-macos-notification-sound.patch",
+        "gpui-notification-sound.patch",
+        "gpui-scheduler-lock-order.patch",
+    ],
     visibility = ["//visibility:public"],
 )
 

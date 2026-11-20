@@ -55,8 +55,11 @@ pub struct MountStatus {
 
 /// Platform/backend hook for mounting, unmounting, and stale-mount recovery.
 pub trait MountBackend: Send + Sync {
-    /// Mounts `config` and returns the PID of the serving process.
-    fn mount(&self, config: &MountConfig) -> io::Result<u32>;
+    /// Mounts `config` and returns the PID of the process that serves it, or
+    /// `None` when no process of ours serves the mount (the system mount tool
+    /// has already exited, and the kernel or an extension serves it). Never
+    /// the caller's own PID.
+    fn mount(&self, config: &MountConfig) -> io::Result<Option<u32>>;
 
     /// Unmounts `mountpoint` (using force when `force` is `true`).
     fn unmount(&self, mountpoint: &Path, force: bool) -> io::Result<()>;
@@ -86,7 +89,7 @@ impl PosixMountBackend {
 }
 
 impl MountBackend for PosixMountBackend {
-    fn mount(&self, config: &MountConfig) -> io::Result<u32> {
+    fn mount(&self, config: &MountConfig) -> io::Result<Option<u32>> {
         let mut cmd = Command::new("/sbin/mount");
         #[cfg(target_os = "macos")]
         cmd.arg("-F");
@@ -103,7 +106,9 @@ impl MountBackend for PosixMountBackend {
                 "mount failed with status {status}"
             )));
         }
-        Ok(std::process::id())
+        // The mount tool has exited and the system serves the mount, so there
+        // is no process of ours to name. Never report this process's own PID.
+        Ok(None)
     }
 
     fn unmount(&self, mountpoint: &Path, force: bool) -> io::Result<()> {
@@ -233,7 +238,7 @@ impl MountSupervisor {
             if inner.state == MountState::Healthy
                 && inner
                     .server_pid
-                    .is_some_and(|pid| self.backend.is_server_alive(pid))
+                    .is_none_or(|pid| self.backend.is_server_alive(pid))
             {
                 return Ok(inner.snapshot());
             }
@@ -250,7 +255,7 @@ impl MountSupervisor {
             Ok(pid) => {
                 let mut inner = self.inner.write().expect("supervisor lock poisoned");
                 inner.state = MountState::Healthy;
-                inner.server_pid = Some(pid);
+                inner.server_pid = pid;
                 inner.consecutive_failures = 0;
                 inner.generation = inner.generation.saturating_add(1);
                 inner.last_error = None;
@@ -303,7 +308,7 @@ impl MountSupervisor {
             Ok(pid) => {
                 let mut inner = self.inner.write().expect("supervisor lock poisoned");
                 inner.state = MountState::Healthy;
-                inner.server_pid = Some(pid);
+                inner.server_pid = pid;
                 inner.restart_count = inner.restart_count.saturating_add(1);
                 inner.consecutive_failures = 0;
                 inner.generation = inner.generation.saturating_add(1);
@@ -339,7 +344,8 @@ impl MountSupervisor {
             return Ok(self.status());
         }
 
-        let alive = pid.is_some_and(|p| self.backend.is_server_alive(p));
+        // No PID means no process of ours serves the mount: nothing to check.
+        let alive = pid.is_none_or(|p| self.backend.is_server_alive(p));
         let stale = self.backend.is_stale_mount(&mountpoint)?;
 
         if state == MountState::Healthy && alive && !stale {
@@ -409,7 +415,7 @@ pub(crate) mod tests {
     }
 
     impl MountBackend for FakeMountBackend {
-        fn mount(&self, _config: &MountConfig) -> io::Result<u32> {
+        fn mount(&self, _config: &MountConfig) -> io::Result<Option<u32>> {
             let remaining = self.fail_next_mounts.load(Ordering::SeqCst);
             if remaining > 0 {
                 self.fail_next_mounts.fetch_sub(1, Ordering::SeqCst);
@@ -420,7 +426,7 @@ pub(crate) mod tests {
             }
             let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
             *self.alive_pid.lock().unwrap() = Some(pid);
-            Ok(pid)
+            Ok(Some(pid))
         }
 
         fn unmount(&self, _mountpoint: &Path, _force: bool) -> io::Result<()> {
@@ -483,6 +489,45 @@ pub(crate) mod tests {
         let unmounted = sup.unmount(false).expect("unmount");
         assert_eq!(unmounted.state, MountState::Unmounted);
         assert_eq!(unmounted.server_pid, None);
+    }
+
+    /// A backend whose mount is served by the system, so it names no process.
+    struct UnnamedServerBackend;
+
+    impl MountBackend for UnnamedServerBackend {
+        fn mount(&self, _config: &MountConfig) -> io::Result<Option<u32>> {
+            Ok(None)
+        }
+
+        fn unmount(&self, _mountpoint: &Path, _force: bool) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn is_stale_mount(&self, _mountpoint: &Path) -> io::Result<bool> {
+            Ok(false)
+        }
+
+        fn cleanup_stale_mount(&self, _mountpoint: &Path) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn is_server_alive(&self, _pid: u32) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_mount_with_no_server_process_reports_no_pid_and_stays_healthy() {
+        let sup = MountSupervisor::new(
+            MountConfig::new("/tmp/fusefs-no-pid", "fusefs://main"),
+            Arc::new(UnnamedServerBackend),
+        );
+        let mounted = sup.mount().expect("mount");
+        assert_eq!(mounted.server_pid, None);
+        assert_ne!(mounted.server_pid, Some(std::process::id()));
+        let checked = sup.check_health_and_recover().expect("health");
+        assert_eq!(checked.state, MountState::Healthy);
+        assert_eq!(checked.restart_count, 0);
     }
 
     #[test]

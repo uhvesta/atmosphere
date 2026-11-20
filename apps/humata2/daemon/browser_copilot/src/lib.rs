@@ -3,7 +3,8 @@
 //! Connects coding agents (`claude`, `codex`, `copilot`, `agy`) to the user's
 //! existing native desktop browsers via WebExtension Native Messaging, with an
 //! Agent Inbox permission gate that grants 30-minute sessions for read actions
-//! and enforces strict per-action approval for every write/guide action.
+//! and enforces strict per-action approval for every write action (guide
+//! highlights only draw an overlay and are classified as reads).
 
 pub mod detect;
 pub mod manifest;

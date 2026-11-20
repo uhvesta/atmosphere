@@ -1415,4 +1415,30 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         Box::pin(async move { shared.set_agent_switch(kind, change).await })
     }
+
+    fn sync_settings(&self) -> Reply<humata2_clients::daemon::SyncSnapshot> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.sync_snapshot().await })
+    }
+
+    fn set_sync_settings(
+        &self,
+        change: humata2_clients::daemon::SyncChange,
+    ) -> Reply<humata2_clients::daemon::SyncSnapshot> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.change_sync_settings(change).await })
+    }
+
+    fn todo_automation(&self) -> Reply<humata2_clients::daemon::TodoAutomation> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.todo_automation().await })
+    }
+
+    fn set_todo_automation(
+        &self,
+        section: humata2_clients::daemon::TodoAutomation,
+    ) -> Reply<humata2_clients::daemon::TodoAutomation> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.change_todo_automation(section).await })
+    }
 }

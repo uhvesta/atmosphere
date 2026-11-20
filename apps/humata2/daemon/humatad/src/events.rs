@@ -162,7 +162,7 @@ impl Feed {
 
     /// Subscribes to live events as shared `Arc<pb::Event>`s, with no extra
     /// bridge task or deep cloning.
-    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Arc<pb::Event>> {
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<pb::Event>> {
         self.live_events.subscribe()
     }
 

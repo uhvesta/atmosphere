@@ -981,6 +981,13 @@ pub enum HolderNote {
 }
 
 impl Request {
+    /// Whether this is a To-do ask: an agent's suggested item or a change to
+    /// one. It waits on the To-do, never as an Inbox card or count (D846).
+    #[must_use]
+    pub const fn is_to_do_ask(&self) -> bool {
+        self.to_do.is_some()
+    }
+
     /// The Migrate card, when this is a Migrate item.
     #[must_use]
     pub const fn migrate(&self) -> Option<&MigrateCard> {
@@ -1095,6 +1102,17 @@ pub struct Request {
     pub asked_why: Option<AskedWhy>,
     /// The Agent access row whose Ask me sent this card.
     pub rule_label: String,
+    /// Set when it is a To-do ask, from the daemon's preview kind (D846).
+    pub to_do: Option<ToDoAsk>,
+}
+
+/// What a To-do ask is about. The To-do shows and answers it on the item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToDoAsk {
+    /// A change to an item that exists: a status, a close, a step.
+    Item(ItemId),
+    /// An agent's suggested new item.
+    NewItem,
 }
 
 /// One row of a card's grey box: `lead` is bold.

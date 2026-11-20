@@ -124,7 +124,10 @@ rust_prost_domain(
 
 proto_library(
     name = "inbox_proto",
-    srcs = ["humata/v1/inbox.proto"],
+    srcs = [
+        "humata/v1/browser.proto",
+        "humata/v1/inbox.proto",
+    ],
     strip_import_prefix = "",
     visibility = _PROTO_VISIBILITY,
     deps = [

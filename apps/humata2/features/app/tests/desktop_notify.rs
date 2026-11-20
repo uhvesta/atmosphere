@@ -388,3 +388,22 @@ fn notification_clicked_routes_to_target_and_falls_back_when_session_absent() {
     store.skip_received();
     assert_eq!(store.state().route, Route::Home);
 }
+
+#[test]
+fn clicking_a_todo_notification_lands_on_the_todo() {
+    let (mut store, _, _) = setup();
+    store.send(A::NotificationClicked(NotifyTarget::Todo { item: None }), |_| {});
+    store.skip_received();
+    assert_eq!(store.state().route, Route::Todo);
+
+    store.send(A::NotificationClicked(NotifyTarget::Home), |_| {});
+    store.skip_received();
+    store.send(
+        A::NotificationClicked(NotifyTarget::Todo {
+            item: Some(humata2_clients::model::ItemId::new("H2-1")),
+        }),
+        |_| {},
+    );
+    store.skip_received();
+    assert_eq!(store.state().route, Route::Todo);
+}

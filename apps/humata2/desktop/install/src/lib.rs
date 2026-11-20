@@ -1,7 +1,7 @@
 //! Installs the host's own tools on every launch of the desktop app.
 //!
-//! The first install copies `humatad2`, `humata2_holder`, `humata` and `stack`
-//! from the app bundle into `~/.humata2/bin` (atomic, so a live holder keeps
+//! The first install copies `humatad2`, `humata2_holder`, `humata`, `stack` and
+//! `humata2_fusefs` from the app bundle into `~/.humata2/bin` (atomic, so a live holder keeps
 //! running its old inode: PER-6) with the release's `bundle.json` beside
 //! them, registers a launchd login item for the daemon (PER-20) and links
 //! `humata` into `~/.local/bin` (D51).
@@ -40,6 +40,9 @@ const DAEMON: &str = "humatad2";
 const HOLDER: &str = "humata2_holder";
 const CLI: &str = "humata";
 const STACK: &str = "stack";
+/// The FUSEFS mount's own process: apart from the daemon, so an exec swap of
+/// the daemon never tears the mount down.
+const FUSEFS: &str = "humata2_fusefs";
 /// The release's manifest, installed beside the tools; the sha256 of its
 /// bytes is the bundle id.
 const BUNDLE_JSON: &str = "bundle.json";
@@ -98,13 +101,20 @@ pub struct Bundle {
     holder: PathBuf,
     humata: PathBuf,
     stack: PathBuf,
+    fusefs: PathBuf,
     manifest: Option<PathBuf>,
     machine_tools: Option<PathBuf>,
 }
 
 impl Bundle {
-    pub fn new(humatad2: PathBuf, holder: PathBuf, humata: PathBuf, stack: PathBuf) -> Self {
-        Self { humatad2, holder, humata, stack, manifest: None, machine_tools: None }
+    pub fn new(
+        humatad2: PathBuf,
+        holder: PathBuf,
+        humata: PathBuf,
+        stack: PathBuf,
+        fusefs: PathBuf,
+    ) -> Self {
+        Self { humatad2, holder, humata, stack, fusefs, manifest: None, machine_tools: None }
     }
 
     /// The app's tools manifest (`manifest.json`, every platform), which
@@ -151,6 +161,7 @@ pub struct Installed {
     pub holder: BinaryChange,
     pub humata: BinaryChange,
     pub stack: BinaryChange,
+    pub fusefs: BinaryChange,
     pub agent: AgentChange,
     /// Set when `~/.local/bin` is not on PATH: what to tell the person.
     pub path_hint: Option<String>,
@@ -195,6 +206,7 @@ pub fn migrate_old_daemon(layout: &Layout, launchd: &dyn Launchd) -> Result<(), 
         (InstalledFile::Holder, HOLDER),
         (InstalledFile::Cli, CLI),
         (InstalledFile::Stack, STACK),
+        (InstalledFile::FuseFs, FUSEFS),
     ] {
         let path = layout.bin.join(format!(".{name}.next"));
         let bytes = fs::read(&path).map_err(|source| InstallError::ReadStaged { path, source })?;
@@ -205,7 +217,7 @@ pub fn migrate_old_daemon(layout: &Layout, launchd: &dyn Launchd) -> Result<(), 
 
     // The daemon's files first, the bundle that names them last: a cut
     // between leaves a daemon its bundle doesn't name, which reports no release.
-    for name in [DAEMON, HOLDER, CLI, STACK] {
+    for name in [DAEMON, HOLDER, CLI, STACK, FUSEFS] {
         let from = layout.bin.join(format!(".{name}.next"));
         let to = layout.bin.join(name);
         fs::rename(&from, &to).map_err(|source| InstallError::Rename { from, to, source })?;
@@ -239,7 +251,8 @@ pub fn install(
 
     let release = release_of(bundle)?;
     let first = !layout.bin.join(DAEMON).exists();
-    let (mut daemon, mut holder, mut humata, mut stack) = (
+    let (mut daemon, mut holder, mut humata, mut stack, mut fusefs) = (
+        BinaryChange::Unchanged,
         BinaryChange::Unchanged,
         BinaryChange::Unchanged,
         BinaryChange::Unchanged,
@@ -250,6 +263,7 @@ pub fn install(
         holder = install_binary(&bundle.holder, &layout.bin.join(HOLDER))?;
         humata = install_binary(&bundle.humata, &layout.bin.join(CLI))?;
         stack = install_binary(&bundle.stack, &layout.bin.join(STACK))?;
+        fusefs = install_binary(&bundle.fusefs, &layout.bin.join(FUSEFS))?;
         write_bundle_json(&layout.bin.join(BUNDLE_JSON), release.bundle_json())?;
     } else if !is_installed(&layout.bin, &release)? {
         stage_next(&layout.bin, &release).map_err(|source| InstallError::Release { source })?;
@@ -293,7 +307,7 @@ pub fn install(
 
     install_machine_tools(bundle, layout)?;
 
-    Ok(Installed { humatad2: daemon, holder, humata, stack, agent, path_hint, path_clash })
+    Ok(Installed { humatad2: daemon, holder, humata, stack, fusefs, agent, path_hint, path_clash })
 }
 
 /// Puts the app's Linux tools in `~/.humata2/machine-tools` (TS-1, TS-2), the
@@ -421,6 +435,7 @@ fn release_of(bundle: &Bundle) -> Result<StagedRelease, InstallError> {
         (InstalledFile::Holder, &bundle.holder),
         (InstalledFile::Cli, &bundle.humata),
         (InstalledFile::Stack, &bundle.stack),
+        (InstalledFile::FuseFs, &bundle.fusefs),
     ] {
         let bytes = fs::read(path)
             .map_err(|source| InstallError::ReadBundle { path: path.clone(), source })?;

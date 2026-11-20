@@ -1,0 +1,3 @@
+# Launch only: what each agent shows first in a new folder.
+quiet 4000
+snap launch unknown

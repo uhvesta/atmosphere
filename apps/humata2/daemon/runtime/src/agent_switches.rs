@@ -116,6 +116,18 @@ impl AgentSwitches {
             .unwrap_or(true)
     }
 
+    /// The agent a start that named none lands on: the first of `preferred`
+    /// that is on, else the first of `order` that is on and isn't the plain
+    /// shell. The shell only counts when it is in `preferred`. `None` when
+    /// every candidate is off.
+    pub fn pick<'a>(&self, preferred: &[&'a str], order: &[&'a str]) -> Option<&'a str> {
+        preferred
+            .iter()
+            .copied()
+            .find(|kind| self.enabled(kind))
+            .or_else(|| order.iter().copied().find(|kind| *kind != ZSH && self.enabled(kind)))
+    }
+
     /// Whether Humata installs the kind's CLI on a machine that doesn't have
     /// it. Off unless the file turns it on, and off for a kind without an
     /// install command.
@@ -710,5 +722,48 @@ mod tests {
             AgentSwitches::parse("[agents.\"my kind\"]\nenabled = false\n"),
             Err(SwitchesError::BadKind { .. })
         ));
+    }
+
+    /// The built-in kinds in Settings › Agents order.
+    const ORDER: [&str; 6] = ["claude", "codex", "copilot", "opencode", "agy", "zsh"];
+
+    #[test]
+    fn a_preferred_kind_that_is_on_is_picked() {
+        let switches = AgentSwitches::parse("").expect("valid file");
+        assert_eq!(switches.pick(&["codex", "claude"], &ORDER), Some("codex"));
+    }
+
+    #[test]
+    fn with_claude_and_codex_off_a_start_naming_none_gets_copilot() {
+        let switches = AgentSwitches::parse(
+            "[agents.claude]\nenabled = false\n[agents.codex]\nenabled = false\n",
+        )
+        .expect("valid file");
+        assert_eq!(switches.pick(&["claude"], &ORDER), Some("copilot"));
+    }
+
+    #[test]
+    fn the_next_preferred_kind_that_is_on_wins_over_list_order() {
+        let switches = AgentSwitches::parse("[agents.claude]\nenabled = false\n").expect("valid file");
+        // The channel's Claude is off; Settings' OpenCode is on, so Codex,
+        // first on in the list, doesn't take it.
+        assert_eq!(switches.pick(&["claude", "opencode"], &ORDER), Some("opencode"));
+    }
+
+    #[test]
+    fn with_every_agent_off_nothing_is_picked_not_even_the_shell() {
+        let off: String = ORDER
+            .iter()
+            .filter(|kind| **kind != ZSH)
+            .map(|kind| format!("[agents.{kind}]\nenabled = false\n"))
+            .collect();
+        let switches = AgentSwitches::parse(&off).expect("valid file");
+        assert_eq!(switches.pick(&["claude"], &ORDER), None);
+    }
+
+    #[test]
+    fn a_shell_asked_for_by_name_is_kept() {
+        let switches = AgentSwitches::parse("[agents.claude]\nenabled = false\n").expect("valid file");
+        assert_eq!(switches.pick(&[ZSH], &ORDER), Some(ZSH));
     }
 }

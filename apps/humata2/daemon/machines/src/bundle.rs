@@ -1,5 +1,5 @@
-//! The tools bundle (TS-2): `humatad2`, `humata2_holder`, `humata` and `stack`
-//! for every platform Humata ships, with a `manifest.json` that names each
+//! The tools bundle (TS-2): `humatad2`, `humata2_holder`, `humata`, `stack` and
+//! `humata2_fusefs` for every platform Humata ships, with a `manifest.json` that names each
 //! file and its SHA-256. Setup and takeover pick a platform's files by the
 //! machine's `uname -sm`; the desktop app installs the host's own from it
 //! (TS-0). A file is read only when a machine of its platform needs it, and
@@ -759,6 +759,7 @@ mod tests {
             (platform, InstalledFile::Holder, b"holder"),
             (platform, InstalledFile::Cli, b"cli"),
             (platform, InstalledFile::Stack, b"stack"),
+            (platform, InstalledFile::FuseFs, b"fusefs"),
         ]
     }
 
@@ -781,6 +782,7 @@ mod tests {
                 (InstalledFile::Holder, b"holder".to_vec()),
                 (InstalledFile::Cli, b"cli".to_vec()),
                 (InstalledFile::Stack, b"stack".to_vec()),
+                (InstalledFile::FuseFs, b"fusefs".to_vec()),
             ]
         );
         assert_eq!(bundle.platforms(), [LINUX]);
@@ -796,7 +798,7 @@ mod tests {
         let merged = Bundle::beside(dir.path(), mac).with_platforms_from(Bundle::open(root.path()).unwrap());
 
         assert_eq!(merged.platforms(), [mac, LINUX]);
-        assert_eq!(merged.payloads(LINUX).unwrap().len(), 4);
+        assert_eq!(merged.payloads(LINUX).unwrap().len(), 5);
     }
 
     #[test]
@@ -874,7 +876,7 @@ mod tests {
 
         let bundle = Bundle::beside(dir.path(), LINUX).with_stale_platforms(vec![LINUX]);
 
-        assert_eq!(bundle.payloads(LINUX).unwrap().len(), 4);
+        assert_eq!(bundle.payloads(LINUX).unwrap().len(), 5);
     }
 
     #[test]
@@ -928,9 +930,10 @@ mod tests {
 
         let payloads = bundle.payloads(LINUX).unwrap();
 
-        assert_eq!(payloads.len(), 4);
+        assert_eq!(payloads.len(), 5);
         assert_eq!(payloads[2].bytes().as_ref(), b"humata");
         assert_eq!(payloads[3].bytes().as_ref(), b"stack");
+        assert_eq!(payloads[4].bytes().as_ref(), b"humata2_fusefs");
     }
 
     #[test]
@@ -1046,6 +1049,11 @@ mod tests {
             read["platforms"]["linux-x86_64"]["humatad2"]["sha256"],
             sha(b"daemon")
         );
+        // The FUSEFS helper is listed under its own file name, like the rest.
+        assert_eq!(
+            read["platforms"]["linux-x86_64"]["humata2_fusefs"]["sha256"],
+            sha(b"fusefs")
+        );
     }
 
     #[test]
@@ -1072,6 +1080,7 @@ mod tests {
                 (LINUX, InstalledFile::Holder, b"holder"),
                 (LINUX, InstalledFile::Cli, b"cli"),
                 (LINUX, InstalledFile::Stack, b"stack"),
+                (LINUX, InstalledFile::FuseFs, b"fusefs"),
             ],
             None,
         );
@@ -1090,7 +1099,7 @@ mod tests {
         let json = bundle.bundle_json(LINUX).unwrap().unwrap();
 
         assert_eq!(release.id(), sha(&json));
-        assert_eq!(release.files().len(), 4);
+        assert_eq!(release.files().len(), 5);
         assert_eq!(release.platform(), LINUX);
     }
 
@@ -1143,6 +1152,7 @@ mod tests {
             [
                 ".bundle.json.next",
                 ".humata.next",
+                ".humata2_fusefs.next",
                 ".humata2_holder.next",
                 ".humatad2.next",
                 ".stack.next",
@@ -1161,7 +1171,7 @@ mod tests {
         fs::write(bin.path().join(".humatad2.next.feedfacefeedface.new"), b"half").unwrap();
 
         stage_next(bin.path(), &first).unwrap();
-        assert_eq!(names(bin.path()).len(), 5);
+        assert_eq!(names(bin.path()).len(), 6);
 
         let second = release("two");
         assert_eq!(stage_next(bin.path(), &second).unwrap(), second.id());
@@ -1169,7 +1179,7 @@ mod tests {
             fs::read(bin.path().join(".humatad2.next")).unwrap(),
             second.files()[0].bytes().to_vec()
         );
-        assert_eq!(names(bin.path()).len(), 5);
+        assert_eq!(names(bin.path()).len(), 6);
     }
 
     #[test]

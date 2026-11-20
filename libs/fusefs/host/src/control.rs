@@ -1,9 +1,11 @@
 //! Framed Unix-domain socket control runtime (`ControlProtocol`).
 //!
 //! Supports `Mount`, `Unmount`, `Remount`, `Status`, `HealthPing`,
-//! `ListCapabilityRoots`, `RegisterCapabilityRoot`, and `RevokeTurn`.
+//! `ListCapabilityRoots`, `RegisterCapabilityRoot`, `RevokeTurn`, and a generic
+//! `Extension` request an embedding application answers with its own callback.
 
 use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -91,6 +93,12 @@ pub enum ControlRequest {
     RevokeTurn {
         turn_id: String,
     },
+    /// An application-defined request. The host knows nothing of its shape:
+    /// it hands `body` to the handler's extension callback (see
+    /// [`ControlHandler::with_extension`]).
+    Extension {
+        body: serde_json::Value,
+    },
 }
 
 /// Control RPC response returned by [`ControlServer`].
@@ -116,21 +124,42 @@ pub enum ControlResponse {
         turn_id: String,
         revoked_cap_ids: Vec<String>,
     },
+    /// The extension callback's answer to a [`ControlRequest::Extension`].
+    ExtensionReply {
+        body: serde_json::Value,
+    },
     Error {
         errno: i32,
         message: String,
     },
 }
 
+/// Answers [`ControlRequest::Extension`] bodies: `Ok` is sent back as the
+/// reply body, `Err` as an `EINVAL` error carrying the message.
+pub type ExtensionCallback =
+    Arc<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+
 /// Pure request dispatcher backing [`ControlServer`].
 pub struct ControlHandler {
     supervisor: Arc<MountSupervisor>,
     router: Arc<CapabilityRouter>,
+    extension: Option<ExtensionCallback>,
 }
 
 impl ControlHandler {
     pub fn new(supervisor: Arc<MountSupervisor>, router: Arc<CapabilityRouter>) -> Self {
-        Self { supervisor, router }
+        Self {
+            supervisor,
+            router,
+            extension: None,
+        }
+    }
+
+    /// Registers the callback that answers [`ControlRequest::Extension`].
+    /// Without one, extension requests are refused with `ENOSYS`.
+    pub fn with_extension(mut self, callback: ExtensionCallback) -> Self {
+        self.extension = Some(callback);
+        self
     }
 
     pub fn supervisor(&self) -> &Arc<MountSupervisor> {
@@ -202,6 +231,19 @@ impl ControlHandler {
                     revoked_cap_ids,
                 }
             }
+            ControlRequest::Extension { body } => match &self.extension {
+                Some(callback) => match callback(body) {
+                    Ok(body) => ControlResponse::ExtensionReply { body },
+                    Err(message) => ControlResponse::Error {
+                        errno: errno::EINVAL,
+                        message,
+                    },
+                },
+                None => ControlResponse::Error {
+                    errno: errno::ENOSYS,
+                    message: "this host has no extension handler".to_string(),
+                },
+            },
         }
     }
 }
@@ -228,6 +270,8 @@ impl ControlServer {
             let _ = std::fs::remove_file(&socket_path);
         }
         let listener = UnixListener::bind(&socket_path)?;
+        // Only this user may connect: the socket can mount and unmount.
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             socket_path,
             listener,
@@ -375,6 +419,10 @@ impl ControlClient {
         self.call(&ControlRequest::ListCapabilityRoots)
     }
 
+    pub fn extension(&self, body: serde_json::Value) -> io::Result<ControlResponse> {
+        self.call(&ControlRequest::Extension { body })
+    }
+
     pub fn revoke_turn(&self, turn_id: impl Into<String>) -> io::Result<ControlResponse> {
         self.call(&ControlRequest::RevokeTurn {
             turn_id: turn_id.into(),
@@ -513,6 +561,76 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
+        server.shutdown();
+    }
+
+    fn bound_server(
+        dir: &Path,
+        extension: Option<ExtensionCallback>,
+    ) -> (ControlServerHandle, PathBuf) {
+        let sock_path = dir.join("control.sock");
+        let supervisor = Arc::new(MountSupervisor::new(
+            MountConfig::new(dir.join("mnt"), "fusefs://main"),
+            Arc::new(FakeMountBackend::new()),
+        ));
+        let mut handler = ControlHandler::new(supervisor, Arc::new(CapabilityRouter::new()));
+        if let Some(callback) = extension {
+            handler = handler.with_extension(callback);
+        }
+        let server = ControlServer::bind(&sock_path, Arc::new(handler))
+            .unwrap()
+            .spawn();
+        (server, sock_path)
+    }
+
+    #[test]
+    fn the_control_socket_is_private_to_its_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, sock_path) = bound_server(dir.path(), None);
+        let mode = std::fs::metadata(&sock_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        server.shutdown();
+    }
+
+    #[test]
+    fn an_extension_request_reaches_the_callback_and_its_answer_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_in = Arc::clone(&seen);
+        let callback: ExtensionCallback = Arc::new(move |body: serde_json::Value| {
+            seen_in.lock().unwrap().push(body.clone());
+            if body.get("bad").is_some() {
+                Err("refused".to_string())
+            } else {
+                Ok(serde_json::json!({ "echo": body }))
+            }
+        });
+        let (server, _) = bound_server(dir.path(), Some(callback));
+        let client = ControlClient::new(server.socket_path());
+
+        match client.extension(serde_json::json!({ "n": 1 })).unwrap() {
+            ControlResponse::ExtensionReply { body } => {
+                assert_eq!(body, serde_json::json!({ "echo": { "n": 1 } }));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        match client.extension(serde_json::json!({ "bad": true })).unwrap() {
+            ControlResponse::Error { errno: code, .. } => assert_eq!(code, errno::EINVAL),
+            other => panic!("unexpected response: {other:?}"),
+        }
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        server.shutdown();
+    }
+
+    #[test]
+    fn an_extension_request_without_a_callback_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, _) = bound_server(dir.path(), None);
+        let client = ControlClient::new(server.socket_path());
+        match client.extension(serde_json::json!({})).unwrap() {
+            ControlResponse::Error { errno: code, .. } => assert_eq!(code, errno::ENOSYS),
+            other => panic!("unexpected response: {other:?}"),
+        }
         server.shutdown();
     }
 }

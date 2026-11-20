@@ -648,6 +648,10 @@ impl DeskSessionPort for DeskSessionAdapter {
         crate::agent_gate::enabled(agents, agent).map_err(Status::from)
     }
 
+    fn pick_agent(&self, agents: &humata2_sessions::Agents, preferred: &[String]) -> Result<String, Status> {
+        crate::agent_gate::pick(agents, preferred).map_err(Status::from)
+    }
+
     fn watch_agent(&self, session: String) {
         crate::session_service::watch_agent(self.tell.clone(), session);
     }

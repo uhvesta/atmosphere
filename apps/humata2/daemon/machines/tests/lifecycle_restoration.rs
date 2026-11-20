@@ -77,6 +77,7 @@ impl FakeBuilds {
                 Payload::new(InstalledFile::Holder, Arc::from(&b"holder-v2"[..])),
                 Payload::new(InstalledFile::Cli, Arc::from(&b"cli-v2"[..])),
                 Payload::new(InstalledFile::Stack, Arc::from(&b"stack-v2"[..])),
+                Payload::new(InstalledFile::FuseFs, Arc::from(&b"#!/bin/sh\nexit 4\n"[..])),
             ],
             bundle: Some(Arc::from(&br#"{"version":2}"#[..])),
         }
@@ -599,6 +600,7 @@ fn ensure_ready_repairs_wiped_bin_restores_missing_enrollment_and_starts_daemon(
         ok(b""),                                                  // install holder
         ok(b""),                                                  // install cli
         ok(b""),                                                  // install stack
+        ok(b""),                                                  // install fusefs
         ok(b""),                                                  // install bundle.json
         ok(b""),                                                  // start service
     ]);
@@ -617,6 +619,7 @@ fn ensure_ready_repairs_wiped_bin_restores_missing_enrollment_and_starts_daemon(
             Purpose::Probe,
             Purpose::Check,
             Purpose::Enroll,
+            Purpose::Install,
             Purpose::Install,
             Purpose::Install,
             Purpose::Install,
@@ -654,6 +657,7 @@ fn ensure_ready_repairs_mismatched_binaries_and_skips_matching_enrollment() {
         ),
         ok(b""), // repair humatad2
         ok(b""), // repair cli
+        ok(b""), // put back the missing fusefs helper
         ok(b""), // write bundle.json
         ok(b""), // restart service
     ]);
@@ -671,6 +675,7 @@ fn ensure_ready_repairs_mismatched_binaries_and_skips_matching_enrollment() {
         [
             Purpose::Probe,
             Purpose::Check,
+            Purpose::Install,
             Purpose::Install,
             Purpose::Install,
             Purpose::Install,

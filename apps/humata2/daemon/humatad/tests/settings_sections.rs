@@ -407,3 +407,68 @@ async fn a_channel_shows_the_agent_a_start_would_take() {
     .unwrap();
     assert_eq!(shown(&daemon, channel.id.clone()).await.as_deref(), Some(common::AGENT_NAME));
 }
+
+fn todo(on_merge: pb::TodoSyncMode, wake: bool, nudge: u32) -> pb::TodoAutomationSettings {
+    pb::TodoAutomationSettings {
+        on_pr_merged: on_merge as i32,
+        on_todo_closed_archive_sessions: pb::TodoSyncMode::Auto as i32,
+        auto_wake_on_ci_fail: wake,
+        auto_wake_on_review_comments: !wake,
+        idle_nudge_days: nudge,
+    }
+}
+
+/// T7: the To-do automation settings read Ask until set, round-trip, and a
+/// channel's own override wins over Settings until it is cleared.
+#[tokio::test(flavor = "multi_thread")]
+async fn todo_automation_is_kept_globally_and_per_channel() {
+    let (mut daemon, world) = with_two_agents().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+
+    let unset = get(&daemon).await.todo_automation.expect("todo automation is shown");
+    assert_eq!(unset.on_pr_merged(), pb::TodoSyncMode::Ask);
+    assert_eq!(unset.on_todo_closed_archive_sessions(), pb::TodoSyncMode::Ask);
+    assert!(!unset.auto_wake_on_ci_fail && !unset.auto_wake_on_review_comments);
+    assert_eq!(unset.idle_nudge_days, 0);
+    assert_eq!(get_channel(&daemon, &channel).await.todo_automation, None);
+
+    let global = todo(pb::TodoSyncMode::Auto, true, 5);
+    let shown = update(&daemon, pb::UpdateSettingsRequest { todo_automation: Some(global.clone()), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(shown.todo_automation, Some(global.clone()));
+    daemon.restart().await;
+    assert_eq!(get(&daemon).await.todo_automation, Some(global.clone()));
+    // No override: the channel shows none and follows Settings.
+    assert_eq!(get_channel(&daemon, &channel).await.todo_automation, None);
+
+    // Unspecified reads Ask.
+    let own = pb::TodoAutomationSettings { on_pr_merged: pb::TodoSyncMode::Unspecified as i32, ..todo(pb::TodoSyncMode::Ask, false, 9) };
+    let set = update_channel(
+        &daemon,
+        pb::UpdateChannelSettingsRequest { channel: channel.id.clone(), todo_automation: Some(own), ..Default::default() },
+    )
+    .await
+    .unwrap();
+    let kept = set.todo_automation.expect("the channel's own settings are shown");
+    assert_eq!(kept.on_pr_merged(), pb::TodoSyncMode::Ask);
+    assert_eq!((kept.auto_wake_on_review_comments, kept.idle_nudge_days), (true, 9));
+    assert_eq!(get(&daemon).await.todo_automation, Some(global.clone()), "Settings are unchanged");
+
+    let cleared = update_channel(
+        &daemon,
+        pb::UpdateChannelSettingsRequest { channel: channel.id.clone(), clear_todo_automation: true, ..Default::default() },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared.todo_automation, None);
+
+    let too_long = update(
+        &daemon,
+        pb::UpdateSettingsRequest { todo_automation: Some(todo(pb::TodoSyncMode::Ask, false, 99_999)), ..Default::default() },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(too_long.code(), Code::InvalidArgument);
+}

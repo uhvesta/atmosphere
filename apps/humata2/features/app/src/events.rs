@@ -79,6 +79,7 @@ impl App {
             viewing_session,
             viewing_session_inbox: state.panel() == Some(Panel::Inbox),
             viewing_channel_inbox,
+            viewing_todo: state.route == Route::Todo,
         }
     }
 
@@ -212,6 +213,7 @@ impl App {
                         let has_pending_inbox_request = state.workspace.waiting().any(|request| {
                             request.session == session.id
                                 && request.kind != RequestKind::Migrate
+                                && !request.is_to_do_ask()
                                 && !request.operation.starts_with("board.")
                         });
                         if let Some(notice) = humata2_notify::evaluate(
@@ -257,6 +259,7 @@ impl App {
                         && !state.workspace.waiting().any(|request| {
                             request.session == session.id
                                 && request.kind != RequestKind::Migrate
+                                && !request.is_to_do_ask()
                                 && !request.operation.starts_with("board.")
                         })
                     {
@@ -281,6 +284,7 @@ impl App {
                 if state.settings.preferences.permission_request_alerts
                     && request.answer.is_none()
                     && !matches!(request.kind, RequestKind::Question)
+                    && !request.is_to_do_ask()
                     && is_new
                 {
                     permission_alert = Some(format!("Permission requested: {}", request.title));
@@ -292,8 +296,39 @@ impl App {
                     ));
                 } else if live
                     && is_new
+                    && let Some(ask) = &request.to_do
+                {
+                    if let Some(notice) =
+                        humata2_inbox::to_do_notification(&state.workspace, &request)
+                    {
+                        let channel_id = Some(request.channel.clone());
+                        let item = match ask {
+                            humata2_clients::model::ToDoAsk::Item(id) => Some(id.clone()),
+                            humata2_clients::model::ToDoAsk::NewItem => None,
+                        };
+                        if let Some(desktop_notice) = humata2_notify::evaluate(
+                            &state.settings.preferences.notify,
+                            &frontmost,
+                            &mut state.notify_burst,
+                            NotifyEvent::TodoAsk {
+                                request_id: request.id.clone(),
+                                session_id: request.session.clone(),
+                                channel_id,
+                                item,
+                                answered: false,
+                                title: notice.title,
+                                body: notice.body,
+                            },
+                            now_secs,
+                        ) {
+                            notices.push(desktop_notice);
+                        }
+                    }
+                } else if live
+                    && is_new
                     && request.kind != RequestKind::Migrate
-                    && !request.operation.starts_with("board.")
+                    && !request.is_to_do_ask()
+                                && !request.operation.starts_with("board.")
                     && let Some(notice) = humata2_inbox::notification(&state.workspace, &request)
                 {
                     let (session_title, channel_id, channel_name) =
@@ -384,6 +419,20 @@ impl App {
                     ));
                 }
                 return Effect::merge(effects);
+            }
+            // D908: the open Sync section reads the mount state again.
+            Event::SettingsChanged => {
+                if state.route == crate::Route::Settings
+                    && state.settings.section == humata2_settings::Section::Sync
+                {
+                    return self.child(
+                        state,
+                        AppAction::Settings(humata2_settings::SettingsAction::Sync(
+                            humata2_settings::SyncAction::Load,
+                        )),
+                    );
+                }
+                return Effect::none();
             }
             Event::Restart(restart) => return self.heard_restart(state, restart),
             Event::ChannelSetup(setup) => return self.heard_setup(state, setup),

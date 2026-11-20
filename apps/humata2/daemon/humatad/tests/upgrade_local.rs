@@ -36,11 +36,12 @@ const LONG: Duration = Duration::from_secs(90);
 const TOKEN_HEADER: &str = "humata-session-token";
 
 /// Where the staged and the installed files are, as the daemon names them.
-const FILES: [(&str, &str); 4] = [
+const FILES: [(&str, &str); 5] = [
     ("humatad2", "HUMATAD2"),
     ("humata2_holder", "HUMATA2_HOLDER"),
     ("humata", "HUMATA"),
     ("stack", "STACK"),
+    ("humata2_fusefs", "HUMATA2_FUSEFS"),
 ];
 
 /// A host daemon at release `a`, its release installed in `bin` beside its

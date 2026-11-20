@@ -9,7 +9,10 @@ rust_library(
     name = "vt_authority",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_vt_authority",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/svc_inbox:__pkg__",
+    ],
     deps = [
         "//apps/humata2/terminal/vt:ghostty_vt",
         "@crates//:thiserror",

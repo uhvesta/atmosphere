@@ -159,6 +159,9 @@ impl Policy {
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
         }
+        if desk_fork_reads(agent, call) && rules.decision(C::GlobalRead) == Some(Decision::Never) {
+            return Ok(never(channel, C::GlobalRead));
+        }
         if switch_allows(&agent.kind, need.capability, call) {
             return Ok(allowed_now(Source::DeskSwitch));
         }
@@ -208,6 +211,9 @@ impl Policy {
         };
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
+        }
+        if desk_fork_reads(agent, call) && rules.decision(C::GlobalRead) == Some(Decision::Never) {
+            return Ok(never(channel, C::GlobalRead));
         }
         if switch_allows(&agent.kind, need.capability, call) {
             return Ok(carry_out(Source::DeskSwitch, reach, context, away));
@@ -921,7 +927,14 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
                 machine: machine.clone(),
                 agent: kind.clone(),
             };
-            in_channel(agent, channel, need_exactly(capability, target))
+            // A Desk agent belongs to no channel and may start or fork in
+            // any; its new-channel rule decides, Ask me by default, and no
+            // Desk switch allows it (DK-10, D910).
+            if matches!(agent.kind, SessionKind::Desk(_)) {
+                need_exactly(capability, target)
+            } else {
+                in_channel(agent, channel, need_exactly(capability, target))
+            }
         }
         (C::GitPush, Target::Push(branch)) => match agent.kind {
             SessionKind::Review { push_allowed: true } => Resolved::ReviewPush,
@@ -976,6 +989,23 @@ fn governing_channel<'a>(agent: &'a Agent, call: &'a Call) -> &'a ChannelId {
         } if matches!(agent.kind, SessionKind::Desk(_)) => channel,
         _ => &agent.session.channel,
     }
+}
+
+/// True when a Desk agent forks a session: the fork carries the parent's
+/// conversation, which is in a channel that is never the Desk's, so the
+/// Desk's GlobalRead rule set to Never refuses it too (D910).
+fn desk_fork_reads(agent: &Agent, call: &Call) -> bool {
+    matches!(agent.kind, SessionKind::Desk(_))
+        && matches!(
+            call,
+            Call::Use {
+                target: Target::Start {
+                    fork_of: Some(_),
+                    ..
+                },
+                ..
+            }
+        )
 }
 
 fn never(channel: &ChannelId, capability: Capability) -> Verdict {

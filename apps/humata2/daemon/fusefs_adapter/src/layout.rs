@@ -9,9 +9,11 @@ use std::sync::{Arc, RwLock};
 use fusefs_vfs::{
     AccessHook, CallerContext, ChunkLoader, DirEntry, FileAttr, FileHandle, FlockOp,
     InMemoryVolume, LeaseTable, NodeId, OpenFlags, SetAttr, StatFs, SyntheticStub, TreeBuilder,
-    VfsError, VfsResult, VirtualPath, Volume,
+    VfsError, VfsResult, VfsTarget, VirtualPath, Volume,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::materialize::FsMountMode;
 
 /// Filename used for Humata build-cache omission stubs inside projected repos.
 pub const HUMATA_OMITTED_STUB_FILENAME: &str = ".humata-omitted.json";
@@ -81,14 +83,22 @@ impl BuildCacheStub {
 
     pub fn to_json_bytes(&self) -> VfsResult<Vec<u8>> {
         let mut out = serde_json::to_vec_pretty(self)
-            .map_err(|e| VfsError::Eio(format!("failed to serialize BuildCacheStub: {e}")))?;
+            .map_err(|source| VfsError::JsonIo {
+                op: "serialize build cache stub",
+                target: VfsTarget::Record("build cache stub"),
+                source,
+            })?;
         out.push(b'\n');
         Ok(out)
     }
 
     pub fn from_json_bytes(bytes: &[u8]) -> VfsResult<Self> {
         serde_json::from_slice(bytes)
-            .map_err(|e| VfsError::Einval(format!("invalid BuildCacheStub JSON: {e}")))
+            .map_err(|source| VfsError::JsonInvalid {
+                op: "parse build cache stub",
+                target: VfsTarget::Record("build cache stub"),
+                source,
+            })
     }
 }
 
@@ -306,7 +316,11 @@ impl HumataTreeProjector {
             let info_dir = format!("/machines/{}", machine.machine_id);
             let info_file = format!("{info_dir}/status.json");
             let info_bytes = serde_json::to_vec_pretty(machine)
-                .map_err(|e| VfsError::Eio(format!("machine status json: {e}")))?;
+                .map_err(|source| VfsError::JsonIo {
+                    op: "serialize machine status",
+                    target: VfsTarget::Record("machine status"),
+                    source,
+                })?;
 
             builder = builder
                 .dir(&m_root)
@@ -363,7 +377,11 @@ impl HumataTreeProjector {
                 desk: sess.desk.clone(),
             };
             let meta_bytes = serde_json::to_vec_pretty(&meta)
-                .map_err(|e| VfsError::Eio(format!("session meta json: {e}")))?;
+                .map_err(|source| VfsError::JsonIo {
+                    op: "serialize session meta",
+                    target: VfsTarget::Record("session meta"),
+                    source,
+                })?;
             builder = builder.file(&format!("{s_root}/meta.json"), meta_bytes);
 
             // Local-authority session context files.
@@ -584,8 +602,24 @@ impl HumataVolumeHost {
     pub fn on_daemon_reconnect(
         &self,
         new_daemon_pid: u32,
-        mut refreshed_topology: HumataTopology,
+        refreshed_topology: HumataTopology,
     ) -> VfsResult<DaemonLinkState> {
+        self.update_topology(refreshed_topology)?;
+
+        self.reconnect_count.fetch_add(1, Ordering::Relaxed);
+        let mut link = self.daemon_link.write().expect("daemon link lock poisoned");
+        let next_epoch = link.epoch().saturating_add(1);
+        let next = DaemonLinkState::Connected {
+            daemon_pid: new_daemon_pid,
+            epoch: next_epoch,
+        };
+        *link = next.clone();
+        Ok(next)
+    }
+
+    /// Swaps in a refreshed topology without touching the link state:
+    /// existing session `holder_pid`s and `.sessions/<id>/` paths are kept.
+    pub fn update_topology(&self, mut refreshed_topology: HumataTopology) -> VfsResult<()> {
         // Preserve live holder PIDs for sessions that were already running.
         {
             let mut holders = self.holders.write().expect("holders lock poisoned");
@@ -616,16 +650,12 @@ impl HumataVolumeHost {
 
         *self.volume.write().expect("volume lock poisoned") = Arc::new(new_vol);
         *self.topology.write().expect("topology lock poisoned") = refreshed_topology;
+        Ok(())
+    }
 
-        self.reconnect_count.fetch_add(1, Ordering::Relaxed);
-        let mut link = self.daemon_link.write().expect("daemon link lock poisoned");
-        let next_epoch = link.epoch().saturating_add(1);
-        let next = DaemonLinkState::Connected {
-            daemon_pid: new_daemon_pid,
-            epoch: next_epoch,
-        };
-        *link = next.clone();
-        Ok(next)
+    /// Records the daemon link state `humatad2` reports, as given.
+    pub fn set_daemon_link(&self, state: DaemonLinkState) {
+        *self.daemon_link.write().expect("daemon link lock poisoned") = state;
     }
 
     /// Performs a same-machine channel rename (`old_channel` -> `new_channel`).
@@ -784,6 +814,18 @@ impl Volume for HumataVolumeHost {
         self.current_volume().open(caller, ino, flags)
     }
 
+    fn create(
+        &self,
+        caller: &CallerContext,
+        parent: NodeId,
+        name: &str,
+        mode: u32,
+        flags: OpenFlags,
+    ) -> VfsResult<(FileAttr, FileHandle)> {
+        self.current_volume()
+            .create(caller, parent, name, mode, flags)
+    }
+
     fn release(&self, caller: &CallerContext, ino: NodeId, fh: FileHandle) -> VfsResult<()> {
         self.current_volume().release(caller, ino, fh)
     }
@@ -835,6 +877,119 @@ impl Volume for HumataVolumeHost {
     }
 }
 
+/// A session as `humatad2` describes it to the helper: the plain facts of
+/// [`SessionProjection`], without files or loaders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionWire {
+    pub session_id: String,
+    pub machine_id: String,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub desk: Option<String>,
+    pub holder_pid: u32,
+    pub machine_root: PathBuf,
+}
+
+/// The wire form of a [`HumataTopology`] snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyWire {
+    pub local_machine_id: String,
+    pub local_machine_root: PathBuf,
+    #[serde(default)]
+    pub machines: Vec<MachineProjection>,
+    #[serde(default)]
+    pub sessions: Vec<SessionWire>,
+    #[serde(default)]
+    pub desks: Vec<DeskProjection>,
+}
+
+impl TopologyWire {
+    /// The snapshot the volume host projects.
+    pub fn into_topology(self) -> HumataTopology {
+        let sessions = self
+            .sessions
+            .into_iter()
+            .map(|wire| {
+                let mut session = SessionProjection::new(
+                    wire.session_id,
+                    wire.machine_id,
+                    wire.machine_root,
+                    wire.holder_pid,
+                );
+                session.channel = wire.channel;
+                session.desk = wire.desk;
+                session
+            })
+            .collect();
+        HumataTopology {
+            local_machine_id: self.local_machine_id,
+            local_machine_root: self.local_machine_root,
+            machines: self.machines,
+            sessions,
+            desks: self.desks,
+            local_context_files: Vec::new(),
+            control_status_json: None,
+        }
+    }
+}
+
+/// What `humatad2` pushes to the helper through the control socket's
+/// `Extension` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "update", rename_all = "snake_case")]
+pub enum HostUpdate {
+    /// The link between the daemon and the helper changed.
+    LinkState { state: DaemonLinkState },
+    /// The daemon's machines and sessions, as they are now.
+    Topology { topology: TopologyWire },
+}
+
+impl HostUpdate {
+    /// Applies the update to `host`. The error says what the host refused.
+    pub fn apply(self, host: &HumataVolumeHost) -> VfsResult<()> {
+        match self {
+            Self::LinkState { state } => {
+                host.set_daemon_link(state);
+                Ok(())
+            }
+            Self::Topology { topology } => host.update_topology(topology.into_topology()),
+        }
+    }
+}
+
+/// The mount mode this machine can run: FSKit on a macOS that has it, the
+/// kernel FUSE device on Linux when it opens, else the degraded skeleton.
+pub fn probe_mount_mode() -> FsMountMode {
+    #[cfg(target_os = "macos")]
+    {
+        let version = std::process::Command::new("/usr/bin/sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+        match version {
+            Some(version) if fskit_supported(&version) => FsMountMode::FsKit,
+            _ => FsMountMode::Degraded,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fusefs_linux::probe_mount_mode().mode.into()
+    }
+}
+
+/// FSKit file systems need macOS 15.4 or later.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn fskit_supported(product_version: &str) -> bool {
+    let mut parts = product_version.split('.').map(|part| part.parse::<u32>().ok());
+    let (Some(Some(major)), minor) = (parts.next(), parts.next().flatten().unwrap_or(0)) else {
+        return false;
+    };
+    (major, minor) >= (15, 4)
+}
+
 /// Helper to read a regular file's full bytes via [`Volume`].
 pub fn read_all_bytes(
     volume: &dyn Volume,
@@ -850,4 +1005,91 @@ pub fn read_all_bytes(
 /// Helper to validate that a path is within a session's canonical root.
 pub fn session_canonical_root(session_id: &str) -> VfsResult<VirtualPath> {
     VirtualPath::parse(&format!("/s/{session_id}"))
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    fn wire_with(session: &str, channel: Option<&str>, holder_pid: u32) -> TopologyWire {
+        TopologyWire {
+            local_machine_id: "m1".into(),
+            local_machine_root: PathBuf::from("/root/m1"),
+            machines: vec![MachineProjection {
+                machine_id: "m1".into(),
+                display_name: "Mac".into(),
+                online: true,
+                machine_root: PathBuf::from("/root/m1"),
+            }],
+            sessions: vec![SessionWire {
+                session_id: session.into(),
+                machine_id: "m1".into(),
+                channel: channel.map(str::to_string),
+                desk: None,
+                holder_pid,
+                machine_root: PathBuf::from("/root/m1"),
+            }],
+            desks: Vec::new(),
+        }
+    }
+
+    fn empty_host() -> HumataVolumeHost {
+        HumataVolumeHost::new(7, HumataTopology::default(), None, None, None).unwrap()
+    }
+
+    #[test]
+    fn an_update_survives_the_json_it_travels_in() {
+        let update = HostUpdate::Topology {
+            topology: wire_with("s1", Some("main"), 40),
+        };
+        let json = serde_json::to_value(&update).unwrap();
+        let back: HostUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, update);
+    }
+
+    #[test]
+    fn a_topology_update_adds_sessions_and_keeps_their_first_holder_pid() {
+        let host = empty_host();
+        HostUpdate::Topology {
+            topology: wire_with("s1", Some("main"), 40),
+        }
+        .apply(&host)
+        .unwrap();
+        assert_eq!(host.holder_record("s1").unwrap().holder_pid, 40);
+
+        HostUpdate::Topology {
+            topology: wire_with("s1", Some("renamed"), 99),
+        }
+        .apply(&host)
+        .unwrap();
+        let record = host.holder_record("s1").unwrap();
+        assert_eq!(record.holder_pid, 40);
+        assert_eq!(record.channel.as_deref(), Some("renamed"));
+        assert_eq!(host.reconnect_count(), 0);
+    }
+
+    #[test]
+    fn a_link_state_update_is_taken_as_given() {
+        let host = empty_host();
+        let state = DaemonLinkState::Connected {
+            daemon_pid: 321,
+            epoch: 5,
+        };
+        HostUpdate::LinkState {
+            state: state.clone(),
+        }
+        .apply(&host)
+        .unwrap();
+        assert_eq!(host.daemon_link_state(), state);
+    }
+
+    #[test]
+    fn fskit_needs_macos_15_4_or_later() {
+        assert!(fskit_supported("15.4"));
+        assert!(fskit_supported("15.6.1"));
+        assert!(fskit_supported("26.0"));
+        assert!(!fskit_supported("15.3"));
+        assert!(!fskit_supported("14.7"));
+        assert!(!fskit_supported("garbage"));
+    }
 }

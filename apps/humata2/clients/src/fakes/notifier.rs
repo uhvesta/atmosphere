@@ -103,6 +103,7 @@ mod tests {
                 session: SessionId::new("s1"),
                 request: RequestId::new("r1"),
             },
+            sound: None,
         };
         notifier.request_permission();
         notifier.post(notice.clone());
@@ -127,6 +128,7 @@ mod tests {
             title: "t".to_owned(),
             body: "b".to_owned(),
             target: NotifyTarget::Inbox,
+            sound: None,
         });
         notifier.withdraw(&["id".to_owned()]);
     }

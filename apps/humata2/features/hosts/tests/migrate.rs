@@ -94,6 +94,7 @@ fn item(thing: MigrateThing, phase: MigratePhase, answer: Option<Answer>) -> Req
         working_on: String::new(),
         asked_why: None,
         rule_label: String::new(),
+        to_do: None,
     }
 }
 

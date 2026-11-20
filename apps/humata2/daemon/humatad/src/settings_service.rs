@@ -20,6 +20,7 @@ use humata2_store::Store;
 use tonic::{Code, Request, Response, Status};
 
 use crate::channel_service::blocking;
+use crate::config_sync::{self, ConfigSync};
 use crate::events::Feed;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
@@ -30,7 +31,8 @@ use crate::agent_switches::OnChange;
 mod gh_login;
 mod sections;
 
-pub(crate) use sections::default_agent_for;
+pub(crate) use sections::{default_agent_chain, default_agent_for, fusefs_enabled_in};
+pub use sections::todo_automation_for;
 
 #[derive(Clone)]
 pub(crate) struct SettingsSvc {
@@ -46,6 +48,12 @@ pub(crate) struct SettingsSvc {
     agents: Agents,
     /// Told when that file is written, so machines get the new copy.
     agents_changed: OnChange,
+    /// The sync settings and the sessions that follow them, once wired.
+    config_sync: Option<Arc<ConfigSync>>,
+    /// Told when Settings turns the FUSE mount on or off, after it is saved.
+    fusefs_switch: Arc<dyn Fn(bool) + Send + Sync>,
+    /// What the FUSE mount is doing now, shown as `fusefs_status` (D908).
+    fusefs_status: Arc<dyn Fn() -> pb::FuseMountStatus + Send + Sync>,
 }
 
 impl SettingsSvc {
@@ -70,7 +78,37 @@ impl SettingsSvc {
             sections,
             agents,
             agents_changed: OnChange::default(),
+            config_sync: None,
+            fusefs_switch: Arc::new(|_| {}),
+            fusefs_status: Arc::new(pb::FuseMountStatus::default),
         }
+    }
+
+    /// Keeps the sync settings in `sync`, and re-composes its sessions when
+    /// they change.
+    pub(crate) fn with_config_sync(mut self, sync: Arc<ConfigSync>) -> Self {
+        self.config_sync = Some(sync);
+        self
+    }
+
+    /// Calls `switch` with the new value each time Settings saves
+    /// `fusefs_enabled`.
+    pub(crate) fn with_fusefs_switch(mut self, switch: Arc<dyn Fn(bool) + Send + Sync>) -> Self {
+        self.fusefs_switch = switch;
+        self
+    }
+
+    /// Fills `fusefs_status` from `status` each time the settings are shown.
+    pub(crate) fn with_fusefs_status(mut self, status: Arc<dyn Fn() -> pb::FuseMountStatus + Send + Sync>) -> Self {
+        self.fusefs_status = status;
+        self
+    }
+
+    /// Tells the Settings feed what the settings are now, from any thread.
+    /// The mount state calls this when it moves on its own (D908).
+    pub(crate) fn tell_in_background(&self, runtime: tokio::runtime::Handle) {
+        let this = self.clone();
+        runtime.spawn(async move { this.tell(None).await });
     }
 
     /// Tells `changed` each time the compatibility switch writes agents.toml.
@@ -177,17 +215,20 @@ impl SettingsSvc {
             ..Default::default()
         };
         self.sections.show(&mut shown);
+        shown.fusefs_status = Some((self.fusefs_status)());
+        shown.sync = Some(config_sync::shown(&self.config_sync.as_ref().map(|sync| sync.config()).unwrap_or_default()));
         Ok(shown)
     }
 
     async fn channel_settings(&self, id: &str) -> Result<pb::ChannelSettings, Status> {
         let (store, key) = (self.store.clone(), id.to_owned());
-        let (channel, contain, agent, retention) = blocking(move || -> Result<_, humata2_store::StoreError> {
+        let (channel, contain, agent, retention, todo) = blocking(move || -> Result<_, humata2_store::StoreError> {
             Ok((
                 store.channel(&key)?,
                 crate::contained::channel(&store, &key)?,
                 store.setting(&sections::channel_agent_key(&key))?,
                 store.setting(&sections::channel_retention_key(&key))?,
+                store.setting(&sections::channel_todo_key(&key))?,
             ))
         })
         .await?
@@ -208,7 +249,8 @@ impl SettingsSvc {
                     .and_then(|saved| sections::parse_retention(&saved.value))
                     .unwrap_or_else(|| self.sections.retention_defaults()),
             ),
-            todo_automation: None,
+            // Unset: the To-do automation in Settings.
+            todo_automation: todo.and_then(|saved| sections::parse_todo(&saved.value)),
         })
     }
 }
@@ -268,6 +310,7 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         if request.branch_prefix.is_none()
             && request.agents.is_none()
             && request.security.is_none()
+            && request.sync.is_none()
             && !sections::sets_any(&request)
         {
             return self.shown().await.map(Response::new);
@@ -279,11 +322,18 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         }
         // Every section is checked before any is saved.
         self.sections.check(&request)?;
+        let wanted_sync = request.sync.as_ref().map(config_sync::wanted).transpose()?;
         let current = self.shown().await?.revision.map_or(0, |revision| revision.value);
         if let Some(expected) = request.expected_revision
             && expected.value != current
         {
             return Err(changed_since("settings", "expected_revision"));
+        }
+        if let (Some(wanted), Some(sync)) = (wanted_sync, &self.config_sync) {
+            // In place: running sessions follow at once, and no holder restarts.
+            // A sync file the user broke is named, and nothing is saved.
+            let sync = sync.clone();
+            blocking(move || sync.apply(wanted)).await?.map_err(|error| error.status())?;
         }
         if sections::sets_any(&request) {
             // A file the user broke by hand is named, not overwritten.
@@ -310,12 +360,13 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
                 )
             })?;
         }
+        let saves_sync = request.sync.is_some();
         let (store, prefix, saves_agents, security) =
             (self.store.clone(), request.branch_prefix, request.agents.is_some(), request.security);
         blocking(move || -> Result<(), humata2_store::StoreError> {
             // The agents' switches live in agents.toml; this key keeps the
             // revision moving when only they change.
-            if saves_sections || saves_agents {
+            if saves_sections || saves_agents || saves_sync {
                 store.put_setting(sections::REVISION_KEY, "", current + 1)?;
             }
             if let Some(security) = security {
@@ -330,6 +381,10 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         .map_err(|error| status::store(error, &self.machine, "save the settings"))?;
         // AW-8: machines get Contain agents with the next policy copy.
         self.guard.policy_changed();
+        if let Some(enabled) = request.fusefs_enabled {
+            let switch = self.fusefs_switch.clone();
+            blocking(move || switch(enabled)).await?;
+        }
         let shown = self.shown().await?;
         self.feed.publish(
             pb::Change::Updated,
@@ -338,11 +393,9 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         );
         if saves_sections {
             // D770: every channel's shown default agent may have changed.
-            let (feed, store, by) = (self.feed.clone(), self.store.clone(), identity::actor(&caller));
+            let (feed, store, agents, by) = (self.feed.clone(), self.store.clone(), self.agents.clone(), identity::actor(&caller));
             let _ = blocking(move || {
-                for channel in store.channels().unwrap_or_default() {
-                    crate::channel_service::tell_channel(&feed, &store, &channel.id, pb::Change::Updated, Some(by.clone()));
-                }
+                crate::channel_service::tell_every_channel(&feed, &store, &agents, Some(&by));
             })
             .await;
         }
@@ -389,6 +442,14 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             }
             None => None,
         };
+        let todo = match (request.clear_todo_automation, &request.todo_automation) {
+            (true, _) => Some(String::new()),
+            (false, Some(todo)) => {
+                sections::check_todo_automation("todo_automation", todo)?;
+                Some(sections::todo_value(todo))
+            }
+            (false, None) => None,
+        };
         let shown = self.channel_settings(&id).await?;
         let prefix = match (request.clear_branch_prefix, request.branch_prefix) {
             (true, _) => Some(None),
@@ -406,7 +467,7 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             (false, Some(on)) => Some(Some(on)),
             (false, None) => None,
         };
-        if prefix.is_none() && contain.is_none() && agent.is_none() && retention.is_none() {
+        if prefix.is_none() && contain.is_none() && agent.is_none() && retention.is_none() && todo.is_none() {
             return Ok(Response::new(shown));
         }
         let current = shown.revision.map_or(0, |revision| revision.value);
@@ -433,6 +494,9 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             if let Some(retention) = retention {
                 store.put_setting(&sections::channel_retention_key(&key), &retention, channel.revision)?;
             }
+            if let Some(todo) = todo {
+                store.put_setting(&sections::channel_todo_key(&key), &todo, channel.revision)?;
+            }
             store.put_channel(&channel)
         })
         .await?
@@ -440,9 +504,9 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         // AW-8: machines get the channel's Contain agents with the next copy.
         self.guard.policy_changed();
         // D770: the channel's shown default agent may have changed.
-        let (feed, store, key, by) = (self.feed.clone(), self.store.clone(), id.clone(), identity::actor(&caller));
+        let (feed, store, agents, key, by) = (self.feed.clone(), self.store.clone(), self.agents.clone(), id.clone(), identity::actor(&caller));
         let _ = blocking(move || {
-            crate::channel_service::tell_channel(&feed, &store, &key, pb::Change::Updated, Some(by));
+            crate::channel_service::tell_channel(&feed, &store, &agents, &key, pb::Change::Updated, Some(by));
         })
         .await;
         self.channel_settings(&id).await.map(Response::new)

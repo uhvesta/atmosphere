@@ -5339,3 +5339,213 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
   - Frame 12: the design drawing (`desktop/tests/design/todo_more.rs`, `panel_drawer_full`) now draws the shipped narrow drawer, and the golden is re-recorded. The rows are State with `Won't do`, Need inside a dashed unset box, and Due as a date box with Today/Tomorrow links on one line and `Loose:` chips on a second. Segments wrap with 7 pt padding. The hint stays "tomorrow" because the fixture day is Thu 19 Nov. Fable approved it as faithful to the app with no clipping or regression.
   - Frame 44: the app is fixed (`ui/core/src/repo_search_field.rs`). The row highlight reaches past the text with negative margins, so rows keep the golden's places, and the list and its clip widen by the same amount. No mask and no budget change.
 - **Reverse:** restore the old `12-panel-full-screen-board.png` and `panel_drawer_full`, and put the row padding back in `repo_row`. Either way, look_test fails again until the other side is changed to match.
+
+## D895: FUSEFS mount is off by default; composed agent homes only for new launches (minion FUSEFSWIRE, 2026-11-20). Provisional
+- **Why:** FUSEFSWIRE wires `humata2_fusefs` into humatad2 as a fifth helper. Mounting runs the system mount tool. On a Mac without the file-system extension, or in a test, that is a side effect nobody asked for.
+- **Ruling:**
+  - `Settings.fusefs_enabled` defaults to false. While it is off, humatad2 spawns no helper and mounts nothing. Turning it on in Settings › Sync starts the helper. Turning it off unmounts.
+  - Local session folders stay on native disk either way.
+  - Sync (`config/config-sync.toml`) follows the composer's defaults: on, with skills and instructions on and MCP and settings off.
+  - An agent tab gets a composed `config/<agent>/` home only when it is launched or relaunched after this ships. The home it got is recorded with the tab, so resume and history read the same place.
+  - Running holders are never restarted. The sync switch re-composes each home in place.
+- **Reverse:** default `fusefs_enabled` to true in `settings_service/sections.rs`. To make sessions that predate this use composed homes too, compose for them at resume.
+
+## D896: BROWSER's bridge and Settings RPCs live in a new `browser.proto` (minion BROWSER, 2026-11-20; main approved)
+- **Ruling:** `api/proto/humata/v1/browser.proto`, built in `inbox_proto`, holds `BrowserBridgeService`: `ConnectBrowserHost`, `ExecuteBrowserAction`, `GetBrowserBridgeStatus`, and the user-only `ListDetectedBrowsers`, `InstallBrowserHost` and `UninstallBrowserHost`. `SettingsService`, `settings.proto` and `settings_service.rs` are not changed.
+- **Why:** another lane holds `settings_service.rs`. Adding RPCs to `SettingsService` would force edits there.
+- **Reverse:** move the three Settings RPCs into `SettingsService` once `settings_service.rs` is free.
+
+## D897: A browser card shows what runs; nothing reaches the browser without the Inbox (minion BROWSER, 2026-11-20; main approved)
+- **Ruling:**
+  - `RequestBrowserApproval` carries the action's JSON. The daemon works out the card's preview, read or write, and a sha256 action key from that JSON, never from text the agent supplies.
+  - An agent's `ExecuteBrowserAction` runs only in one of two cases:
+    - It names a request its own session made, which the user approved, for an action with the same key. Each approval is used once.
+    - The action is a read, and the session has an active 30-minute read grant.
+  - Read grants belong to one session, are kept in memory only, and end after 30 minutes or when humatad2 restarts.
+  - Write cards take only Allow once or Deny. Allow 30 min is refused on writes, and Always allow on every browser card. Approve all skips browser cards.
+- **Why:** an agent must not be able to show one action on the card and run another, or call the bridge directly. A grant per agent kind would let every session of that agent read tabs.
+- **Reverse:** keep grants per agent kind, as `browser_copilot`'s `PermissionGate` did, and let the agent send the preview text.
+
+## D898: The browser host is not a new `Caller` (minion BROWSER, 2026-11-20; main approved)
+- **Ruling:** `identity.rs` accepts the `humata-browser-host-token` header only under these conditions:
+  - the token matches `<state_dir>/browser-host.token` (mode 0600);
+  - the peer has the same uid and is outside every session;
+  - the method is `ConnectBrowserHost`.
+  It then marks the call with a type local to humatad. `daemon/ports`' `Caller` gets no new variant.
+- **Why:** many matches across the daemon list every `Caller` variant. The host may make only one call, so a marker is enough.
+- **Reverse:** add `Caller::BrowserHost` to `daemon/ports` and give it a branch in every match on `Caller`.
+
+## D899: `browser_guide_highlight` is a read; `browser_copilot` loses its panics (minion BROWSER, 2026-11-20; main approved)
+- **Ruling:**
+  - `ActionClass::classify` treats `HighlightGuide` as a read, as the BROWSER brief's table says. It only draws an overlay and changes nothing on the page.
+  - `PermissionGate::resolve_ask` drops its `expect` and `unreachable!`.
+  - `Submit` stays in the crate but is offered as no tool.
+- **Reverse:** classify `HighlightGuide` as a write, so its cards offer only Allow once and Deny.
+
+## D900: SCREENPARSE records Claude Code, Codex and Copilot; agy waits for an API key (minion SCREENPARSE, 2026-11-20; Fable). Provisional
+- **Models:** Claude Code on `claude-haiku-5-5`, Codex on `gpt-6-luna` (its fast, affordable current model), Copilot on its cheapest listed model, agy on `gemini-3.8-flash-low` (Fable: the lowest tier of the cheapest family that still calls tools; step up to `-medium` only if it calls none).
+- **agy is not recorded yet.** It keeps its files under `$HOME/.gemini` and has no config-dir flag or variable, so a scratch `HOME` isolates its files. But its sign-in is a login-keychain item, not a file: a scratch home starts signed out, and pointing it at the real keychain would let it rewrite the owner's login on token refresh. agy screens are recorded only once a `GEMINI_API_KEY` is passed in the environment (never a file).
+- **Widths:** each labelled screen is captured at 60, 80, 120 and 200 columns by resizing the running holder, not by re-running the turn at each width, so a script costs one set of model calls.
+- **Not recorded:** a rate limit (it can't be triggered on purpose without burning quota). "Answered from a different terminal" looks the same on screen as an answer typed in the tab, so the after-answer screens cover it.
+- **Isolation:** every CLI, including its `--version` call, runs with `HOME` and its config-dir variable pointed at a scratch folder, because Codex writes helper folders under `$HOME/.codex/tmp` even when `CODEX_HOME` is set. The before/after check has no exclusions for `~/.codex/tmp`. Two early runs, before this fix, left `~/.codex/tmp/arg0-macos/codex-arg0{0PsbI3,wT0FaD}` behind. They hold only Codex's temporary helper links, and we leave them untouched.
+- **Reverse:** record agy against a copied keychain login, or re-run each script per width.
+
+## D901: A step's context is edited in place in the item drawer (minion TODO2WIRE, 2026-11-20; Fable). Provisional
+- **Control:** a step with no context gets a "+ Context" link before its ↑ ↓ Drop. It shows only while the pointer is over the step or the link has focus (`todo-step-context-add-{i}`); it is always laid out, at opacity 0 at rest.
+- **Existing context:** clicking a step's grey context line (`todo-step-context-{i}`) edits it.
+- **Editor:** both ways open one multi-line box under the step (`todo-step-context-edit`, 3 to 8 rows). It has Save (`todo-step-context-save`), Cancel (`todo-step-context-cancel`) and the hint "⌘↩ saves · Esc cancels".
+- **Keys:** Return adds a new line, ⌘↩ saves, and Esc cancels without closing the drawer.
+- **Saving:** empty text removes the context; there is no Remove control. One editor is open at a time, through `EditField::StepContext(i)` and `SetStepMarkdown`.
+- **Narrow:** the session panel keeps the context read-only, as it already hides step reordering.
+- **Frames:** `workflow/milestones/mockups/todo2wire/t2-0`, `t2-1` and `t2-2`.
+- **Why:** nothing is added to a step row at rest, so no design golden changes. A context is usually several lines, so the single-line title field doesn't fit.
+- **Reverse:** show "+ Context" permanently (a one-line change) if hover proves hard to find.
+
+## D902: To-do automation is a "To-do" group in Settings › General (minion TODO2WIRE, 2026-11-20; Fable). Provisional
+- **Place:** under Fast mode and above Repositories.
+- **Header:** a "To-do" heading, with one line saying Ask puts a one-click question on the item and never stops an agent.
+- **Card:** one card of five rows:
+  - "When a pull request merges", Ask / Auto (`settings-todo-pr-merged-*`)
+  - "When an item closes", Ask / Auto (`settings-todo-close-archive-*`)
+  - "Wake the agent when checks fail", a switch (`settings-todo-wake-ci`)
+  - "Wake the agent on review comments", a switch (`settings-todo-wake-comments`)
+  - "Nudge about idle items", a pop-up of 1, 3, 7 or 14 days (`settings-todo-idle-nudge`)
+- **Defaults:** Ask, Ask, off, off, 3 days. Auto comes with Undo.
+- **Archiving:** Auto archive always keeps a session that has unsaved work or a running terminal, and the daemon enforces this.
+- **No Off for the nudge:** the setting has no off value.
+- **Frame:** `workflow/milestones/mockups/todo2wire/t7-1-settings-todo.png`.
+- **Why General:** a ninth section entry would change every Settings golden for five rows. General is in no golden.
+- **Not yet:** channel overrides get no UI.
+- **Reverse:** move the group to its own section at the next Settings redesign.
+
+## D903: The PR watcher wakes sessions only for failing checks and review comments (minion TODO2WIRE, 2026-11-20). Provisional
+- **What wakes a session:** failing checks follow `auto_wake_on_ci_fail`, and new unresolved review comments follow `auto_wake_on_review_comments`.
+- **Always a prompt:** merge conflicts, a merged base and a PR closed without merging show a prompt on the item ("Send to session"), because no setting covers them.
+- **Signals:** a prompt is raised only when its signal is new since the last check. A dismissed prompt stays gone until the signal clears and comes back, including across restarts.
+- **Cadence:** checks run at most every 5 minutes, only while some item watches a PR, and right away when a PR is added. After a gh rate limit, the watcher waits the stated time (15 minutes when gh doesn't say).
+- **Reverse:** let conflicts follow the checks switch.
+
+## D904: Settings › Sync is frame 211; dim, never hide (minion FUSEFSWIRE, 2026-11-20)
+
+Fable signed off candidate `211-settings-sync` with edits.
+
+Layout:
+- Sync is third in the Settings nav, after Agents, with the FolderTree icon.
+- Card 1 holds the master switch and four rows indented 28: Skills (with a Host wins / Host only control), Instructions, MCP servers, Settings.
+- Then a "Machines" table: This Mac first, then the other machines in sidebar order. Each cell is a Default/On/Off popup. Default is drawn in the secondary colour and writes the field as unset. Offline machines are listed and can be edited.
+- Then a separate mount card ("Browse other machines as files", off).
+- Copy defines the host once: "The host is this Mac." Every session on any machine gets the host's config, which matches config_compose's host-synced vs machine-local layers. The manager corrected Fable's wording ("the machine it runs on") to say this.
+
+Dimming:
+- Master off: the category rows and the whole Machines table dim to 0.4, are disabled and keep their values. The master row and the mount card never dim.
+- Skills off: only the mode control dims.
+- A machine's Sync cell Off: the rest of that row dims.
+- Per-machine `skills_mode` is not shown in v1 and stays unset.
+
+Follow-up: goldens 29-settings and 117 draw the nav without Sync. Add it in design/pages.rs and design/agent_asks.rs, and re-record both when the native nav gains Sync.
+
+Sign-off (Fable, 2026-11-20): the render of `211-settings-sync` is approved with the reworded master note, and so are the re-drawn `29-settings` and `117-settings-agents-ask-in-inbox`, whose only change is the Sync nav row and the rows below it moving down one row (29 pt). Record all three.
+
+## D905: The host daemon serves the To-do UI at a local URL, switched in the desktop app (owner, 2026-11-20)
+
+The owner asked for the root/host daemon to host the To-do UI at a local URL so Humata's overall state can be checked in a browser. Built with GPUI's web support; gaps are fixed in our crates. A desktop Settings switch enables and disables it. This narrows the earlier cut of the browser client: only the To-do page, nothing else. It is the very last milestone (WEBTODO, release 0.11.0), after 0.10.0's FUSE work and the other lanes are validated.
+
+## D906: Read-only provider helper commands let an agent write a machine provider from the CLI alone (owner, 2026-11-20)
+
+The new commands are `humata provider guide`, `schema`, `example`, `check`, `render` and `parse`, plus their MCP twins.
+- None of them runs, imports or changes anything, so none needs approval.
+- `schema` is generated from the parser's own types, so it can't drift from it.
+- Importing stays owner-only (MP-23).
+
+It ships as 0.10.1, after FUSEFSWIRE (milestone PROVIDERCLI). The Create channel fix (NEWCHCLOSE) moves to 0.10.2.
+
+## D907: The file-byte MCP tools stay as the fallback when FUSE can't be set up (owner, 2026-11-20)
+
+The retirement of `files_list`, `file_read`, `files_find`, `file_write`, `folder_create`, `file_fetch` and `session_read` (D886's first bullet, and the B2 change that built it) is withdrawn. The mount is off by default and some machines can't run it, so agents need the tools whether or not anything is mounted.
+- The seven tools are registered and work with or without a mount; the mount is an additional way to read the same places.
+- The humata-files skill says which to use: plain files under `$HUMATA_FUSE_ROOT` when it is set, `humata files` and the MCP files tools when it is not.
+- The rest of D886 stands.
+
+## D908: The mount card says where the mount is, or why there isn't one (Fable, 2026-11-20)
+
+The "Browse other machines as files" card in Settings › Sync shows the daemon's live mount state, not only the saved switch. Fable decided this and signs off the design; candidates `211b-settings-sync-mount-cannot` and `211c-settings-sync-mounted` still need their renders judged before they move into FRAMES.
+
+The switch (`settings-fusefs-enabled`) always shows the saved setting. The state adds at most one thing to the card:
+- **Off:** nothing. The card is frame 211, unchanged, and goldens 211 and native settings-sync don't move.
+- **Starting:** a third secondary note under the two existing ones, id `settings-fusefs-status`: "Mounting…".
+- **Mounted:** the same note, same id: "Mounted at <path>", with the home folder written as `~` (for example "Mounted at ~/Humata"). The path comes from the daemon. It is shown because the owner needs it to open the folder, and it is the only sign that the switch worked.
+- **CannotSetUp:** no status note. Under the row, inside the card, a needs-you line, id `settings-fusefs-problem`: "<reason> Sessions reach other machines through the files tools instead."
+
+The needs-you line uses the existing look: `attention_bg` behind it, a 12 pt orange Info icon, the sentence in the primary text colour at the page's 12.5 pt, padding 14 by 8, and the card's bottom corners rounded. The sentence is not tinted, because orange text at this size is too faint on a light page.
+
+Rules:
+- The reason is the daemon's sentence, shown as sent. It ends with a full stop, says what failed, and says how to fix it when a fix exists (for example "The mount helper wouldn't start. Turn this off and on to try again."). When nothing can be done on this machine it says only what is missing ("This Mac has neither FSKit nor /dev/fuse.").
+- Turning the switch off and on again is the retry, so the card has no retry button. Off clears the line at once.
+- The line appears only while the switch is on. With the switch off, a machine that can't mount shows nothing, since nothing is blocked.
+- The card never dims and nothing else on the page changes in any state. The second note ("Session folders on this machine stay on its own disk either way.") stays in every state.
+- A helper that died and came back shows Starting, then Mounted. Only one that could not come back shows the needs-you line.
+- Nothing goes to the Inbox, the sidebar or a notification for this: agents already fall back to the files tools (D907), so no work is blocked outside this card.
+
+Sign-off (Fable, 2026-11-20): the renders of `211b-settings-sync-mount-cannot` and `211c-settings-sync-mounted` are approved and moved into FRAMES; record both. Each differs from 211 only inside the mount card. In 211b the card ends half a point above the bottom of the 760-high frame with its border and corners whole, so nothing is clipped.
+
+## D909: HIGHLIGHT ships in 0.10.2 and STACKGH in 0.10.4, before WEBTODO (main, 2026-11-20; reversible)
+- The owner asked for both on the roadmap without giving releases.
+- **HIGHLIGHT** is a bug fix, so it rides with the other 0.10.2 bug fixes.
+- **STACKGH** is new CLI work. It comes after the SMFIX state machine fixes (0.10.3) and before WEBTODO, which the owner wants very last (D905).
+- The parity table's differences go to Fable.
+
+## D910: A Desk agent may start or fork sessions in any channel, with the owner's approval (owner, 2026-11-20)
+The owner asked: "can we let the global desk make sessions in addition to channels if I approve them?" Before this, a Desk agent's start in any channel was refused, because no channel is its own (D182.3). Now a global Desk agent's start or fork, in any channel and on any machine, goes through the matching "Start or fork sessions" rule under the Desk's new-channel defaults: Ask me, so it lands in the Inbox. The ask is filed under the desk channel id and carries the target channel and machine. Never still wins. Neither DK-4 switch allows it, because the owner said "if I approve them". A fork also reads the parent's conversation, so it is refused when the Desk's other-channels read rule is Never. Channel Desk sessions keep their own rules (CD-3). Ordinary, fork and review sessions are still refused outside their channel. MCP `session_start` takes an optional `channel`, which a Desk agent must send, and `session_fork` takes an optional `session` to fork. The start and fork cards show the target channel and machine. **Always allow** stays per machine and agent, so for a Desk agent it covers every channel, and the option's text says "in any channel" (main's pick; reversible: add a channel to the grant target). **Reverse:** put the `in_channel` check back for `SessionKind::Desk` in the policy's start arm.
+
+## D911: A real FSKit mount on the Mac is its own milestone, FSKITSERVE, in 0.10.5 (main, 2026-11-20; reversible)
+FUSEFSWIRE found that `humata2_fusefs serve` served no volume on either OS:
+- On Linux it ran `/sbin/mount -t linux …`, which always fails. FUSEFSWIRE fixes Linux itself, with a fusermount3 mount, the FUSE wire codec and a serve loop in `libs/fusefs/linux`, and a `LinuxFuseBackend` in the adapter.
+- On the Mac a real mount also needs the FSKit appex, its signing and entitlements, and the bridge server started in `run_serve`. That is too much for 0.10.0.
+Until FSKITSERVE ships, a Mac reports "can't set up" with a reason and agents use the files tools. That is the owner's fallback rule.
+**Reverse:** pull FSKITSERVE into an earlier release.
+
+## D912: A To-do ask lives on the To-do only, and notifies as a To-do (Fable, NOTIFY2, 2026-11-20)
+The owner said: "stuff that goes to TODO should not go to inbox, like status change requests." A To-do ask is an agent's suggested new item or a change to an item: a status, a close or a step. The daemon has left these out of Agent-inbox lists since D846, but the live event stream still put them in the app's requests. The app recognised them only by a `board.` operation, which To-do service asks don't have, so they showed as Inbox cards, counts and Inbox notifications.
+- The client now marks them from the preview kind, the same test the daemon applies (BoardChange or NewBoardItem): `Request.to_do: Option<ToDoAsk>` and `Request::is_to_do_ask()`.
+- They are left out of `Workspace::waiting()`, the Inbox's cards and chips, Home's Needs you, and the badges. The To-do still shows and answers them on the item.
+- A To-do ask still posts a notification, under the master switch with no extra toggle:
+  - title "<agent> suggests a To-do: <item>", or "<agent> wants to change '<item>'";
+  - body "Accept or dismiss it on the To-do.";
+  - clicking it opens the To-do on the item (`NotifyTarget::Todo`);
+  - it stays quiet while the window is frontmost on the To-do.
+- A To-do ask stays To-do-only even when its agent is blocked, because one ask gets one place to answer.
+- **Reverse:** make `is_to_do_ask()` return false.
+
+## D913: Notifications ask for permission when switched on (main's diagnosis, NOTIFY2, 2026-11-20)
+The installed app never posted a notification. The switch is off by default, and turning it on called a permission request that the desktop notifier ignored. So macOS never asked, the app never appeared in System Settings › Notifications, and the first post could be lost while permission was still pending.
+- The desktop notifier now asks for permission when the switch is turned on, through a small patch to the UI framework: `request_system_notification_permission`.
+- The same patch adds `show_system_notification_with_sound` and lets a notification play its sound while the app is frontmost.
+- The patches are in `engine/patches/gpui-{notification,macos-notification}-sound.patch`, and the `UNNotificationSound` feature is on.
+- **Reverse:** drop the two patch annotations in MODULE.bazel and go back to `show_system_notification`.
+
+## D914: Two notification sounds of our own, behind Play a sound, off by default (Fable, NOTIFY2, 2026-11-20)
+The owner asked for "a noise ... One for INBOX and another for TODOs ... pleasant and gentle please and short please."
+- `app/sounds/make_sounds.py` makes both sounds from sine partials and is deterministic:
+  - `humata2-inbox.wav`: E5 rising to A5, 0.38 s, peak -12 dBFS.
+  - `humata2-todo.wav`: one G4, 0.30 s, peak -16 dBFS, lower and softer.
+- `app.bzl` copies them into Contents/Resources.
+- With Play a sound on, a To-do ask plays the To-do sound and every other notification plays the Inbox sound. A notification within the cooldown of the last sound posts silent, so a burst never stacks sounds.
+- Fable judged both from their parameters and waveform: no clicks, soft attack, distinct. It raised both levels 4 dB.
+- The "Play a sound" row comes in Settings › Notifications after "Desktop notifications". It is greyed while the master switch is off.
+- **Reverse:** set `play_sound` to false, or delete the `sounds` attr default.
+
+## D915: A default never lands on an agent that is off; with none on, the app says so (Fable, AGENTOFF, 2026-11-20; reversible)
+The owner reported: "when i disable claude and codex it defaults to them and fails because they dont exist."
+1. **One rule.** A start that names no agent takes the first agent that is on along its chain. The daemon's chain is the channel's own default, then Settings', then the one the channel was made with. The app's chain is the channel's start agent, then Settings'. After the chain, it takes the first agent that is on in Settings › Agents order. The plain shell counts only when it is named. The rule is `AgentSwitches::pick` in the daemon (`agent_gate::pick`) and `humata2_clients::pick_agent` in the app.
+2. **Stored defaults are kept.** A Settings default, a channel default or the Desk's `--default-agent` that is off stays saved and falls back at use time, so turning the agent back on restores it. A start that explicitly names an agent that is off is still refused.
+3. **Fork.**
+   - The Fork dialog of a session whose agent is off preselects the first agent that is on, opens More options, and says "Claude is off, so this fork starts with Copilot."
+   - The daemon refuses a fork that names no agent while the parent's agent is off ("name an agent that is on for the fork, or turn X on in Settings › Agents"). It never switches agents silently, because a different agent changes what the fork carries.
+4. **With every agent off:**
+   - New session opens on Terminal with a note, not an error: "Every agent is off. Terminal still starts a plain shell; to start an agent, turn one on in Settings › Agents."
+   - New desk session, Fork and Review a pull request open nothing. A toast says "Every agent is off. Turn one on in Settings › Agents, then try again." and has an Open Settings button.
+   - The daemon refuses a start that names no agent: "Every agent is turned off in Settings › Agents, so Humata has none to start". The fix names Settings › Agents, or `zsh` for a plain shell.
+5. **Continue in another channel** for a session whose agent is off is refused, because the conversation belongs to that agent: "<Agent> is turned off in Settings › Agents, so this session can't continue in another channel".
+6. **Settings › Agents › Default agent:** when the saved default is off, a dim line under the buttons says: "Claude, your default, is off. New sessions start with Copilot until you turn Claude back on or pick another." When every agent is off, it says: "…, and so is every other agent. New sessions can only start Terminal until you turn an agent on."
+
+**Reverse:** make `pick` return the first preferred kind whatever its switch says.

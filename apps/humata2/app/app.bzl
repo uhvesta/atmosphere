@@ -6,11 +6,12 @@ app is a Rust executable, so this rule lays the bundle out itself:
     Humata2.app/Contents/Info.plist
     Humata2.app/Contents/PkgInfo
     Humata2.app/Contents/MacOS/humata2
-    Humata2.app/Contents/Helpers/{humatad2,humata2_holder,humata,stack}
+    Humata2.app/Contents/Helpers/{humatad2,humata2_holder,humata,stack,humata2_fusefs}
     Humata2.app/Contents/Resources/THIRD_PARTY_NOTICES.txt (with `notices`)
     Humata2.app/Contents/Resources/Humata2.icns (with `icon`)
     Humata2.app/Contents/Resources/machine-tools/ (with `machine_tools`: the Linux tools bundle)
     Humata2.app/Contents/Resources/manifest.json (with `machine_tools`: Mac + Linux, the release)
+    Humata2.app/Contents/Resources/humata2-{inbox,todo}.wav (`sounds`: the notification sounds)
 
 The app finds its tools in Contents/Helpers (desktop/src/live.rs). The
 bundle is signed ad hoc so it runs from the build; the release daemon only
@@ -26,7 +27,7 @@ contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
 cp "$exe" "$contents/MacOS/humata2"
 chmod 755 "$contents/MacOS/humata2"
-for name in humatad2 humata2_holder humata stack; do
+for name in humatad2 humata2_holder humata stack humata2_fusefs; do
   [ -f "$tools/$platform/$name" ] || {
     echo "humata2_app: $tools has no $platform/$name; the tools bundle must be built for $platform." >&2
     exit 1
@@ -59,6 +60,12 @@ if [ -n "$machine_tools" ]; then
   linux=$(sed 's/^{"platforms": {//' "$machine_tools/manifest.json")
   printf '%s, %s\n' "$mac" "$linux" > "$contents/Resources/manifest.json"
 fi
+# The notification sounds (NOTIFY2), by name: macOS finds a named
+# notification sound in the bundle's Resources.
+shift 9
+for sound in "$@"; do
+  cp "$sound" "$contents/Resources/$(basename "$sound")"
+done
 printf 'APPL????' > "$contents/PkgInfo"
 outside=$(find "$app" -type l | head -n 1)
 [ -z "$outside" ] || {
@@ -83,8 +90,10 @@ def _humata2_app_impl(ctx):
     args.add(ctx.file.icon.path if ctx.file.icon else "")
     machine_tools = ctx.file.machine_tools
     args.add(machine_tools.path if machine_tools else "")
+    sounds = ctx.files.sounds
+    args.add_all(sounds)
     ctx.actions.run_shell(
-        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []),
+        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []) + sounds,
         outputs = [app],
         command = _SCRIPT,
         arguments = [args],
@@ -110,6 +119,11 @@ humata2_app = rule(
         "machine_tools": attr.label(allow_single_file = True),
         # THIRD_PARTY_NOTICES.txt, copied to Contents/Resources. Optional.
         "notices": attr.label(allow_single_file = [".txt"]),
+        # The notification sounds, copied by name to Contents/Resources.
+        "sounds": attr.label_list(
+            allow_files = [".wav"],
+            default = ["//apps/humata2/app/sounds:sounds"],
+        ),
         # The tools folder's subfolder for this Mac, as `uname -sm` names it.
         "platform": attr.string(mandatory = True),
         # A tools_bundle folder (daemon/humatad/tools.bzl).

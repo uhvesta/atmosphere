@@ -1589,7 +1589,7 @@ mod tests {
                 from_keys: vec!["PAY-1".to_owned()],
                 became_keys: vec!["PAY-100".to_owned()],
                 run_count: 3,
-                total_cost_micros: 2_500_000,
+                total_cost_micros: Some(2_500_000),
                 wont_do_reason: "superseded".to_owned(),
                 external_block: Some(pb::ExternalBlock {
                     reason: "Waiting on vendor".to_owned(),
@@ -1620,7 +1620,7 @@ mod tests {
         assert_eq!(t.from_keys, ["PAY-1"]);
         assert_eq!(t.became_keys, ["PAY-100"]);
         assert_eq!(t.run_count, 3);
-        assert_eq!(t.total_cost_micros, 2_500_000);
+        assert_eq!(t.total_cost_micros, Some(2_500_000));
         assert_eq!(t.wont_do_reason.as_deref(), Some("superseded"));
         assert_eq!(t.external_block.as_ref().map(|b| b.reason.as_str()), Some("Waiting on vendor"));
         assert_eq!(t.owner.as_ref().map(|o| o.kind), Some(OwnerKind::Agent));

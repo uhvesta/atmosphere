@@ -185,7 +185,8 @@ impl SessionSvc {
 
     /// Takes `machine` out of every channel that has it.
     async fn leave_channels(&self, machine: &str) -> Result<(), Status> {
-        let (store, feed, name) = (self.starter.store.clone(), self.tell.feed.clone(), machine.to_owned());
+        let (store, feed, agents, name) =
+            (self.starter.store.clone(), self.tell.feed.clone(), self.starter.agents.clone(), machine.to_owned());
         blocking(move || -> Result<(), humata2_store::StoreError> {
             for mut channel in store.channels()? {
                 if !channel.machines.contains(&name) {
@@ -194,7 +195,7 @@ impl SessionSvc {
                 channel.machines.retain(|machine| machine != &name);
                 channel.revision += 1;
                 store.put_channel(&channel)?;
-                crate::channel_service::tell_channel(&feed, &store, &channel.id, pb::Change::Updated, None);
+                crate::channel_service::tell_channel(&feed, &store, &agents, &channel.id, pb::Change::Updated, None);
             }
             Ok(())
         })
@@ -353,7 +354,7 @@ impl SessionSvc {
         if sessions.is_empty() {
             return;
         }
-        let (store, feed) = (self.starter.store.clone(), self.tell.feed.clone());
+        let (store, feed, agents) = (self.starter.store.clone(), self.tell.feed.clone(), self.starter.agents.clone());
         let told = blocking(move || -> Result<(), humata2_store::StoreError> {
             let channels: BTreeSet<String> = store
                 .sessions()?
@@ -362,7 +363,7 @@ impl SessionSvc {
                 .map(|record| record.channel)
                 .collect();
             for channel in channels {
-                crate::channel_service::tell_channel(&feed, &store, &channel, pb::Change::Updated, None);
+                crate::channel_service::tell_channel(&feed, &store, &agents, &channel, pb::Change::Updated, None);
             }
             Ok(())
         })

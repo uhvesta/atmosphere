@@ -12,8 +12,8 @@ use humata2_store::Take;
 
 pub use bring::{Brought, check_brought};
 pub use carry::{
-    CARRY_DIR, CHANNELS_ROOT, CHUNK_SIZE, CHUNKS_DIR, CHUNKS_FILE, CLONES_FILE, CarryError, Discard, ForkPack,
-    ForkPackError, ForkPacked, HAVE_DIR, Landing, Packed, REUSE_FILE, Unpacked,
+    CARRY_DIR, CHANNELS_ROOT, CHUNKED_FROM, CHUNKS_DIR, CHUNKS_FILE, CLONES_FILE, CarryError, Discard, ForkPack,
+    ForkPackError, ForkPacked, Landing, Packed, REUSE_FILE, Unpacked, chunk_store_dir, frame_chunk, held_chunks,
 };
 
 pub(crate) struct CarryOps<'a>(pub(crate) &'a Starter);

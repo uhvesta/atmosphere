@@ -6,7 +6,7 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{VfsError, VfsResult};
+use crate::error::{VfsError, VfsResult, VfsTarget};
 use crate::path::VirtualPath;
 use crate::types::CallerContext;
 
@@ -115,15 +115,21 @@ impl LeaseTable {
         }
 
         if saw_expired_or_revoked {
-            Err(VfsError::Eacces(format!(
-                "write lease for pid {} on '{}' is expired or revoked",
-                caller.pid, path
-            )))
+            Err(VfsError::Eacces {
+                op: "write (lease expired or revoked)",
+                target: VfsTarget::Caller {
+                    pid: caller.pid,
+                    path: path.to_string(),
+                },
+            })
         } else {
-            Err(VfsError::Eacces(format!(
-                "no active write lease for pid {} covering '{}'",
-                caller.pid, path
-            )))
+            Err(VfsError::Eacces {
+                op: "write (no active lease)",
+                target: VfsTarget::Caller {
+                    pid: caller.pid,
+                    path: path.to_string(),
+                },
+            })
         }
     }
 
@@ -194,9 +200,13 @@ pub fn check_generation(expected: Option<u64>, actual: u64) -> VfsResult<()> {
     if let Some(exp) = expected
         && exp != actual
     {
-        return Err(VfsError::Estale(format!(
-            "generation mismatch: expected {exp}, actual {actual}"
-        )));
+        return Err(VfsError::Estale {
+            op: "check generation",
+            target: VfsTarget::Generation {
+                expected: exp,
+                actual,
+            },
+        });
     }
     Ok(())
 }
@@ -224,14 +234,14 @@ mod tests {
         // Sibling with matching string prefix must be rejected.
         let sibling = VirtualPath::parse("/work/repo2/src/lib.rs").unwrap();
         let err = table.authorize_write(&caller, &sibling, 5_000).unwrap_err();
-        assert!(matches!(err, VfsError::Eacces(_)));
+        assert!(matches!(err, VfsError::Eacces { .. }));
 
         // Different PID must be rejected.
         let other_caller = CallerContext::new(99, 1000, 1000);
         let err = table
             .authorize_write(&other_caller, &inside, 5_000)
             .unwrap_err();
-        assert!(matches!(err, VfsError::Eacces(_)));
+        assert!(matches!(err, VfsError::Eacces { .. }));
     }
 
     #[test]
@@ -260,7 +270,7 @@ mod tests {
         // Expired at t = 1_000.
         assert!(matches!(
             table.authorize_write(&caller, &path_a, 1_000),
-            Err(VfsError::Eacces(_))
+            Err(VfsError::Eacces { .. })
         ));
         // Still active at t = 1_000 for lease_b.
         assert_eq!(
@@ -272,7 +282,7 @@ mod tests {
         assert_eq!(table.revoke_turn("turn-x"), 2);
         assert!(matches!(
             table.authorize_write(&caller, &path_b, 1_000),
-            Err(VfsError::Eacces(_))
+            Err(VfsError::Eacces { .. })
         ));
     }
 
@@ -281,6 +291,6 @@ mod tests {
         assert!(check_generation(None, 5).is_ok());
         assert!(check_generation(Some(5), 5).is_ok());
         let err = check_generation(Some(4), 5).unwrap_err();
-        assert!(matches!(err, VfsError::Estale(_)));
+        assert!(matches!(err, VfsError::Estale { .. }));
     }
 }
