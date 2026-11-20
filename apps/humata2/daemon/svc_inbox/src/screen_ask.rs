@@ -41,14 +41,14 @@ const RELOOK_EVERY: Duration = Duration::from_millis(300);
 
 /// How long a pending ask's prompt must stay absent on the live terminal screen
 /// (after terminal output has advanced) before auto-clearing (0.6.1 HOOKCLEAR).
-pub const CLEAR_DEBOUNCE: Duration = Duration::from_millis(2500);
+pub(crate) const CLEAR_DEBOUNCE: Duration = Duration::from_millis(2500);
 
 /// Agent kinds strictly scoped to 0.6.1 HOOKCLEAR auto-clear.
-pub const SUPPORTED_AGENTS: &[&str] = &["claude", "codex", "copilot", "agy"];
+pub(crate) const SUPPORTED_AGENTS: &[&str] = &["claude", "codex", "copilot", "agy"];
 
 /// Returns `true` when `agent` is one of the 0.6.1 HOOKCLEAR supported kinds
 /// (`claude`, `codex`, `copilot`, `agy`).
-pub fn is_supported_agent(agent: &str) -> bool {
+pub(crate) fn is_supported_agent(agent: &str) -> bool {
     SUPPORTED_AGENTS.contains(&agent)
 }
 

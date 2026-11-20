@@ -233,20 +233,11 @@ fn run_materialize(
         );
     }
 
-    match planner.execute_plan(&plan, yes, |target| Ok(target.estimated_bytes)) {
-        Ok(report) => {
-            if !json {
-                println!(
-                    "Materialized {} target(s) ({}).",
-                    report.materialized_targets,
-                    format_bytes(report.materialized_bytes)
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("{err}");
-            ExitCode::from(2)
-        }
-    }
+    // No volume is mounted yet, so nothing can be copied: report the plan,
+    // then fail plainly instead of claiming the bytes were materialized.
+    let _ = yes;
+    eprintln!(
+        "materialize is not implemented yet: nothing was copied. The plan above is what it would fetch once the FUSEFS volume serves files."
+    );
+    ExitCode::from(3)
 }

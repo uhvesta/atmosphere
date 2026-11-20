@@ -320,7 +320,7 @@ fn plan_changed(changed: pb::delete_sessions_response::Changed) -> ToolError {
         message: format!(
             "nothing was deleted: the sessions changed since the plan was made: {changes}"
         ),
-        fix: "details.plan is the current plan; call sessions_delete_many again to delete it, or ask the user if the changes matter".to_owned(),
+        fix: "nothing was deleted; show details.changes to the user and call sessions_delete_many again only if they still want these sessions deleted".to_owned(),
         retry: None,
         details,
     }
@@ -463,10 +463,9 @@ mod tests {
         let error = plan_changed(changed);
 
         assert_eq!(error.kind, ErrorKind::PlanStale);
-        assert!(
-            error.message.contains("\"Ledger\" now has 2 unpushed commits"),
-            "{}",
-            error.message
+        assert_eq!(
+            error.details["changes"],
+            json!(["\"Ledger\" now has 2 unpushed commits"])
         );
         assert!(error.details.contains_key("plan"));
     }

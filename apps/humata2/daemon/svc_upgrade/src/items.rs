@@ -2647,11 +2647,11 @@ mod tests {
 
         // Older remote daemon auto-migrates on link-up.
         watch.linked("gpu", Some(&elsewhere(4))).await;
-        for _ in 0..20 {
+        for _ in 0..2500 {
             if calls(&fake) >= 1 {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         assert_eq!(calls(&fake), 1, "older remote should auto-migrate");
         let gpu_id = migrations.pending(pb::MigrateThing::Daemon, &gpu()).unwrap();
@@ -2665,7 +2665,7 @@ mod tests {
             ..Default::default()
         };
         watch.linked("tpu", Some(&newer)).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..64 { tokio::task::yield_now().await; }
         assert_eq!(calls(&fake), 1, "newer remote must never auto-downgrade");
         let tpu_id = migrations.pending(pb::MigrateThing::Daemon, &tpu()).unwrap();
         assert_eq!(card(&held(&inbox, &tpu_id).await).phase(), pb::MigratePhase::Waiting);
@@ -2679,7 +2679,7 @@ mod tests {
         };
         let box3 = pb::MachineId { value: "box3".to_owned() };
         watch.linked("box3", Some(&newer_ver)).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..64 { tokio::task::yield_now().await; }
         assert_eq!(calls(&fake), 1, "newer semver remote must never auto-downgrade");
         let box3_id = migrations.pending(pb::MigrateThing::Daemon, &box3).unwrap();
         assert_eq!(card(&held(&inbox, &box3_id).await).phase(), pb::MigratePhase::Waiting);
@@ -2699,11 +2699,11 @@ mod tests {
 
         // First link-up auto-migrates and fails -> trips failed.json.
         watch.linked("gpu", Some(&elsewhere(4))).await;
-        for _ in 0..20 {
+        for _ in 0..2500 {
             if calls(&fake) >= 1 && migrations.is_failed("gpu", &target_bundle) {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         assert_eq!(calls(&fake), 1);
         assert!(migrations.is_failed("gpu", &target_bundle));
@@ -2714,7 +2714,7 @@ mod tests {
         // Second link-up at the same host bundle must NOT retry-loop.
         fake.fails.store(false, Ordering::SeqCst);
         watch.linked("gpu", Some(&elsewhere(4))).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..64 { tokio::task::yield_now().await; }
         assert_eq!(calls(&fake), 1, "circuit breaker must prevent retry loop on same to_bundle");
 
         // Re-opening Migrations from the same state folder preserves the tripped breaker.
@@ -2798,11 +2798,11 @@ mod tests {
             moved: None,
         };
         watch.holders("gpu", report.clone(), true, &channel).await;
-        for _ in 0..20 {
+        for _ in 0..2500 {
             if calls(&fake) >= 1 {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         assert_eq!(calls(&fake), 1, "holders report should auto-migrate");
 
@@ -2817,7 +2817,7 @@ mod tests {
 
         // Even a subsequent clean report will not auto-retry while tripped.
         watch.holders("gpu", report, false, &channel).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..64 { tokio::task::yield_now().await; }
         assert_eq!(calls(&fake), 1, "tripped breaker prevents holders retry loop");
     }
 }

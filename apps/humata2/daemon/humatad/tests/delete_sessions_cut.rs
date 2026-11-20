@@ -14,6 +14,8 @@ use humata2_grpc::humata::v1 as pb;
 /// Every step of one session's delete, as the points a cut can land on.
 const POINTS: &[&str] = &[
     "delete_sessions.intent",
+    "delete_sessions.stopped",
+    "delete_sessions.snapshotted",
     "delete_sessions.trashed",
     "delete_sessions.forgotten",
 ];

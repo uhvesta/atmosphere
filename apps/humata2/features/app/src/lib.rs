@@ -1339,7 +1339,7 @@ impl App {
                     loading: true,
                     plan: None,
                     delete_work: false,
-                    end_live: true,
+                    end_live: false,
                     deleting: false,
                     error: None,
                 });

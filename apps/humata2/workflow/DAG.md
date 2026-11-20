@@ -80,10 +80,21 @@ milestone file; agents read that file, not this one.
 | [DIFFVIEW](milestones/DIFFVIEW.md) | I open any changed file across a session's repos and read its whole diff, big ones too, smoothly; the prepared PR view works | L13 | UI + clients + daemon | none (owner, 2026-11-18 12:25) | done (DV-1–DV-19 + PR >1,500-line virtual box D877; shipping in 0.3.10) |
 | [PROGRESS](milestones/PROGRESS.md) | Anything that takes more than a moment shows the step it is on and a thin bar where I started it: filled when the daemon can measure, sweeping when it can't, with elapsed time after 10 s | L13 | daemon + clients + UI | none for T0–T5; LIVEHOLDER T6 for T6; DIFFVIEW* (panel_changes.rs) for T7 | done (T0–T10 ticked, frames 122–126 recorded; shipping in 0.3.10) |
 | [REVIEWUI](milestones/REVIEWUI.md) | Reviewing a pull request feels like reading the Diff panel: Submit review sits by the drafts, full screen and back keep my exact place, every control names itself on hover, and the diff can be driven from the keyboard | L13 | UI + clients + features | DIFFVIEW (DV-5 for RV-2 and RV-8; DV-16 and DV-18 for RV-1); parallel to STACKVIEW, sharing only the layer-key pick (RV-5 → T8) | planning (owner, 2026-11-18; spec DIFFVIEW-spec.md, cases flows/cases/diff/) |
+| [MASSDELETE](milestones/MASSDELETE.md) | I can delete many sessions at once, through one stale-safe plan and confirmation | L13 | daemon + CLI + UI | none: builds on the existing one-session delete gate; it defines the topology-delete boundary FUSEFS must preserve | open (owner, 2026-11-19) |
+| [TODO2](milestones/TODO2.md) | Smarter To-do ranking, fast triage, structured agent collaboration, and two-way PR/session lifecycle sync | L13 | daemon + clients + features/todo + UI | BOARDSIMPLE, INBOXHOOKS, REVIEWUI/STACKVIEW/DIFFVIEW, AGENTS2; scheduled before FUSEFS | planning (owner, 2026-11-19) |
+| [FUSEFS](milestones/FUSEFS.md) | One lazy, stable filesystem-shaped view of Humata state across every machine (built over standalone `//libs/fusefs/*` crates), plus native per-session config homes with toggleable/scriptable non-auth sync and zero host-sync blocking | L14 | `libs/fusefs/*` + daemon adapter + config compose + platform packaging | MASSDELETE: unlink/rename cannot bypass planned deletes; LIVEHOLDER: native paths, sync toggles and holders survive rename and upgrade; AGENTS2: all agent config/state adapters are known; TODO2: scheduled immediately before FUSEFS; MACH/AWAY/NOPATH/UPGRADE/MACHINESCRIPTS: machine identity, `PeerUplink`, roots, script safety and Migrate already exist | planning (owner, 2026-11-19; spec and one-day spike first) |
+| [FUSEFSWIRE](milestones/FUSEFSWIRE.md) | FUSEFS is actually on: humatad2 runs the mount as a fifth helper, sessions get native config homes with a zero-restart sync switch, moves carry chunks through the shared chunk store, and Settings › Sync controls it | L15 | proto + daemon + sessions_carry + MCP + clients + Settings UI | FUSEFS T1–T10 (12305aba); Settings › Sync frame from Fable first | open (owner, 2026-11-20; ships 0.6.0) |
+| [SCREENPARSE](milestones/SCREENPARSE.md) | Agent prompts on screen are read right for every agent, tested against recordings of the real CLIs driven by cheap models | L15 | svc_inbox + agent_hooks + slow-tier live recorder | HOOKCLEAR (fixes its regressions first) | open (owner, 2026-11-20; ships 0.6.1) |
+| [BROWSER](milestones/BROWSER.md) | Claude Code, Codex, Copilot and agy read my real browser tabs and, with my per-action approval, click, type and navigate; read can be granted for 30 min, write never | L16 | proto + humatad2 browser-host + svc_mcp + svc_inbox + clients + UI | core crates (12305aba); FUSEFSWIRE and SCREENPARSE release first; frames from Fable first | open (owner, 2026-11-20; ships 0.7.0) |
 
 ## Critical path
 
 Fast tier (fast mode off and on) → slow tier once → commit and push → release 0.3 (RELEASE3) → 0.3.1 (released 10:37) → AGENTS2, STACKVIEW and LIVEHOLDER in parallel.
+
+FUSEFS is a later L14 fan-in. It cannot open until AGENTS2, LIVEHOLDER and
+MASSDELETE define the stable agent, holder and destructive boundaries it must
+preserve. Its first deliverable is only the one-day spike; the measured result
+gates how much of config, databases and working directories enters the mount.
 
 - Gate 30 has reported (605 of 678 passed) and its failures went to fix agents lane by lane
   (2026-11-17). Every "code in" lane, OWNERFIX included, and V1 close
@@ -196,6 +207,12 @@ graph TD
   AGENTS2["AGENTS2: next"]
   STACKVIEW["STACKVIEW: open"]
   LIVEHOLDER["LIVEHOLDER: open"]
+  MASSDELETE["MASSDELETE: open"]
+  TODO2["TODO2: planning"]
+  FUSEFS["FUSEFS: T1–T10 built"]
+  FUSEFSWIRE["FUSEFSWIRE: open"]
+  SCREENPARSE["SCREENPARSE: open"]
+  BROWSER["BROWSER: open"]
   LINUX["LINUX: cut (D485)"]
   ANYHOST["ANYHOST: cut (D485)"]
   classDef cut fill:#ddd,stroke:#999,color:#666
@@ -314,4 +331,11 @@ graph TD
   RELEASE3 ==> AGENTS2
   RELEASE3 --> STACKVIEW
   RELEASE3 --> LIVEHOLDER
+  AGENTS2 --> FUSEFS
+  LIVEHOLDER --> FUSEFS
+  MASSDELETE --> FUSEFS
+  TODO2 --> FUSEFS
+  FUSEFS --> FUSEFSWIRE
+  FUSEFSWIRE --> BROWSER
+  SCREENPARSE --> BROWSER
 ```

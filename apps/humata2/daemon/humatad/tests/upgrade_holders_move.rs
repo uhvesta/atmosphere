@@ -238,7 +238,7 @@ impl Mac {
                 Instant::now() < deadline,
                 "holders {names:?} never recorded new build {wanted}"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         upgrade::inbox_until(&self.daemon, "Holders item settled", |items| {
             (!items
@@ -263,7 +263,7 @@ impl Mac {
                 "session {} was never restarted onto a new holder; its holder is {holder:?} (was {old})",
                 session.value
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 }
@@ -296,7 +296,7 @@ async fn wait_at_release(daemon: &Daemon, bundle: &str) {
             return;
         }
         assert!(Instant::now() < deadline, "the daemon never answered as release {bundle}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 

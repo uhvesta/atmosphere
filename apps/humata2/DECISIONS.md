@@ -5273,7 +5273,7 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
 - After stable-path and native config composition pass, retire same-machine transcript path-rewrite loops, `peer_skills.rs` direct `~/.<agent>/skills` mutation, and `seed_claude_copy`.
 - **Reverse:** keep the MCP file bridge and per-machine copy bootstrap as the primary path.
 
-## D887: The virtual filesystem and CAS engine live in standalone, domain-agnostic `//libs/fusefs/*` crates consumed by Humata via public APIs (owner, 2026-11-19). Provisional
+## D890: The virtual filesystem and CAS engine live in standalone, domain-agnostic `//libs/fusefs/*` crates consumed by Humata via public APIs (owner, 2026-11-19). Provisional
 
 - Following `//libs/tca-rust` and `//apps/humata2/terminal/*`, the generic virtual filesystem (`//libs/fusefs/vfs`), `BLAKE3` manifest/chunk CAS, codec planner and sparse CoW overlays (`//libs/fusefs/cas`), macOS FSKit bridge (`//libs/fusefs/fskit`), Linux `/dev/fuse` + skeleton adapter (`//libs/fusefs/linux`), and mount runtime (`//libs/fusefs/host`) are built as standalone crates under `libs/fusefs/` with **zero dependencies on `//apps/humata2/...`** (no Humata protobufs, store records, Inbox types, or agent schemas).
 - Humata consumes only narrow public traits (`Volume`, `AccessHook`, `ChunkTransport`, `FilesystemBackend`) inside `//apps/humata2/daemon/fusefs_adapter` (`humata2_fusefs`) and `//apps/humata2/daemon/config_compose`, keeping Bazel compile/test caches isolated and letting all VFS/CAS/CoW/lease mechanics be tested in pure in-process isolation.
