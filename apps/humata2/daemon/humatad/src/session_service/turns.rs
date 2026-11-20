@@ -640,12 +640,10 @@ impl SessionSvc {
         };
         self.inbox.hook_heard(&agent.agent).await;
         let session = agent.session.id.to_string();
-        // D798 / 0.6.1 HOOKCLEAR (Signal A): a turn that ends settles every ask
-        // held for it; lifecycle activity (`Working` from PostToolUse /
-        // PostToolBatch / UserPromptSubmit / etc.) immediately resolves stale
-        // hook-raised asks for supported agents (`claude`, `codex`, `copilot`,
-        // `agy`) as `Resolved` (never `Denied`), while leaving unsupported
-        // agents with existing notice-only clearing.
+        // D798: a turn that ends settles every ask held for it. `Working`
+        // (PostToolUse and the like) only drops notices: with parallel tool
+        // calls one tool can finish while another still waits on the owner,
+        // so a held ask stays until the turn ends or the owner answers.
         match hook {
             Hook::Idle => {
                 self.inbox.withdraw_held(&session).await;
@@ -653,9 +651,6 @@ impl SessionSvc {
             }
             Hook::Working => {
                 self.inbox.withdraw_notice(&session).await;
-                self.inbox
-                    .clear_stale_hook_asks_on_lifecycle(&session, &agent.agent)
-                    .await;
             }
             Hook::NeedsInput => {}
         }

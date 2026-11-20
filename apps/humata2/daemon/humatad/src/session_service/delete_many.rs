@@ -634,13 +634,19 @@ fn marker_path(root: &Path, session: &str) -> PathBuf {
 }
 
 /// The folder that goes to the trash for `session`: its own folder when it
-/// is a plain `sessions/<name>` folder, otherwise a fresh folder holding
-/// only the side file.
-fn trash_folder(root: &Path, record: &humata2_store::SessionRecord, shares: bool) -> Option<PathBuf> {
+/// is a plain `sessions/<name>` folder no other session works in, otherwise
+/// a fresh folder holding only the side file.
+fn trash_folder(
+    root: &Path,
+    record: &humata2_store::SessionRecord,
+    shares: bool,
+    folder_shared: bool,
+) -> Option<PathBuf> {
     if shares {
         return None;
     }
-    let plain = record.folder.is_dir()
+    let plain = !folder_shared
+        && record.folder.is_dir()
         && record
             .folder
             .parent()
@@ -1150,11 +1156,21 @@ impl SessionSvc {
         let root = self.starter.layout.root();
         let channels = self.channels.get().ok_or(RunError::NotReady)?;
         let (store, key) = (self.starter.store.clone(), id.clone());
-        let Some(record) = blocking(move || store.session(&key))
-            .await
-            .map_err(RunError::Worker)?
-            .map_err(RunError::Store)?
-        else {
+        // A folder another session still works in (a context-only fork
+        // deleted without its parent) is never this session's to trash.
+        let found = blocking(move || -> Result<Option<(humata2_store::SessionRecord, bool)>, StoreError> {
+            let Some(record) = store.session(&key)? else {
+                return Ok(None);
+            };
+            let shared = store.sessions()?.iter().any(|other| {
+                other.id != record.id && other.machine == record.machine && other.folder == record.folder
+            });
+            Ok(Some((record, shared)))
+        })
+        .await
+        .map_err(RunError::Worker)?
+        .map_err(RunError::Store)?;
+        let Some((record, folder_shared)) = found else {
             // Its records went last: nothing is left but the note.
             self.finish_note(&root, &id);
             return Ok(None);
@@ -1202,7 +1218,7 @@ impl SessionSvc {
         let marker = marker_path(&root, &id);
         let mut item = None;
         if !marker.exists()
-            && let Some(folder) = trash_folder(&root, &record, note.shares.is_some())
+            && let Some(folder) = trash_folder(&root, &record, note.shares.is_some(), folder_shared)
         {
             let side = folder.join(SIDE_FILE);
             let (store, key, made) = (self.starter.store.clone(), id.clone(), folder.clone());

@@ -368,27 +368,6 @@ impl Inbox {
         })
     }
 
-    /// 0.6.1 HOOKCLEAR (Signal A): a subsequent lifecycle event for `session`
-    /// (such as `PostToolUse`, `PostToolBatch`, `UserPromptSubmit`, `Stop`, or
-    /// `TurnState::Idle`) arrived for `agent_kind`. For supported agents
-    /// (`claude`, `codex`, `copilot`, `agy`), immediately resolves any pending
-    /// hook-raised ask for `session` as `WithdrawReason::Resolved` (never
-    /// `Denied`) and clears any pending screen-ask debounce.
-    ///
-    /// Unsupported/unknown agent kinds are left untouched.
-    pub async fn clear_stale_hook_asks_on_lifecycle(
-        &self,
-        session: &str,
-        agent_kind: &str,
-    ) -> usize {
-        if !crate::screen_ask::is_supported_agent(agent_kind) {
-            return 0;
-        }
-        let cleared = self.withdraw_held_where(session, |_| true).await;
-        crate::screen_ask::untrack_hook_ask(session);
-        cleared
-    }
-
     async fn withdraw_held_where(&self, session: &str, wanted: impl Fn(&Entry) -> bool) -> usize {
         let state = self.state.lock().await;
         let mut cleared = 0;

@@ -7,7 +7,12 @@
 `daemon/svc_inbox/src/screen_ask.rs` reads each agent's terminal screen to find prompts. Its fixtures are hand-written screens. The owner suspects real CLIs draw more cases than we cover (2026-11-20).
 
 ## Plan
-1. **Fix the HOOKCLEAR regressions first.** These come from the 12305aba review:
+1. **Fix the HOOKCLEAR regressions first.** These come from the 12305aba review. The first three were fixed on 2026-11-20 (main):
+   - `Working` no longer clears held asks. `clear_stale_hook_asks_on_lifecycle` and the unused `ScreenAsk::on_lifecycle` are gone.
+   - An unsupported agent's screen hold ends when its dialog is gone, as it did before HOOKCLEAR.
+   - Signal B clears a hook ask only after its dialog was seen on screen (`hook_prompt_seen`). A held ask that is never drawn, with only the agent's spinner moving, stays. Test: `held_hook_ask_never_drawn_stays_while_output_moves`.
+
+   The `std::thread::sleep` in the test helper is still open. The original items:
    - turns.rs:654-659: `Hook::Working` clears every held hook ask, which reverses D798. Drop the clear and keep `withdraw_notice`.
    - screen_ask.rs:509: for unsupported agents the hold is never ended.
    - Signal B can auto-withdraw a card while the agent's spinner is still showing.

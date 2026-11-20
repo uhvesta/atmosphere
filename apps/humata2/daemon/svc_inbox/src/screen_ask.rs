@@ -81,6 +81,10 @@ struct Asks {
 struct Watching {
     asking: HashSet<String>,
     hook_asking: HashSet<String>,
+    /// Sessions whose hook ask was drawn on screen. Only those may clear
+    /// when the prompt goes away: a held ask whose agent never draws a
+    /// dialog (it waits on the hook, spinner turning) stays until answered.
+    hook_prompt_seen: HashSet<String>,
     due: HashSet<String>,
     last_seen: HashMap<String, (u32, u64)>,
     pending_clear: HashMap<String, PendingClear>,
@@ -169,24 +173,10 @@ impl ScreenAsk {
     pub fn untrack_hook_ask(&self, session: &str) {
         let mut watching = self.0.watching();
         watching.hook_asking.remove(session);
+        watching.hook_prompt_seen.remove(session);
         if !watching.asking.contains(session) {
             watching.pending_clear.remove(session);
         }
-    }
-
-    /// 0.6.1 HOOKCLEAR (Signal A): a subsequent lifecycle event for `session`
-    /// arrived for `agent_kind`. For supported agents (`claude`, `codex`,
-    /// `copilot`, `agy`), immediately resolves pending hook-raised asks and
-    /// cancels any pending debounce. Unsupported agents are left untouched.
-    pub async fn on_lifecycle(&self, session: &str, agent_kind: &str) {
-        if !is_supported_agent(agent_kind) {
-            return;
-        }
-        self.0.cancel_clear(session);
-        if self.0.hook_asks.has_pending_hook_ask(session).await {
-            self.0.hook_asks.resolve_pending_hook_asks(session).await;
-        }
-        self.0.watching().hook_asking.remove(session);
     }
 
     /// `session`'s agent, under holder `holder_pid`, wrote output: while a
@@ -232,6 +222,7 @@ impl ScreenAsk {
             let mut watching = asks.watching();
             watching.asking.remove(&session);
             watching.hook_asking.remove(&session);
+            watching.hook_prompt_seen.remove(&session);
             watching.due.remove(&session);
             watching.last_seen.remove(&session);
             watching.pending_clear.remove(&session);
@@ -414,6 +405,7 @@ impl Asks {
         let mut watching = self.watching();
         watching.asking.remove(session);
         watching.hook_asking.remove(session);
+        watching.hook_prompt_seen.remove(session);
     }
 
     async fn look(self: &Arc<Self>, session: &str, holder_pid: u32) {
@@ -483,6 +475,9 @@ impl Asks {
             // Prompt is visibly present on the live screen: cancel any pending
             // debounce immediately so genuine asks never flicker or disappear.
             self.cancel_clear(session);
+            if has_hook_open {
+                self.watching().hook_prompt_seen.insert(session.to_owned());
+            }
             if let Some(question) = seen.filter(|_| !heard) {
                 let mut open = self.open.lock().await;
                 if open
@@ -505,15 +500,22 @@ impl Asks {
         }
 
         // Prompt is not visible on the live screen.
-        // Unsupported/unknown agents are left untouched by 0.6.1 HOOKCLEAR.
         if !supported {
+            // An agent whose screen we don't read closely: a screen hold
+            // ends as soon as its dialog is gone, as before HOOKCLEAR.
+            if has_screen_open {
+                self.open.lock().await.remove(session);
+                self.watching().asking.remove(session);
+            }
             return;
         }
 
-        // Signal B: for supported agents (`claude`, `codex`, `copilot`, `agy`),
-        // if a pending hook-raised or screen-raised ask is no longer on screen
-        // AND terminal output has advanced, arm the debounce timer.
-        if (has_screen_open || has_hook_open) && output_advanced {
+        // Signal B: a screen-raised ask, or a hook ask whose dialog was drawn,
+        // is no longer on screen and output has moved on: arm the debounce. A
+        // hook ask never drawn (the agent waits on the hook with its spinner
+        // turning) stays until it is answered or the turn ends (D798).
+        let hook_drawn = has_hook_open && self.watching().hook_prompt_seen.contains(session);
+        if (has_screen_open || hook_drawn) && output_advanced {
             self.schedule_clear(session, holder_pid);
         }
     }
@@ -840,7 +842,8 @@ test result: ok. 42 passed; 0 failed;";
             hook_asks.clone(),
         );
 
-        // Poll 1: baseline observation (output hasn't advanced yet) -> does NOT clear.
+        // Poll 1: the hook ask's dialog is on screen -> does NOT clear.
+        holders.set(100, PERMISSION_PROMPT_SCREEN);
         watcher.look_now("se_stale", HOLDER_PID).await;
         assert!(!watcher.has_pending_clear("se_stale"));
         assert!(hook_asks.is_pending());
@@ -866,26 +869,29 @@ test result: ok. 42 passed; 0 failed;";
     }
 
     #[tokio::test(start_paused = true)]
-    async fn lifecycle_hook_signal_immediately_auto_clears_stale_hook_ask() {
-        for agent_kind in SUPPORTED_AGENTS {
-            let session = format!("se_lc_{agent_kind}");
-            let (_dir, store) = setup_store(&session, agent_kind);
-            let holders = Arc::new(MockHolders::new(100, STREAMING_OUTPUT_SCREEN));
-            let hook_asks = Arc::new(MockHookAsk::new(true));
-            let watcher = ScreenAsk::new_with_hook_asks(
-                holders,
-                Arc::new(NoopAsking),
-                store,
-                Arc::new(|_| true),
-                Arc::new(|_| {}),
-                hook_asks.clone(),
-            );
+    async fn held_hook_ask_never_drawn_stays_while_output_moves() {
+        let (_dir, store) = setup_store("se_held", "claude");
+        let holders = Arc::new(MockHolders::new(100, STREAMING_OUTPUT_SCREEN));
+        let hook_asks = Arc::new(MockHookAsk::new(true));
+        let watcher = ScreenAsk::new_with_hook_asks(
+            holders.clone(),
+            Arc::new(NoopAsking),
+            store,
+            Arc::new(|_| true),
+            Arc::new(|_| {}),
+            hook_asks.clone(),
+        );
 
-            assert!(hook_asks.is_pending());
-            watcher.on_lifecycle(&session, agent_kind).await;
-            assert!(!hook_asks.is_pending(), "{agent_kind}: should clear immediately");
-            assert_eq!(hook_asks.resolved(), 1);
+        // The agent waits on the hook: no dialog, only its spinner moving.
+        for end in [100, 160, 220, 280] {
+            holders.set(end, STREAMING_OUTPUT_SCREEN);
+            watcher.look_now("se_held", HOLDER_PID).await;
         }
+        assert!(!watcher.has_pending_clear("se_held"));
+        tokio::time::advance(Duration::from_secs(10)).await;
+        settle_tasks().await;
+        assert!(hook_asks.is_pending());
+        assert_eq!(hook_asks.resolved(), 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -903,10 +909,6 @@ test result: ok. 42 passed; 0 failed;";
                 Arc::new(|_| {}),
                 hook_asks.clone(),
             );
-
-            // Signal A leaves unsupported agents untouched.
-            watcher.on_lifecycle(&session, agent_kind).await;
-            assert!(hook_asks.is_pending());
 
             // Signal B leaves unsupported agents untouched even as output advances.
             watcher.look_now(&session, HOLDER_PID).await;

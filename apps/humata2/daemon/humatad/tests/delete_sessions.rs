@@ -452,3 +452,20 @@ async fn an_agent_with_allow_deletes_a_plan_without_terminals_and_asks_for_one_t
     assert!(left.contains(&busy.id), "the busy session is untouched");
     assert!(!left.contains(&quiet.id), "the quiet session is deleted");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_context_fork_alone_keeps_its_parents_folder() {
+    let fixture = Fixture::new().await;
+    let parent = fixture.session("Parent").await;
+    let context = fixture.fork(&parent, pb::ForkKind::ContextOnly).await;
+    let clone = clone_of(&parent);
+    std::fs::write(clone.join("parent.txt"), "mine\n").unwrap();
+    let plan = fixture.plan_of(&[&context]).await;
+
+    fixture.deleted(&plan, 0).await;
+
+    assert_eq!(std::fs::read_to_string(clone.join("parent.txt")).unwrap(), "mine\n");
+    let listed = fixture.listed().await;
+    assert!(listed.iter().any(|s| s.id == parent.id), "the parent stays");
+    assert!(!listed.iter().any(|s| s.id == context.id), "the fork is gone");
+}
