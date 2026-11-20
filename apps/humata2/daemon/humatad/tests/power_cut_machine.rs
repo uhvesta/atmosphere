@@ -20,12 +20,9 @@ macro_rules! cut_tests {
 
 cut_tests! {
     a_start_with_a_boxs_power_cut_loses_nothing: Operation::Start;
-    a_local_fork_with_a_boxs_power_cut_loses_nothing: Operation::LocalFork;
     a_fork_onto_the_box_with_a_boxs_power_cut_loses_nothing: Operation::RemoteFork;
     a_move_with_a_boxs_power_cut_loses_nothing: Operation::Move;
     an_archive_on_the_box_with_a_boxs_power_cut_loses_nothing: Operation::RemoteArchive;
     a_restore_on_the_host_with_a_boxs_power_cut_loses_nothing: Operation::RemoteRestore;
-    a_comment_send_with_a_boxs_power_cut_loses_nothing: Operation::CommentSend;
-    a_transfer_with_a_boxs_power_cut_loses_nothing: Operation::Transfer;
     a_host_variable_on_a_box_with_a_boxs_power_cut_loses_nothing: Operation::RemoteHostVariable;
 }

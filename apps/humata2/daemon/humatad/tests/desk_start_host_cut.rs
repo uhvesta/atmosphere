@@ -77,7 +77,7 @@ async fn settled(rig: &Rig, id: &str) -> Vec<String> {
             tokio::time::Instant::now() < deadline,
             "the host's restart never settled the start of {id}: {states:?}"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 

@@ -360,18 +360,23 @@ pub(super) async fn session<D: Daemon, C: Console>(
         }
         SessionCommand::Delete {
             sessions,
-            channel,
-            machine,
             all,
             delete_work,
             count,
         } => {
+            if ctx.flags.machine.len() > 1 {
+                return Err(CliError::BadValue {
+                    field: "--machine",
+                    value: ctx.flags.machine.join(", "),
+                    expected: "one machine at a time",
+                });
+            }
             sessions_delete::run(
                 ctx,
                 sessions_delete::Bulk {
                     sessions,
-                    channel,
-                    machine,
+                    channel: ctx.flags.channel.clone(),
+                    machine: ctx.flags.machine.first().cloned(),
                     all,
                     delete_work,
                     count,

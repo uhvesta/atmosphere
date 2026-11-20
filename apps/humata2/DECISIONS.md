@@ -5224,3 +5224,74 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
 
 - All seven re-recorded `native/massdelete-*` snapshots (`home-select`, `machine-select-all`, `plan-picked`, `plan-all-empty`, `plan-all-typed-dark`, `plan-stale`, and `after-delete`) PASS visual review against `mockups/massdelete/` after fixing bottom-bar ellipsis truncation, dark-mode count-input contrast/focus and list bottom-border/scroll coverage, dark-pill `×` toast styling, and `FakeDaemon` context-fork/stale-line/inbox-withdrawal parity (judged by Gemini).
 - **Reverse:** revert the `select_mode.rs`, `overlay_delete_sessions.rs`, `overlay_toasts.rs`, and `clients/src/daemon/fake/mass_delete.rs` polish changes.
+
+## D881: FUSEFS makes every machine feel like one file namespace over one `BLAKE3` manifest/chunk data plane, without blocking remote sessions on host sync (FUSEFS spec, 2026-11-19). Provisional
+
+- The owner-level outcome is one machine: an agent addresses code, checkouts, context and another session by logical Humata path. It does not choose SSH, upload/download or a physical host path on the success path. Machine placement remains an inspection view.
+- One authenticated peer protocol (`fusefs_cas::ChunkTransport`) serves FUSE `read`, owner copy/upload/download, materialization, config-bundle sync, checkout and `SessionSnapshot` move payloads. Files have paged manifests and 256 KiB logical chunks batched in at-most-1 MiB replies, verified and cached in one machine-wide sharded store by decoded 256-bit `BLAKE3` digest (`T1` compares fixed 256 KiB vs FastCDC for snapshot dedup). A per-chunk planner selects negotiated lz4/zstd/none from file/content class, measured ratio, source CPU load, peer bandwidth pressure and latency budget; elevated source CPU load immediately sheds `zstd` to `lz4`/`none` so host reads never starve remote builds.
+- `open` fetches no content. A read fetches one coalesced compressed chunk set and slices the result; sequential misses add bounded read-ahead. A sparse copy-on-write edit stages changed chunks out-of-band before atomic `Commit`. Ordinary remote rename/unlink are server-side metadata/trash commits with no file download.
+- Remote sessions are never blocked by syncing with the local Mac (`AWAY` parity): each machine generates `s/<local-id>/context/` locally from its own transcripts, pushes invalidations into a non-blocking coalescing ring, serves outbound chunks lock-free at background QoS (`ESTALE` to remote reader on race, never blocking local writers), and skips the 250 ms revalidation wait (`0 ms` cached topology + `< 1 ms` `MachineOffline` for uncached remote peers) whenever `PeerUplink` reports `host_reachable == false`.
+- Build caches and generated directories are classified at the source and exposed on remote views as synthetic stub directories containing only `.humata-omitted.json` (`user.humata.omitted_bytes`) so `rg` and `find` exit `0` with zero cache bytes transferred unless materialized by the owner.
+- **Reverse:** keep FUSE reads, `humata cp`, upload/download and session carry as separate byte paths, use SHA-256 per-channel `.carry/have` stores, or let host sync/revalidation block remote sessions.
+
+## D882: Every session has one stable `s/<id>` FUSEFS path; human trees are symlinks, and native backing is id-based (FUSEFS spec, 2026-11-19). Provisional
+
+- `~/.humata/fuse/main/s/<session-id>` is canonical. `channels/`, `desks/` and `machines/` are generated friendly symlinks to `s/` and `m/` identities. Slugs and titles may change without moving the canonical path.
+- New sessions use `<machine-root>/.sessions/<id>/{work,config}` as native backing. A same-machine rename, reparent or folder move updates metadata and aliases; the holder, `cwd`, conversation key and backing worktree stay put (`LIVEHOLDER`).
+- Local `s/<local-id>/work` resolves via native symlink to `<machine-root>/.sessions/<local-id>/work` where containment permits (`1.00x` native speed), and a daemon-maintained native symlink skeleton keeps local `s/<id>` paths working when FSKit is not yet enabled or `/dev/fuse` is absent in a container.
+- Cross-machine `MoveSession` keeps its lifecycle verb and preserves `carry_cheap.rs`'s Git `CloneRecipe` (local main-clone checkout + unpushed/`refs/humata/*` bundles, D313) inside `SessionSnapshot`, transferring only bundle payloads and missing dirty/config `BLAKE3` chunks while retiring per-channel `<channel>/.carry/have`.
+- **Reverse:** keep channel/title folders as the physical session identity, retain every same-machine agent-state path rewrite, or drop `carry_cheap` Git bundle reconstruction during moves.
+
+## D883: Cross-session/remote writes return `EACCES` with an Inbox request, then grant a turn/10m subtree lease with progress-bounded `fsync`; protected roots never implement delete or move (FUSEFS spec, 2026-11-19). Provisional
+
+- A process may read every visible non-secret node across machines. Writing another session, even on the same machine, needs owner approval, except the existing channel `shared/` write on the agent's own machine. When `host_reachable == false` (`AWAY`), same-box cross-session requests journal locally (`D225`) so SSH `humata login` + `humata inbox` can approve without waking the host.
+- The first unleased write creates one deduplicated Inbox request keyed to `(caller_session, dst_session, dst_parent_dir, op_class)` and returns `EACCES` (< 50 ms) with a pointer under `requests/`. It never blocks on Inbox.
+- Approval grants a `WriteLease` on `<dst_parent_dir>` expiring at `min(caller_turn_end_hook, 10 minutes)`, allowing multi-syscall POSIX workflows (`sed -i` / `vim` / `Edit` random temp-sibling create + `fsync` + `rename`, `copyfile(3)`, `cp -r`) to complete under one approval while checking per-file `expected_generation` on `open`/`Commit` (`ESTALE` on concurrent remote edit).
+- Remote `fsync` never returns `EAGAIN` (which POSIX tools treat as fatal write failure); it uses a 1,000 ms *progress/stall* bound, waiting to `0` while chunks actively acknowledge progress and returning `ENETUNREACH`/`EIO` (with dirty CoW extents preserved in the local journal) only if the link drops or stalls.
+- Canonical session/repo/config/channel/desk/machine roots and friendly aliases return `EPERM`; delete goes through `MASSDELETE` and move goes through `MoveSession`.
+- **Reverse:** bind write leases to one syscall on one exact path, return `EAGAIN` from `fsync` at 1 s wall time, or queue syscalls on human approval.
+
+## D884: Agent config homes are native per-session directories wired to machine-local auth, with Settings-toggleable host-canonical sync, TOML/`Steel`/`bash` rewrites, and a rage-quit switch (FUSEFS spec, 2026-11-19). Provisional
+
+- Claude, Codex and Copilot launch with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` pointing to **native** `<machine-root>/.sessions/<session-id>/config/<agent>/` (never routing live agent turns, atomic temp-file renames or SQLite WAL locks through FUSE/FSKit). `~/.humata/fuse/main/s/<session-id>/config/<agent>` exposes a sanitized FUSE view with `Secret` strictly denylisted (`CredentialOutsideMount`).
+- Each machine uses **its own local auth** natively (macOS Keychain where verified, or local native symlinks to `<real-home>/.codex/auth.json`, `<real-home>/.claude/.credentials.json`, etc. on headless Linux / file-auth setups so OAuth refresh works in place). Credentials and inline MCP secret literals never cross the peer link or enter `SessionSnapshot`.
+- The Mac host is canonical for shared non-auth config, pushed asynchronously in the background as a `ConfigBundle` (never blocking remote session launch) and governed by `[sync]` Settings toggles in `config/config-sync.toml`: `skills = true` and `instructions = true` by default, `mcp = false` and `settings = false` opt-in, per-machine overrides, and a master `enabled` **"rage-quit" switch** that atomically reverts disabled facets back to `<real-home>/.<agent>` without mutating real home folders or restarting holders (`LIVEHOLDER`).
+- Users customize cross-machine path and MCP rewrites through a 3-stage pipeline in `config-sync.toml` and `~/.humata2/scripts/`: (1) declarative TOML `[[path_rewrite]]` and `[mcp.servers.<name>]` overrides (`pass_env` for local secret binding); (2) capability-free embedded `Steel` Scheme (`steel-core`) AST transforms; and (3) target-local `bash` filter scripts (`D680`/`D688` safety rules). Post-transform checks enforce valid agent schemas, soft-skip missing 3rd-party MCP binaries with a warning, and always re-assert the target machine's protected `humata` MCP entry.
+- **Reverse:** point `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`COPILOT_HOME` through FUSE (breaking machine-local file auth and exposing WAL/rename paths to FUSE restarts), hardcode all-or-nothing config sync, or omit user-programmable path/MCP transforms.
+
+## D885: `humata2_fusefs` is a separate Rust process over standalone `//libs/fusefs/*` crates; macOS uses FSKit with `$HUMATA_FUSE_ROOT` capability roots, and Linux targets worker boxes (FUSEFS spec, 2026-11-19). Provisional
+
+- Each machine runs `humata2_fusefs` under its user service, outside `humatad2`, so daemon `Migrate` and restarts do not disturb the mount, and `humata2_fusefs` restarts never disturb native agent `cwd`/config/SQLite descriptors.
+- macOS 26.7+ uses `//libs/fusefs/fskit` (`objc2-fs-kit` + minimal signing shim if required, mounted with `MNT_DONTBROWSE` to avoid Finder drive clutter). Unless `T1` proves kernel-vouched per-request `audit_token_t` PID delivery through FSKit, the public Mac view stays read-only and launched agents receive `$HUMATA_FUSE_ROOT` (`cap_<id>` root with `..` clamped); `sessions_search`, `topology_get` and `session_info` emit `$HUMATA_FUSE_ROOT`-rooted paths so macOS agents never hit `CallerIdentityUnavailable` on tool-returned paths.
+- While Linux desktop/host milestones (`LINUX`, `ANYHOST`) remain cut (`D485`), `//libs/fusefs/linux` (`fuser` over `/dev/fuse` with kernel PID binding) ships for **enrolled headless Linux worker boxes**, falling back cleanly to the native local symlink skeleton inside unprivileged containers lacking `/dev/fuse`.
+- **Reverse:** embed the filesystem in `humatad2`, use `fuse-t` or kext FUSE in production, or emit public read-only paths to macOS session tools.
+
+## D886: FUSEFS replaces file-byte MCP tools and duplicated config bootstrap only after native liveness/performance pass (FUSEFS spec, 2026-11-19). Provisional
+
+- Remove `files_list`, `file_read`, `files_find`, `file_write`, `folder_create`, `file_fetch` and `session_read` from normal mounted agents. Keep `sessions_search` as the broad index query returning `$HUMATA_FUSE_ROOT` mount paths.
+- Keep Inbox ask/wait/explain, to-do operations, session lifecycle, terminal verbs, machine operations, `humata config sync`, explicit transfer/materialization status and `PlanDeleteSessions`/`DeleteSessions` as RPC/MCP/CLI verbs.
+- After stable-path and native config composition pass, retire same-machine transcript path-rewrite loops, `peer_skills.rs` direct `~/.<agent>/skills` mutation, and `seed_claude_copy`.
+- **Reverse:** keep the MCP file bridge and per-machine copy bootstrap as the primary path.
+
+## D887: The virtual filesystem and CAS engine live in standalone, domain-agnostic `//libs/fusefs/*` crates consumed by Humata via public APIs (owner, 2026-11-19). Provisional
+
+- Following `//libs/tca-rust` and `//apps/humata2/terminal/*`, the generic virtual filesystem (`//libs/fusefs/vfs`), `BLAKE3` manifest/chunk CAS, codec planner and sparse CoW overlays (`//libs/fusefs/cas`), macOS FSKit bridge (`//libs/fusefs/fskit`), Linux `/dev/fuse` + skeleton adapter (`//libs/fusefs/linux`), and mount runtime (`//libs/fusefs/host`) are built as standalone crates under `libs/fusefs/` with **zero dependencies on `//apps/humata2/...`** (no Humata protobufs, store records, Inbox types, or agent schemas).
+- Humata consumes only narrow public traits (`Volume`, `AccessHook`, `ChunkTransport`, `FilesystemBackend`) inside `//apps/humata2/daemon/fusefs_adapter` (`humata2_fusefs`) and `//apps/humata2/daemon/config_compose`, keeping Bazel compile/test caches isolated and letting all VFS/CAS/CoW/lease mechanics be tested in pure in-process isolation.
+- **Reverse:** tangle FUSE/FSKit/CAS mechanics directly into `daemon/humatad` or `daemon/svc_*` crates.
+
+## D887: Fast mode is the default; NORMALREL and FASTREL merge into one 0.5.0 release (owner, 2026-11-19). Settled
+
+- Fast mode becomes the default for builds, runtime, and tests so the full suite runs once rather than twice (normal + fast).
+- `NORMALREL` and `FASTREL` merge into a single `0.5.0` release: flip fast mode on by default, walk and audit every flow in `apps/humata2/flows/`, fix gaps, run full postsubmit (`presubmit.sh --full`), launch check, release, and install.
+- **Reverse:** revert the fast-mode default back to off and restore separate normal and fast release runs.
+
+## D888: Power-cut test deduplication and trim without losing recovery coverage (judged by Gemini, 2026-11-19). Provisional
+
+- Audited all 17 power-cut/fault test files and trimmed strictly redundant fault points, zero-point no-op scenarios, and duplicate single-side tests while keeping every distinct write-ahead, atomic-rename, rollback, and revive recovery branch (`P1`–`P9`):
+  - `power_cut_machine.rs`: dropped zero-point no-ops (`LocalFork`, `CommentSend`, `Transfer`).
+  - `power_cut_both.rs`: dropped single-side duplicates (`LocalFork`, `CommentSend`, `RemoteHostVariable`).
+  - `common/power_cut.rs`: added equivalence-class `keep_point()` filter (preserving `store.file.temp_written` and all three `revive.resume.{spawned,tab.put.committed,verified}` phases), added non-empty case guard, tightened `until()` poll from 50 ms to 5 ms, skipped `reports_quiet()` for `HostVariable`/`RemoteHostVariable`, and waited for running host operations + in-progress box `StartStep` in `settle()` so `Inventory::take` never races an active remote clone.
+  - Deleted `power_cut_focus.rs` (10 redundant tests covered by `power_cut_host_test` + `power_cut_start_box_test`); kept `power_cut_start_box_test` as the fast presubmit smoke gate.
+  - `daemon/store/tests/power_cut.rs`: merged 3 matrix tests into 1 `[Host, Machine]` pass with 16 representative live fault points + per-point `SIGKILL` guardrail (11.7 s; removed from `tools/tests/slow.txt`).
+  - Trimmed redundant `@n` points and sleeps in `remove_machine_cut.rs`, `upgrade_cut.rs` (also fixing Test 4 to use distinct `HUMATAD2_FAULTS` vs `HUMATAD2` binaries so rollback actually runs), `delete_sessions_cut.rs`, `restore_channel_cut.rs`, `desk_start_host_cut.rs`, `transfers/tests/power_cut.rs` (12.2 s), and `holder/tests/power_cut.rs` (1.4 s).
+- **Reverse:** revert the P1–P9 test trims and restore `power_cut_focus.rs` and `store:power_cut_test` in `tools/tests/slow.txt`.

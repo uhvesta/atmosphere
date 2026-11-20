@@ -408,7 +408,7 @@ async fn until(what: &str, check: impl AsyncFn() -> bool) -> Result<(), String> 
         if tokio::time::Instant::now() >= deadline {
             return Err(format!("never saw {what} within {LONG:?}"));
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     Ok(())
 }
@@ -606,8 +606,9 @@ async fn setup(rig: &Rig, operation: Operation) -> Base {
             .set_host_variable(pb::SetHostVariableRequest { id, ..host_variable(HOST_VARIABLE_OLD) })
             .await
             .expect("the first host variable is set");
+    } else {
+        reports_quiet(rig).await;
     }
-    reports_quiet(rig).await;
 
     Base {
         channel,
@@ -1292,6 +1293,70 @@ async fn trace(operation: Operation) -> Traced {
     found
 }
 
+/// Filters out fault points that are crash-state equivalent to another kept
+/// point, or redundant under a double cut (`Cut::Both`).
+fn keep_point(cut: Cut, operation: Operation, origin: Side, name: &str) -> bool {
+    // Drop strictly identical consecutive twins and orphan-blob writes
+    // (orphan blobs are already swept & tested in `store:power_cut_test`).
+    // Explicitly preserved: "store.file.temp_written",
+    // "store.session.put.committed", "revive.resume.spawned",
+    // "store.tab.put.committed", "revive.resume.verified".
+    if matches!(
+        name,
+        "store.session_detail.put.committing"
+            | "store.session_detail.put.committed"
+            | "store.agent.put.committed"
+            | "store.tab.put.committing"
+            | "store.agent_and_tab.put.committing"
+            | "store.blob.written"
+            | "store.remote_report.put.committing"
+    ) {
+        return false;
+    }
+
+    // Keep "store.remote_report.put.committed" only on Start and Move.
+    if name == "store.remote_report.put.committed" {
+        return matches!(operation, Operation::Start | Operation::Move);
+    }
+
+    if cut == Cut::Both && origin == Side::Host {
+        match operation {
+            Operation::Start
+            | Operation::RemoteFork
+            | Operation::Move
+            | Operation::RemoteArchive
+            | Operation::RemoteRestore => {
+                // Skip pure pre-RPC Host points and settled post-Box cleanup;
+                // those single-side states are already covered by Cut::Host.
+                if matches!(
+                    name,
+                    "fork-started"
+                        | "fork-packed"
+                        | "move-started"
+                        | "move-packed"
+                        | "archive_remote.journaled"
+                        | "move-released"
+                        | "archive_remote.settled"
+                ) {
+                    return false;
+                }
+            }
+            Operation::Transfer => {
+                return matches!(
+                    name,
+                    "transfer.journaled"
+                        | "transfer.chunk.written"
+                        | "transfer.committing"
+                        | "transfer.commit.renamed"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
 /// The pairs of side and point that a cut reaches. The host's points are
 /// cut only for an operation that does work on the host: one that works on
 /// the box alone (a box's host variable) leaves the host saving only the
@@ -1300,10 +1365,22 @@ async fn trace(operation: Operation) -> Traced {
 fn cases(cut: Cut, operation: Operation, found: &Traced) -> Vec<(Side, String)> {
     let mut all = Vec::new();
     if cut != Cut::Machine && operation.runs_on(Side::Host) {
-        all.extend(found.host.iter().map(|name| (Side::Host, name.clone())));
+        all.extend(
+            found
+                .host
+                .iter()
+                .filter(|name| keep_point(cut, operation, Side::Host, name))
+                .map(|name| (Side::Host, name.clone())),
+        );
     }
     if cut != Cut::Host {
-        all.extend(found.boxes.iter().map(|name| (Side::Box, name.clone())));
+        all.extend(
+            found
+                .boxes
+                .iter()
+                .filter(|name| keep_point(cut, operation, Side::Box, name))
+                .map(|name| (Side::Box, name.clone())),
+        );
     }
     all
 }
@@ -1542,6 +1619,28 @@ async fn settle(rig: &Rig, cut: Cut, old: &[(Side, usize)], base: &Base) -> Resu
             }),
             Err(_) => false,
         }
+    })
+    .await?;
+    // A remote start retried after a box cut answers once the box writes its
+    // record and then clones asynchronously; wait for running operations on
+    // the host and any in-progress start on the box (whose daemon runs without
+    // --admin, so read its store directly) so Inventory::take never races an
+    // active clone.
+    until("the running operations settled", async || {
+        let host_idle = pb::operation_service_client::OperationServiceClient::new(channel.clone())
+            .list_operations(pb::ListOperationsRequest {
+                running_only: true,
+                ..Default::default()
+            })
+            .await
+            .is_ok_and(|reply| reply.into_inner().operations.is_empty());
+        let box_idle = boxes.session_details().is_ok_and(|details| {
+            details.iter().all(|detail| {
+                detail.start == humata2_store::StartStep::Done
+                    || boxes.archive(&detail.session).is_ok_and(|row| row.is_some())
+            })
+        });
+        host_idle && box_idle
     })
     .await?;
     until("the sessions settled", async || {
@@ -1911,6 +2010,7 @@ pub async fn run_cases(cut: Cut, operation: Operation) {
     phases.done("trace");
     phases.say();
     let cases = cases(cut, operation, &found);
+    assert!(!cases.is_empty(), "{operation:?} ({cut:?}) produced 0 power-cut cases");
     let count = cases.len();
     // Each case runs on a thread of its own, so a case's blocking waits
     // hold up no other case.

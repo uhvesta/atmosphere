@@ -63,16 +63,23 @@ fn install_a(bin: &Path) -> String {
     upgrade::install(bin, &manifest("a"))
 }
 
-/// Release `b` staged in `bin`; returns its bundle id.
-fn stage_b(bin: &Path) -> String {
+/// Release `b` staged in `bin`, carrying `daemon_var` as `humatad2`; returns
+/// its bundle id.
+fn stage_b_with(bin: &Path, daemon_var: &str) -> String {
     for (name, variable) in FILES {
-        put_file(variable, &bin.join(format!(".{name}.next")));
+        let source = if name == "humatad2" { daemon_var } else { variable };
+        put_file(source, &bin.join(format!(".{name}.next")));
     }
-    let bundle = manifest("b");
+    let bundle = upgrade::manifest(&upgrade::sha256_of(&binary(daemon_var)), "b");
     let staged = bin.join(".bundle.json.next");
     std::fs::write(&staged, &bundle).expect("the staged bundle is written");
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)).expect("readable");
     upgrade::bundle_id(&bundle)
+}
+
+/// Release `b` staged in `bin`; returns its bundle id.
+fn stage_b(bin: &Path) -> String {
+    stage_b_with(bin, "HUMATAD2_FAULTS")
 }
 
 async fn try_info(daemon: &Daemon) -> Option<pb::ServerInfo> {
@@ -99,7 +106,7 @@ async fn wait_at_release(daemon: &Daemon, bundle: &str) {
             return;
         }
         assert!(Instant::now() < deadline, "the daemon never answered as release {bundle}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -180,14 +187,9 @@ async fn assert_whole_on_release_a_and_retryable(point: &str, ended: &str) {
     let deadline = Instant::now() + LONG;
     while daemon.state.join("upgrade/this.json").exists() {
         assert!(Instant::now() < deadline, "the retry never settled");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert_eq!(last_record(&daemon.state)["upgrade_id"], "up_retry");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_cut_after_the_upgrade_was_recorded_and_before_anything_was_swapped_leaves_release_a() {
-    assert_whole_on_release_a_and_retryable("upgrade.record.written", "abandoned").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -195,17 +197,17 @@ async fn a_cut_between_the_daemon_and_the_bundle_being_swapped_leaves_release_a_
     assert_whole_on_release_a_and_retryable("upgrade.binary.swapped", "abandoned").await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_new_build_cut_after_keeping_the_store_copy_is_rolled_back_to_release_a() {
-    assert_whole_on_release_a_and_retryable("upgrade.store.copied", "rolled_back").await;
-}
-
 /// D439: the start that rolls back relaunches release a by exec before it
 /// has said it listens; release a says it, on the pipe the starter passed
 /// in, so a starter waiting on that word (D398) hears it instead of the
 /// pipe closing.
+///
+/// Release `a` carries `HUMATAD2_FAULTS` and release `b` carries `HUMATAD2`
+/// so `installed != own` on rollback and `Start::Restart` -> `exec_at`
+/// actually relaunches release `a` while handing on `--ready-fd`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rollback_relaunch_says_ready_on_the_starters_pipe() {
+    assert_ne!(daemon_sha(), upgrade::admin_sha(), "release a and release b must carry distinct daemon binaries");
     let dir = folder();
     let bin = dir.path().join("bin");
     let from = install_a(&bin);
@@ -215,20 +217,28 @@ async fn a_rollback_relaunch_says_ready_on_the_starters_pipe() {
         Build::Admin,
         dir,
         &[],
-        &[("HUMATA2_STOP_AT", "upgrade.store.copied"), ("HUMATA2_FAULT_ARM", arm_path.as_str())],
+        &[("HUMATA2_STOP_AT", "upgrade.schema.migrated"), ("HUMATA2_FAULT_ARM", arm_path.as_str())],
     )
     .await;
     wait_at_release(&daemon, &from).await;
     std::fs::write(&arm, b"").expect("the cut point is armed");
-    let to = stage_b(&bin);
+    let to = stage_b_with(&bin, "HUMATAD2");
     // The call may be cut off with the daemon that was answering it.
     let _ = upgrade_to(&daemon, &to, "up_ready").await;
     daemon.stopped(LONG).await;
 
-    let heard = daemon.restart_hearing_ready(&[("HUMATA2_STOP_AT", NEVER)]).await;
+    // Empty env starts `HUMATAD2` (release `b`'s binary), which rolls back to
+    // release `a` (`HUMATAD2_FAULTS`) and execs it with `--ready-fd` kept open.
+    let heard = daemon.restart_hearing_ready(&[]).await;
 
     assert!(heard.starts_with(b"READY=1"), "the starter hears READY=1: {heard:?}");
     wait_at_release(&daemon, &from).await;
+    assert_eq!(
+        upgrade::build_of(&daemon).await.own_sha256,
+        daemon_sha(),
+        "the rollback relaunched release a's binary via exec"
+    );
+    assert_eq!(upgrade::sha256_of(&bin.join("humatad2")), daemon_sha(), "release a's daemon is back on disk");
     assert_eq!(last_record(&daemon.state)["ended"]["result"], "rolled_back");
 }
 

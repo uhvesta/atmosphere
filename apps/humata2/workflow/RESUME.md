@@ -54,11 +54,10 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 | 9 | Fresh review terminals beside any diff (REVIEWER) | 0.3.15 | patch + launch check |
 | 10 | One ranked To-do list (BOARDSIMPLE) | 0.3.16 | patch |
 | 11 | Two quiet inboxes (INBOXHOOKS) | 0.3.17 | patch |
-| 12 | Fix every failure | **0.4.0** | full suite + launch check |
+| 12 | Fix every failure + power-cut trim | **0.4.0** | full suite + launch check |
 | 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
-| 14 | Walk every flow, audit, fix (NORMALREL; flow fixes ship as 0.4.x patches first) | **0.5.0** | full suite + launch check |
-| 15 | Fast mode benchmarked and tuned (FASTREL) | **0.6.0** | full suite with fast mode on + launch check |
-| 16 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end") | 0.6.1 | patch + launch check |
+| 14 | Fast mode as default + walk every flow, audit, fix (NORMALREL + FASTREL merged, D887) | **0.5.0** | full suite + launch check |
+| 15 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end") | 0.5.1 | patch + launch check |
 
 ## 1. Finish the open feature lanes
 

@@ -167,7 +167,7 @@ impl App {
         self.press(RECORD);
         assert!(self.recording(), "the shortcut starts a recording");
         assert!(self.ui.recorder().is_recording());
-        self.click(Role::Link, "Inbox");
+        self.click(Role::Link, "Agent inbox");
         self.press(&app_key("k"));
         self.type_text(typed);
         self.press(RECORD);
@@ -326,7 +326,7 @@ fn a_recording_becomes_a_form_a_pinned_comment_and_a_copied_report() {
 
     app.send(ReportAction::Happened("the inbox looked wrong".to_owned()));
     app.send(ReportAction::Expected("a list of requests".to_owned()));
-    app.send(ReportAction::Query("Inbox".to_owned()));
+    app.send(ReportAction::Query("Agent inbox".to_owned()));
     let matches = app.form().expect("the form is open").matches();
     let first = *matches.first().expect("Inbox can be pinned");
     let pinned = app.form().expect("the form is open").elements[first].clone();
@@ -651,7 +651,7 @@ fn palette_records_and_stops() {
     app.palette("start recording");
     assert!(app.recording(), "the palette starts a recording");
     assert!(app.ui.recorder().is_recording());
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     app.press(&app_key("k"));
     app.type_text("hello");
     app.press("escape");
@@ -731,7 +731,7 @@ fn draw_circle_names_the_element() {
     let mut app = App::saving_to(reports.path());
     app.press(SNAPSHOT);
     let folder = app.form().expect("the snapshot opens the form").folder;
-    let (x, y, width, height) = app.place("Link", "Inbox");
+    let (x, y, width, height) = app.place("Link", "Agent inbox");
 
     app.click(Role::Button, "Draw on the window");
     assert!(app.form().is_some_and(|form| form.drawing), "draw mode is on");
@@ -751,7 +751,7 @@ fn draw_circle_names_the_element() {
     assert_eq!(strokes.len(), 1, "the loop is one stroke");
     assert!(strokes[0].points.len() >= 12, "the stroke keeps its path");
     assert!(
-        strokes[0].covers.iter().any(|c| c.label == "Inbox"),
+        strokes[0].covers.iter().any(|c| c.label == "Agent inbox"),
         "the loop covers the row: {:?}",
         strokes[0].covers
     );
@@ -762,20 +762,20 @@ fn draw_circle_names_the_element() {
     app.click(Role::Button, "Undo last mark");
     let after_undo = app.form().expect("the form is open").strokes;
     assert_eq!(after_undo.len(), 1, "Undo removes the last mark");
-    assert!(after_undo[0].covers.iter().any(|c| c.label == "Inbox"));
+    assert!(after_undo[0].covers.iter().any(|c| c.label == "Agent inbox"));
 
     app.click(Role::Button, "Finish drawing");
     assert!(app.form().is_some_and(|form| !form.drawing), "Done leaves draw mode");
     let prompt = app.copy();
 
-    assert!(prompt.contains("Inbox"), "the prompt names the row: {prompt}");
+    assert!(prompt.contains("Agent inbox"), "the prompt names the row: {prompt}");
     assert!(prompt.contains("circle around"), "the prompt names the mark: {prompt}");
     let drawing = fs::read_to_string(folder.join("drawing.json")).expect("drawing.json is saved");
     let text = drawing.trim();
     assert!(text.starts_with('{') && text.ends_with('}'), "drawing.json is a JSON object");
     assert_eq!(drawing.matches("\"shape\"").count(), 1, "one stroke is saved");
     assert!(drawing.contains("loop"));
-    assert!(drawing.contains("Inbox"), "the stroke's covers name the row");
+    assert!(drawing.contains("Agent inbox"), "the stroke's covers name the row");
     assert!(has_file(&folder, "window.png"), "a snapshot saves a picture of the window");
     let marks = fs::read_to_string(folder.join("marks.svg")).expect("marks.svg is saved with a mark");
     assert!(marks.contains("window.png"), "the marks are drawn over the picture");
@@ -801,7 +801,7 @@ fn rpc_calls_are_recorded_and_replay_still_matches() {
     app.press(RECORD);
     assert!(app.recording());
     feed.push(rpc("humata.v1.Test/First"));
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     feed.push(rpc("humata.v1.Test/Second"));
     app.press(RECORD);
     let form = app.form().expect("stopping opens the form");
@@ -827,7 +827,7 @@ fn rpc_calls_are_recorded_and_replay_still_matches() {
     // The call after the stop belongs to no recording: a later one has none.
     app.send(ReportAction::Close);
     app.press(RECORD);
-    app.click(Role::Link, "Inbox");
+    app.click(Role::Link, "Agent inbox");
     app.press(RECORD);
     let later = app.form().expect("the second stop opens the form");
     assert!(

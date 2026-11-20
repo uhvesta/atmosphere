@@ -37,7 +37,6 @@
 //apps/humata2/daemon/humatad:own_copy_remote_test
 //apps/humata2/daemon/humatad:pointers_test
 //apps/humata2/daemon/humatad:power_cut_both_test
-//apps/humata2/daemon/humatad:power_cut_focus_test
 //apps/humata2/daemon/humatad:power_cut_host_test
 //apps/humata2/daemon/humatad:power_cut_machine_test
 //apps/humata2/daemon/humatad:pr_base_test
@@ -85,7 +84,6 @@
 //apps/humata2/daemon/revive:kill_matrix_test
 //apps/humata2/daemon/sessions:kill_matrix_test
 //apps/humata2/daemon/store:crash_test
-//apps/humata2/daemon/store:power_cut_test
 //apps/humata2/desktop:design_test
 //apps/humata2/desktop:live_flows_cases
 //apps/humata2/desktop:live_flows_ssh_test

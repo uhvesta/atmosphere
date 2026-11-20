@@ -548,18 +548,10 @@ pub enum SessionCommand {
     /// machine, or all of them. Shows the plan, then asks.
     Delete {
         /// Sessions by id or name; leave out with --channel, --machine or --all.
-        #[arg(conflicts_with_all = ["delete_channel", "delete_machine", "all"])]
+        #[arg(conflicts_with = "all")]
         sessions: Vec<String>,
-        /// Every session of this channel, live and archived.
-        // The id differs from the global --channel's, so the two don't clash.
-        #[arg(long, id = "delete_channel", value_name = "NAME|ID", conflicts_with_all = ["sessions", "delete_machine", "all"])]
-        channel: Option<String>,
-        /// Every session on this machine, live and archived.
-        // The id differs from the global --machine's, so the two don't clash.
-        #[arg(long, id = "delete_machine", value_name = "NAME|ID", conflicts_with_all = ["sessions", "delete_channel", "all"])]
-        machine: Option<String>,
         /// Every channel session, live and archived (the Desk's are left out).
-        #[arg(long, conflicts_with_all = ["sessions", "delete_channel", "delete_machine"])]
+        #[arg(long, conflicts_with = "sessions")]
         all: bool,
         /// Delete the sessions' unpushed work too (CH-24).
         #[arg(long)]

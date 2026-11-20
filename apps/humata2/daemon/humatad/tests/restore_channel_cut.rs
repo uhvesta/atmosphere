@@ -174,10 +174,12 @@ fn restore_state(state: &Path) -> Option<String> {
 }
 
 /// A restore whose files can't be moved is named stuck, with its note kept,
-/// and the next restart, with nothing failing, finishes it and names that.
+/// and the next restart, with nothing failing, finishes it and names that,
+/// moving the conversation files and updating the store records.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restore_whose_files_fail_to_move_is_stuck_and_the_next_restart_finishes_it() {
-    let Cut { mut daemon, world, .. } = cut_a_restore().await;
+    let Cut { mut daemon, world, channel, id, session, before, old } = cut_a_restore().await;
+    let old_conversation = world.conv.join(dashed(&before)).join(format!("{}.jsonl", session.conversation_id));
     let notes = world.channels.join(".restoring");
 
     daemon.restart_env(&[("HUMATA2_FAIL_AT", "restore_channel.finish_files")]).await;
@@ -191,32 +193,18 @@ async fn a_restore_whose_files_fail_to_move_is_stuck_and_the_next_restart_finish
     let state = daemon.state.clone();
     until("the restore named finished", || async { restore_state(&state).as_deref() == Some("finished") }).await;
     until("the note going", || async { std::fs::read_dir(&notes).map_or(true, |mut left| left.next().is_none()) }).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_restore_cut_after_its_records_came_back_finishes_the_conversations_at_restart() {
-    let Cut { mut daemon, world, channel, id, session, before, old } = cut_a_restore().await;
-    let old_conversation = world.conv.join(dashed(&before)).join(format!("{}.jsonl", session.conversation_id));
-    let state = daemon.state.clone();
-    let store = move || Store::open(state.join("store")).unwrap();
-
-    daemon.restart().await;
-    common::last_start(&daemon).await;
 
     let new = world.channels.join(format!("{}-2", channel.folder));
     let after: PathBuf = new.join(before.strip_prefix(&old).unwrap());
     let new_conversation = world.conv.join(dashed(&after)).join(format!("{}.jsonl", session.conversation_id));
-    let notes = world.channels.join(".restoring");
-    until("the restore finishing", || async {
-        new_conversation.is_file() && std::fs::read_dir(&notes).map_or(true, |mut left| left.next().is_none())
-    })
-    .await;
+    assert!(new_conversation.is_file(), "the conversation moved to {}", new_conversation.display());
     assert!(!old_conversation.exists(), "nothing is left at the old key");
     let kept = std::fs::read_to_string(&new_conversation).unwrap();
     assert!(kept.contains(&after.display().to_string()), "it names the new folder: {kept:?}");
     assert!(!kept.contains(&before.display().to_string()), "it no longer names the old one: {kept:?}");
-    assert_eq!(store().session(&id.value).unwrap().unwrap().folder, after);
-    assert_eq!(store().agent(&id.value).unwrap().unwrap().launch.folder, after);
+    let store = Store::open(state.join("store")).unwrap();
+    assert_eq!(store.session(&id.value).unwrap().unwrap().folder, after);
+    assert_eq!(store.agent(&id.value).unwrap().unwrap().launch.folder, after);
 }
 
 /// A restore whose records can't be imported is named stuck with its side file

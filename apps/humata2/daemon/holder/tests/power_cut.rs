@@ -9,7 +9,7 @@
 //! sync, then kills it, as pulling the plug would.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use humata2_holder::{Event, HolderSpec, attach, read_saved, saved_scrollback_path, spawn};
 use rustix::process::{Pid, Signal};
@@ -64,11 +64,11 @@ async fn print_then_cut(dir: &Path, at: CutAt) -> Vec<u8> {
     ];
     let script = "i=0; while :; do echo line$i; i=$((i+1)); done";
     let spawned = spawn(&spec(dir, script, env)).unwrap();
-    let attached = attach(&dir.join("root/t.sock"), 0).await.unwrap();
+    let socket = dir.join("root/t.sock");
+    let attached = attach(&socket, 0).await.unwrap();
     let _control = attached.control;
     let mut events = attached.events;
     let mut seen = Vec::new();
-    let mut first_output = None;
     let mut cut = false;
     tokio::time::timeout(WAIT, async {
         // Reads until the holder is gone, so every byte it sent is counted.
@@ -80,19 +80,19 @@ async fn print_then_cut(dir: &Path, at: CutAt) -> Vec<u8> {
             if let Event::Output { offset, data } = event {
                 assert_eq!(offset, seen.len() as u64, "output skipped or repeated bytes");
                 seen.extend(data);
-                first_output.get_or_insert_with(Instant::now);
             }
-            let due = match at {
-                CutAt::FirstOutput => !seen.is_empty(),
-                CutAt::Bytes(bytes) => seen.len() >= bytes,
-                // Goes on reading while it waits, so what it was sent keeps
-                // up with what the holder saves and syncs.
-                CutAt::AfterASync => first_output
-                    .is_some_and(|since: Instant| since.elapsed() >= Duration::from_millis(1200)),
-            };
-            if due && !cut {
-                cut = true;
-                rustix::process::kill_process(pid(spawned.pid), Signal::USR2).unwrap();
+            if !cut {
+                let due = match at {
+                    CutAt::FirstOutput => !seen.is_empty(),
+                    CutAt::Bytes(bytes) => seen.len() >= bytes,
+                    // Goes on reading while it waits, so what it was sent keeps
+                    // up with what the holder saves and syncs.
+                    CutAt::AfterASync => synced_bytes(&socket).is_some_and(|synced| synced > 0),
+                };
+                if due {
+                    cut = true;
+                    rustix::process::kill_process(pid(spawned.pid), Signal::USR2).unwrap();
+                }
             }
         }
     })
@@ -195,19 +195,22 @@ async fn a_cut_after_a_sync_keeps_what_was_synced() {
     check(CutAt::AfterASync).await;
 }
 
+/// How many bytes the holder on `socket` reports as synced, if it has synced yet.
+fn synced_bytes(socket: &Path) -> Option<u64> {
+    std::fs::read_to_string(socket.with_extension("synced"))
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+}
+
 /// Waits until the holder on `socket` says its saved output is synced
 /// through at least `end`.
 async fn synced_to(socket: &Path, end: u64) {
-    let marker = socket.with_extension("synced");
     tokio::time::timeout(WAIT, async {
         loop {
-            let synced = std::fs::read_to_string(&marker)
-                .ok()
-                .and_then(|text| text.trim().parse::<u64>().ok());
-            if synced.is_some_and(|synced| synced >= end) {
+            if synced_bytes(socket).is_some_and(|synced| synced >= end) {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await

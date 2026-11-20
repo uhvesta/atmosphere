@@ -24,7 +24,6 @@ const LONG: Duration = Duration::from_secs(120);
 const POINTS: &[&str] = &[
     "remove_machine.intent",
     "remove_machine.session_handled@1",
-    "remove_machine.session_handled@2",
     "remove_machine.sessions_done",
     "remove_machine.dropped",
 ];

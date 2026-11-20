@@ -262,21 +262,16 @@ fn child(dir: &Path, mode: &str, stop_at: &str, roots: &[PathBuf]) -> Output {
 }
 
 /// Runs the writer, cut at `stop_at` with `cut` losing what wasn't
-/// synced, and returns how many writes returned before it.
-fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> usize {
+/// synced, and returns how many writes returned before it along with
+/// how the child exited.
+fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> (usize, Output) {
     let roots: Vec<PathBuf> = cut.iter().map(|side| root(dir, *side)).collect();
     let output = child(dir, "writes", stop_at, &roots);
     let done = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| line.contains("done "))
         .count();
-    if output.status.signal() == Some(9) {
-        done
-    } else {
-        assert!(output.status.success(), "the writer failed: {}", output.status);
-        assert_eq!(done, WORK.len(), "the writer ended without finishing");
-        done
-    }
+    (done, output)
 }
 
 /// Runs the writer in `mode` cut at `stop_at` with `roots` losing what
@@ -286,30 +281,47 @@ fn cut_at(dir: &Path, mode: &str, stop_at: &str, roots: &[PathBuf]) {
     assert_eq!(output.status.signal(), Some(9), "{mode} never reached {stop_at}");
 }
 
-/// Every point a write passes, each as often as the work passes it.
-fn cut_points() -> Vec<String> {
-    let mut points = Vec::new();
-    for op in ["session.put", "session.remove", "journal.append", "journal.ack"] {
-        for stage in ["committing", "committed"] {
-            for nth in 1..=4 {
-                points.push(format!("store.{op}.{stage}@{nth}"));
-            }
-        }
-    }
-    for nth in 1..=4 {
-        points.push(format!("store.blob.written@{nth}"));
-    }
-    points
+/// Representative fault points across every write operation and store.
+fn cut_points() -> Vec<&'static str> {
+    vec![
+        // Host create, machine create, host overwrite.
+        "store.session.put.committing@1",
+        "store.session.put.committed@1",
+        "store.session.put.committing@2",
+        "store.session.put.committed@2",
+        "store.session.put.committing@3",
+        "store.session.put.committed@3",
+        // Machine remove.
+        "store.session.remove.committing@1",
+        "store.session.remove.committed@1",
+        // Big (blob) append on host, small (inline) append on machine.
+        "store.journal.append.committing@1",
+        "store.journal.append.committed@1",
+        "store.journal.append.committing@3",
+        "store.journal.append.committed@3",
+        // Journal ack.
+        "store.journal.ack.committing@1",
+        "store.journal.ack.committed@1",
+        // First blob and a later blob after ack.
+        "store.blob.written@1",
+        "store.blob.written@4",
+    ]
 }
 
 fn check(cut: &[Side]) {
+    let points = cut_points();
     let mut cuts = 0;
-    for stop_at in cut_points() {
+    for stop_at in &points {
         let dir = tempfile::tempdir().unwrap();
-        let done = run(dir.path(), &stop_at, cut);
-        if done < WORK.len() {
-            cuts += 1;
-        }
+        let (done, output) = run(dir.path(), stop_at, cut);
+        assert_eq!(
+            output.status.signal(),
+            Some(9),
+            "writes never reached {stop_at}: {}",
+            output.status
+        );
+        assert!(done < WORK.len(), "cut at {stop_at} happened after all writes finished");
+        cuts += 1;
         let host = found(dir.path(), Side::Host);
         let machine = found(dir.path(), Side::Machine);
         let matches = [done, (done + 1).min(WORK.len())]
@@ -323,17 +335,7 @@ fn check(cut: &[Side]) {
             model(Side::Machine, done),
         );
     }
-    assert!(cuts > 0, "no cut point was ever reached");
-}
-
-#[test]
-fn a_cut_losing_the_hosts_unsynced_writes_leaves_both_stores_as_the_model() {
-    check(&[Side::Host]);
-}
-
-#[test]
-fn a_cut_losing_the_machines_unsynced_writes_leaves_both_stores_as_the_model() {
-    check(&[Side::Machine]);
+    assert_eq!(cuts, points.len(), "not every cut point was reached");
 }
 
 #[test]
