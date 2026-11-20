@@ -189,6 +189,17 @@ impl Mac {
         to
     }
 
+    /// The owner clicks Migrate on this Mac's Holders item: holders never
+    /// migrate on their own (D892), so the item is still waiting when clicked.
+    async fn migrate_holders(&self) {
+        let item = upgrade::approve_migrate(&self.daemon, pb::MigrateThing::Holders, &self.machine).await;
+        assert_eq!(
+            upgrade::migrate_of(&item).map(pb::MigratePreview::phase),
+            Some(pb::MigratePhase::Waiting),
+            "the Holders item waits for the click: {item:?}"
+        );
+    }
+
     fn hook_command(&self, event: &str) -> String {
         let file = self.daemon.state.join("claude-hooks.json");
         let json: serde_json::Value =
@@ -362,10 +373,11 @@ async fn migrate_moves_a_working_agent_and_a_shell_onto_the_current_holder_with_
     let (agent_before, shell_before) = (read_pid(&agent_pid), read_pid(&shell_pid));
     let agent_holder = mac.agent_holder_now(&login);
     let shell_holder_before = shell_holder(&mac.daemon, &shell);
-    // A working agent: auto-migrate moves both holders in place with no idle
-    // moment and no manual click required.
+    // A working agent: Migrate moves both holders in place with no idle
+    // moment.
     mac.turn(&login, "UserPromptSubmit", pb::SessionStatus::Working).await;
     mac.upgrade_to_b().await;
+    mac.migrate_holders().await;
 
     mac.wait_moved(&[format!("{}.sha", login.value), format!("{}.shell.sha", shell.value)])
         .await;
@@ -406,9 +418,10 @@ async fn a_holder_too_old_to_move_is_still_restarted_when_idle_while_one_that_ca
     let (login_holder, billing_holder) = (mac.agent_holder_now(&login), mac.agent_holder_now(&billing));
     mac.turn(&billing, "Stop", pb::SessionStatus::Idle).await;
     mac.upgrade_to_b().await;
+    mac.migrate_holders().await;
 
-    // Auto-migrate moves `login` in place and restarts `billing` (too old to
-    // move) once idle, without requiring a manual click.
+    // Migrate moves `login` in place and restarts `billing` (too old to
+    // move) once idle.
     mac.restarted(&billing, billing_holder).await;
     mac.wait_moved(&[format!("{}.sha", login.value), format!("{}.sha", billing.value)])
         .await;
@@ -427,8 +440,9 @@ async fn shells_on_holders_that_can_move_hold_the_item_open_until_they_moved() {
     let shell = machine_shell(&mac.daemon, &hup, &pid).await;
     let holder = shell_holder(&mac.daemon, &shell);
     mac.upgrade_to_b().await;
+    mac.migrate_holders().await;
 
-    // Only a shell is on an old holder, and it can move: auto-migrate moves it
+    // Only a shell is on an old holder, and it can move: Migrate moves it
     // in place and settles the Holders item.
     mac.wait_moved(&[format!("{}.shell.sha", shell.value)]).await;
     assert_eq!(shell_holder(&mac.daemon, &shell), holder, "the same holder process");

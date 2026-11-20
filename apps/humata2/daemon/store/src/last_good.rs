@@ -106,13 +106,15 @@ fn mtime_unix_ms(path: &Path) -> Option<i64> {
     i64::try_from(since.as_millis()).ok()
 }
 
-/// Opens a dedicated query-only connection to `database` and writes a
+/// Opens a dedicated read-only connection to `database` and writes a
 /// snapshot to `root/last-good.sqlite`, so normal writes on the main
 /// connection do not block while `VACUUM INTO`, integrity checking, and
 /// syncing run. Callers must hold `maintenance_lock` to serialize with
 /// `sweep()`.
 pub(crate) fn save_from_path(database: &Path, root: &Path) -> Result<LastGood, StoreError> {
-    let connection = Connection::open(database).map_err(|source| StoreError::Open {
+    // Read-only at open, not `PRAGMA query_only`: that also refuses the
+    // `VACUUM INTO` the copy is made with.
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|source| StoreError::Open {
         path: database.to_owned(),
         source,
     })?;
@@ -504,32 +506,31 @@ impl crate::Store {
 /// Where the damaged databases restores moved aside are kept, by when.
 const DAMAGED: &str = "damaged-";
 
-/// How many newest `damaged-*` and `upgraded-*` backup folders to retain
-/// for each prefix (at least 2).
+/// How many newest `upgraded-*` backup folders to retain (at least 2).
 const KEEP_BACKUPS: usize = 2;
 
-/// Best-effort pruning of old `damaged-*` and `upgraded-*` folders in `root`,
-/// keeping at least the newest [`KEEP_BACKUPS`] of each prefix.
+/// Best-effort pruning of old `upgraded-*` folders in `root`, keeping at
+/// least the newest [`KEEP_BACKUPS`]. `damaged-*` folders are never pruned
+/// here: a damaged database may hold the only copy of recent work, so only
+/// the owner removes them.
 pub(crate) fn prune_kept(root: &Path) {
-    for prefix in [DAMAGED, UPGRADED] {
-        let Ok(entries) = fs::read_dir(root) else {
-            continue;
-        };
-        let mut kept: Vec<(u64, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let at: u64 = name.to_str()?.strip_prefix(prefix)?.parse().ok()?;
-                Some((at, entry.path()))
-            })
-            .collect();
-        if kept.len() <= KEEP_BACKUPS {
-            continue;
-        }
-        kept.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        for (_, path) in kept.into_iter().skip(KEEP_BACKUPS) {
-            let _ = fs::remove_dir_all(&path);
-        }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut kept: Vec<(u64, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let at: u64 = name.to_str()?.strip_prefix(UPGRADED)?.parse().ok()?;
+            Some((at, entry.path()))
+        })
+        .collect();
+    if kept.len() <= KEEP_BACKUPS {
+        return;
+    }
+    kept.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, path) in kept.into_iter().skip(KEEP_BACKUPS) {
+        let _ = fs::remove_dir_all(&path);
     }
 }
 

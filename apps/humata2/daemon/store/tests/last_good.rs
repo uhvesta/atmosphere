@@ -316,3 +316,23 @@ fn the_files_a_pre_upgrade_copy_names_are_kept_until_it_is_dropped() {
     drop(Store::open(dir.path()).unwrap());
     assert!(blob_files(dir.path()) < with_file, "the dropped copy's file was kept");
 }
+
+#[test]
+fn damaged_copies_are_never_pruned_while_old_upgrade_copies_are() {
+    let dir = tempfile::tempdir().unwrap();
+    for at in 1..=4 {
+        fs::create_dir(dir.path().join(format!("damaged-{at}"))).unwrap();
+        fs::create_dir(dir.path().join(format!("upgraded-{at}"))).unwrap();
+    }
+    drop(Store::open(dir.path()).unwrap());
+    let mut left: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+        .filter(|name| name.starts_with("damaged-") || name.starts_with("upgraded-"))
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["damaged-1", "damaged-2", "damaged-3", "damaged-4", "upgraded-3", "upgraded-4"]
+    );
+}

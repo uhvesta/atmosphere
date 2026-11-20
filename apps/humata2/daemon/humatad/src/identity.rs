@@ -6,7 +6,7 @@
 //! (SEC-9), except:
 //! - methods in `OPEN_TO_ANYONE` (`WhoAmI`, `BeginCliSession`, relay proof,
 //!   `StopSessions`), which answer it as unauthenticated;
-//! - strictly read-only inspection RPCs in `LOCAL_READ_ONLY` from a local
+//! - the status and list RPCs in `LOCAL_READ_ONLY` from a local
 //!   same-UID process outside every Humata session, which run as
 //!   `UserVia::LocalReadOnly` (a process inside any session tree is never
 //!   treated as a local read-only user);
@@ -231,86 +231,23 @@ const OPEN_TO_ANYONE: [(&str, &str); 5] = [
     (pb::daemon_service_server::SERVICE_NAME, "StopSessions"),
 ];
 
-/// Strictly read-only inspection RPCs that a local same-UID CLI user outside
-/// every Humata session may call without `humata login` (SEC-9 split).
+/// Status and list RPCs that a local same-UID CLI user outside every Humata
+/// session may call without `humata login` (SEC-9 split, trimmed to what
+/// `humata status` and the list commands show; D41 is the owner's ruling and
+/// still open on whether even these stay).
 ///
-/// Everything not listed here — all mutations, session/terminal starts and
-/// stops, inbox approvals/denials, access-rule changes, CLI login/token
-/// management, host variables, file access, upgrades, and anything
-/// destructive or privileged — remains gated on `humata login`.
+/// Nothing that reads contents is here: conversations, turns, search,
+/// diffs, comments, Inbox requests, audit, access rules, settings, files
+/// and history all need `humata login`, as do every mutation, start, stop,
+/// approval and anything destructive or privileged.
 const LOCAL_READ_ONLY: &[(&str, &str)] = &[
-    // Daemon status
     (pb::daemon_service_server::SERVICE_NAME, "GetServerInfo"),
-    // Channels & activity
-    (pb::channel_service_server::SERVICE_NAME, "GetChannel"),
     (pb::channel_service_server::SERVICE_NAME, "ListChannels"),
-    (pb::channel_service_server::SERVICE_NAME, "GetGrid"),
-    (pb::activity_service_server::SERVICE_NAME, "ListActivity"),
-    // Sessions & history
-    (pb::session_service_server::SERVICE_NAME, "GetSession"),
     (pb::session_service_server::SERVICE_NAME, "ListSessions"),
-    (pb::session_service_server::SERVICE_NAME, "ListTurns"),
-    (pb::session_service_server::SERVICE_NAME, "ReadConversation"),
-    (pb::history_service_server::SERVICE_NAME, "SearchSessions"),
-    (pb::history_service_server::SERVICE_NAME, "ReadTurns"),
-    // Terminals (inspection only; no open/attach/type/paste)
     (pb::terminal_service_server::SERVICE_NAME, "ListTabs"),
-    (pb::terminal_service_server::SERVICE_NAME, "ListQueued"),
-    // Machines, providers & port forwards (no host variables or provider configs)
     (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
-    (pb::machine_service_server::SERVICE_NAME, "GetMachine"),
-    (pb::machine_service_server::SERVICE_NAME, "GetStorage"),
-    (pb::machine_service_server::SERVICE_NAME, "ListRunningHolders"),
-    (pb::machine_service_server::SERVICE_NAME, "ListMachineScripts"),
-    (pb::machine_service_server::SERVICE_NAME, "ListMachineScriptRuns"),
-    (pb::provider_service_server::SERVICE_NAME, "ListProviders"),
-    (pb::bridge_service_server::SERVICE_NAME, "ListPortForwards"),
-    // Boards & todos
-    (pb::board_service_server::SERVICE_NAME, "ListItems"),
-    (pb::board_service_server::SERVICE_NAME, "GetItem"),
-    (pb::board_service_server::SERVICE_NAME, "GetItemHistory"),
-    (pb::todo_service_server::SERVICE_NAME, "ListTodo"),
-    (pb::todo_service_server::SERVICE_NAME, "ListTodoRuns"),
-    (pb::todo_service_server::SERVICE_NAME, "GetTodoHistory"),
-    (pb::todo_service_server::SERVICE_NAME, "GetTodoMigration"),
-    // Inbox (read-only inspection only; approvals/denials stay gated)
-    (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
-    (pb::inbox_service_server::SERVICE_NAME, "GetRequest"),
-    // Repos
-    (pb::repo_service_server::SERVICE_NAME, "ListRepoLibrary"),
-    (pb::repo_service_server::SERVICE_NAME, "GetRepoScope"),
-    (pb::repo_service_server::SERVICE_NAME, "ListRepoOwners"),
-    // Settings, agents, marks & view state
-    (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
-    (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
     (pb::agent_service_server::SERVICE_NAME, "ListAgents"),
-    (pb::mark_service_server::SERVICE_NAME, "ListPinned"),
-    (pb::view_state_service_server::SERVICE_NAME, "GetViewState"),
-    // Operations
-    (pb::operation_service_server::SERVICE_NAME, "GetOperation"),
-    (pb::operation_service_server::SERVICE_NAME, "FindOperation"),
     (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
-    (pb::operation_service_server::SERVICE_NAME, "WatchOperation"),
-    // Access rules & audit (read-only inspection only)
-    (pb::access_service_server::SERVICE_NAME, "ListCapabilities"),
-    (pb::access_service_server::SERVICE_NAME, "GetChannelRules"),
-    (pb::access_service_server::SERVICE_NAME, "GetDefaultRules"),
-    (pb::access_service_server::SERVICE_NAME, "ListGrants"),
-    (pb::access_service_server::SERVICE_NAME, "Explain"),
-    (pb::audit_service_server::SERVICE_NAME, "ListAudit"),
-    // Transfers, trash, desk & review inspection
-    (pb::transfer_service_server::SERVICE_NAME, "ListTransfers"),
-    (pb::trash_service_server::SERVICE_NAME, "ListTrash"),
-    (pb::desk_service_server::SERVICE_NAME, "ListDeskSessions"),
-    (pb::desk_service_server::SERVICE_NAME, "ListDocVersions"),
-    (pb::diff_service_server::SERVICE_NAME, "GetDiff"),
-    (pb::diff_service_server::SERVICE_NAME, "GetFileDiff"),
-    (pb::diff_service_server::SERVICE_NAME, "ListReviewedSnapshots"),
-    (pb::diff_service_server::SERVICE_NAME, "GetLooks"),
-    (pb::diff_service_server::SERVICE_NAME, "ListBases"),
-    (pb::diff_service_server::SERVICE_NAME, "FindDefaultBranch"),
-    (pb::comment_service_server::SERVICE_NAME, "ListComments"),
-    (pb::view_service_server::SERVICE_NAME, "ListViews"),
 ];
 
 fn route_of(path: &str) -> Option<(&str, &str)> {
@@ -1518,13 +1455,7 @@ mod tests {
             (pb::channel_service_server::SERVICE_NAME, "ListChannels"),
             (pb::session_service_server::SERVICE_NAME, "ListSessions"),
             (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
-            (pb::board_service_server::SERVICE_NAME, "ListItems"),
-            (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
-            (pb::repo_service_server::SERVICE_NAME, "ListRepoLibrary"),
-            (pb::repo_service_server::SERVICE_NAME, "GetRepoScope"),
-            (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
             (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
-            (pb::provider_service_server::SERVICE_NAME, "ListProviders"),
         ] {
             assert!(
                 is_local_read_only_route(allowed_route),
@@ -1532,6 +1463,11 @@ mod tests {
             );
         }
         for gated_route in [
+            // Contents need a login (D893).
+            (pb::session_service_server::SERVICE_NAME, "ReadConversation"),
+            (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
+            (pb::board_service_server::SERVICE_NAME, "ListItems"),
+            (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
             (pb::channel_service_server::SERVICE_NAME, "CreateChannel"),
             (pb::session_service_server::SERVICE_NAME, "StartSession"),
             (pb::session_service_server::SERVICE_NAME, "DeleteSession"),

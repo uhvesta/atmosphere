@@ -40,6 +40,10 @@ use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use upgrade_rig::BOX;
 
+/// These tests click Migrate themselves: with this Mac's auto-migrate on,
+/// the daemon would take the item first and restart under the test.
+const MANUAL: &[(&str, &str)] = &[("HUMATA2_AUTO_MIGRATE", "0")];
+
 /// How long a daemon may take to start itself again on a loaded machine: a
 /// safety net, never a time anything is expected to take.
 const LONG: Duration = Duration::from_secs(90);
@@ -260,7 +264,7 @@ impl Mac {
         let from = install_release(&bin, "a");
         let args = world.args();
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let daemon = Daemon::start_with(Build::Admin, dir, &refs).await;
+        let daemon = Daemon::start_with_env(Build::Admin, dir, &refs, MANUAL).await;
         assert_eq!(upgrade::build_of(&daemon).await.bundle, from, "the daemon runs release a");
         let (channel, setup) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
         assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{setup:?}");
@@ -284,7 +288,7 @@ impl Mac {
         let dir = folder();
         let bin = dir.path().join("bin");
         let from = install_release(&bin, "a");
-        let daemon = Daemon::start_in(dir).await;
+        let daemon = Daemon::start_env(dir, MANUAL).await;
         assert_eq!(upgrade::build_of(&daemon).await.bundle, from, "the daemon runs release a");
         let machine = common::machine_id(&daemon).await;
         Self {
@@ -329,7 +333,7 @@ async fn a_release_staged_before_the_daemon_starts_is_posted_once_the_daemon_is_
     let from = install_release(&bin, "a");
     let to = stage(&bin, "b");
 
-    let daemon = Daemon::start_in(dir).await;
+    let daemon = Daemon::start_env(dir, MANUAL).await;
 
     assert_eq!(upgrade::build_of(&daemon).await.bundle, from, "the daemon runs release a");
     let machine = common::machine_id(&daemon).await;
@@ -405,7 +409,7 @@ async fn a_daemon_that_names_no_release_posts_nothing_for_a_staged_one() {
     let dir = folder();
     let bin = dir.path().join("bin");
     install_files(&bin);
-    let mut daemon = Daemon::start_in(dir).await;
+    let mut daemon = Daemon::start_env(dir, MANUAL).await;
     assert_eq!(upgrade::build_of(&daemon).await.bundle, "", "with no bundle.json the daemon names no release");
     let machine = common::machine_id(&daemon).await;
 

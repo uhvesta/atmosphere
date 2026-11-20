@@ -168,10 +168,9 @@ impl Fixture {
             .await
             .ask_user(as_agent(
                 pb::AskUserRequest {
-                    idempotency_key: None,
                     question: "Which ledger?".to_owned(),
-                    choices: Vec::new(),
                     wait_seconds: 1,
+                    ..Default::default()
                 },
                 &token,
             ))

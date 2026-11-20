@@ -65,6 +65,30 @@ async fn a_machine_at_another_release_is_one_vip_migrate_item_with_no_requester(
     assert_ne!(box_release, host_release);
 }
 
+/// D892: only this Mac's daemon, CLI and host tools migrate on their own. A
+/// machine's daemon item waits for the owner's click, through a second
+/// detection too, and the machine keeps running its own release.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_at_another_release_is_never_migrated_until_migrate_is_clicked() {
+    let (mut rig, _) = upgrade_rig::at_one_release().await;
+    let box_release = upgrade_rig::box_at_release(&mut rig, "b").await;
+    let item = upgrade_rig::daemon_item(&rig).await;
+
+    // A second detection: the link drops and comes back.
+    rig.link_lost(BOX).await;
+    rig.link_back(BOX).await;
+
+    still_pending(&rig, &item, "the link came back").await;
+    let now = upgrade::request(&rig.host, the_id(&item)).await;
+    let migrate = upgrade::migrate_of(&now).expect("the item carries its Migrate card");
+    assert_eq!(migrate.phase(), pb::MigratePhase::Waiting, "nothing migrates before the click: {now:?}");
+    assert_eq!(
+        upgrade::build_of(rig.the(BOX).daemon()).await.bundle,
+        box_release,
+        "gpu still runs its own release"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_machine_that_changes_release_again_keeps_its_one_item_showing_what_it_is_now() {
     let (mut rig, _) = upgrade_rig::at_one_release().await;
@@ -121,7 +145,7 @@ async fn a_migrate_item_takes_no_answer_but_migrate() {
         ("deny", Answer::Deny(pb::Deny::default())),
         ("deny with a note", Answer::Deny(pb::Deny { note: "not now".to_owned() })),
         ("always", Answer::Always(pb::AlwaysLet::default())),
-        ("reply", Answer::Reply(pb::Reply { text: "later".to_owned() })),
+        ("reply", Answer::Reply(pb::Reply { text: "later".to_owned(), ..Default::default() })),
     ];
     for (label, answer) in others {
         let answered = inbox.answer_request(answering(&item, label, answer)).await;

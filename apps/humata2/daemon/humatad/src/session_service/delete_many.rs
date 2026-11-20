@@ -1004,7 +1004,6 @@ impl SessionSvc {
                 )),
             }));
         }
-        take_token(&token);
         let channels = self.channels.get().ok_or_else(|| status::internal(RunError::NotReady.to_string(), ""))?;
         let bin = channels.trash_bin().ok_or_else(|| status::internal(RunError::NotReady.to_string(), ""))?;
 
@@ -1040,6 +1039,9 @@ impl SessionSvc {
                 return Ok(Gated::Done(deleted(0, Vec::new(), Some(operation))));
             }
         };
+        // Spent only once the delete is under way: a delete that couldn't
+        // start can be sent again with the same plan.
+        take_token(&token);
         let by = identity::actor(caller);
         let operation_id = progress.operation().id.map(|id| id.value).unwrap_or_default();
 

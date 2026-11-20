@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use gpui_kit::Role;
 use humata2_app::{AppAction, Route};
 use humata2_clients::model::SessionId;
-use humata2_flow::Action;
 
 use super::world::World;
 use super::{App, runtime};
@@ -100,7 +99,8 @@ fn the_new_desk_session_form_previews_the_folder_the_daemon_makes_and_clones_its
     let title = "batch export idea";
     open_form_with_title(&mut app, title);
 
-    // Step 4: the form's own repo chip. Add a repo…, type, Enter.
+    // Step 4: the form's own repo chip. Add a repo…, search, tick the
+    // result, Done (the repo search adds what is ticked).
     app.click(Role::Button, "Add a repo\u{2026}");
     app.wait_until("the form's repo field", |app| {
         app.ui
@@ -108,7 +108,11 @@ fn the_new_desk_session_form_previews_the_folder_the_daemon_makes_and_clones_its
     });
     app.click(Role::TextInput, "Repo to add");
     app.type_text("owner/api");
-    app.play(&Action::Key("enter".to_owned()));
+    app.wait_until("owner/api among the results", |app| {
+        app.view().contains("CheckBox \"owner/api\"")
+    });
+    app.click(Role::CheckBox, "owner/api");
+    app.click(Role::Button, "Done");
     app.wait_until("the repo to become a chip on the form", |app| {
         app.ui.read(|state| {
             state

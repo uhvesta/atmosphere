@@ -5319,3 +5319,16 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
 - **Why:** the owner wants machines to be interchangeable; Fable's review had raised remote tab reads as an owner question.
 - **Still true:** request cards name the machine the agent runs on, like every other request.
 - **Reverse:** add a per-machine browser switch in Settings › Agents, off for remote machines.
+
+## D892: Auto-migrate is this Mac's daemon, CLI and host tools only (reviewer, 2026-11-20). Provisional, open owner question
+- **Ruling:** a Migrate item migrates with no click only for the daemon, the CLI and the host tools on this Mac (the local watcher, `svc_upgrade::local`). Holders, on this Mac or a remote machine, and every item about a remote machine (daemon, CLI, host tools, holders) wait for the owner to click Migrate in the Inbox.
+- **Still true:** Migrate items are posted, updated and withdrawn exactly as before; `HUMATA2_AUTO_MIGRATE=0` and the `failed.json` breaker still govern the local auto-migrate; once the owner clicks, holders move or restart as before, and the reported failure still trips the breaker.
+- **Code:** `Migrations::auto_migrate` accepts only Daemon, Cli and HostTools; `Watch` (remote link-up, refusals, holders reports) no longer starts a migration, and the newer-remote skip (`is_host_older`) went with it; the local holders watch carries on only after the click.
+- **Owner question:** should holders, or remote machines, ever migrate without a click? Until the owner rules, they wait.
+- **Reverse:** add `Holders` back to `auto_migrate`'s list and call `auto_migrate` again from `Watch::{unsupported, holders, compare}` (with the newer-remote skip) and from the local holders watch.
+
+## D893: The no-login local read tier is status and lists only (reviewer, 2026-11-20). Provisional, open owner question
+- **Why:** 0.5.2 added `LOCAL_READ_ONLY` (`daemon/humatad/src/identity.rs`): about 60 read RPCs a same-user process outside every session could call without `humata login`, conversations, turns, search, diffs, comments, Inbox requests and audit among them. D41 (owner ruling) says no credential, no access.
+- **Ruling:** trimmed to what `humata status` and the list commands show: `GetServerInfo`, `ListChannels`, `ListSessions`, `ListTabs`, `ListMachines`, `ListAgents`, `ListOperations`. Everything that reads contents needs `humata login`. `tests/auth.rs` checks a conversation and the Inbox are refused.
+- **Owner question:** D41 reads as "nothing without a login". Should even these seven stay open?
+- **Reverse:** put the removed routes back in `LOCAL_READ_ONLY`, or empty it to follow D41 exactly.

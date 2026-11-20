@@ -734,15 +734,12 @@ impl Holders {
             moved: self.round(),
         };
         let build = tools::release_only(&self.inner.release.info());
-        if let Err(error) = migrations.observe_holders(machine, build.clone(), detail).await {
+        if let Err(error) = migrations.observe_holders(machine, build, detail).await {
             humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
             return;
         }
-        if !migrations.is_migrating(pb::MigrateThing::Holders, machine) {
-            migrations
-                .auto_migrate(pb::MigrateThing::Holders, machine, &build.bundle)
-                .await;
-        }
+        // The item waits for the owner's click (D892); once Migrate is under
+        // way each look carries it on.
         if migrations.is_migrating(pb::MigrateThing::Holders, machine) {
             self.carry_on(found);
         }

@@ -88,7 +88,17 @@ async fn the_release_daemon_allows_local_read_only_and_refuses_mutations_with_no
         .await
         .unwrap_err();
 
-    for refused in [&shell, &create_channel, &logins] {
+    // Contents stay behind `humata login` too: a conversation and the Inbox.
+    let conversation = pb::session_service_client::SessionServiceClient::new(daemon.channel().await)
+        .read_conversation(pb::ReadConversationRequest::default())
+        .await
+        .unwrap_err();
+    let inbox = pb::inbox_service_client::InboxServiceClient::new(daemon.channel().await)
+        .list_requests(pb::ListRequestsRequest::default())
+        .await
+        .unwrap_err();
+
+    for refused in [&shell, &create_channel, &logins, &conversation, &inbox] {
         assert_unauthenticated(refused);
     }
 }

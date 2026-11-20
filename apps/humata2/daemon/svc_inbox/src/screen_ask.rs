@@ -89,12 +89,25 @@ struct Watching {
     last_seen: HashMap<String, (u32, u64)>,
     pending_clear: HashMap<String, PendingClear>,
     next_generation: u64,
+    /// Debounce timers that fired and are still checking the screen.
+    clearing: usize,
+}
+
+/// Counts a fired debounce timer as checking until it returns.
+struct Clearing<'a>(&'a Asks);
+
+impl Drop for Clearing<'_> {
+    fn drop(&mut self) {
+        let mut watching = self.0.watching();
+        watching.clearing = watching.clearing.saturating_sub(1);
+    }
 }
 
 /// An armed prompt-gone debounce timer for a session. Dropping it while armed
 /// aborts the sleeping timer immediately.
 struct PendingClear {
     generation: u64,
+    deadline: tokio::time::Instant,
     task: Option<JoinHandle<()>>,
 }
 
@@ -245,6 +258,14 @@ impl ScreenAsk {
     fn has_pending_clear(&self, session: &str) -> bool {
         self.0.watching().pending_clear.contains_key(session)
     }
+
+    /// Whether a debounce timer is due or still checking the screen.
+    #[cfg(test)]
+    fn clear_in_flight(&self) -> bool {
+        let watching = self.0.watching();
+        let now = tokio::time::Instant::now();
+        watching.clearing > 0 || watching.pending_clear.values().any(|pending| pending.deadline <= now)
+    }
 }
 
 /// Starts looking at agents' screens. Called once, when the daemon serves.
@@ -335,6 +356,7 @@ impl Asks {
             session.to_owned(),
             PendingClear {
                 generation,
+                deadline,
                 task: Some(task),
             },
         );
@@ -358,12 +380,14 @@ impl Asks {
             if let Some(mut pending) = watching.pending_clear.remove(session) {
                 pending.disarm();
             }
+            watching.clearing += 1;
             watching
                 .last_seen
                 .get(session)
                 .filter(|(pid, _)| *pid == holder_pid)
                 .map(|(_, end)| *end)
         };
+        let _clearing = Clearing(self);
 
         let Some((tab, agent_kind)) = self.agent_tab(session, holder_pid).await else {
             return;
@@ -712,12 +736,13 @@ test result: ok. 42 passed; 0 failed;";
         (dir, store)
     }
 
-    /// Drives spawned tasks (including `spawn_blocking`) to completion without
-    /// advancing Tokio's paused virtual clock.
-    async fn settle_tasks() {
-        for _ in 0..24 {
+    /// Runs every debounce timer that is due, and its screen check, to its
+    /// end without advancing Tokio's paused clock. Spins on `yield_now`, so
+    /// the store read on the blocking pool finishes on its own thread.
+    async fn settle_tasks(watcher: &ScreenAsk) {
+        tokio::task::yield_now().await;
+        while watcher.clear_in_flight() {
             tokio::task::yield_now().await;
-            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
@@ -748,7 +773,7 @@ test result: ok. 42 passed; 0 failed;";
                 holders.set(100 + step * 25, prompt_screen);
                 watcher.look_now(&session, HOLDER_PID).await;
                 tokio::time::advance(Duration::from_secs(5)).await;
-                settle_tasks().await;
+                settle_tasks(&watcher).await;
                 assert!(
                     hook_asks.is_pending(),
                     "{agent_kind}: genuine prompt should remain open at step {step}"
@@ -792,7 +817,7 @@ test result: ok. 42 passed; 0 failed;";
 
         // Well past the original 2.5s deadline, the ask is still open.
         tokio::time::advance(Duration::from_secs(5)).await;
-        settle_tasks().await;
+        settle_tasks(&watcher1).await;
         assert!(hook_asks1.is_pending());
         assert_eq!(hook_asks1.resolved(), 0);
 
@@ -824,7 +849,7 @@ test result: ok. 42 passed; 0 failed;";
         assert!(!watcher2.has_pending_clear("se_copilot"));
 
         tokio::time::advance(Duration::from_secs(5)).await;
-        settle_tasks().await;
+        settle_tasks(&watcher2).await;
         assert!(watcher2.has_open_screen_ask("se_copilot").await);
     }
 
@@ -857,13 +882,13 @@ test result: ok. 42 passed; 0 failed;";
         tokio::time::advance(Duration::from_millis(2000)).await;
         holders.set(220, STREAMING_OUTPUT_SCREEN);
         watcher.look_now("se_stale", HOLDER_PID).await;
-        settle_tasks().await;
+        settle_tasks(&watcher).await;
         assert!(hook_asks.is_pending());
 
         // After full 2.5s debounce (500ms more, because streaming did not starve the timer),
         // the stale hook ask auto-clears cleanly.
         tokio::time::advance(Duration::from_millis(600)).await;
-        settle_tasks().await;
+        settle_tasks(&watcher).await;
         assert!(!hook_asks.is_pending());
         assert_eq!(hook_asks.resolved(), 1);
     }
@@ -889,7 +914,7 @@ test result: ok. 42 passed; 0 failed;";
         }
         assert!(!watcher.has_pending_clear("se_held"));
         tokio::time::advance(Duration::from_secs(10)).await;
-        settle_tasks().await;
+        settle_tasks(&watcher).await;
         assert!(hook_asks.is_pending());
         assert_eq!(hook_asks.resolved(), 0);
     }
@@ -915,7 +940,7 @@ test result: ok. 42 passed; 0 failed;";
             holders.set(200, STREAMING_OUTPUT_SCREEN);
             watcher.look_now(&session, HOLDER_PID).await;
             tokio::time::advance(Duration::from_secs(10)).await;
-            settle_tasks().await;
+            settle_tasks(&watcher).await;
             assert!(
                 hook_asks.is_pending(),
                 "unsupported agent '{agent_kind}' must remain untouched"

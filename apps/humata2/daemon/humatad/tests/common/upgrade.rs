@@ -255,6 +255,30 @@ pub async fn migrate_item(daemon: &Daemon, thing: pb::MigrateThing, machine: &pb
     .await
 }
 
+/// The owner clicks Migrate on the pending `thing` item for `machine` in
+/// `daemon`'s Inbox, once there is one. Only this Mac's daemon, CLI and host
+/// tools migrate without the click (D892). Returns the item as it was clicked.
+pub async fn approve_migrate(daemon: &Daemon, thing: pb::MigrateThing, machine: &pb::MachineId) -> pb::InboxRequest {
+    let item = migrate_item(daemon, thing, machine).await;
+    let id = item.id.clone().expect("a Migrate item has an id");
+    daemon
+        .inbox_service()
+        .await
+        .answer_request(pb::AnswerRequestRequest {
+            idempotency_key: Some(pb::IdempotencyKey {
+                value: format!("migrate-{}-{}", id.value, item.revision.as_ref().map_or(0, |revision| revision.value)),
+            }),
+            id: Some(id),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_else(|status| panic!("the owner's Migrate on {machine:?} is taken: {status:?}"));
+    item
+}
+
 /// Item `id` as `daemon` shows it now.
 pub async fn request(daemon: &Daemon, id: &pb::RequestId) -> pb::InboxRequest {
     daemon
