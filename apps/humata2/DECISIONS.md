@@ -5549,3 +5549,9 @@ The owner reported: "when i disable claude and codex it defaults to them and fai
 6. **Settings › Agents › Default agent:** when the saved default is off, a dim line under the buttons says: "Claude, your default, is off. New sessions start with Copilot until you turn Claude back on or pick another." When every agent is off, it says: "…, and so is every other agent. New sessions can only start Terminal until you turn an agent on."
 
 **Reverse:** make `pick` return the first preferred kind whatever its switch says.
+
+## D916: A session's shell gets `HUMATA_FUSE_ROOT` and `HUMATA_MACHINE_NAME` too, but no config home (FUSEFSWIRE, 2026-11-20; reversible)
+
+- A Terminal session, and a shell tab inside any session, is started with the same place variables as the session's agent: `HUMATA_FUSE_ROOT` while the tree is mounted, and `HUMATA_MACHINE_NAME`. It gets no composed config home, since no agent runs there.
+- A machine shell belongs to no session and gets neither. A session on another machine gets nothing from this daemon, as before.
+- Why: the mount is how anything in a session reaches the other locations, and the owner works in shells as much as agents do. Before this, only agent tabs got the variable, so a shell had no way to find the mount.

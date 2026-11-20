@@ -803,6 +803,9 @@ pub struct Tokens {
     minted: Mutex<HashMap<String, Vec<(OsString, OsString)>>>,
 }
 
+/// What a session's shell tab is composed as: no agent, so no config home.
+const SHELL_AGENT: &str = "shell";
+
 impl Tokens {
     pub fn new(store: Arc<Store>, tab_env: Arc<dyn TabEnvPort>, socket: PathBuf) -> Self {
         Self {
@@ -834,15 +837,13 @@ impl Tokens {
     }
 
     /// D895: the composed config home an agent tab of a local session runs
-    /// in. Shells and machine shells get none. When it can't be made the
-    /// agent starts in its usual home, and the log says why.
+    /// in. A shell of a session gets no home, only the session's mount and
+    /// machine variables (D916); a machine shell gets none. When the home
+    /// can't be made the agent starts in its usual one, and the log says why.
     fn compose_env(&self, tab: &TabRecord) -> Vec<(OsString, OsString)> {
         let Some(session) = &tab.session else {
             return Vec::new();
         };
-        if !matches!(tab.kind, TabKind::Agent) {
-            return Vec::new();
-        }
         let record = match self.store.session(session) {
             Ok(Some(record)) => record,
             Ok(None) => return Vec::new(),
@@ -855,7 +856,11 @@ impl Tokens {
                 return Vec::new();
             }
         };
-        match self.tab_env.session_compose_env(&record, &record.agent) {
+        let agent = match tab.kind {
+            TabKind::Agent => record.agent.as_str(),
+            TabKind::Shell => SHELL_AGENT,
+        };
+        match self.tab_env.session_compose_env(&record, agent) {
             Ok(env) => env,
             Err(error) => {
                 humata2_rpc_kit::log::say!(
@@ -1095,7 +1100,7 @@ mod tests {
 
     use super::{
         OperationState, Operations, Revived, Started, TabEnvPort, Tokens, note_cut_launches,
-        note_cut_starts, note_ended, note_relaunched, pending_in, pretty_name,
+        note_cut_starts, note_ended, note_relaunched, pending_in, pretty_name, SHELL_AGENT,
     };
     use crate::pb;
 
@@ -1338,10 +1343,14 @@ mod tests {
             session: &humata2_store::SessionRecord,
             agent: &str,
         ) -> Result<Vec<(OsString, OsString)>, String> {
-            Ok(vec![(
-                OsString::from("COMPOSED_HOME"),
-                session.folder.join("config").join(agent).into_os_string(),
-            )])
+            let mut env = vec![(OsString::from("COMPOSED_FOR"), OsString::from(agent))];
+            if agent != SHELL_AGENT {
+                env.push((
+                    OsString::from("COMPOSED_HOME"),
+                    session.folder.join("config").join(agent).into_os_string(),
+                ));
+            }
+            Ok(env)
         }
         fn session_home(&self, _session: &str, _agent: &str) -> Option<std::path::PathBuf> {
             None
@@ -1386,5 +1395,10 @@ mod tests {
         )));
         assert!(!has_home(&tab("tab_shell", Some("se_a"), TabKind::Shell)));
         assert!(!has_home(&tab("tab_machine_shell", None, TabKind::Shell)));
+        // D916: a session's shell still gets the session's variables (the
+        // mount, the machine); a machine shell belongs to no session.
+        let composed = |tab: &TabRecord| tokens.env(tab).iter().any(|(name, _)| name == "COMPOSED_FOR");
+        assert!(composed(&tab("tab_shell", Some("se_a"), TabKind::Shell)));
+        assert!(!composed(&tab("tab_machine_shell", None, TabKind::Shell)));
     }
 }

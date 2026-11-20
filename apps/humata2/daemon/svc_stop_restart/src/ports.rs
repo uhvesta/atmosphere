@@ -10,7 +10,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Capability, Refusal};
 use humata2_daemon_ports::{Caller, Deferred, Gated, PeerLinkState, Run, TabIdentity};
-use humata2_machines::Runner;
 use humata2_sessions::Starter;
 use humata2_store::StoreError;
 use prost::Message;
@@ -147,8 +146,9 @@ pub trait TabEnvPort: Send + Sync {
     fn tools_path(&self, host_path: Option<OsString>) -> Option<OsString>;
     /// The variables that point a local agent tab at its session's composed
     /// config home (D895): the agent's own home variable, the FUSE root and
-    /// the machine name. Empty for an agent with no composed home (a remote
-    /// session, or an agent that has none), and then its home is as it was.
+    /// the machine name. An agent with no composed home (a session's shell,
+    /// D916) gets only the FUSE root and the machine name; a remote session
+    /// gets nothing, and then its home is as it was.
     fn session_compose_env(
         &self,
         session: &humata2_store::SessionRecord,

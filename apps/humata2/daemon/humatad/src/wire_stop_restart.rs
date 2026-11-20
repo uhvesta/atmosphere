@@ -279,12 +279,14 @@ impl ComposeEnv {
     /// a home only if [`Self::plan_home`] made one (refreshed here, and kept
     /// if the refresh fails), else it runs in its usual home.
     fn env(&self, session: &SessionRecord, agent: &str) -> Result<Vec<(OsString, OsString)>, String> {
-        let Some(kind) = compose_kind(agent) else {
-            return Ok(Vec::new());
-        };
         if !session.machine.is_empty() && session.machine != self.sync.machine_name() {
             return Ok(Vec::new());
         }
+        let Some(kind) = compose_kind(agent) else {
+            // D916: a shell (or any tab with no composed home) still reaches
+            // the mount and knows its machine.
+            return Ok(self.place_env());
+        };
         let existing = crate::config_sync::composed_home_of(self.sync.machine_root(), &session.id, agent).map(|(_, dir)| dir);
         let mut env = Vec::new();
         if existing.is_some() || !records_conversations(kind) {
@@ -304,11 +306,18 @@ impl ComposeEnv {
             };
             env.push((OsString::from(kind.config_env_var()), dir.into_os_string()));
         }
+        env.extend(self.place_env());
+        Ok(env)
+    }
+
+    /// The FUSE root, only while the tree is mounted, and the machine's name.
+    fn place_env(&self) -> Vec<(OsString, OsString)> {
+        let mut env = Vec::new();
         if self.fuse_mounted.load(Ordering::SeqCst) {
             env.push((OsString::from("HUMATA_FUSE_ROOT"), self.sync.fuse_root().as_os_str().to_owned()));
         }
         env.push((OsString::from("HUMATA_MACHINE_NAME"), OsString::from(self.sync.machine_name())));
-        Ok(env)
+        env
     }
 
     #[allow(dead_code, reason = "called once archive and delete have one place to say a session is gone")]
@@ -682,12 +691,25 @@ mod compose_tests {
     }
 
     #[test]
-    fn a_session_on_another_machine_and_an_agent_with_no_home_get_nothing() {
+    fn a_session_on_another_machine_gets_nothing_and_a_shell_gets_no_home() {
         let rig = rig();
         assert!(rig.compose.env(&session("elsewhere", "codex"), "codex").unwrap().is_empty());
-        assert!(rig.compose.env(&session("", "opencode"), "opencode").unwrap().is_empty());
-        assert!(rig.compose.env(&session("", "zsh"), "zsh").unwrap().is_empty());
+        assert!(rig.compose.env(&session("elsewhere", "shell"), "shell").unwrap().is_empty());
+        for agent in ["shell", "zsh"] {
+            let env = rig.compose.env(&session("", agent), agent).unwrap();
+            assert_eq!(value(&env, "HUMATA_FUSE_ROOT"), Some(&rig.dir.path().join("mnt").into_os_string()), "{agent}");
+            assert!(value(&env, "HUMATA_MACHINE_NAME").is_some(), "{agent}");
+            assert_eq!(env.len(), 2, "{agent} gets no config home");
+        }
         assert!(!rig.dir.path().join("machine/.sessions").exists());
+    }
+
+    #[test]
+    fn an_unmounted_tree_leaves_the_fuse_root_out_of_a_shell_too() {
+        let rig = rig_mounted(false);
+        let env = rig.compose.env(&session("", "shell"), "shell").unwrap();
+        assert!(value(&env, "HUMATA_FUSE_ROOT").is_none());
+        assert!(value(&env, "HUMATA_MACHINE_NAME").is_some());
     }
 
     /// A rig whose machine root is a file, so composing a session home fails.

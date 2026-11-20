@@ -329,3 +329,4 @@ Close only when cases 1–6 pass in a slow-tier run.
   - vfs: Volume::create, defaulting to ENOSYS, implemented in InMemoryVolume.
   - fusefs_adapter: linux_mount.rs LinuxFuseBackend; run_serve picks it for --mode linux; layout.rs delegates create.
   - Follow-ups: files created in the mount live only in the helper's in-memory volume, so they are lost when the helper restarts; a single-threaded serve loop means one slow call stalls the mount; with the access hook attached, create needs a lease.
+- 2026-11-20 (manager): T13 cases 1-5 failed because the cases open a Terminal session and only agent tabs got HUMATA_FUSE_ROOT (svc_stop_restart restart.rs compose_env returned early for Shell tabs; ComposeEnv::env returned nothing for a non-agent). Fixed: session shells now get HUMATA_FUSE_ROOT (only while mounted) and HUMATA_MACHINE_NAME, no config home; machine shells none (D916). Unit tests updated in wire_stop_restart.rs and restart.rs.
