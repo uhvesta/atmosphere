@@ -1,0 +1,32 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Generic Linux FUSE adapter for FUSEFS: /dev/fuse availability probing,
+# kernel PID-to-caller capability binding, FUSE ABI opcode dispatching to
+# fusefs_vfs::Volume, and explicit degraded native-symlink skeleton fallback.
+
+rust_library(
+    name = "linux",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fusefs_linux",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//libs/fusefs/vfs",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "linux_test",
+    crate = ":linux",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

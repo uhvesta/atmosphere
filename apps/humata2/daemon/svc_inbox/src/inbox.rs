@@ -3040,4 +3040,103 @@ mod tests {
             .into_inner();
         assert_eq!(rev_changes.state, pb::RequestState::Answered as i32);
     }
+
+    #[tokio::test]
+    async fn lifecycle_hook_signal_resolves_supported_agents_and_leaves_unsupported_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inbox = test_inbox(&dir);
+
+        for agent_kind in ["claude", "codex", "copilot", "agy"] {
+            let session = format!("se_{agent_kind}");
+            let agent = AgentCaller {
+                session: humata2_access::SessionRef {
+                    id: humata2_access::SessionId::new(&session),
+                    channel: humata2_access::ChannelId::new("ch_1"),
+                    machine: humata2_access::MachineId::new("local"),
+                },
+                agent: agent_kind.to_owned(),
+                title: agent_kind.to_owned(),
+                method: "hook".to_owned(),
+                context_only_parent: None,
+                desk: None,
+                review_push: None,
+                channel_desk: None,
+            };
+            let caller = Caller::Agent(agent.clone());
+            let mut wait = inbox
+                .raise_permission(
+                    &caller,
+                    &agent,
+                    agent_kind,
+                    permission::Ask {
+                        tool: "Bash".to_owned(),
+                        command: "ls".to_owned(),
+                        description: None,
+                        edits_files: false,
+                        key: format!("k_{agent_kind}"),
+                    },
+                )
+                .await
+                .expect("raise_permission");
+            let req_id = wait.id().to_owned();
+            assert!(inbox.has_pending_held(&session).await);
+
+            let cleared = inbox
+                .clear_stale_hook_asks_on_lifecycle(&session, agent_kind)
+                .await;
+            assert_eq!(cleared, 1, "{agent_kind} should auto-clear on lifecycle");
+            assert!(!inbox.has_pending_held(&session).await);
+            assert_eq!(wait.decided().await, permission::Decision::Undecided);
+
+            let req = inbox
+                .get_request(user_req(pb::GetRequestRequest {
+                    id: Some(pb::RequestId { value: req_id }),
+                }))
+                .await
+                .expect("get_request")
+                .into_inner();
+            assert_eq!(req.state, pb::RequestState::Withdrawn as i32);
+            assert_eq!(req.withdraw_reason, pb::WithdrawReason::Resolved as i32);
+        }
+
+        // Unsupported / unknown agent kinds must remain pending and untouched.
+        for agent_kind in ["opencode", "unknown_agent"] {
+            let session = format!("se_{agent_kind}");
+            let agent = AgentCaller {
+                session: humata2_access::SessionRef {
+                    id: humata2_access::SessionId::new(&session),
+                    channel: humata2_access::ChannelId::new("ch_1"),
+                    machine: humata2_access::MachineId::new("local"),
+                },
+                agent: agent_kind.to_owned(),
+                title: agent_kind.to_owned(),
+                method: "hook".to_owned(),
+                context_only_parent: None,
+                desk: None,
+                review_push: None,
+                channel_desk: None,
+            };
+            let caller = Caller::Agent(agent.clone());
+            let _wait = inbox
+                .raise_permission(
+                    &caller,
+                    &agent,
+                    agent_kind,
+                    permission::Ask {
+                        tool: "Bash".to_owned(),
+                        command: "ls".to_owned(),
+                        description: None,
+                        edits_files: false,
+                        key: format!("k_{agent_kind}"),
+                    },
+                )
+                .await
+                .expect("raise_permission");
+            let cleared = inbox
+                .clear_stale_hook_asks_on_lifecycle(&session, agent_kind)
+                .await;
+            assert_eq!(cleared, 0, "{agent_kind} must not be auto-cleared");
+            assert!(inbox.has_pending_held(&session).await);
+        }
+    }
 }

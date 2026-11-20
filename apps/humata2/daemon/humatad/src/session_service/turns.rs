@@ -640,12 +640,23 @@ impl SessionSvc {
         };
         self.inbox.hook_heard(&agent.agent).await;
         let session = agent.session.id.to_string();
-        // D798: a turn that ends settles every ask held for it, though its
-        // hook stays; one that starts only drops the "waiting in its
-        // terminal" card.
+        // D798 / 0.6.1 HOOKCLEAR (Signal A): a turn that ends settles every ask
+        // held for it; lifecycle activity (`Working` from PostToolUse /
+        // PostToolBatch / UserPromptSubmit / etc.) immediately resolves stale
+        // hook-raised asks for supported agents (`claude`, `codex`, `copilot`,
+        // `agy`) as `Resolved` (never `Denied`), while leaving unsupported
+        // agents with existing notice-only clearing.
         match hook {
-            Hook::Idle => self.inbox.withdraw_held(&session).await,
-            Hook::Working => self.inbox.withdraw_notice(&session).await,
+            Hook::Idle => {
+                self.inbox.withdraw_held(&session).await;
+                crate::screen_ask::untrack_hook_ask(&session);
+            }
+            Hook::Working => {
+                self.inbox.withdraw_notice(&session).await;
+                self.inbox
+                    .clear_stale_hook_asks_on_lifecycle(&session, &agent.agent)
+                    .await;
+            }
             Hook::NeedsInput => {}
         }
         let timed = source_of(&agent.agent) != pb::TurnEndSource::None;

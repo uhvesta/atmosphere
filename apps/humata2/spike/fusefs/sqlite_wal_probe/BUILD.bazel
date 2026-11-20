@@ -1,0 +1,22 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# Gate T1 SQLite WAL matrix probe:
+# - Native tempdir WAL concurrency, checkpointing, and integrity_check.
+# - Custom sqlite3_vfs tracing pread/pwrite/fsync ordering and simulating
+#   FUSE/FSKit missing coherent -shm mmap (SQLITE_IOERR_SHMMAP).
+
+rust_test(
+    name = "sqlite_wal_probe_test",
+    srcs = ["tests/wal_matrix.rs"],
+    deps = [
+        "@crates//:libsqlite3-sys",
+        "@crates//:rusqlite",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

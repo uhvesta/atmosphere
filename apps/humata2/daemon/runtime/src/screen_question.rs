@@ -64,6 +64,76 @@ pub fn asked_on(screen: &str) -> Option<ScreenQuestion> {
         .map(|(_, question)| *question)
 }
 
+/// Active interactive prompt phrases shown on the live TUI screen of supported
+/// agent CLIs (`claude`, `codex`, `copilot`, `agy`) when waiting for user
+/// approval, a question answer, or explicit confirmation.
+const ACTIVE_PROMPT_PHRASES: &[&str] = &[
+    "do you want to proceed?",
+    "do you want to make this edit",
+    "do you want to create",
+    "do you want to run",
+    "would you like to run",
+    "allow once",
+    "allow for this session",
+    "allow always",
+    "allow this tool",
+    "yes, and don't ask again",
+    "approve command?",
+    "approve this",
+    "approve once",
+    "approve for this session",
+    "permission required",
+    "waiting for your approval",
+    "waiting for approval",
+    "waiting for input",
+    "enter to confirm",
+    "esc to cancel",
+    "press enter to confirm",
+    "select an option",
+    "choose an option",
+    "yes, proceed",
+];
+
+/// Returns `true` when `screen` visibly shows an active interactive prompt
+/// (permission approval, question, folder trust, or input confirmation) for a
+/// supported agent CLI (`claude`, `codex`, `copilot`, `agy`).
+///
+/// Offers that do not hold `Needs you` (such as Claude's post-turn auto-mode
+/// tip) return `false`.
+pub fn has_active_prompt(screen: &str) -> bool {
+    if let Some(question) = asked_on(screen) {
+        return question.needs_you();
+    }
+    let shown = plain(screen);
+    if shown.is_empty() {
+        return false;
+    }
+    let lower = shown.to_ascii_lowercase();
+    if ACTIVE_PROMPT_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+    {
+        return true;
+    }
+    // Interactive choice selector: focused first choice (`❯ 1.` or `› 1.`)
+    // paired with a second numbered choice (`2. `).
+    if (shown.contains("❯ 1.") || shown.contains("› 1.")) && shown.contains(" 2. ") {
+        return true;
+    }
+    // Confirmation prompt suffix at the end of the visible screen.
+    let trimmed = lower.trim_end();
+    [
+        "(y/n)",
+        "[y/n]",
+        "(yes/no)",
+        "[yes/no]",
+        "(y/n)?",
+        "[y/n]?",
+    ]
+    .iter()
+    .any(|suffix| trimmed.ends_with(suffix))
+}
+
 /// `text` without box drawing, with each run of white space, line breaks
 /// included, as one space: a question drawn in a box, or wrapped over rows
 /// on a narrow screen, reads the same.
@@ -168,5 +238,35 @@ mod tests {
             asked_on("printf 'Do you trust the files' 'in this folder?'"),
             None
         );
+    }
+
+    #[test]
+    fn active_prompt_detects_live_tui_prompts_and_ignores_idle_or_streaming() {
+        // Genuine interactive prompts across supported agents.
+        assert!(has_active_prompt(COPILOT_TRUST));
+        assert!(has_active_prompt(
+            "Bash command\n  rm -rf target\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No"
+        ));
+        assert!(has_active_prompt(
+            "Would you like to run the following command?\n  git status\n› 1. Yes, proceed\n  2. No"
+        ));
+        assert!(has_active_prompt(
+            "Which database should we use?\n❯ 1. Postgres\n  2. SQLite"
+        ));
+        assert!(has_active_prompt(
+            "Run command `cargo test`? [y/N]"
+        ));
+        assert!(has_active_prompt(
+            "Antigravity: Permission required — Allow once / Allow always"
+        ));
+
+        // Idle, post-turn offer, or normal streaming output are NOT active prompts.
+        assert!(!has_active_prompt(CLAUDE_READY));
+        assert!(!has_active_prompt(COPILOT_READY));
+        assert!(!has_active_prompt(CLAUDE_OFFER));
+        assert!(!has_active_prompt(
+            "Compiling humata2_svc_inbox v0.1.0\nRunning 24 tests...\nAll tests passed."
+        ));
+        assert!(!has_active_prompt(""));
     }
 }

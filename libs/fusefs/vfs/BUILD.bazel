@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Generic virtual filesystem (VFS) layer for FUSEFS: typed POSIX errors,
+# capability-root-clamped virtual paths, core inode/attr/handle types,
+# subtree write leases with optimistic generation checks, and the Volume
+# trait separating zero-data metadata/control RPCs from chunk-data I/O.
+rust_library(
+    name = "vfs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fusefs_vfs",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "vfs_test",
+    crate = ":vfs",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Native per-session agent config composer (FUSEFS T8):
+# materializes <machine-root>/.sessions/<id>/config/<agent>/ with
+# machine-local auth pass-through, [sync] Settings toggles and instant
+# non-destructive rage-quit, secret-scrubbed FUSE views, and the 3-stage
+# rewrite pipeline (TOML rules, capability-free Scheme AST, target-local bash).
+rust_library(
+    name = "config_compose",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_config_compose",
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+    ],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:toml",
+    ],
+)
+
+rust_test(
+    name = "config_compose_test",
+    crate = ":config_compose",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

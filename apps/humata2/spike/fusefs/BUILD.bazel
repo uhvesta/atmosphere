@@ -1,0 +1,19 @@
+# Gate T1 throwaway spike for Humata 2 0.6.0 FUSEFS.
+# Completely isolated from the rest of the workspace; produces evidence,
+# not product code.
+
+test_suite(
+    name = "all_tests",
+    tests = [
+        "//apps/humata2/spike/fusefs/cas_bench:cas_bench_test",
+        "//apps/humata2/spike/fusefs/fskit_probe:fskit_probe_test",
+        "//apps/humata2/spike/fusefs/posix_probe:posix_probe_test",
+        "//apps/humata2/spike/fusefs/sqlite_wal_probe:sqlite_wal_probe_test",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

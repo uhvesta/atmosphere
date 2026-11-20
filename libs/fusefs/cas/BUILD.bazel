@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Generic content-addressed storage (CAS) primitives for FUSEFS:
+# BLAKE3 hashing, FastCDC chunking, adaptive compression with source-CPU
+# shedding, paged directory/file manifests, sharded LRU chunk store,
+# sparse CoW overlay with resumable commit journal and progress-bounded fsync,
+# and generic chunk transport.
+
+rust_library(
+    name = "cas",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "fusefs_cas",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:lz4_flex",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:zstd",
+    ],
+)
+
+rust_test(
+    name = "cas_test",
+    crate = ":cas",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

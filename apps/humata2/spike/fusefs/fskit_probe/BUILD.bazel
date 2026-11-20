@@ -1,0 +1,53 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# Gate T1 FSKit probe:
+# - `fskit_bridge` + `mount_helper` + `fskit_probe_test`: pure-Rust local Unix
+#   socket bridge, audit_token_t / LOCAL_PEERPID caller-PID probe, and
+#   `/sbin/mount -F -o nobrowse` command/layout validator.
+# - `extension_sources`: macOS 26.7+ Swift FSUnaryFileSystem +
+#   FSGenericURLResource extension skeleton, Info.plist, and entitlements
+#   (built with Xcode / macOS 26.7 SDK once FSKit.framework is wired).
+
+rust_library(
+    name = "fskit_bridge",
+    srcs = ["src/lib.rs"],
+    crate_name = "fusefs_fskit_probe",
+    deps = [
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_binary(
+    name = "mount_helper",
+    srcs = ["src/main.rs"],
+    crate_name = "fusefs_fskit_mount_helper",
+    deps = [
+        ":fskit_bridge",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "fskit_probe_test",
+    crate = ":fskit_bridge",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "extension_sources",
+    srcs = [
+        "HumataFuseFSExtension.entitlements",
+        "HumataFuseFSExtension.swift",
+        "Info.plist",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

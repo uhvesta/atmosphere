@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2 Native Browser Co-Pilot (0.7.0 BROWSER):
+# - detect: cross-platform browser auto-detection (macOS & Linux) with
+#   injectable filesystem roots for deterministic tests.
+# - manifest: Native Messaging host manifest generation and atomic
+#   install/uninstall for Chromium and Firefox families.
+# - protocol: 4-byte native-endian length-prefixed JSON stdio codec (1 MiB
+#   bounded) and typed browser action/reply messages.
+# - policy: Agent Inbox Permission Policy strictly scoped to Claude, Codex,
+#   Copilot, and Agy (30-min Read session grants; strict per-action Write
+#   approval that never accepts AllowFor30Min).
+# - mcp_tools: typed MCP tool schemas and PermissionGate-backed dispatcher
+#   over BrowserTransport (with in-memory FakeBrowserTransport).
+
+rust_library(
+    name = "browser_copilot",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_browser_copilot",
+    visibility = [
+        "//apps/humata2:__subpackages__",
+    ],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "browser_copilot_test",
+    crate = ":browser_copilot",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

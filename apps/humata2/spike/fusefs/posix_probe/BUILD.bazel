@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# Gate T1 POSIX atomic write, subtree lease (sed -i / cp -r), and
+# progress-bounded fsync probe.
+
+rust_test(
+    name = "posix_probe_test",
+    srcs = ["tests/posix_ops.rs"],
+    deps = [
+        "@crates//:rustix",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

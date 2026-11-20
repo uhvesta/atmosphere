@@ -248,13 +248,18 @@ pub(crate) fn wrap_migrator(
 }
 
 /// Starts `humata2_svc_inbox::screen_ask` wired to `humatad2`'s holders,
-/// `Asking`, and `start_ready`.
-pub(crate) fn start_screen_ask(store: Arc<Store>, holders: Arc<crate::holders::Holders>) {
+/// `Asking`, `start_ready`, and `Inbox`.
+pub(crate) fn start_screen_ask(
+    store: Arc<Store>,
+    holders: Arc<crate::holders::Holders>,
+    inbox: Arc<Inbox>,
+) {
     humata2_svc_inbox::screen_ask::start(
         Arc::new(ScreenHoldersAdapter(holders)),
         Arc::new(AskingAdapter),
         store,
         Arc::new(crate::start_ready::is_heard),
         Arc::new(crate::start_ready::forget),
+        inbox,
     );
 }

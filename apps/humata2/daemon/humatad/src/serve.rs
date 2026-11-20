@@ -790,8 +790,8 @@ pub async fn run(
         agents: starter.agents.clone(),
         home: starter.home.clone(),
     });
-    // D845: a dialog an agent asks on its screen holds its session at needs-you.
-    crate::wire_inbox::start_screen_ask(store.clone(), terminals.holders());
+    // D845 / 0.6.1 HOOKCLEAR: watch agents' screens for dialogs and stale asks.
+    crate::wire_inbox::start_screen_ask(store.clone(), terminals.holders(), inbox.clone());
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),

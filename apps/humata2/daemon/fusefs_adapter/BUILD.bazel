@@ -1,0 +1,63 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# Humata 2 FUSEFS adapter (T6 + T7 + T9 + T10):
+# - layout: Humata virtual tree projector (s/, m/, channels/, desks/, machines/,
+#   requests/, control/, context/, .humata-omitted.json BuildCache stubs),
+#   stable-by-id .sessions/<id>/ placement, and daemon reconnect survival.
+# - transport: PeerChunkTransport over fusefs_cas::ChunkTransport with AWAY
+#   autonomy, coalescing fire-and-forget InvalidationRing, host-relayed routing,
+#   and Interactive vs. Bulk QoS prioritization.
+# - access: HumataAccessHook with subtree WriteLeases, <50ms EACCES +
+#   requests/<id>.json ask descriptors, ESTALE generation checks, AWAY journal,
+#   and MASSDELETE EPERM root protection.
+# - materialize: fs status summary and fs materialize byte-count planner.
+
+rust_library(
+    name = "fusefs_adapter",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "humata2_fusefs_adapter",
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        "//libs/fusefs/cas",
+        "//libs/fusefs/fskit",
+        "//libs/fusefs/host",
+        "//libs/fusefs/linux",
+        "//libs/fusefs/vfs",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_binary(
+    name = "humata2_fusefs",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        ":fusefs_adapter",
+        "//libs/fusefs/cas",
+        "//libs/fusefs/fskit",
+        "//libs/fusefs/host",
+        "//libs/fusefs/linux",
+        "//libs/fusefs/vfs",
+        "@crates//:clap",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "fusefs_adapter_test",
+    crate = ":fusefs_adapter",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

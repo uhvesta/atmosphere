@@ -1,0 +1,31 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Generic FUSEFS host runtime: capability-root router, mount/restart supervisor
+# state machine, progress-bounded fsync pass-through, and framed Unix-socket
+# control protocol.
+rust_library(
+    name = "host",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fusefs_host",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//libs/fusefs/vfs",
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "host_test",
+    crate = ":host",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

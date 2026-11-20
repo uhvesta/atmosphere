@@ -1,0 +1,37 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# Gate T1 BLAKE3 + FastCDC vs fixed-256K wire codec benchmark.
+# Uses pure-Rust spec-compliant BLAKE3 + pure-Rust FastCDC (64K/256K/1M)
+# alongside pinned @crates//:lz4_flex and @crates//:zstd.
+
+rust_library(
+    name = "cas_bench_lib",
+    srcs = [
+        "src/blake3.rs",
+        "src/fastcdc.rs",
+        "src/lib.rs",
+    ],
+    crate_name = "fusefs_cas_bench",
+    deps = [
+        "@crates//:lz4_flex",
+        "@crates//:zstd",
+    ],
+)
+
+rust_binary(
+    name = "cas_bench",
+    srcs = ["src/main.rs"],
+    crate_name = "fusefs_cas_bench_bin",
+    deps = [":cas_bench_lib"],
+)
+
+rust_test(
+    name = "cas_bench_test",
+    crate = ":cas_bench_lib",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

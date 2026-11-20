@@ -357,17 +357,59 @@ impl Inbox {
         self.withdraw_held_where(session, |_| true).await;
     }
 
-    async fn withdraw_held_where(&self, session: &str, wanted: impl Fn(&Entry) -> bool) {
+    /// Returns `true` when `session` currently has at least one pending
+    /// hook-raised ask (permission, question, or terminal notice).
+    pub async fn has_pending_held(&self, session: &str) -> bool {
         let state = self.state.lock().await;
+        state.requests.iter().any(|entry| {
+            entry.permission
+                && entry.session == session
+                && entry.request.borrow().request.state == pb::RequestState::Pending as i32
+        })
+    }
+
+    /// 0.6.1 HOOKCLEAR (Signal A): a subsequent lifecycle event for `session`
+    /// (such as `PostToolUse`, `PostToolBatch`, `UserPromptSubmit`, `Stop`, or
+    /// `TurnState::Idle`) arrived for `agent_kind`. For supported agents
+    /// (`claude`, `codex`, `copilot`, `agy`), immediately resolves any pending
+    /// hook-raised ask for `session` as `WithdrawReason::Resolved` (never
+    /// `Denied`) and clears any pending screen-ask debounce.
+    ///
+    /// Unsupported/unknown agent kinds are left untouched.
+    pub async fn clear_stale_hook_asks_on_lifecycle(
+        &self,
+        session: &str,
+        agent_kind: &str,
+    ) -> usize {
+        if !crate::screen_ask::is_supported_agent(agent_kind) {
+            return 0;
+        }
+        let cleared = self.withdraw_held_where(session, |_| true).await;
+        crate::screen_ask::untrack_hook_ask(session);
+        cleared
+    }
+
+    async fn withdraw_held_where(&self, session: &str, wanted: impl Fn(&Entry) -> bool) -> usize {
+        let state = self.state.lock().await;
+        let mut cleared = 0;
+        let mut still_pending = false;
         for entry in &state.requests {
             if entry.permission
                 && entry.session == session
                 && entry.request.borrow().request.state == pb::RequestState::Pending as i32
-                && wanted(entry)
             {
-                self.withdraw_resolved(entry).await;
+                if wanted(entry) {
+                    self.withdraw_resolved(entry).await;
+                    cleared += 1;
+                } else {
+                    still_pending = true;
+                }
             }
         }
+        if !still_pending {
+            crate::screen_ask::untrack_hook_ask(session);
+        }
+        cleared
     }
 
     /// Raises a question card for the agent's own ask-user form (D761),
@@ -437,6 +479,7 @@ impl Inbox {
             &entry.session,
             &entry.request.borrow().request,
         );
+        crate::screen_ask::track_hook_ask(&entry.session);
         state.add(entry);
         Ok(PermissionWait {
             inbox: Arc::clone(self),
@@ -451,7 +494,17 @@ impl Inbox {
         let Some(entry) = state.requests.iter().find(|entry| entry.id == id) else {
             return Ok(());
         };
-        self.withdraw_unheld(entry).await
+        let session = entry.session.clone();
+        let result = self.withdraw_unheld(entry).await;
+        let still_pending = state.requests.iter().any(|other| {
+            other.permission
+                && other.session == session
+                && other.request.borrow().request.state == pb::RequestState::Pending as i32
+        });
+        if !still_pending {
+            crate::screen_ask::untrack_hook_ask(&session);
+        }
+        result
     }
 
     /// Withdraws pending `entry` as resolved: the question it shows is no
@@ -493,6 +546,17 @@ impl Inbox {
         }
         self.tell(pb::Change::Updated, &entry.session, &current);
         saved
+    }
+}
+
+#[tonic::async_trait]
+impl ports::HookAskPort for Inbox {
+    async fn has_pending_hook_ask(&self, session: &str) -> bool {
+        self.has_pending_held(session).await
+    }
+
+    async fn resolve_pending_hook_asks(&self, session: &str) {
+        self.withdraw_held(session).await;
     }
 }
 

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Humata 2 Browser Co-Pilot",
+  "version": "0.7.0",
+  "description": "Connects your native desktop browser to Humata 2 coding agents (Claude, Codex, Copilot, Agy) via Native Messaging with per-action Agent Inbox approvals.",
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "shared/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["shared/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

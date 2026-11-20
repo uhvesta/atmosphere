@@ -143,6 +143,31 @@ pub trait ScreenHoldersPort: Send + Sync {
     }
 }
 
+/// Port allowing `screen_ask` to inspect and auto-clear stale hook-raised asks
+/// without coupling `screen_ask` to `Inbox` internals.
+#[tonic::async_trait]
+pub trait HookAskPort: Send + Sync {
+    /// Returns `true` when `session` currently has at least one pending
+    /// hook-raised ask in the Inbox.
+    async fn has_pending_hook_ask(&self, session: &str) -> bool;
+
+    /// Auto-clears pending hook-raised asks for `session` as resolved in
+    /// terminal (`pb::WithdrawReason::Resolved`, never `Denied`).
+    async fn resolve_pending_hook_asks(&self, session: &str);
+}
+
+/// Default no-op [`HookAskPort`].
+pub struct NoopHookAsk;
+
+#[tonic::async_trait]
+impl HookAskPort for NoopHookAsk {
+    async fn has_pending_hook_ask(&self, _session: &str) -> bool {
+        false
+    }
+
+    async fn resolve_pending_hook_asks(&self, _session: &str) {}
+}
+
 /// Converts a [`SystemTime`] to a [`humata2_grpc::Timestamp`].
 pub fn timestamp(at: SystemTime) -> humata2_grpc::Timestamp {
     let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();

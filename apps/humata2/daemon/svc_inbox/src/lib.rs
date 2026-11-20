@@ -10,7 +10,7 @@ pub use inbox::{
     permission::{self, Decision, Question, codex_trust},
 };
 pub use ports::{
-    AgentGatePort, AskingGuardPort, EventScope, InboxFeedPort, InboxGuardPort,
-    MigrateApproverPort, NoopAsking, ScreenHoldersPort,
+    AgentGatePort, AskingGuardPort, EventScope, HookAskPort, InboxFeedPort, InboxGuardPort,
+    MigrateApproverPort, NoopAsking, NoopHookAsk, ScreenHoldersPort,
 };
 pub use screen_ask::ScreenAsk;
