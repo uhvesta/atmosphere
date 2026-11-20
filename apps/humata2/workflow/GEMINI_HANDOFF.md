@@ -56,7 +56,7 @@ Each milestone's file is `milestones/<ID>.md`. Its top half has the outcome and 
 - There is an open question in its Lane: a Codex probe saw a new folder under `~/.codex/tmp/arg0-macos/`.
   - Never touch `~/.codex`.
   - Run probes only with scratch HOMEs.
-  - Ask Fable whether the probe is safe to rerun.
+  - Ask a judge subagent whether the probe is safe to rerun.
 
 **TODO2WIRE**
 - Batches 3 and 4 are written but not yet built: svc_board automation, PR watcher and session events.
@@ -69,7 +69,7 @@ Each milestone's file is `milestones/<ID>.md`. Its top half has the outcome and 
 
 **Then, before the release:**
 1. Run the full gate.
-2. Check `desktop/tests/__snapshots__/native/providers-e-remove-blocked.view.txt`. Commit `0385636a` added a `Tab "Sync"` line to it, from Settings › Sync. Have Fable confirm it is intended, rather than re-recording the snapshot just to make the test pass.
+2. Check `desktop/tests/__snapshots__/native/providers-e-remove-blocked.view.txt`. Commit `0385636a` added a `Tab "Sync"` line to it, from Settings › Sync. Have a judge subagent confirm it is intended, rather than re-recording the snapshot just to make the test pass.
 3. Commit each lane's paths.
 4. Release, install and log.
 
@@ -132,7 +132,7 @@ Every test must check an outcome a user or caller would notice: given these inpu
 - Check behavior, not wording. No asserts on exact message text, call order, or that one function calls another. A test should break when behavior breaks, not when code is refactored.
 - One behavior per test, named as a sentence: `a_shell_in_a_session_gets_the_mount_root`.
 - No tests that restate the code, check only that something doesn't panic, or snapshot whole structs to "lock in" output.
-- Don't re-record goldens just to make a test pass; Fable judges each image change against the signed-off frames.
+- Don't re-record goldens just to make a test pass; a judge subagent checks each image change against the signed-off frames.
 - A test that fails often for reasons unrelated to the code under test is a bug to fix, not to rerun or mark slow.
 
 **Keeping tests fast**
@@ -159,9 +159,9 @@ Every test must check an outcome a user or caller would notice: given these inpu
 
 ### Decisions
 
-- Never ask the owner. Fable 5.2 decides anything you'd ask them: design, goldens, approvals, second opinions.
+- Never ask the owner. When you need help with a decision (design, goldens, approvals, a second opinion), spawn your own judge subagent at high effort, give it the milestone file and the frames or diff, and follow its ruling. There is no Fable in this setup; older notes that say "Fable decides" mean a judge subagent.
 - Log every decision in `DECISIONS.md`. The next free number is **D917**.
-- UI lanes copy Fable's signed-off frames in `milestones/mockups/` exactly.
+- UI lanes copy the signed-off frames in `milestones/mockups/` exactly (they were signed off earlier; a judge compares new renders against them).
 
 ### Hard rules
 
