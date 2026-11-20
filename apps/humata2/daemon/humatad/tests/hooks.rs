@@ -632,6 +632,7 @@ async fn the_old_one_switch_sets_every_agents_own() {
 fn reply(text: &str) -> pb::request_answer::Answer {
     pb::request_answer::Answer::Reply(pb::Reply {
         text: text.to_owned(),
+        selected_choices: Vec::new(),
     })
 }
 
