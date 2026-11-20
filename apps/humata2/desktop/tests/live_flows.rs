@@ -7,12 +7,6 @@
 
 #[path = "live_flows/away_box.rs"]
 mod away_box;
-#[path = "live_flows/board_drawer.rs"]
-mod board_drawer;
-#[path = "live_flows/board_conflict.rs"]
-mod board_conflict;
-#[path = "live_flows/board_revision.rs"]
-mod board_revision;
 #[path = "live_flows/channel_desk.rs"]
 mod channel_desk;
 #[path = "live_flows/channel_page.rs"]
@@ -82,6 +76,8 @@ mod views;
 mod views_remote;
 #[path = "live_flows/terminals.rs"]
 mod terminals;
+#[path = "live_flows/todo_asks.rs"]
+mod todo_asks;
 #[path = "live_flows/shell_screen.rs"]
 mod shell_screen;
 #[path = "live_flows/two_viewers.rs"]

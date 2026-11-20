@@ -188,6 +188,17 @@ impl Schema {
         }
     }
 
+    /// True when this is an object that requires that property.
+    pub(crate) fn requires(&self, name: &str) -> bool {
+        match &self.kind {
+            Kind::Object(object) => object
+                .properties
+                .iter()
+                .any(|property| property.name == name && property.required),
+            _ => false,
+        }
+    }
+
     /// Adds a property to an object.
     pub(crate) fn push_property(&mut self, property: Property) {
         if let Kind::Object(object) = &mut self.kind {

@@ -1,9 +1,7 @@
 //! Search and the Pinned section in the app (LD-23, LD-24, NV-20 to
 //! NV-25): where a picked hit or a picked pin opens.
 
-use humata2_board::BoardAction;
 use humata2_clients::marks::Thing;
-use humata2_clients::model::{ItemId, Scope};
 use humata2_find::{FindDelegate, PinnedDelegate};
 use humata2_session::{Panel, SessionAction};
 use tca::Effect;
@@ -49,9 +47,11 @@ impl App {
                 );
                 Effect::merge([go, panel])
             }
+            // A pinned board item opens in the To-do list, whose key is
+            // the item's id (D874).
             Thing::BoardItem(id) => {
-                let go = self.switch(state, Route::Board(Scope::Global));
-                let open = self.child(state, AppAction::Board(BoardAction::Open(ItemId::new(id.clone()))));
+                let go = self.switch(state, Route::Todo);
+                let open = self.child(state, AppAction::Todo(humata2_todo_feature::TodoAction::Open(id.clone())));
                 Effect::merge([go, open])
             }
         }

@@ -1,5 +1,5 @@
 //! IN-3/7: default selection and Waiting/Answered/All are scoped to visible requests.
-use humata2_clients::{Clients, fixture, model::Answer};
+use humata2_clients::{fixture, model::Answer};
 use humata2_inbox::{History, Inbox, InboxAction as A, InboxState};
 use std::sync::Arc;
 use tca::{TestClock, TestStore};

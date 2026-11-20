@@ -105,7 +105,20 @@ fn a_failed_create_clears_progress_so_a_retry_latches_fresh() {
     // Waiting again, a new attempt latches onto its own operation.
     if let Some(Overlay::NewSession(sheet)) = store.state().overlay() {
         assert!(!sheet.creating);
+        assert!(sheet.error.is_some());
     }
+}
+
+#[test]
+fn a_successful_create_clears_progress_and_closes_the_sheet() {
+    let mut store = new_session(true);
+    store.send(update("op-1", OpKind::StartSession, Some(step("Cloning", 0.4))), |_| {});
+    assert_eq!(sheet_progress(&store).0, Some(step("Cloning", 0.4)));
+    let created = SessionId::new("ledger");
+    store.send(A::SessionCreated(Ok(created.clone())), |_| {});
+    store.skip_received();
+    assert!(!store.state().overlays.iter().any(|o| matches!(o, Overlay::NewSession(_))));
+    assert_eq!(store.state().route, Route::Session(created));
 }
 
 #[test]
@@ -121,6 +134,7 @@ fn a_fork_dialog_follows_its_operation_and_forgets_it_on_failure() {
             branch: "fork".into(),
             turns: None,
             picker: None,
+            more: false,
             progress: None,
             op: None,
         });
@@ -132,6 +146,36 @@ fn a_fork_dialog_follows_its_operation_and_forgets_it_on_failure() {
     store.send(A::Session(SessionAction::Forked(Err(refused()))), |_| {});
     let fork = store.state().session.fork.clone();
     assert!(fork.is_some_and(|f| f.progress.is_none() && f.op.is_none()));
+    assert!(store.state().session.error.is_some());
+}
+
+#[test]
+fn a_successful_fork_clears_progress_and_closes_the_dialog() {
+    let mut store = store(|state| {
+        state.session.forking = true;
+        state.session.fork = Some(ForkDraft {
+            kind: ForkKind::Shared,
+            title: "Fork".into(),
+            before_turn: None,
+            agent: None,
+            machine: None,
+            branch: "fork".into(),
+            turns: None,
+            picker: None,
+            more: false,
+            progress: None,
+            op: None,
+        });
+    });
+    store.send(update("op-1", OpKind::Fork, Some(step("Cloning", 0.3))), |_| {});
+    assert_eq!(
+        store.state().session.fork.as_ref().and_then(|f| f.progress.clone()),
+        Some(step("Cloning", 0.3))
+    );
+    store.send(A::Session(SessionAction::Forked(Ok(SessionId::new("ledger")))), |_| {});
+    store.skip_received();
+    assert!(!store.state().session.forking);
+    assert!(store.state().session.fork.is_none());
 }
 
 #[test]
@@ -146,6 +190,22 @@ fn a_continue_dialog_follows_its_operation_and_forgets_it_on_failure() {
     store.send(A::Session(SessionAction::Continued(Err(refused()))), |_| {});
     let draft = store.state().session.continuing.clone();
     assert!(draft.is_some_and(|d| !d.sending && d.progress.is_none() && d.op.is_none()));
+    assert!(store.state().session.error.is_some());
+}
+
+#[test]
+fn a_successful_continue_clears_progress_and_closes_the_dialog() {
+    let mut store = store(|state| {
+        state.session.continuing = Some(ContinueDraft { sending: true, ..ContinueDraft::default() });
+    });
+    store.send(update("op-1", OpKind::ContinueInChannel, Some(step("Copying", 0.6))), |_| {});
+    assert_eq!(
+        store.state().session.continuing.as_ref().and_then(|d| d.progress.clone()),
+        Some(step("Copying", 0.6))
+    );
+    store.send(A::Session(SessionAction::Continued(Ok(SessionId::new("ledger")))), |_| {});
+    store.skip_received();
+    assert!(store.state().session.continuing.is_none());
 }
 
 #[test]
@@ -182,4 +242,28 @@ fn a_waiting_add_repo_sheet_follows_its_operation_and_forgets_it_on_failure() {
     );
     let after = sheet(&store);
     assert!(after.progress.is_none() && after.op.is_none() && after.adding.is_none());
+    assert!(after.error.is_some());
+}
+
+#[test]
+fn a_successful_add_repo_clears_progress_and_closes_the_sheet() {
+    let id = SessionId::new("ledger");
+    let mut store = store(|_| {});
+    store.send(A::SessionAddRepo(Add::Open(id)), |_| {});
+    store.skip_received();
+    let mut state = store.state().clone();
+    for overlay in &mut state.overlays {
+        if let Overlay::SessionAddRepo(sheet) = overlay {
+            sheet.adding = Some("acme/web".into());
+        }
+    }
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(update("op-1", OpKind::AddRepo, Some(step("Cloning", 0.5))), |_| {});
+    store.send(
+        A::SessionAddRepo(Add::Added { repo: "acme/web".into(), result: Ok(()) }),
+        |_| {},
+    );
+    store.skip_received();
+    assert!(!store.state().overlays.iter().any(|o| matches!(o, Overlay::SessionAddRepo(_))));
 }

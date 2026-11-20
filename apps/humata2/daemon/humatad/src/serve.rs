@@ -786,6 +786,8 @@ pub async fn run(
         builds: builds.clone(),
         tell: session_tell.clone(),
         started: last_start.clone(),
+        agents: starter.agents.clone(),
+        home: starter.home.clone(),
     });
     // D845: a dialog an agent asks on its screen holds its session at needs-you.
     crate::wire_inbox::start_screen_ask(store.clone());
@@ -919,6 +921,7 @@ pub async fn run(
         ),
     }
     // D194: a delete a restart cut short is finished once the start is done.
+    let session_bin = channel_bin.clone();
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
     let board_plugin = plugins.board.map(|plugin| {
@@ -980,6 +983,15 @@ pub async fn run(
         socket.clone(),
         migrations.clone(),
     );
+    // MASSDELETE (D876): a bulk session delete a restart cut short is finished once the start is done.
+    {
+        let svc = session_svc.clone();
+        let started = last_start.clone();
+        tokio::spawn(async move {
+            started.wait().await;
+            svc.recover_session_deletes(session_bin).await;
+        });
+    }
     // Archives a cut run left are finished once the start has brought the
     // sessions back (MV-15, PER-27).
     session_svc.finish_archives_after(last_start.clone());

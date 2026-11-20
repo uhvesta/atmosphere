@@ -27,6 +27,7 @@ files_find
 files_list
 folder_create
 inbox_ask
+inbox_explain
 inbox_mine
 inbox_request
 inbox_wait
@@ -78,6 +79,7 @@ session_restore
 session_start
 session_stop
 session_type
+sessions_delete_many
 sessions_search
 skills_sync
 todo_add

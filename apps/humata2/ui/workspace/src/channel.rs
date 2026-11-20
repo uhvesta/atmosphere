@@ -20,7 +20,7 @@ use humata2_app::{
 };
 use humata2_clients::marks::Thing;
 use humata2_clients::model::{
-    ActivityKind, Agent, Channel, ChannelId, ForkKind, Scope, SessionId, Status,
+    ActivityKind, Agent, Channel, ChannelId, ForkKind, SessionId, Status,
 };
 use humata2_find::PinnedAction;
 use humata2_session::{Panel, SessionAction};
@@ -881,11 +881,11 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
             if machines.len() == 1 { "is" } else { "are" }
         )
     };
-    let board_empty = !state
-        .workspace
+    let todo_empty = !state
+        .todo
         .items
         .iter()
-        .any(|i| matches!(&i.scope, Scope::Channel(id) if *id == channel.id));
+        .any(|e| e.todo.channel.as_deref() == Some(channel.id.as_str()));
     let step = |glyph: IconName, title: &'static str, note: String, action: Option<Button>| {
         row()
             .gap(px(12.))
@@ -991,12 +991,12 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                             )),
                         )),
                 )
-                .children(board_empty.then(|| {
+                .children(todo_empty.then(|| {
                     div()
                         .text_size(px(11.5))
                         .text_color(rgb(look.secondary))
                         .child(
-                            "The board is empty too: add items from the Board tab, or ask an agent to.",
+                            "The To-do list is empty too: add items from the To-do tab, or ask an agent to.",
                         )
                 })),
         )
@@ -1009,7 +1009,7 @@ pub fn page(
     state: &AppState,
     channel: &Channel,
     filter: Entity<InputState>,
-    board_inputs: &crate::board::Inputs,
+    todo: &dyn Fn() -> AnyElement,
     look: Look,
 ) -> AnyElement {
     let view = page_view(state, &channel.id);
@@ -1028,12 +1028,7 @@ pub fn page(
         Tab::Activity => activity(ui, state, channel, look),
         Tab::Repos => repos(ui, state, channel, look),
         Tab::Inbox => inbox_page::inbox(ui, state, look).into_any_element(),
-        Tab::Board => col()
-            .size_full()
-            .min_h_0()
-            .child(crate::board::toolbar(ui, state, board_inputs, look))
-            .child(crate::board::page(ui, state, board_inputs, look))
-            .into_any_element(),
+        Tab::Board => todo(),
         Tab::Access => humata2_ui_settings::access::tab(ui, state, channel, look).into_any_element(),
     }
 }

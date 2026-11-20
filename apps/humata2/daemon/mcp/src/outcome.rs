@@ -29,6 +29,14 @@ fn envelope_schema() -> Value {
                 "type": "object",
                 "properties": { "machine": { "type": "string" }, "seq": { "type": "integer" } }
             },
+            "asked_why": {
+                "type": "boolean",
+                "description": "Set when pending and the user asked why: call inbox_explain with request_id and your reason, then inbox_wait again."
+            },
+            "next": {
+                "type": "string",
+                "description": "Set with asked_why: the tool to call next."
+            },
             "stale_as_of": {
                 "type": "string",
                 "format": "date-time",
@@ -112,6 +120,12 @@ pub(crate) fn success(reply: Reply, waited_on: Option<&RequestId>) -> Value {
         Reply::Pending { request } => {
             envelope.insert("outcome".to_owned(), json!("pending"));
             envelope.insert("request_id".to_owned(), json!(request.as_str()));
+        }
+        Reply::PendingAskedWhy { request } => {
+            envelope.insert("outcome".to_owned(), json!("pending"));
+            envelope.insert("request_id".to_owned(), json!(request.as_str()));
+            envelope.insert("asked_why".to_owned(), json!(true));
+            envelope.insert("next".to_owned(), json!("inbox_explain"));
         }
     }
     tool_result(Value::Object(envelope), false)

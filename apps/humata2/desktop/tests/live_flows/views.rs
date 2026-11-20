@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use humata2_app::layout::FullScreen;
 use humata2_app::{AppAction, AppState, Route};
 use humata2_clients::comments::{Anchor, Side};
-use humata2_clients::model::{DiffTargets, RepoBase, Scope, SessionId, ViewId, ViewState};
+use humata2_clients::model::{DiffTargets, RepoBase, SessionId, ViewId, ViewState};
 use humata2_clients::views::ViewsClient;
 use humata2_grpc::humata::v1 as pb;
 use humata2_review::ReviewAction;
@@ -261,7 +261,6 @@ pub(super) struct Seen {
     full_screen: Option<FullScreen>,
     full_screens: Option<FullScreen>,
     collapsed: bool,
-    board: Scope,
     targets: Option<DiffTargets>,
 }
 
@@ -278,7 +277,6 @@ pub(super) fn seen(app: &App, session: &SessionId) -> Seen {
             full_screen: state.full_screen(),
             full_screens: state.full_screens.get(session).copied(),
             collapsed: state.layout.panel.collapsed,
-            board: state.board.scope.clone(),
             targets: state.review.targets.get(session).cloned(),
         }
     })

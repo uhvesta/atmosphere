@@ -178,7 +178,7 @@ fn sidebar(look: Look, state: u32, badge: Option<&'static str>) -> Div {
                 .child("⌘K"),
         )
         .child(nav(look, "Home", None))
-        .child(nav(look, "Inbox", Some("2")))
+        .child(nav(look, "Agent inbox", Some("2")))
         .child(nav(look, "Board", None))
         .child(nav(look, "Desk", None))
         .child(sec(look, "Channels"))
@@ -338,7 +338,7 @@ fn rail(look: Look, on: bool, diff: &'static str) -> Div {
         .border_l_1()
         .border_color(c(look.line))
         .bg(c(look.panel))
-        .child(rail_item(look, "Inbox", false))
+        .child(rail_item(look, "Agent inbox", false))
         .child(rail_item(look, diff, on))
         .child(rail_item(look, "Files", false))
         .child(rail_item(look, "Board", false))

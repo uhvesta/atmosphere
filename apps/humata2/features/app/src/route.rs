@@ -1,5 +1,4 @@
-use humata2_board::BoardAction;
-use humata2_clients::model::{ChannelId, ItemId, Scope, SessionId};
+use humata2_clients::model::{ChannelId, ItemId, SessionId};
 use humata2_palette::PullRef;
 use humata2_files::FilesAction;
 use humata2_hosts::HostsAction;
@@ -18,14 +17,13 @@ use crate::{App, AppAction, AppState, TRAIL, channel};
 
 /// A screen.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SavedRoute")]
 pub enum Route {
     /// What needs the person, across channels (HM-1–5).
     #[default]
     Home,
     /// The Inbox.
     Inbox,
-    /// A board.
-    Board(Scope),
     /// The To-do list.
     Todo,
     /// A channel's page.
@@ -44,6 +42,43 @@ pub enum Route {
     Settings,
     /// A machine's page (HO-4).
     Machine(humata2_clients::model::MachineId),
+}
+
+/// A route as an earlier build saved it. The board page is gone (D874):
+/// a saved board opens the To-do list, so the rest of what was saved
+/// still restores.
+#[derive(Deserialize)]
+enum SavedRoute {
+    Home,
+    Inbox,
+    Board(serde::de::IgnoredAny),
+    Todo,
+    Channel(ChannelId),
+    Session(SessionId),
+    Hosts,
+    Files,
+    Views,
+    Desk,
+    Settings,
+    Machine(humata2_clients::model::MachineId),
+}
+
+impl From<SavedRoute> for Route {
+    fn from(saved: SavedRoute) -> Self {
+        match saved {
+            SavedRoute::Home => Self::Home,
+            SavedRoute::Inbox => Self::Inbox,
+            SavedRoute::Board(_) | SavedRoute::Todo => Self::Todo,
+            SavedRoute::Channel(id) => Self::Channel(id),
+            SavedRoute::Session(id) => Self::Session(id),
+            SavedRoute::Hosts => Self::Hosts,
+            SavedRoute::Files => Self::Files,
+            SavedRoute::Views => Self::Views,
+            SavedRoute::Desk => Self::Desk,
+            SavedRoute::Settings => Self::Settings,
+            SavedRoute::Machine(id) => Self::Machine(id),
+        }
+    }
 }
 
 impl App {
@@ -69,10 +104,6 @@ impl App {
             ),
             self.child(
                 state,
-                AppAction::Board(BoardAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
                 AppAction::Hosts(HostsAction::Show(state.workspace.clone())),
             ),
             self.child(
@@ -86,6 +117,12 @@ impl App {
             self.child(
                 state,
                 AppAction::Desk(humata2_desk::DeskAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::Show(
+                    mass_delete_listing(&state.workspace),
+                )),
             ),
         ])
     }
@@ -121,6 +158,20 @@ impl App {
         }
     }
 
+    /// A channel's To-do tab is the To-do list narrowed to that channel
+    /// (D874). The list loads once and is followed, as on the page.
+    pub(super) fn channel_todo(&self, state: &mut AppState, id: ChannelId) -> Vec<Effect<AppAction>> {
+        let filter = humata2_todo_feature::ViewFilter {
+            channel: Some(humata2_todo_feature::ChannelPick::Channel(id.as_str().to_owned())),
+            ..Default::default()
+        };
+        vec![
+            self.child(state, AppAction::Todo(TodoAction::SetFilter(filter))),
+            self.child(state, AppAction::Todo(TodoAction::Load)),
+            self.child(state, AppAction::Todo(TodoAction::Watch)),
+        ]
+    }
+
     /// Tells the features what the route now shows.
     pub(super) fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
         // NV-37, SE-13: the side panel's collapsed state belongs to each
@@ -138,10 +189,20 @@ impl App {
             Route::Channel(id) => Some(RowKey::Channel(id.clone())),
             _ => None,
         };
-        let mut effects = vec![self.child(
-            state,
-            AppAction::Sidebar(SidebarAction::SetCurrent(current)),
-        )];
+        let surface = match &state.route {
+            Route::Machine(id) => humata2_mass_delete::Surface::Machine(id.clone()),
+            Route::Home => humata2_mass_delete::Surface::Home,
+            _ => humata2_mass_delete::Surface::Sidebar,
+        };
+        let mut effects = vec![
+            self.child(state, AppAction::Sidebar(SidebarAction::SetCurrent(current))),
+            self.child(
+                state,
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::SurfaceChanged(
+                    surface,
+                )),
+            ),
+        ];
         match state.route.clone() {
             Route::Session(id) => {
                 effects.push(self.child(state, AppAction::Views(ViewsAction::Return(id.clone()))));
@@ -171,10 +232,7 @@ impl App {
                             id,
                         ))),
                     )),
-                    Some(channel::Tab::Board) => effects.push(self.child(
-                        state,
-                        AppAction::Board(BoardAction::SetScope(Scope::Channel(id))),
-                    )),
+                    Some(channel::Tab::Board) => effects.extend(self.channel_todo(state, id)),
                     _ => {}
                 }
             }
@@ -184,9 +242,6 @@ impl App {
                     state,
                     AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::All)),
                 ));
-            }
-            Route::Board(scope) => {
-                effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
             }
             Route::Todo => {
                 state.session.open = None;
@@ -328,4 +383,38 @@ fn parse_pull(text: &str) -> Option<PullRef> {
         repo: name.to_owned(),
         number: number.parse().ok()?,
     })
+}
+
+fn mass_delete_listing(workspace: &humata2_clients::Workspace) -> humata2_mass_delete::Listing {
+    let rows = workspace
+        .sessions
+        .iter()
+        .map(|s| humata2_mass_delete::Row {
+            id: s.id.clone(),
+            channel: s.channel.clone(),
+            machine: s.machine.clone(),
+            context_fork_of: (s.fork == Some(humata2_clients::model::ForkKind::Conversation))
+                .then(|| s.parent.clone())
+                .flatten(),
+            archived: s.archived,
+            live: !s.archived,
+            desk: humata2_clients::desk::is_desk(s),
+        })
+        .collect();
+    let offline = workspace
+        .machines
+        .iter()
+        .filter(|m| !m.online)
+        .map(|m| m.id.clone())
+        .collect();
+    let machine_names = workspace
+        .machines
+        .iter()
+        .map(|m| (m.id.clone(), m.name.clone()))
+        .collect();
+    humata2_mass_delete::Listing {
+        rows,
+        offline,
+        machine_names,
+    }
 }

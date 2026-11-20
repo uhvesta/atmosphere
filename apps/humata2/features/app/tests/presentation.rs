@@ -135,33 +135,27 @@ fn a_restart_restores_both_tab_groups_and_the_selected_file() {
 }
 
 #[test]
-fn board_view_scope_and_filters_restore_together() {
-    use humata2_board::{BoardAction as B, Filter, Mode};
-    use humata2_clients::model::{ChannelId, ItemStatus, Scope};
+fn an_earlier_builds_saved_board_opens_the_todo_list() {
+    // The board page is gone (D874): a saved board route, a board in the
+    // trail, and a Go to Board recent pick from an earlier build still
+    // restore, as the To-do list and without the pick.
     let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
-    let mut state = AppState::launch(&clients);
-    state.route = Route::Board(Scope::Global);
-    let mut store = TestStore::new(state, App::new(clients.clone()));
-    let scope = Scope::Channel(ChannelId::new("infra"));
-    store.send(AppAction::Board(B::SetScope(scope.clone())), |s| {
-        s.route = Route::Board(scope.clone());
-        s.board.scope = scope.clone();
-    });
-    store.send(
-        AppAction::Board(B::Drill(Filter::Status(ItemStatus::InProgress))),
-        |s| {
-            s.board.view.mode = Mode::Table;
-            s.board.view.filter = Filter::Status(ItemStatus::InProgress);
-        },
-    );
-    saved::Saver::new(clients.storage.clone())
-        .save(1, &store.state().saved())
-        .expect("saved board");
-    let restored = AppState::launch(&clients);
-    assert_eq!(restored.route, Route::Board(scope.clone()));
-    assert_eq!(restored.board.scope, scope);
-    assert_eq!(restored.board.view, store.state().board.view);
-    store.finish();
+    let earlier = br#"{
+        "route": {"Board": {"Channel": "infra"}},
+        "trail": ["Inbox", {"Board": "Global"}],
+        "recent": ["Board", "Inbox", {"ChannelBoard": "infra"}],
+        "board": {"mode": "Table"}
+    }"#;
+    clients
+        .storage
+        .save(saved::KEY, earlier)
+        .expect("save an earlier build's state");
+    let restored = saved::restore(clients.storage.as_ref())
+        .expect("an earlier build's state reads")
+        .expect("something was saved");
+    assert_eq!(restored.route, Route::Todo);
+    assert_eq!(restored.trail, vec![Route::Inbox, Route::Todo]);
+    assert_eq!(restored.recent, vec![humata2_palette::Command::Inbox]);
 }
 
 #[test]

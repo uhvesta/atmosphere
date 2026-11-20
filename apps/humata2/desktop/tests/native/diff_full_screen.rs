@@ -23,7 +23,7 @@ fn full(app: &mut App) -> bool {
 }
 
 /// One title bar: Exit full screen replaces the arrow, Close stays, and the
-/// base chip sits in the 52 pt bar.
+/// repository count (two repos, D868) sits in the 52 pt bar.
 #[test]
 fn full_screen_draws_one_header() {
     let mut app = app();
@@ -37,7 +37,7 @@ fn full_screen_draws_one_header() {
     app.cx
         .update_window(app.window, |_, window, _| {
             let panel = window.find("panel-full-screen").bounds();
-            let base = window.find("diff-base").bounds();
+            let base = window.find("diff-repos-count").bounds();
             assert!(base.origin.y - panel.origin.y < px(52.));
             assert!(base.origin.y >= panel.origin.y);
         })
@@ -137,7 +137,11 @@ fn double_clicking_the_panel_header_enters_full_screen() {
 
 #[test]
 fn escape_leaves_full_screen_but_not_while_the_base_menu_is_open() {
-    let mut app = app();
+    // One repository keeps the header's base chip (D868).
+    let mut workspace = fixture::design();
+    workspace.diffs.retain(|d| d.session != SessionId::new("ledger") || d.repo == "api");
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
     app.send(AppAction::Session(SessionAction::ToggleWiden));
     app.click("diff-base");
     assert!(app.contains("diff-base-menu"));
@@ -214,30 +218,36 @@ fn new_agent_tab_opens_a_tab_beside_the_diff() {
     assert!(app.contains("new-agent-tab-last-used-copilot"));
 }
 
-/// D857: an agent pick keeps its opening prompt for the new tab, and types
-/// nothing before the tab has painted and gone quiet. The harness clock
-/// never moves, so the typing itself is tested in `features/session`.
-/// Terminal keeps no prompt.
+/// D858: an agent pick calls `open_agent_tab` directly with its agent and
+/// opening prompt (never `send_to_tab`), while Terminal calls `open ... zsh`
+/// and never `open_agent_tab`.
 #[test]
 fn an_agent_pick_waits_with_its_prompt_and_terminal_has_none() {
     let mut app = app();
-    let waiting = |app: &mut App| {
-        app.ui.read(|state| {
-            let id = state.session.open.clone()?;
-            let shells = state.session.workspace.session(&id)?.shells.len();
-            Some((1..=shells).any(|tab| state.session.awaits_opening_prompt(&id, tab)))
-        })
-    };
     app.send(AppAction::Session(SessionAction::ToggleWiden));
     app.click("new-agent-tab");
     app.click("new-agent-tab-zsh");
-    assert_eq!(waiting(&mut app), Some(false));
+    let calls_after_zsh = app.fakes.daemon.calls();
+    assert!(
+        calls_after_zsh.iter().any(|call| call.contains("zsh")),
+        "zsh opens a shell tab: {calls_after_zsh:?}"
+    );
+    assert!(
+        !calls_after_zsh.iter().any(|call| call.starts_with("open_agent_tab")),
+        "zsh never calls open_agent_tab: {calls_after_zsh:?}"
+    );
     app.send(AppAction::Session(SessionAction::ToggleWiden));
     app.click("new-agent-tab");
     app.click("new-agent-tab-copilot");
-    assert_eq!(waiting(&mut app), Some(true));
-    let typed = app.fakes.daemon.calls().into_iter().any(|call| call.starts_with("send_to_tab"));
-    assert!(!typed, "nothing is typed before the tab is quiet");
+    let calls = app.fakes.daemon.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("open_agent_tab") && call.contains("copilot")),
+        "copilot calls open_agent_tab: {calls:?}"
+    );
+    let typed = calls.iter().any(|call| call.starts_with("send_to_tab"));
+    assert!(!typed, "nothing is typed via send_to_tab: {calls:?}");
 }
 
 /// Escape closes the menu before it leaves full screen.
@@ -265,4 +275,50 @@ fn cmd_t_opens_a_terminal_tab_and_leaves_full_screen() {
     app.send(AppAction::Session(SessionAction::ToggleWiden));
     app.click("new-agent-tab");
     assert!(!app.contains("new-agent-tab-last-used-zsh"));
+}
+
+/// D857: an agent the session's machine lacks is listed as "not installed",
+/// after the installed ones, and clicking it opens nothing.
+#[test]
+fn a_missing_agent_row_is_listed_and_opens_nothing() {
+    use humata2_clients::machines::{MachineDetail, MachineHealth, Reach};
+    use humata2_clients::model::{Agent, SessionId};
+    let mut app = app();
+    let machine = app
+        .ui
+        .read(|state| state.workspace.session(&SessionId::new("ledger")).map(|s| s.machine.clone()))
+        .expect("the fixture has the ledger session");
+    app.fakes.machines.set_detail(Ok(MachineDetail {
+        machine,
+        os: "Ubuntu 24.04".to_owned(),
+        arch: "x86_64".to_owned(),
+        address: "devbox-1.lan".to_owned(),
+        reach: Reach::Ssh,
+        daemon_version: "2.0.3".to_owned(),
+        health: MachineHealth {
+            gh: None,
+            agents: vec![(Agent::Claude, "2.4.1".to_owned())],
+            disk_free: 11_000_000_000,
+            disk_total: 500_000_000_000,
+            variables: Vec::new(),
+            skills_problem: None,
+            git_version: "2.43.0".to_owned(),
+            gh_version: "2.83.0".to_owned(),
+        },
+        folders: Vec::new(),
+        sessions: Vec::new(),
+        rules: Vec::new(),
+        stop: None,
+    }));
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.click("new-agent-tab");
+    assert!(app.contains("new-agent-tab-codex"), "a missing agent still has its row");
+    let before = app.ui.read(|state| state.session.open.as_ref().and_then(|id| state.workspace.session(id)).map_or(0, |s| s.shells.len()));
+    app.click("new-agent-tab-codex");
+    assert!(app.contains("new-agent-tab-menu"), "a missing agent can't be picked");
+    assert!(full(&mut app));
+    let after = app.ui.read(|state| state.session.open.as_ref().and_then(|id| state.workspace.session(id)).map_or(0, |s| s.shells.len()));
+    assert_eq!(before, after);
+    app.click("new-agent-tab-claude");
+    assert!(!app.contains("new-agent-tab-menu"));
 }

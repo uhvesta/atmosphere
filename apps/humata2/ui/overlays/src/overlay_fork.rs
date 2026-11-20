@@ -13,11 +13,9 @@ use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::model::{Agent, ForkKind, Session, Speaker};
+use humata2_clients::model::{Agent, ForkKind, Session};
 use humata2_session::{ForkDraft, ForkPicker, SessionAction};
 use std::rc::Rc;
-
-const GREEN: u32 = 0x30b350;
 
 /// A dialog card as the frames draw it: padded, 12 pt corners, 12.5 pt text.
 pub(super) fn card(id: &'static str, label: &'static str, width: f32, look: Look) -> Stateful<Div> {
@@ -143,9 +141,23 @@ pub(super) fn form_row(look: Look, key: &'static str, value: impl IntoElement) -
         .child(div().flex_1().min_w_0().child(value))
 }
 
-/// The unwrapped line of a preview.
-fn line(color: u32, text: String) -> Div {
-    div().text_color(rgb(color)).whitespace_nowrap().child(text)
+/// The quiet "More options" button with its chevron (› closed, ⌄ open).
+fn more_options(ui: &Rc<Ui>, look: Look, open: bool) -> impl IntoElement {
+    let ui = ui.clone();
+    widgets::push(
+        "fork-more-options",
+        "More options",
+    )
+    .text_color(rgb(look.secondary))
+    .child(chrome::icon(
+        if open { IconName::ChevronDown } else { IconName::ChevronRight },
+        look.secondary,
+        12.,
+    ))
+    .on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        ui.send(AppAction::Session(SessionAction::ForkMoreOptions), cx);
+    })
 }
 
 impl Overlays {
@@ -163,24 +175,7 @@ impl Overlays {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         sync(&self.fork_branch, &fork.branch, window, cx);
-        let (machines, repos) = ui.read(|state| {
-            let repos = parent
-                .as_ref()
-                .map(|p| {
-                    state
-                        .workspace
-                        .session_files
-                        .get(&p.id)
-                        .into_iter()
-                        .flatten()
-                        .map(|f| f.repo.clone())
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            (state.workspace.machines.clone(), repos)
-        });
+        let machines = ui.read(|state| state.workspace.machines.clone());
         // AGENTSET (D725): the enabled agents, then the plain shell.
         let offered: Vec<Agent> = ui
             .read(|state| state.settings.offered_agents())
@@ -204,9 +199,14 @@ impl Overlays {
                 |m| m.name.clone(),
             );
         let same_agent = parent.as_ref().is_none_or(|p| p.agent == agent);
+        let agent_name = match agent {
+            Agent::Claude => "Claude Code",
+            _ => agent.name(),
+        };
         let send = |action: SessionAction| AppAction::Session(action);
 
         let mut body = card("fork-session", "Fork session", 640., look)
+            .overflow_y_scroll()
             .child(heading(format!("Fork “{parent_title}”")));
         let kinds = [
             (
@@ -225,7 +225,19 @@ impl Overlays {
                 "New copies of the files and a fresh agent with no conversation.",
             ),
         ];
-        body = body.child(col().gap(px(6.)).children(kinds.map(|(index, kind, note)| {
+        let sentence = kinds
+            .iter()
+            .find(|(_, kind, _)| *kind == fork.kind)
+            .map_or("", |(_, _, note)| *note);
+        if !fork.more {
+            body = body.child(
+                div()
+                    .id("fork-sentence")
+                    .text_color(rgb(look.secondary))
+                    .child(sentence),
+            );
+        } else {
+            body = body.child(col().gap(px(6.)).children(kinds.map(|(index, kind, note)| {
             let on = fork.kind == kind;
             let id = if on {
                 format!("fork-kind-{index}-on")
@@ -242,7 +254,8 @@ impl Overlays {
                 radio(look, on, kind.name().to_owned(), note),
             )
         })));
-
+        }
+        if fork.more {
         if fork.kind != ForkKind::Shared {
             let from = match fork.before_turn {
                 None => "Now".to_owned(),
@@ -371,83 +384,34 @@ impl Overlays {
             ));
         }
 
-        // The preview, as a tree under the parent.
-        let repo_list = if repos.is_empty() {
-            parent.as_ref().map_or_else(String::new, |p| p.repo.clone())
-        } else {
-            repos.join(", ")
-        };
-        let turns = parent
-            .as_ref()
-            .map_or(0, |p| p.transcript.iter().filter(|l| l.from == Speaker::You).count());
-        let fork_title = fork.title.trim().to_owned();
-        let how = fork.kind.name().to_lowercase();
-        let conversation = match (fork.kind, same_agent) {
-            (ForkKind::Shared, _) => "fresh agent, no conversation".to_owned(),
-            (_, true) => "conversation copied exactly (same agent)".to_owned(),
-            (_, false) => format!("conversation sent to {} as a summary", agent.name()),
-        };
-        let place = if fork.kind == ForkKind::Conversation {
-            format!("     works in the files of {parent_title}, no copies")
-        } else {
-            format!("     new clones of {repo_list} on {}", fork.branch)
-        };
-        let mut preview = col()
-            .id("fork-preview")
-            .role(Role::Group)
-            .aria_label("Preview")
-            .test_support()
-            .gap(px(2.))
-            .px(px(12.))
-            .py(px(9.))
-            .rounded(px(7.))
-            .bg(rgb(look.fill))
-            .font_family("Menlo")
-            .text_size(px(11.))
-            .line_height(px(16.))
-            .child(line(
-                look.text,
-                format!(
-                    "{parent_title}   [{repo_list}]  {} · {} · {turns} turns",
-                    parent.as_ref().map_or("", |p| p.agent.name()),
-                    parent.as_ref().map_or_else(String::new, |p| p.machine.to_string()),
-                ),
-            ))
-            .child(line(look.text, format!("└─⑂ {fork_title}   {how}")))
-            .child(line(look.secondary, place));
-        preview = preview.child(line(look.secondary, format!("     {conversation}")));
+        }
+
+        // What the fork will be, live under the fields (D873).
+        let mut facts = format!("{agent_name} · {machine_name}");
+        if fork.kind != ForkKind::Conversation {
+            facts.push_str(&format!(" · branch {}", fork.branch));
+        }
+        if let Some(turn) = fork.before_turn.filter(|_| fork.kind != ForkKind::Shared) {
+            facts.push_str(&format!(" · before turn {turn}"));
+        }
         body = body.child(
-            col()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(look.secondary))
-                        .child("Preview"),
-                )
-                .child(preview),
+            div()
+                .id("fork-facts")
+                .role(Role::Group)
+                .aria_label("Fork facts")
+                .test_support()
+                .text_color(rgb(look.secondary))
+                .child(facts),
         );
-        if fork.kind != ForkKind::Shared {
-            let (mark, words) = if same_agent {
-                (GREEN, "Same agent: the conversation is copied exactly.".to_owned())
-            } else {
-                (
-                    0xff9f0a,
-                    format!(
-                        "A different agent can't read this conversation, so {} starts from a summary of it.",
-                        agent.name()
-                    ),
-                )
-            };
+        if fork.kind != ForkKind::Shared && !same_agent {
             body = body.child(
                 row()
                     .gap(px(6.))
-                    .child(chrome::icon(
-                        if same_agent { IconName::Check } else { IconName::Info },
-                        mark,
-                        12.,
-                    ))
-                    .child(div().text_color(rgb(look.secondary)).child(words)),
+                    .child(chrome::icon(IconName::Info, 0xff9f0a, 12.))
+                    .child(div().text_color(rgb(look.secondary)).child(format!(
+                        "A different agent can't read this conversation, so {} starts from a summary of it.",
+                        agent.name()
+                    ))),
             );
         }
         body = body
@@ -460,22 +424,27 @@ impl Overlays {
             }))
             .child(
                 row()
-                    .justify_end()
-                    .gap(px(8.))
+                    .justify_between()
+                    .items_center()
                     .pt(px(4.))
+                    .child(more_options(ui, look, fork.more))
                     .child(
-                        widgets::push_quiet(ui, "fork-cancel", "Cancel", send(SessionAction::CancelFork), look)
-                            .disabled(forking),
-                    )
-                    .child(
-                        widgets::push_primary(
-                            ui,
-                            "fork-create",
-                            if forking { "Forking…" } else { "Fork" },
-                            send(SessionAction::ConfirmFork),
-                            look,
-                        )
-                        .disabled(forking || fork.title.trim().is_empty()),
+                        row()
+                            .gap(px(8.))
+                            .child(
+                                widgets::push_quiet(ui, "fork-cancel", "Cancel", send(SessionAction::CancelFork), look)
+                                    .disabled(forking),
+                            )
+                            .child(
+                                widgets::push_primary(
+                                    ui,
+                                    "fork-create",
+                                    if forking { "Forking…" } else { "Fork" },
+                                    send(SessionAction::ConfirmFork),
+                                    look,
+                                )
+                                .disabled(forking || fork.title.trim().is_empty()),
+                            ),
                     ),
             );
         body = body.children(
@@ -484,7 +453,16 @@ impl Overlays {
                 .filter(|_| forking)
                 .map(|p| widgets::progress_line(look, p, Some(ui.now()))),
         );
-        body.test_support()
+        // Return forks and Escape cancels while the dialog itself has focus.
+        let (keys, sheet) = (ui.clone(), self.sheet.clone());
+        body.track_focus(&self.sheet)
+            .on_key_down(move |event, window, cx| {
+                if event.keystroke.key == "enter" && sheet.is_focused(window) {
+                    cx.stop_propagation();
+                    keys.send(AppAction::Session(SessionAction::ConfirmFork), cx);
+                }
+            })
+            .test_support()
             .focus_trap("fork-trap", &self.sheet)
             .into_any_element()
     }

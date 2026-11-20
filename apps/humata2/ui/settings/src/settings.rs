@@ -399,6 +399,45 @@ fn toggle(ui: &Rc<Ui>, id: &str, on: bool, action: A, look: Look) -> impl IntoEl
         .cursor_pointer()
         .on_click(move |_, _, cx| ui.send(AppAction::Settings(action.clone()), cx))
 }
+/// Settings > Storage > Sessions (MASSDELETE, D875): Delete all sessions…
+/// opens the plan; deleting only some is done by ticking them.
+fn sessions_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let count = state
+        .workspace
+        .sessions
+        .iter()
+        .filter(|session| !state.workspace.desk.sessions.contains_key(&session.id))
+        .count();
+    let note = format!(
+        "Every live and archived session on every machine that can be reached: {count} now. \
+         You see the full plan first and type the count to confirm. Desk sessions are not part of this."
+    );
+    col()
+        .gap(px(8.))
+        .child(dim(look, "Sessions").font_weight(FontWeight::SEMIBOLD))
+        .child(card(look).child(setting(
+            look,
+            "Delete all sessions",
+            &note,
+            button(
+                ui,
+                "settings-delete-all-sessions",
+                "Delete all sessions\u{2026}",
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::OpenAll),
+                look,
+            )
+            .bg(rgb(look.card))
+            .border_1()
+            .border_color(rgb(0xff453a))
+            .text_color(rgb(0xff453a))
+            .into_any_element(),
+        )))
+        .child(dim(
+            look,
+            "To delete only some, tick them in the sidebar, on Home or on a machine\u{2019}s page: \u{2318}-click a session, or use Select.",
+        ))
+}
+
 fn setting(look: Look, title: &str, note: &str, control: AnyElement) -> Div {
     row()
         .gap(px(16.))
@@ -716,10 +755,27 @@ pub fn page(
                 // MACHINESCRIPTS (D680): rules and script names, with Edit rules and Reveal scripts.
                 .when(state.settings.section == Section::Machines, |x| {
                     x.child(machine_scripts_block(ui, state, look))
+                })
+                // MASSDELETE (D875): the way to delete every session.
+                .when(state.settings.section == Section::Storage, |x| {
+                    x.child(sessions_block(ui, state, look))
                 });
         }
         Section::Access => {
-            body=body.child(div().font_weight(FontWeight::SEMIBOLD).child("Agent access")).child(dim(look,"Requests to change items you own wait in Inbox. Review each request before allowing it.")).child(button(ui,"settings-open-inbox","Review Inbox",AppAction::Switch(humata2_app::Route::Inbox),look));
+            body = body
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Agent access"))
+                .child(dim(
+                    look,
+                    "What agents may do in every channel that doesn\u{2019}t say otherwise. A channel\u{2019}s own Agent access tab overrides these.",
+                ))
+                .child(crate::access::global(ui, state, look))
+                .child(button(
+                    ui,
+                    "settings-open-inbox",
+                    "Review Agent inbox",
+                    AppAction::Switch(humata2_app::Route::Inbox),
+                    look,
+                ));
         }
         Section::Notifications => {
             body = body

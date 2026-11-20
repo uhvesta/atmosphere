@@ -126,7 +126,7 @@ pub fn panel(
                     .when(back_in_body, |body| body.children(back(send, state, session, look)))
                     .child(todo::drawer(send, state, e, inputs, sessions, look, false)),
             ))
-            .child(todo::footer(send, state, &e.todo, look).flex_shrink_0().px(px(12.)).py(px(10.))),
+            .child(todo::footer(send, state, &e.todo, look, false).flex_shrink_0().px(px(12.)).py(px(10.))),
         None => col().w_full().flex_1().min_h_0().child(scroll(list(send, state, session, look))),
     }
 }

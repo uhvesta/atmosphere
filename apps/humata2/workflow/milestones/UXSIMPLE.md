@@ -47,6 +47,8 @@ The loop from "the agent did work" to "I've reviewed it and it's shipped" takes 
 
 Lane log: 2026-11-19 minion DIFFUI: Fable ruled D867–D869. Workers: T1 Sonnet (D867: features/review stack.rs+lib.rs `whole_groups`, ui panel_stack.rs `layer_caption`, plan.rs, file_list.rs `file_row_also`, tests), T2 Haiku (D869: review_header.rs `review_repo_head`, one call in mod.rs, pr_session test). Gate-ready; goldens to record: native stack-whole, 68-pr-review-session, 68b, 68c.
 
+Lane log: 2026-11-19 minion DIFFUI round 2: Fable ruled the Fork dialog (D873: opens collapsed on Code + context, More options disclosure). Workers: Sonnet A (D868 header "N repos" + per-repo menus + "Use for every repo"; Whole stack stepping follows drawn order), Sonnet B (Fork dialog: ui/overlays overlay_fork.rs, features/session fork state, fork_move tests). No builds this round.
+
 ## Out of scope
 Building anything before the owner picks.
 - 2026-11-19 (DIFFUI3): (f) is done (D854): `order-humata-review` is folded into `render-humata-review` as "show with notes" (`with-notes.md`). Two review skills: show, review. The installer drops the old skill from agents' folders.

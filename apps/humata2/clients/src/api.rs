@@ -26,6 +26,7 @@ mod local_daemon;
 pub mod marks;
 pub mod todo;
 pub mod model;
+pub mod mass_delete;
 // PROGRESS: the one model of a running operation's progress.
 pub mod progress;
 // REPOS (RL-1): the repo library and the one repo search.

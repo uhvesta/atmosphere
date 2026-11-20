@@ -10,6 +10,7 @@ use crate::daemon::{
     SwitchChange, TerminalNotice, Terminals,
 };
 use crate::fixture;
+use crate::mass_delete::{DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan};
 use crate::model::{
     Agent, Answer, Archive, Capability, ChannelId, DiffBase, GrantId, ItemId, ItemStatus, Line,
     MachineId, PushChoice, Recovery, RepoBases, RepoDiff, Request, RequestId, RuleSetting, Scope, Session,
@@ -28,6 +29,7 @@ mod desk;
 mod docs;
 mod inbox;
 mod machines;
+mod mass_delete;
 // REPOS (RL-1): the repo library and search.
 mod repos;
 mod review;
@@ -112,6 +114,8 @@ struct Inner {
     repos: repos::State,
     /// D784: the holders each machine lists, as a test seeded them.
     running: Vec<crate::daemon::RunningHolder>,
+    /// MASSDELETE: the plan last given out, and whether the next delete changes.
+    mass_delete: mass_delete::State,
 }
 
 struct Subscriber {
@@ -181,6 +185,7 @@ impl FakeDaemon {
                 // REPOS (RL-1)
                 repos: repos::State::default(),
                 running: Vec::new(),
+                mass_delete: mass_delete::State::default(),
             })),
             holds: Arc::new(Mutex::new(HashMap::new())),
             clock,
@@ -396,6 +401,11 @@ impl FakeDaemon {
     #[must_use]
     pub fn workspace(&self) -> Workspace {
         self.inner().workspace.clone()
+    }
+
+    /// The next bulk delete answers Changed and deletes nothing (MASSDELETE).
+    pub fn change_after_plan(&self) {
+        mass_delete::change_after_plan(self);
     }
 
     /// Takes a host offline, as a closed lid would: its sessions show as
@@ -763,6 +773,19 @@ impl Daemon for FakeDaemon {
         sessions::plan_archive(self, session)
     }
 
+    fn plan_delete_sessions(&self, scope: &DeleteScope) -> Reply<DeleteSessionsPlan> {
+        mass_delete::plan(self, scope.clone())
+    }
+
+    fn delete_sessions(
+        &self,
+        token: &str,
+        delete_unpushed_work: bool,
+        typed_count: u32,
+    ) -> Reply<DeleteSessionsOutcome> {
+        mass_delete::delete(self, token, delete_unpushed_work, typed_count)
+    }
+
     fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive> {
         sessions::archive(self, session, push_first)
     }
@@ -960,6 +983,45 @@ impl Terminals for FakeDaemon {
         terminals::open_in(self, session, agent, folder)
     }
 
+    fn open_agent_tab(
+        &self,
+        session: &SessionId,
+        agent: Agent,
+        prompt: &str,
+    ) -> Reply<(usize, Session)> {
+        let id = session.clone();
+        let prompt = prompt.to_owned();
+        let call = format!("open_agent_tab {session} {} {prompt:?}", agent.command());
+        self.reply(Some(Operation::OpenAgentTab), call, move |inner| {
+            if agent == Agent::Shell {
+                return Err(DaemonError::Refused {
+                    what: "Opening an agent tab".into(),
+                    reason: "a plain shell is not an agent. Open a Terminal tab instead".into(),
+                });
+            }
+            let session = inner.session_mut(&id)?;
+            // D858: always a fresh extra tab, never attaching tab 0 or an earlier tab.
+            session.shells.push(agent.command().to_owned());
+            let tab = session.shells.len();
+            session.terminal_agents.insert(tab, agent);
+            let snapshot = session.clone();
+            inner.changed(&id);
+            for line in fixture::extra_terminal(agent, &snapshot.repo, &snapshot.branch) {
+                inner.output(&id, tab, line.from, &line.text);
+            }
+            if !prompt.is_empty() {
+                inner.output(&id, tab, Speaker::You, &prompt);
+                inner.output(
+                    &id,
+                    tab,
+                    Speaker::Agent,
+                    &format!("Message received by the fake {} terminal.", agent.name()),
+                );
+            }
+            Ok((tab, snapshot))
+        })
+    }
+
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()> {
         terminals::write(self, session, tab, text)
     }
@@ -975,5 +1037,102 @@ impl Terminals for FakeDaemon {
         bytes: Vec<u8>,
     ) -> Reply<String> {
         terminals::paste_image(self, session, kind, bytes)
+    }
+}
+
+#[cfg(test)]
+mod open_agent_tab_tests {
+    use super::*;
+    use tca::TestClock;
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn open_agent_tab_creates_fresh_tabs_with_label_agent_and_prompt() {
+        let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+        let id = SessionId::new("ledger");
+        let before = daemon.workspace().session(&id).expect("ledger").shells.len();
+
+        let mut events = block_on(daemon.events()).expect("subscribe");
+        let (first, snap1) = block_on(daemon.open_agent_tab(
+            &id,
+            Agent::Claude,
+            "Review the diff without editing files.",
+        ))
+        .expect("first agent tab opens");
+        assert_eq!(first, before + 1);
+        assert_eq!(snap1.shells.last().map(String::as_str), Some("claude"));
+        assert_eq!(snap1.terminal_agents.get(&first), Some(&Agent::Claude));
+
+        // Picking the same agent a second time opens another fresh tab instead
+        // of attaching tab 0 or the first reviewer tab.
+        let (second, snap2) =
+            block_on(daemon.open_agent_tab(&id, Agent::Claude, "")).expect("second agent tab opens");
+        assert_eq!(second, first + 1);
+        assert_eq!(snap2.terminal_agents.get(&first), Some(&Agent::Claude));
+        assert_eq!(snap2.terminal_agents.get(&second), Some(&Agent::Claude));
+
+        // Reloading the workspace keeps both labels and agent kinds.
+        let reloaded = daemon.workspace();
+        let kept = reloaded.session(&id).expect("ledger");
+        assert_eq!(kept.shells.get(first - 1).map(String::as_str), Some("claude"));
+        assert_eq!(kept.shells.get(second - 1).map(String::as_str), Some("claude"));
+        assert_eq!(kept.terminal_agents.get(&first), Some(&Agent::Claude));
+        assert_eq!(kept.terminal_agents.get(&second), Some(&Agent::Claude));
+
+        // Prompt bytes were written to the first tab and not to the empty-prompt second tab.
+        let first_bytes = String::from_utf8_lossy(&reloaded.terminal_bytes[&(id.clone(), first)]);
+        assert!(first_bytes.contains("Review the diff without editing files."));
+        let second_bytes = String::from_utf8_lossy(&reloaded.terminal_bytes[&(id.clone(), second)]);
+        assert!(!second_bytes.contains("Review the diff without editing files."));
+
+        // Subscribers received a session event carrying the agent tab metadata.
+        let mut saw_session = false;
+        while let Ok(Ok(event)) = events.try_recv() {
+            if let Event::Session(changed) = event
+                && changed.id == id
+                && changed.terminal_agents.get(&first) == Some(&Agent::Claude)
+            {
+                saw_session = true;
+            }
+        }
+        assert!(saw_session, "open_agent_tab publishes Event::Session with terminal_agents");
+    }
+
+    #[test]
+    fn open_agent_tab_refuses_shell_and_honours_scripted_or_offline_errors() {
+        let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+        let id = SessionId::new("ledger");
+
+        assert!(matches!(
+            block_on(daemon.open_agent_tab(&id, Agent::Shell, "")),
+            Err(DaemonError::Refused { .. })
+        ));
+        assert!(matches!(
+            block_on(daemon.open_agent_tab(&SessionId::new("no-such"), Agent::Codex, "")),
+            Err(DaemonError::NotFound { .. })
+        ));
+
+        daemon.fail_next(Operation::OpenAgentTab, "agent cli failed");
+        assert!(matches!(
+            block_on(daemon.open_agent_tab(&id, Agent::Codex, "check")),
+            Err(DaemonError::Scripted {
+                operation: Operation::OpenAgentTab,
+                ..
+            })
+        ));
+
+        let machine = daemon.workspace().session(&id).expect("ledger").machine.clone();
+        daemon.take_offline(&machine);
+        assert!(matches!(
+            block_on(daemon.open_agent_tab(&id, Agent::Codex, "check")),
+            Err(DaemonError::Offline { .. })
+        ));
     }
 }

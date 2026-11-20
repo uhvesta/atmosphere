@@ -39,6 +39,7 @@ Document "Machine devbox-1"
   Tab "Overview" selected
   Tab "Storage"
   #machine-overview
+    Button "Select"
     Group "Health"
       Status "Disk 97% used"
       Button "Set value…"

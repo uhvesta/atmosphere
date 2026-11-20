@@ -225,6 +225,27 @@ fn the_header_compares_per_repo_only_when_the_bases_differ() {
 }
 
 #[test]
+fn use_for_every_repo_gives_all_repositories_that_base_and_closes_the_menu() {
+    let mut rig = rig();
+    rig.act(A::PickRepoBase {
+        session: session(),
+        repo: "acme/api".to_owned(),
+        base: RepoBase::Uncommitted,
+    });
+    assert!(rig.store.state().compares_per_repo(&session()));
+    rig.act(toggle("acme/api"));
+    rig.act(A::UseRepoBaseForEvery {
+        session: session(),
+        repo: "acme/api".to_owned(),
+    });
+    assert_eq!(rig.open_repo(), None);
+    let targets = rig.store.state().targets_of(&session());
+    assert_eq!(targets.of("acme/api"), RepoBase::Uncommitted);
+    assert_eq!(targets.of("acme/web"), RepoBase::Uncommitted);
+    assert!(!rig.store.state().compares_per_repo(&session()));
+}
+
+#[test]
 fn pushing_a_repository_on_its_own_branch_asks_for_that_base() {
     let mut rig = rig();
     rig.act(A::PickRepoBase {

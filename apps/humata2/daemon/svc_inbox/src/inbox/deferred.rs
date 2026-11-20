@@ -9,10 +9,11 @@
 use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
-use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision};
+use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision, Place, Root};
 use humata2_daemon_ports::{AgentCaller, Caller, Names};
 use humata2_grpc::humata::v1 as pb;
 use humata2_rpc_kit::helpers as status;
+use humata2_store::Store;
 use tonic::{Code, Status};
 
 use super::{
@@ -152,10 +153,88 @@ fn standing(held: &Held) -> Standing {
     }
 }
 
+/// Turns `place` (a file or folder read) into a `pb::RepoPath`, splitting out
+/// the `owner/name` repository prefix when `place` targets a repository clone.
+fn repo_path_of(place: &Place, store: &Store) -> pb::RepoPath {
+    let raw = place.path.as_str();
+    match &place.root {
+        Root::MainClone { repo, .. } => {
+            let repo = repo
+                .as_str()
+                .split_once('/')
+                .map(|(owner, name)| pb::RepoRef {
+                    owner: owner.to_owned(),
+                    name: name.to_owned(),
+                });
+            pb::RepoPath {
+                repo,
+                path: raw.to_owned(),
+            }
+        }
+        Root::Clone(session) => {
+            let repos = store
+                .session_detail(session.id.as_str())
+                .ok()
+                .flatten()
+                .map(|detail| detail.repos)
+                .unwrap_or_default();
+            for repo in repos {
+                let prefix = format!("{}/{}", repo.owner, repo.name);
+                if raw == prefix {
+                    return pb::RepoPath {
+                        repo: Some(pb::RepoRef {
+                            owner: repo.owner,
+                            name: repo.name,
+                        }),
+                        path: String::new(),
+                    };
+                }
+                if let Some(rest) = raw.strip_prefix(&format!("{prefix}/")) {
+                    return pb::RepoPath {
+                        repo: Some(pb::RepoRef {
+                            owner: repo.owner,
+                            name: repo.name,
+                        }),
+                        path: rest.to_owned(),
+                    };
+                }
+            }
+            pb::RepoPath {
+                repo: None,
+                path: raw.to_owned(),
+            }
+        }
+        _ => pb::RepoPath {
+            repo: None,
+            path: raw.to_owned(),
+        },
+    }
+}
+
+/// Builds a `FileAccessPreview` for an asked `Call::ReadFiles(place)`.
+fn file_read_preview(place: &Place, store: &Store) -> pb::FileAccessPreview {
+    let source_session = match &place.root {
+        Root::Clone(session) | Root::Pastes(session) => Some(pb::SessionId {
+            value: session.id.to_string(),
+        }),
+        _ => None,
+    };
+    pb::FileAccessPreview {
+        source_session,
+        source_machine: Some(pb::MachineId {
+            value: place.machine.to_string(),
+        }),
+        mode: pb::file_access_preview::Mode::ReadThisCall as i32,
+        paths: vec![repo_path_of(place, store)],
+    }
+}
+
 /// The card for a deferred call (IN-9, IN-10). It offers "Always allow" of
 /// the exact target IN-22 names for the call, when the call has one (IN-14).
+#[allow(clippy::too_many_arguments)]
 fn card(
     guard: &dyn InboxGuardPort,
+    store: &Store,
     id: &str,
     agent: &AgentCaller,
     asked: &AccessRequest,
@@ -169,10 +248,37 @@ fn card(
     let target = offered.map(|target| guard.target_pb(target));
     let target_label =
         offered.map_or_else(|| asked.capability.label().to_owned(), super::describe);
-    let details = board
-        .as_ref()
-        .map(|board| super::facts::details(&board.preview, names))
-        .unwrap_or_default();
+    let (reason, preview, details) = match board {
+        Some(board) => {
+            let details = match (&board.preview, &asked.call) {
+                (pb::request_preview::Preview::FileAccess(access), Call::ReadFiles(place)) => {
+                    super::facts::file_read_details(access, place, store, names)
+                }
+                (preview, _) => super::facts::details(preview, names),
+            };
+            (board.reason, board.preview, details)
+        }
+        None => match &asked.call {
+            Call::ReadFiles(place) => {
+                let file_access = file_read_preview(place, store);
+                let details = super::facts::file_read_details(&file_access, place, store, names);
+                (
+                    String::new(),
+                    pb::request_preview::Preview::FileAccess(file_access),
+                    details,
+                )
+            }
+            _ => (
+                String::new(),
+                pb::request_preview::Preview::AccessAhead(pb::AccessAheadPreview {
+                    capability,
+                    target: target.clone(),
+                    target_label: target_label.clone(),
+                }),
+                super::facts::Details::default(),
+            ),
+        },
+    };
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -185,19 +291,9 @@ fn card(
         requester: Some(agent.actor()),
         operation: agent.operation(),
         action_title: super::asks_title(&agent.title, asked.capability, false),
-        reason: board
-            .as_ref()
-            .map(|board| board.reason.clone())
-            .unwrap_or_default(),
+        reason,
         preview: Some(pb::RequestPreview {
-            preview: Some(match board {
-                Some(board) => board.preview,
-                None => pb::request_preview::Preview::AccessAhead(pb::AccessAheadPreview {
-                    capability,
-                    target: target.clone(),
-                    target_label: target_label.clone(),
-                }),
-            }),
+            preview: Some(preview),
         }),
         capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, super::decision_of) as i32,
@@ -276,7 +372,31 @@ impl Inbox {
         operation: &str,
         run: Option<Run>,
     ) -> Result<(), Status> {
-        self.ask_read_with(caller, asked, operation, run, None).await
+        self.ask_read_reason(caller, asked, operation, String::new(), run)
+            .await
+    }
+
+    /// [`Inbox::ask_read`] with the agent's `reason` for reading, shown on the
+    /// card's `FileAccessPreview` when `asked.call` is a file read.
+    pub async fn ask_read_reason(
+        &self,
+        caller: &Caller,
+        asked: AccessRequest,
+        operation: &str,
+        reason: String,
+        run: Option<Run>,
+    ) -> Result<(), Status> {
+        let board = match &asked.call {
+            Call::ReadFiles(place) if !reason.trim().is_empty() => Some(BoardAsk {
+                preview: pb::request_preview::Preview::FileAccess(file_read_preview(
+                    place,
+                    &self.store,
+                )),
+                reason,
+            }),
+            _ => None,
+        };
+        self.ask_read_with(caller, asked, operation, run, board).await
     }
 
     /// [`Inbox::ask_read`] whose card shows `board`'s preview and reason
@@ -445,6 +565,7 @@ impl Inbox {
         let names = Names::of_host(&self.machine);
         let mut held = Held::new(card(
             self.guard.as_ref(),
+            &self.store,
             &id,
             agent,
             &asked,

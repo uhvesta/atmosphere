@@ -795,6 +795,10 @@ RIG_TESTS.append("resume_exits_at_once_remote")
 # refusal tells online machines from offline ones as they are.
 RIG_TESTS.append("channel_delete_remote")
 
+# MASSDELETE, D876: a bulk session delete reaches online machines through the
+# host and leaves offline ones alone.
+RIG_TESTS.append("delete_sessions_remote")
+
 # D786: a box grows a clipped trust box's pty only while no writer, relayed
 # ones included, is attached.
 RIG_TESTS.append("screen_questions_remote")
@@ -978,6 +982,12 @@ TEST_NEEDS = {
     "delete_channel": [
         "FAULTS",
         "HUMATA",
+    ],
+    "delete_sessions_cut": ["FAULTS"],
+    "delete_sessions_remote": [
+        "HUMATA",
+        "RELEASE",
+        "SETSID",
     ],
     "desk": [
         "FAULTS",
@@ -1439,6 +1449,9 @@ POWER_CUT_SCOPED_TESTS = [
     "conversation_follows",
     "daemon",
     "delete_launching",
+    "delete_sessions",
+    "delete_sessions_cut",
+    "delete_sessions_remote",
     "desk_agent_missing",
     "desk_close_remote",
     "desk_events",

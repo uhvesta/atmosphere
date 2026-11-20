@@ -48,6 +48,7 @@ mod archive_remote;
 pub(crate) use archive_remote::{machine_failed as peer_failed, use_upgrade as use_peer_upgrade};
 mod continue_in;
 mod conversation_read;
+mod delete_many;
 mod ended;
 mod forget;
 mod fork;
@@ -280,6 +281,7 @@ impl Tell {
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
         shown.pull_request = loaded.review.as_ref().map(pr_binding);
+        shown.shell_tabs.clone_from(&loaded.shell_tabs);
         if let Some(remote) = self.remote.get()
             && remote::elsewhere(&loaded.record, &self.machine)
         {
@@ -291,6 +293,7 @@ impl Tell {
         // After the machine's report, so an archived session shows archived.
         lineage::apply(&self.store, &mut shown);
         move_session::show_moving(&mut shown);
+        stamp_status_since(&mut shown);
         self.feed.publish_in(
             change,
             pb::event::Payload::Session(shown),
@@ -318,6 +321,8 @@ pub(crate) struct Loaded {
     /// first: it is started again in its conversation, not resumed as an
     /// interrupted one, so nothing is recorded and it isn't told.
     moved: Option<&'static str>,
+    /// D858: extra terminal tabs (shell or added agent), oldest first.
+    shell_tabs: Vec<pb::ShellTab>,
 }
 
 impl Loaded {
@@ -336,6 +341,15 @@ impl Loaded {
             agent,
             record,
             moved: None,
+            shell_tabs: humata2_svc_terminal::agent_tabs::shell_tabs(store, key)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| pb::ShellTab {
+                    tab: Some(pb::TabId { value: entry.tab }),
+                    label: entry.label,
+                    agent: entry.agent.map(|value| pb::AgentId { value }),
+                })
+                .collect(),
         }))
     }
 }
@@ -1419,12 +1433,14 @@ impl SessionSvc {
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
         shown.pull_request = loaded.review.as_ref().map(pr_binding);
+        shown.shell_tabs.clone_from(&loaded.shell_tabs);
         self.merge_remote(&loaded.record, &mut shown);
         if !remote::elsewhere(&loaded.record, &self.machine) {
             self.tell.pointers.fill(&loaded.record.id, &mut shown);
         }
         self.apply_lineage(&mut shown);
         move_session::show_moving(&mut shown);
+        stamp_status_since(&mut shown);
         shown
     }
 
@@ -1638,6 +1654,26 @@ fn away_pb(left: humata2_store::AwayLeftOut) -> pb::AwayWritesLeftOut {
     }
 }
 
+/// Records the session's final shown status (after remote merge, lineage, and
+/// move state) and stamps `status_since` on `shown` (PROGRESS T5).
+fn stamp_status_since(shown: &mut pb::Session) {
+    stamp_status_since_at(shown, now_ms());
+}
+
+fn stamp_status_since_at(shown: &mut pb::Session, at_ms: i64) {
+    let Some(id) = shown
+        .id
+        .as_ref()
+        .map(|id| id.value.as_str())
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let status = pb::SessionStatus::try_from(shown.status)
+        .unwrap_or(pb::SessionStatus::Unspecified);
+    shown.status_since = Some(timestamp_ms(status_since::observe(id, status, at_ms)));
+}
+
 fn session_pb(
     record: &SessionRecord,
     detail: Option<&SessionDetail>,
@@ -1670,7 +1706,9 @@ fn session_pb(
         }),
         folder: record.folder.display().to_string(),
         status: status as i32,
-        status_since: Some(timestamp_ms(status_since::observe(&record.id, status, now_ms()))),
+        // Stamped by `stamp_status_since` after remote merge, lineage, and move
+        // state settle on the final status shown to callers.
+        status_since: None,
         repos: detail
             .map(|detail| {
                 detail
@@ -2473,7 +2511,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
         }
         let store = self.starter.store.clone();
         let include_archived = request.include_archived;
-        let (sessions, details, agents, sources, lineage, left_out, reviews) = blocking(move || {
+        let (sessions, details, agents, sources, lineage, left_out, reviews, shell_tabs) = blocking(move || {
             let left_out: HashMap<String, pb::AwayWritesLeftOut> = store
                 .away_left_outs()?
                 .into_iter()
@@ -2498,6 +2536,8 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 .filter(|row| row.deleted_unix_ms.is_some())
                 .map(|row| row.session_id)
                 .collect();
+            let shell_tabs =
+                humata2_svc_terminal::agent_tabs::shell_tabs_by_session(&store).unwrap_or_default();
             Ok::<_, StoreError>((
                 store
                     .sessions()?
@@ -2510,6 +2550,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 lineage,
                 left_out,
                 reviews,
+                shell_tabs,
             ))
         })
         .await?
@@ -2558,9 +2599,21 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 );
                 shown.away_left_out = left_out.get(&session.id).cloned();
                 shown.pull_request = reviews.get(&session.id).cloned();
+                shown.shell_tabs = shell_tabs
+                    .get(&session.id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|entry| pb::ShellTab {
+                        tab: Some(pb::TabId { value: entry.tab }),
+                        label: entry.label,
+                        agent: entry.agent.map(|value| pb::AgentId { value }),
+                    })
+                    .collect();
                 self.merge_remote(session, &mut shown);
                 lineage.apply(&mut shown);
                 move_session::show_moving(&mut shown);
+                stamp_status_since(&mut shown);
                 shown
             })
             .collect();
@@ -2913,11 +2966,12 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::DeletePlan>, Status> {
         let caller = identity::caller(&request)?;
         let id = request.into_inner().id;
+        let key = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
         let first = self
-            .delete_of(&caller, id.clone(), false, "humata.v1.SessionService.PlanDelete")
+            .delete_of(&caller, id.clone(), false, || self.plan_one(&caller, &key))
             .await;
         answer_plan(first, || {
-            self.delete_of(&caller, id, true, "humata.v1.SessionService.PlanDelete")
+            self.delete_of(&caller, id, true, || self.plan_one(&caller, &key))
         })
         .await
     }
@@ -2933,9 +2987,16 @@ impl pb::session_service_server::SessionService for SessionSvc {
             .as_ref()
             .map(|key| key.value.clone());
         let id = request.id;
-        let first = self
-            .delete_of(&caller, id.clone(), false, "humata.v1.SessionService.DeleteSession")
-            .await;
+        let (plan, idempotency) = (request.plan, request.idempotency_key);
+        let named = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        let first = {
+            let (me, who, named, plan, idempotency) =
+                (self.clone(), caller.clone(), named.clone(), plan.clone(), idempotency.clone());
+            self.delete_of(&caller, id.clone(), false, || async move {
+                me.delete_one(&who, &named, plan, idempotency).await
+            })
+            .await
+        };
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
             &self.inbox,
@@ -2944,9 +3005,45 @@ impl pb::session_service_server::SessionService for SessionSvc {
             "humata.v1.DeleteSessionResponse",
             first,
             move || async move {
-                me.delete_of(&who, id, true, "humata.v1.SessionService.DeleteSession")
-                    .await
+                let (again, as_who) = (me.clone(), who.clone());
+                me.delete_of(&who, id, true, || async move {
+                    again.delete_one(&as_who, &named, plan, idempotency).await
+                })
+                .await
             },
+        )
+        .await
+    }
+
+    async fn plan_delete_sessions(
+        &self,
+        request: Request<pb::PlanDeleteSessionsRequest>,
+    ) -> Result<Response<pb::DeleteSessionsPlan>, Status> {
+        let caller = identity::caller(&request)?;
+        let scope = request.into_inner().scope;
+        let first = self.plan_delete_sessions_of(&caller, scope.clone(), false).await;
+        answer_plan(first, || self.plan_delete_sessions_of(&caller, scope, true)).await
+    }
+
+    async fn delete_sessions(
+        &self,
+        request: Request<pb::DeleteSessionsRequest>,
+    ) -> Result<Response<pb::DeleteSessionsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.delete_sessions_of(&caller, request.clone(), false, false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.DeleteSessionsResponse",
+            first,
+            move || async move { me.delete_sessions_of(&who, request, true, false).await },
         )
         .await
     }
@@ -3434,5 +3531,34 @@ mod tests {
         })
         .await;
         assert!(resynced.is_ok(), "no subscriber was told to resync");
+    }
+
+    #[test]
+    fn stamp_status_since_tracks_the_final_merged_status() {
+        let mut shown = pb::Session {
+            id: Some(pb::SessionId {
+                value: "se_stamp_merged_test".to_owned(),
+            }),
+            status: pb::SessionStatus::Working as i32,
+            ..pb::Session::default()
+        };
+        let ms = |shown: &pb::Session| {
+            shown
+                .status_since
+                .as_ref()
+                .map(|at| at.seconds * 1_000 + i64::from(at.nanos) / 1_000_000)
+        };
+        stamp_status_since_at(&mut shown, 10_000);
+        assert_eq!(ms(&shown), Some(10_000));
+        // Repeating the same status keeps its start time.
+        stamp_status_since_at(&mut shown, 25_000);
+        assert_eq!(ms(&shown), Some(10_000));
+        // A status transition (including after a remote merge) moves it.
+        shown.status = pb::SessionStatus::Idle as i32;
+        stamp_status_since_at(&mut shown, 40_000);
+        assert_eq!(ms(&shown), Some(40_000));
+        shown.status = pb::SessionStatus::Working as i32;
+        stamp_status_since_at(&mut shown, 55_000);
+        assert_eq!(ms(&shown), Some(55_000));
     }
 }

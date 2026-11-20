@@ -453,7 +453,14 @@ fn sec(look: Look, text: &'static str) -> Div {
 
 fn check_circle(look: Look) -> Div {
     let ring = tone(look, 0xc9c9cf, 0x55555a);
-    div().size(px(22.)).flex_shrink_0().rounded_full().border_1().border_color(ring).flex().items_center().justify_center().child(Icon::new(IconName::Check).size(px(12.)).text_color(ring))
+    ring_slot(ring, 12.)
+}
+
+/// A 22px slot holding a 19px ring with a 1.5px stroke and a tick.
+fn ring_slot(ring: Rgba, tick: f32) -> Div {
+    div().size(px(22.)).flex_shrink_0().flex().items_center().justify_center().child(
+        div().size(px(19.)).rounded_full().border(px(1.5)).border_color(ring).flex().items_center().justify_center().child(Icon::new(IconName::Check).size(px(tick)).text_color(ring)),
+    )
 }
 
 fn key(look: Look, text: &'static str) -> Div {
@@ -920,8 +927,7 @@ fn list_sec(look: Look, text: &'static str, note: &'static str, columns: bool) -
 }
 
 fn bright_check(look: Look) -> Div {
-    let ring = c(0xc9c9cf);
-    div().size(px(22.)).flex_shrink_0().rounded_full().border_1().border_color(ring).flex().items_center().justify_center().child(Icon::new(IconName::Check).size(px(12.)).text_color(ring))
+    ring_slot(c(0xc9c9cf), 13.)
 }
 
 fn due(look: Look, text: &'static str, kind: u8) -> Div {
@@ -974,7 +980,7 @@ fn list_row(look: Look, item: Item, first: bool) -> Div {
         .items_center()
         .gap(px(10.))
         .px(px(8.))
-        .py(px(7.))
+        .py(px(5.75))
         .min_h(px(50.))
         .relative()
         .when(!first, |r| r.child(div().absolute().top(px(-1.)).left(px(0.)).right(px(0.)).h(px(1.)).bg(tone(look, 0xf0f0f3, 0x2a2a2d))))
@@ -985,7 +991,7 @@ fn list_row(look: Look, item: Item, first: bool) -> Div {
                 .flex_1()
                 .min_w_0()
                 .child(div().flex().items_center().gap(px(7.)).whitespace_nowrap().overflow_hidden().children(line1))
-                .child(div().mt(px(3.)).flex().items_center().gap(px(6.)).whitespace_nowrap().overflow_hidden().text_size(px(12.)).text_color(muted(look)).children(line2)),
+                .child(div().mt(px(4.)).flex().items_center().gap(px(6.)).whitespace_nowrap().overflow_hidden().text_size(px(12.)).text_color(muted(look)).children(line2)),
         )
         .child(div().w(px(110.)).flex_shrink_0().flex().items_center().text_size(px(12.)).text_color(soft(look)).children(size.map(|(letter, level)| {
             div()
@@ -1111,8 +1117,8 @@ pub fn notification(look: Look) -> Div {
         .line_height(relative(1.35))
         .flex()
         .gap(px(11.))
-        .px(px(14.))
-        .py(px(12.))
+        .px(px(13.))
+        .py(px(11.))
         .rounded(px(16.))
         .bg(rgba(0x3a3a3ef5))
         .border_1()
@@ -1137,8 +1143,8 @@ pub fn notification(look: Look) -> Div {
             div()
                 .flex_1()
                 .min_w_0()
-                .child(div().flex().justify_between().text_size(px(12.)).text_color(c(0xb4b4ba)).child("HUMATA").child("now"))
-                .child(div().mt(px(1.)).mb(px(2.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.35)).child("codex is stopped: move Benchmark BRIN to gpu-box?"))
+                .child(div().flex().justify_between().text_size(px(12.)).line_height(relative(1.3)).text_color(c(0xb4b4ba)).child("HUMATA").child("now"))
+                .child(div().mt(px(1.)).mb(px(2.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.3)).child("codex is stopped: move Benchmark BRIN to gpu-box?"))
                 .child(div().text_size(px(12.5)).text_color(c(0xd4d4d9)).line_height(relative(1.4)).child("Its 2 terminals would move along and keep running. Open the Agent inbox to say yes or no.")),
         );
     div().relative().size_full().child(todo_page(look)).child(banner)

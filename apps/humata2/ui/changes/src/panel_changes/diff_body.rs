@@ -289,6 +289,11 @@ impl Target {
 /// approved goldens.
 pub(super) const VIRTUAL_FROM: usize = 1000;
 
+/// Pull request review files with more lines than this draw in their own
+/// bounded-height virtual list (DV-5 step 5, DS-29); shorter files keep
+/// frame 68's inline blocks.
+pub(super) const REVIEW_VIRTUAL_FROM: usize = 1500;
+
 /// Everything one file's code rows need besides its lines, gathered once
 /// per frame and owned, so a virtual list can build any line later in the
 /// frame: the comments by line, the open box, the click target and the

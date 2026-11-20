@@ -1,17 +1,15 @@
-//! Sidebar, channel, session tabs, terminals, board, file manager, inbox, and
+//! Sidebar, channel, session tabs, terminals, To-do, file manager, inbox, and
 //! session panels for Humata 2's GPUI desktop UI.
 
 pub(crate) use humata2_ui_core::{
     action_menu, bridge, chrome, code_wrap, full_text, keys, repo_search_field, theme, widgets,
 };
 
-pub mod board;
 pub mod channel;
 pub mod conversation_tab;
 pub mod file_manager;
 pub mod inbox_page;
 pub mod inbox_terminal;
-pub mod panel_board;
 pub mod panel_files;
 pub mod panel_inbox;
 pub mod panel_info;
@@ -26,7 +24,7 @@ pub mod todo;
 pub mod todo_panel;
 pub mod view_tab;
 
-/// Shared imports for `panel_{board,files,inbox,info,journal}` extracted from `panels.rs`.
+/// Shared imports for `panel_{files,inbox,info,journal}` extracted from `panels.rs`.
 #[allow(unused_imports)]
 mod panel_prelude {
     pub(crate) use std::collections::HashSet;

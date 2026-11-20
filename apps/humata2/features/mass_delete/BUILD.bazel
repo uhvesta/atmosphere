@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Deleting many sessions (MASSDELETE, D875): select mode and the one confirming sheet.
+# State, actions and effects only; the views are in //apps/humata2/ui.
+rust_library(
+    name = "mass_delete",
+    srcs = glob(["src/*.rs"]),
+    aliases = {"//apps/humata2/clients:api": "humata2_clients"},
+    crate_name = "humata2_mass_delete",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata2/clients:api",
+        "//libs/tca-rust:tca",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":mass_delete",
+            "//apps/humata2/clients",
+            "//libs/tca-rust:tca",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

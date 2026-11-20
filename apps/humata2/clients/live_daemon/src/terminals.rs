@@ -289,6 +289,29 @@ async fn new_shell_tab(
         })
 }
 
+/// Resolves the 1-based tab index returned by `TerminalService.OpenAgentTab`:
+/// uses `reply.index` when the daemon reported it, else locates `reply.tab.id`
+/// in `tabs` (ordered with tab 0 first).
+fn resolve_agent_tab_index(
+    reply: &pb::OpenAgentTabResponse,
+    tabs: &[pb::Tab],
+    agent: Agent,
+) -> Result<usize, DaemonError> {
+    if let Ok(index) = usize::try_from(reply.index)
+        && index > 0
+    {
+        return Ok(index);
+    }
+    let wanted_id = reply.tab.as_ref().and_then(|tab| tab.id.as_ref());
+    tabs.iter()
+        .position(|candidate| candidate.id.as_ref() == wanted_id && wanted_id.is_some())
+        .ok_or_else(|| DaemonError::Refused {
+            what: format!("Starting {} in a new tab", agent.name()),
+            reason: "the daemon opened the tab but doesn't list it. Reload and try again"
+                .to_owned(),
+        })
+}
+
 /// Opens a link to tab `tab` of `session` whose attaches open at `size`;
 /// (0, 0) leaves the tab at its own size.
 fn link_at(shared: &Arc<Shared>, session: &SessionId, tab: usize, size: (u16, u16)) -> Reply<TerminalLink> {
@@ -349,6 +372,46 @@ impl Terminals for LiveDaemon {
         })
     }
 
+    fn open_agent_tab(
+        &self,
+        session: &SessionId,
+        agent: Agent,
+        prompt: &str,
+    ) -> Reply<(usize, Session)> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let prompt = prompt.to_owned();
+        Box::pin(async move {
+            if agent == Agent::Shell {
+                return Err(DaemonError::Refused {
+                    what: "Opening an agent tab".to_owned(),
+                    reason: "a plain shell is not an agent. Open a Terminal tab instead".to_owned(),
+                });
+            }
+            let id = pb_session(&session);
+            let daemon_agent = shared.agents.name(agent);
+            let reply = shared
+                .terminal()
+                .open_agent_tab(pb::OpenAgentTabRequest {
+                    idempotency_key: fresh_key(),
+                    session: Some(id.clone()),
+                    agent: Some(pb::AgentId {
+                        value: daemon_agent,
+                    }),
+                    prompt,
+                })
+                .await
+                .map_err(|status| {
+                    shared.error(&status, &format!("Starting {} in a new tab", agent.name()))
+                })?
+                .into_inner();
+            let tabs = shared.refresh_tabs(&id).await?;
+            let index = resolve_agent_tab_index(&reply, &tabs, agent)?;
+            let current = shared.fetch_session(&id).await?;
+            Ok((index, current))
+        })
+    }
+
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()> {
         let link = self.link(session, tab);
         let route = u64::try_from(tab).unwrap_or_default();
@@ -382,5 +445,50 @@ impl Terminals for LiveDaemon {
                 .into_inner();
             Ok(pasted.path)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab_with(id: &str, kind: pb::tab::Kind) -> pb::Tab {
+        pb::Tab {
+            id: Some(pb::TabId { value: id.to_owned() }),
+            kind: kind as i32,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_agent_tab_index_uses_reported_index_when_nonzero() {
+        let reply = pb::OpenAgentTabResponse {
+            tab: Some(tab_with("tb_new", pb::tab::Kind::Shell)),
+            index: 3,
+        };
+        assert_eq!(resolve_agent_tab_index(&reply, &[], Agent::Codex), Ok(3));
+    }
+
+    #[test]
+    fn resolve_agent_tab_index_falls_back_to_tab_position_and_errors_if_missing() {
+        let tabs = vec![
+            tab_with("tb_0", pb::tab::Kind::Agent),
+            tab_with("tb_1", pb::tab::Kind::Shell),
+            tab_with("tb_2", pb::tab::Kind::Shell),
+        ];
+        let found = pb::OpenAgentTabResponse {
+            tab: Some(tab_with("tb_2", pb::tab::Kind::Shell)),
+            index: 0,
+        };
+        assert_eq!(resolve_agent_tab_index(&found, &tabs, Agent::Claude), Ok(2));
+
+        let missing = pb::OpenAgentTabResponse {
+            tab: Some(tab_with("tb_gone", pb::tab::Kind::Shell)),
+            index: 0,
+        };
+        assert!(matches!(
+            resolve_agent_tab_index(&missing, &tabs, Agent::Claude),
+            Err(DaemonError::Refused { .. })
+        ));
     }
 }

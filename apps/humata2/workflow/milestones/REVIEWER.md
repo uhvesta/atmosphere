@@ -102,3 +102,19 @@ does.
     5. Seam lines in features/app/src/lib.rs, so the app's workspace gets the label without waiting for the next session event:
        - after `state.workspace = Arc::new(workspace);` (~1045, Loaded), add `state.session.keep_agent_tabs(Arc::make_mut(&mut state.workspace));`;
        - the same after the child reduce of `AppAction::Session(SessionAction::AgentTabOpened { .. })`.
+
+- 2026-11-19 minion DIFFUI round 2: item 5 seam lines already in (features/app lib.rs ~1061, ~1253; events.rs). Worker Sonnet C: "not installed" rows from `MachineHealth.agents` (no proto needed), `end_running_holder` session push, "N agents" counting `terminal_agents`, plan for items 1–2. No builds this round.
+- 2026-11-19 minion REVIEWER (Gemini 4 Neon, D858 items 1–2):
+  - **Built (claimed files):**
+    - `api/proto/humata/v1/terminal.proto`: added `TerminalService.OpenAgentTab(OpenAgentTabRequest) -> OpenAgentTabResponse{tab, index}` and `Tab.agent` (field 10).
+    - `daemon/svc_terminal/src/agent_tabs.rs` (+ `lib.rs`, `remote_terminal.rs`, `running_holders.rs`): persisted extra tab agent metadata (`tab_agent:<tab_id>` in SQLite store, label in `TabRecord::title`), `shell_tabs` / `shell_tabs_by_session` / `tab_index`, `resolve_launch` / `build_holder_spec` / `save_agent_tab` / `deliver_prompt`, `RemoteTerminal::open_agent_tab`, `running_holders` surfacing persisted agent kind and clearing it on `end()`. Unit tests in `agent_tabs.rs`, `remote_terminal.rs`, and `running_holders.rs`.
+    - `clients/src/daemon.rs` + `clients/src/daemon/fake.rs`: added `Operation::OpenAgentTab`, `Terminals::open_agent_tab`, `FakeDaemon::open_agent_tab`, and `open_agent_tab_tests`.
+    - `clients/live_daemon/src/terminals.rs`: implemented `LiveDaemon::open_agent_tab` over `TerminalService.OpenAgentTab` with `resolve_agent_tab_index` unit tests.
+    - `ui/changes/src/panel_changes/agent_tab.rs` + `features/app/src/lib.rs` + `features/app/tests/agent_tab_label.rs`: routed `SessionAction::OpenAgentTab` through `Terminals::open_agent_tab` with missing-agent guard and immediate workspace sync; tests verify direct daemon call, restart survival, and missing-agent guard.
+  - **Seams for main:**
+    - `api/proto/humata/v1/sessions.proto`: `message ShellTab { TabId tab = 1; string label = 2; AgentId agent = 3; }` and `repeated ShellTab shell_tabs = 36;` on `Session` (MASSDELETE's).
+    - `daemon/humatad/src/terminal.rs` + `serve.rs` + `session_service.rs`: wire `TerminalService::open_agent_tab`, `Tab.agent` in `describe()`, `clear_tab_agent` in `close_one()`, `agents`/`home` in `TerminalsConfig`, and `Session.shell_tabs` in `Loaded`/`show`/`ListSessions`/`Tell`.
+    - `clients/live_core/src/map.rs`: populate `Session.shells` and `Session.terminal_agents` from `pb::Session.shell_tabs` (with fallback to `tabs` + `tab.agent`).
+    - `desktop/tests/native/diff_full_screen.rs` + `desktop/tests/live_flows/reviewer.rs`: update the two pre-D858-item-2 assertions that expected client-side shell typing (`awaits_opening_prompt` / bash `$` prompt) to match direct `OpenAgentTab` launch.
+    - `DECISIONS.md`: Provisional entry (next free D number) recording D858 items 1–2.
+  - **Status:** written, awaiting main to apply seam lines and run focused Bazel build/tests.

@@ -21,6 +21,9 @@ pub trait Console {
     /// A line typed with echo off, read from the terminal itself rather than
     /// stdin, so a pipe can't answer it (CLI.md §3).
     fn secret(&self, prompt: &str) -> io::Result<String>;
+    /// A line typed with echo on, read from the terminal itself rather than
+    /// stdin, so a pipe can't answer it: for a count the person can see.
+    fn line(&self, prompt: &str) -> io::Result<String>;
     /// The CLI's own "Continue?" after a plan. Never stands in for presence.
     fn confirm(&self, prompt: &str) -> io::Result<bool>;
     /// All of stdin.
@@ -75,6 +78,15 @@ impl Console for StdConsole {
 
     fn interactive(&self) -> bool {
         io::stdin().is_terminal() && io::stdout().is_terminal()
+    }
+
+    fn line(&self, prompt: &str) -> io::Result<String> {
+        let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        write!(tty, "{prompt}")?;
+        tty.flush()?;
+        let mut line = String::new();
+        io::BufReader::new(&tty).read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_owned())
     }
 
     fn secret(&self, prompt: &str) -> io::Result<String> {

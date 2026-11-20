@@ -87,7 +87,6 @@
 //apps/humata2/daemon/store:crash_test
 //apps/humata2/daemon/store:power_cut_test
 //apps/humata2/desktop:design_test
-//apps/humata2/desktop:live_boards_test
 //apps/humata2/desktop:live_flows_cases
 //apps/humata2/desktop:live_flows_ssh_test
 //apps/humata2/desktop:live_flows_test

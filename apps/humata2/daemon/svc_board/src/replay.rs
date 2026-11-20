@@ -15,8 +15,8 @@
 //! entry moves the machine's mark in the same store transaction as its
 //! board write, so a restart or a second delivery changes nothing.
 
-use humata2_access::{BoardAct, BoardRef, Call};
-use humata2_daemon_ports::Caller;
+use humata2_access::{BoardAct, BoardRef, Call, Capability, PresenceMethod, Refusal};
+use humata2_daemon_ports::{Caller, UserVia};
 use crate::pb;
 use humata2_rpc_kit::{blocking, chain, invalid_field, lock, missing, not_built_status, now_ms};
 use humata2_store::{
@@ -29,7 +29,7 @@ use tonic::{Code, Status};
 
 use super::ports::{
     Checked, Method, Placement, Replayed, agent_caller_of, by_name, by_operation, error_of_status,
-    on_link, placed_on, resolve_fork, store_error,
+    on_link, placed_on, refused, resolve_fork, store_error,
 };
 use super::scope::{self, board_for_policy, by_of, column_number, made_by_session};
 use super::{BoardSvc, DEFAULT_COLUMN, Op, history, ids, item_id, item_ids, keys, merged, page_of};
@@ -400,6 +400,27 @@ impl BoardSvc {
         let Some(row) = by_name(&call.method) else {
             return Err(not_built_status(&call.method));
         };
+        let bytes = call.request.as_slice();
+        if row.method == Method::AskWhy {
+            let caller = match &call.principal {
+                Some(pb::forwarded_call::Principal::User(user)) if user.outside_sessions => {
+                    Caller::User(UserVia::Host)
+                }
+                Some(pb::forwarded_call::Principal::User(_)) => {
+                    return Err(refused(&Refusal::PresenceRequired {
+                        accepted: vec![PresenceMethod::ApprovalPassphrase],
+                    }));
+                }
+                Some(pb::forwarded_call::Principal::Agent(_)) => {
+                    return Err(refused(&Refusal::UserOnly {
+                        capability: Some(Capability::InboxAnswer),
+                    }));
+                }
+                None => return Err(not_built_status(&call.method)),
+            };
+            let request: pb::AskWhyRequest = request_of(bytes, &call.method)?;
+            return Ok(self.inbox.ask_why_as(caller, request).await?.encode_to_vec());
+        }
         let Some(pb::forwarded_call::Principal::Agent(principal)) = &call.principal else {
             return Err(not_built_status(&call.method));
         };
@@ -417,7 +438,6 @@ impl BoardSvc {
                     store_error(source, &self.machine, "read the session")
                 }
             })?;
-        let bytes = call.request.as_slice();
         let me = self.clone();
         match row.method {
             Method::ListItems => {
@@ -477,6 +497,13 @@ impl BoardSvc {
             Method::WithdrawRequest => {
                 let request: pb::WithdrawRequestRequest = request_of(bytes, &call.method)?;
                 Ok(me.inbox.withdraw_as(caller, request).await?.encode_to_vec())
+            }
+            Method::AskWhy => Err(refused(&Refusal::UserOnly {
+                capability: Some(Capability::InboxAnswer),
+            })),
+            Method::ExplainAsk => {
+                let request: pb::ExplainAskRequest = request_of(bytes, &call.method)?;
+                Ok(me.inbox.explain_as(caller, request).await?.encode_to_vec())
             }
             // REPOS (RL-12, D568): the host's library and search, as that
             // agent, under the host's rule for global reads.
@@ -856,7 +883,9 @@ impl BoardSvc {
             | Method::GetMachine
             | Method::ListDirectory
             | Method::Stat
-            | Method::StartTransfer => Err(Rejection::UnknownOperation {
+            | Method::StartTransfer
+            | Method::AskWhy
+            | Method::ExplainAsk => Err(Rejection::UnknownOperation {
                 operation: entry.operation.clone(),
             }
             .into()),
@@ -1170,6 +1199,8 @@ mod tests {
 
     struct NoopInbox {
         approved: Mutex<Vec<(String, String, String, pb::InboxRequest)>>,
+        asked_why: Mutex<Vec<(Caller, pb::AskWhyRequest)>>,
+        explained: Mutex<Vec<(Caller, pb::ExplainAskRequest)>>,
     }
 
     #[tonic::async_trait]
@@ -1204,6 +1235,37 @@ mod tests {
         ) -> Result<pb::InboxRequest, Status> {
             Err(Status::not_found("none"))
         }
+        async fn ask_why_as(
+            &self,
+            caller: Caller,
+            request: pb::AskWhyRequest,
+        ) -> Result<pb::InboxRequest, Status> {
+            let id = request.id.clone();
+            self.asked_why.lock().unwrap().push((caller, request));
+            Ok(pb::InboxRequest {
+                id,
+                state: pb::RequestState::Pending as i32,
+                ..Default::default()
+            })
+        }
+        async fn explain_as(
+            &self,
+            caller: Caller,
+            request: pb::ExplainAskRequest,
+        ) -> Result<pb::InboxRequest, Status> {
+            let id = request.id.clone();
+            let reply = request.reply.clone();
+            self.explained.lock().unwrap().push((caller, request));
+            Ok(pb::InboxRequest {
+                id,
+                state: pb::RequestState::Pending as i32,
+                asked_why: Some(pb::AskedWhy {
+                    reply,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        }
         async fn approved_on(
             &self,
             machine: &str,
@@ -1231,21 +1293,29 @@ mod tests {
         }
     }
 
-    fn test_host() -> (tempfile::TempDir, Arc<Store>, BoardSvc) {
+    fn test_host_with_inbox() -> (tempfile::TempDir, Arc<Store>, Arc<NoopInbox>, BoardSvc) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path()).unwrap());
         store.put_session(&session(AGENT, BOX)).unwrap();
         store.put_session(&session("se_far", "ma_other")).unwrap();
         store.claim_board_prefix("ch_a", "PAY").unwrap();
+        let inbox = Arc::new(NoopInbox {
+            approved: Mutex::new(Vec::new()),
+            asked_why: Mutex::new(Vec::new()),
+            explained: Mutex::new(Vec::new()),
+        });
         let boards = BoardSvc::new(
             Arc::new(AllowAllGuard),
             Arc::clone(&store),
             Arc::new(NoopFeed),
-            Arc::new(NoopInbox {
-                approved: Mutex::new(Vec::new()),
-            }),
+            Arc::clone(&inbox) as Arc<dyn crate::ports::BoardInbox>,
             HOST.to_owned(),
         );
+        (dir, store, inbox, boards)
+    }
+
+    fn test_host() -> (tempfile::TempDir, Arc<Store>, BoardSvc) {
+        let (dir, store, _inbox, boards) = test_host_with_inbox();
         (dir, store, boards)
     }
 
@@ -1333,5 +1403,156 @@ mod tests {
         let unknown = entry(2, "board.item_create", "se_missing", Vec::new());
         assert_eq!(boards.replay_at(BOX, &unknown, 1000).await, Replayed::Rejected);
         assert_eq!(store.machine_journal_mark(BOX).unwrap(), 2);
+    }
+
+    #[test]
+    fn by_name_finds_ask_why_and_explain_ask() {
+        assert_eq!(
+            by_name("/humata.v1.InboxService/AskWhy").map(|row| row.method),
+            Some(Method::AskWhy)
+        );
+        assert_eq!(
+            by_name("/humata.v1.InboxService/ExplainAsk").map(|row| row.method),
+            Some(Method::ExplainAsk)
+        );
+        assert_eq!(Method::AskWhy.row().name, "/humata.v1.InboxService/AskWhy");
+        assert_eq!(Method::ExplainAsk.row().name, "/humata.v1.InboxService/ExplainAsk");
+    }
+
+    #[tokio::test]
+    async fn forwarded_ask_why_allows_trusted_peer_user_and_refuses_agent_or_in_session_user() {
+        let (_dir, _store, inbox, boards) = test_host_with_inbox();
+        let body = pb::AskWhyRequest {
+            id: Some(pb::RequestId { value: "rq_1".to_owned() }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+
+        // An agent trying to forward AskWhy is refused.
+        let as_agent = boards
+            .forwarded(
+                BOX,
+                pb::ForwardedCall {
+                    call_id: 1,
+                    principal: Some(pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
+                        session: Some(pb::SessionId { value: AGENT.to_owned() }),
+                        pid: 0,
+                    })),
+                    method: "/humata.v1.InboxService/AskWhy".to_owned(),
+                    request: body.clone(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(as_agent.outcome, Some(pb::forwarded_result::Outcome::Error(_))));
+        assert!(inbox.asked_why.lock().unwrap().is_empty());
+
+        // A user inside a session terminal is refused.
+        let inside = boards
+            .forwarded(
+                BOX,
+                pb::ForwardedCall {
+                    call_id: 2,
+                    principal: Some(pb::forwarded_call::Principal::User(pb::MachineUser {
+                        presence: None,
+                        outside_sessions: false,
+                    })),
+                    method: "/humata.v1.InboxService/AskWhy".to_owned(),
+                    request: body.clone(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(inside.outcome, Some(pb::forwarded_result::Outcome::Error(_))));
+        assert!(inbox.asked_why.lock().unwrap().is_empty());
+
+        // A user outside sessions on a trusted peer runs as Caller::User(UserVia::Host).
+        let ok = boards
+            .forwarded(
+                BOX,
+                pb::ForwardedCall {
+                    call_id: 3,
+                    principal: Some(pb::forwarded_call::Principal::User(pb::MachineUser {
+                        presence: None,
+                        outside_sessions: true,
+                    })),
+                    method: "/humata.v1.InboxService/AskWhy".to_owned(),
+                    request: body,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let Some(pb::forwarded_result::Outcome::Response(bytes)) = ok.outcome else {
+            panic!("expected AskWhy response, got {:?}", ok.outcome);
+        };
+        let decoded = pb::InboxRequest::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.id.map(|id| id.value).as_deref(), Some("rq_1"));
+        let recorded = inbox.asked_why.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(recorded[0].0, Caller::User(UserVia::Host)));
+    }
+
+    #[tokio::test]
+    async fn forwarded_explain_ask_routes_for_placed_session_and_refuses_session_elsewhere() {
+        let (_dir, _store, inbox, boards) = test_host_with_inbox();
+        let body = pb::ExplainAskRequest {
+            id: Some(pb::RequestId { value: "rq_1".to_owned() }),
+            reply: "needed for the build".to_owned(),
+        }
+        .encode_to_vec();
+
+        let wrong_machine = boards
+            .forwarded(
+                BOX,
+                pb::ForwardedCall {
+                    call_id: 1,
+                    principal: Some(pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
+                        session: Some(pb::SessionId { value: "se_far".to_owned() }),
+                        pid: 0,
+                    })),
+                    method: "/humata.v1.InboxService/ExplainAsk".to_owned(),
+                    request: body.clone(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(
+            wrong_machine.outcome,
+            Some(pb::forwarded_result::Outcome::Error(pb::Error {
+                kind: Some(pb::error::Kind::IdentityMismatch(_)),
+                ..
+            }))
+        ));
+        assert!(inbox.explained.lock().unwrap().is_empty());
+
+        let ok = boards
+            .forwarded(
+                BOX,
+                pb::ForwardedCall {
+                    call_id: 2,
+                    principal: Some(pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
+                        session: Some(pb::SessionId { value: AGENT.to_owned() }),
+                        pid: 0,
+                    })),
+                    method: "/humata.v1.InboxService/ExplainAsk".to_owned(),
+                    request: body,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let Some(pb::forwarded_result::Outcome::Response(bytes)) = ok.outcome else {
+            panic!("expected ExplainAsk response, got {:?}", ok.outcome);
+        };
+        let decoded = pb::InboxRequest::decode(bytes.as_slice()).unwrap();
+        assert_eq!(
+            decoded.asked_why.map(|why| why.reply).as_deref(),
+            Some("needed for the build")
+        );
+        let recorded = inbox.explained.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(
+            &recorded[0].0,
+            Caller::Agent(agent) if agent.session.id.as_str() == AGENT
+        ));
     }
 }

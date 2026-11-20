@@ -67,6 +67,9 @@ pub enum Capability {
     SessionStopOther,
     // Never by default.
     SessionDeleteOther,
+    // Delete many sessions at once (MASSDELETE); never by default, and
+    // never the agent's own session.
+    SessionsDeleteMany,
     MachineSessionsStop,
     ChannelChange,
     MachineDestroy,
@@ -144,7 +147,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 57] = [
+    pub const ALL: [Capability; 58] = [
         Self::OwnBoardWrite,
         Self::TodoSuggest,
         Self::TodoClose,
@@ -185,6 +188,7 @@ impl Capability {
         Self::ProviderImport,
         Self::SessionStopOther,
         Self::SessionDeleteOther,
+        Self::SessionsDeleteMany,
         Self::MachineSessionsStop,
         Self::ChannelChange,
         Self::MachineDestroy,
@@ -244,6 +248,7 @@ impl Capability {
             | Self::SessionStopOther => Tier::AskMe,
             Self::NetworkReach | Self::DeskMoveToChannel | Self::ProviderImport => Tier::AskNoAllow,
             Self::SessionDeleteOther
+            | Self::SessionsDeleteMany
             | Self::MachineSessionsStop
             | Self::ChannelChange
             | Self::MachineDestroy
@@ -311,6 +316,7 @@ impl Capability {
             | Self::ProviderImport
             | Self::ChannelChange
             | Self::MachineScriptRun
+            | Self::SessionsDeleteMany
             | Self::AccessChange
             | Self::SettingsChange
             | Self::MarksChange
@@ -431,6 +437,7 @@ impl Capability {
             Self::ProviderImport => "ask you to import a machine provider",
             Self::SessionStopOther => "stop or archive another session",
             Self::SessionDeleteOther => "delete another session",
+            Self::SessionsDeleteMany => "delete many sessions at once",
             Self::MachineSessionsStop => "stop or start all sessions on a machine",
             Self::ChannelChange => "change channel settings, or remove a repo from a channel",
             Self::MachineDestroy => "remove, forget or delete machines",

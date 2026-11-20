@@ -510,7 +510,11 @@ fn widening_a_wrapped_diff_keeps_its_top_line_in_place() {
 #[test]
 fn the_base_menu_picks_what_the_diff_is_against_and_looks_good_starts_it_over() {
     use humata2_clients::model::DiffBase;
-    let mut app = changes_app();
+    // One repository keeps the header's base menu (D868).
+    let mut workspace = fixture::design();
+    workspace.diffs.retain(|d| d.session != SessionId::new("ledger") || d.repo == "api");
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
     let id = SessionId::new("ledger");
     assert!(!app.contains("diff-base-menu"));
     app.click("diff-base");
@@ -570,8 +574,9 @@ fn a_failed_refresh_keeps_the_last_diff_with_try_again() {
     let mut app = changes_app();
     assert!(!app.contains("diff-refresh-failed"));
     app.fakes.daemon.fail_next(Operation::Diffs, "The daemon closed the connection.");
-    app.click("diff-base");
-    app.click("diff-base-uncommitted");
+    app.click("diff-file-count");
+    app.click("repo-base-0");
+    app.click("repo-base-uncommitted");
     assert!(app.contains("diff-refresh-failed"));
     assert!(app.contains("diff-retry"));
     // The diff read before stays.

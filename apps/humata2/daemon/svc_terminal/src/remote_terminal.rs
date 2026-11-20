@@ -121,6 +121,18 @@ impl RemoteTerminal {
         .await
     }
 
+    /// `OpenAgentTab` on `machine`.
+    pub async fn open_agent_tab(
+        &self,
+        machine: &str,
+        message: pb::OpenAgentTabRequest,
+    ) -> Result<Response<pb::OpenAgentTabResponse>, Status> {
+        self.forward(machine, message, |mut client, request| async move {
+            client.open_agent_tab(request).await
+        })
+        .await
+    }
+
     /// `OpenMachineShell` on `machine`.
     pub async fn open_machine_shell(
         &self,
@@ -925,6 +937,26 @@ mod tests {
             Err(Status::unimplemented("not used"))
         }
 
+        async fn open_agent_tab(
+            &self,
+            request: Request<pb::OpenAgentTabRequest>,
+        ) -> Result<Response<pb::OpenAgentTabResponse>, Status> {
+            let req = request.into_inner();
+            let agent = req.agent.as_ref().map(|a| a.value.clone()).unwrap_or_default();
+            let tab = pb::Tab {
+                id: Some(pb::TabId { value: "tb_agent_remote".to_owned() }),
+                session: req.session,
+                kind: pb::tab::Kind::Shell as i32,
+                title: agent.clone(),
+                agent: (!agent.is_empty()).then(|| pb::AgentId { value: agent }),
+                ..Default::default()
+            };
+            Ok(Response::new(pb::OpenAgentTabResponse {
+                tab: Some(tab),
+                index: 2,
+            }))
+        }
+
         async fn open_machine_shell(&self, _: Request<pb::OpenMachineShellRequest>) -> Result<Response<pb::Tab>, Status> {
             Err(Status::unimplemented("not used"))
         }
@@ -1331,5 +1363,29 @@ mod tests {
             .await
             .expect("it ends at once");
         assert!(ended.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_agent_tab_forwards_request_and_returns_tab_and_index() {
+        let rig = rig().await;
+        let reply = rig
+            .relay
+            .open_agent_tab(
+                "devbox",
+                pb::OpenAgentTabRequest {
+                    idempotency_key: Some(pb::IdempotencyKey { value: "k1".to_owned() }),
+                    session: Some(pb::SessionId { value: "se_remote".to_owned() }),
+                    agent: Some(pb::AgentId { value: "codex".to_owned() }),
+                    prompt: "Review the diff".to_owned(),
+                },
+            )
+            .await
+            .expect("relayed open_agent_tab succeeds")
+            .into_inner();
+        assert_eq!(reply.index, 2);
+        let tab = reply.tab.expect("response carries tab");
+        assert_eq!(tab.id.as_ref().map(|id| id.value.as_str()), Some("tb_agent_remote"));
+        assert_eq!(tab.title, "codex");
+        assert_eq!(tab.agent.as_ref().map(|a| a.value.as_str()), Some("codex"));
     }
 }

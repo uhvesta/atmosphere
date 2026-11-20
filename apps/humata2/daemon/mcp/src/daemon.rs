@@ -118,6 +118,9 @@ pub enum Reply {
     },
     /// Waiting for the user in the Inbox.
     Pending { request: RequestId },
+    /// Waiting for the user, who pressed Ask why: the agent answers with
+    /// `inbox_explain` (INBOXHOOKS), then waits again.
+    PendingAskedWhy { request: RequestId },
 }
 
 /// Where a journaled write sits (`humata.v1.JournalPosition`).

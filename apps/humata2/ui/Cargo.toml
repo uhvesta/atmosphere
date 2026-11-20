@@ -13,7 +13,6 @@ path = "src/lib.rs"
 [dependencies]
 gpui-kit = { workspace = true }
 humata2-app = { path = "../features/app" }
-humata2-board = { path = "../features/board" }
 humata2-clients = { path = "../clients" }
 humata2-desk = { path = "../features/desk" }
 humata2-files = { path = "../features/files" }

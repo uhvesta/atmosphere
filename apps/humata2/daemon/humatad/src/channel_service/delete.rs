@@ -89,31 +89,31 @@ impl State {
 
 /// One repository of a session and the work in its clone.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RepoWorkListed {
-    owner: String,
-    name: String,
-    branch: String,
-    dirty_files: u32,
-    unpushed_commits: u32,
-    never_pushed: bool,
+pub(crate) struct RepoWorkListed {
+    pub(crate) owner: String,
+    pub(crate) name: String,
+    pub(crate) branch: String,
+    pub(crate) dirty_files: u32,
+    pub(crate) unpushed_commits: u32,
+    pub(crate) never_pushed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SessionListed {
-    title: String,
-    repos: Vec<RepoWorkListed>,
+pub(crate) struct SessionListed {
+    pub(crate) title: String,
+    pub(crate) repos: Vec<RepoWorkListed>,
 }
 
 impl SessionListed {
-    fn dirty(&self) -> u32 {
+    pub(crate) fn dirty(&self) -> u32 {
         self.repos.iter().map(|repo| repo.dirty_files).sum()
     }
 
-    fn unpushed(&self) -> u32 {
+    pub(crate) fn unpushed(&self) -> u32 {
         self.repos.iter().map(|repo| repo.unpushed_commits).sum()
     }
 
-    fn has_work(&self) -> bool {
+    pub(crate) fn has_work(&self) -> bool {
         self.dirty() > 0 || self.unpushed() > 0
     }
 }
@@ -176,7 +176,7 @@ impl Listing {
 
 /// What listing a channel can fail on.
 #[derive(Debug, thiserror::Error)]
-enum ListError {
+pub(crate) enum ListError {
     #[error("the store could not be read")]
     Store(#[from] StoreError),
     #[error("git could not read a clone of session {session}")]
@@ -185,6 +185,42 @@ enum ListError {
         #[source]
         source: humata2_sessions::GitError,
     },
+}
+
+/// The work in each clone of `session` on this machine. A clone whose
+/// folder is gone was freed and counts nothing.
+pub(crate) fn repos_listed(store: &Store, session: &str) -> Result<Vec<RepoWorkListed>, ListError> {
+    let mut repos = Vec::new();
+    for repo in store
+        .session_detail(session)?
+        .into_iter()
+        .flat_map(|detail| detail.repos)
+    {
+        if !repo.path.exists() {
+            continue;
+        }
+        // Reading the work fetches, which writes FETCH_HEAD; a plan
+        // changes nothing, so a file it made is taken away again.
+        let fetched = repo.path.join(".git").join("FETCH_HEAD");
+        let had_fetched = fetched.exists();
+        let work = repo_work(&repo.path);
+        if !had_fetched {
+            let _ = fs::remove_file(&fetched);
+        }
+        let work = work.map_err(|source| ListError::Git {
+            session: session.to_owned(),
+            source,
+        })?;
+        repos.push(RepoWorkListed {
+            owner: repo.owner,
+            name: repo.name,
+            branch: work.branch,
+            dirty_files: work.dirty_files,
+            unpushed_commits: work.unpushed_commits,
+            never_pushed: work.never_pushed,
+        });
+    }
+    Ok(repos)
 }
 
 fn list(store: &Store, channel: &str, machine: &str) -> Result<Listing, ListError> {
@@ -198,37 +234,7 @@ fn list(store: &Store, channel: &str, machine: &str) -> Result<Listing, ListErro
             listing.elsewhere.insert(session.id, session.machine);
             continue;
         }
-        let mut repos = Vec::new();
-        for repo in store
-            .session_detail(&session.id)?
-            .into_iter()
-            .flat_map(|detail| detail.repos)
-        {
-            // A clone whose folder is gone was freed and counts nothing.
-            if !repo.path.exists() {
-                continue;
-            }
-            // Reading the work fetches, which writes FETCH_HEAD; a plan
-            // changes nothing, so a file it made is taken away again.
-            let fetched = repo.path.join(".git").join("FETCH_HEAD");
-            let had_fetched = fetched.exists();
-            let work = repo_work(&repo.path);
-            if !had_fetched {
-                let _ = fs::remove_file(&fetched);
-            }
-            let work = work.map_err(|source| ListError::Git {
-                session: session.id.clone(),
-                source,
-            })?;
-            repos.push(RepoWorkListed {
-                owner: repo.owner,
-                name: repo.name,
-                branch: work.branch,
-                dirty_files: work.dirty_files,
-                unpushed_commits: work.unpushed_commits,
-                never_pushed: work.never_pushed,
-            });
-        }
+        let repos = repos_listed(store, &session.id)?;
         listing.live.insert(
             session.id,
             SessionListed {
@@ -274,7 +280,7 @@ struct Sorted {
 }
 
 /// Whether the process `pid` still exists.
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     i32::try_from(pid)
         .ok()
         .and_then(rustix::process::Pid::from_raw)
@@ -569,7 +575,7 @@ struct Carried {
 
 /// What stops a delete part way.
 #[derive(Debug, thiserror::Error)]
-enum DeleteError {
+pub(crate) enum DeleteError {
     #[error("the channel's records could not be read or written")]
     Store(#[source] StoreError),
     #[error("session {session}'s agent could not be stopped")]
@@ -663,6 +669,11 @@ fn remove_durably(path: &Path) -> std::io::Result<()> {
 }
 
 impl ChannelSvc {
+    /// The trash bin deletes send folders to, once the daemon serves.
+    pub(crate) fn trash_bin(&self) -> Option<Arc<Bin>> {
+        self.deletes.bin.get().cloned()
+    }
+
     /// Only the user, present, deletes a channel, and nothing is asked of
     /// the Inbox (CH-25). An agent may only with the destroy switch on
     /// (D801 H, PER-32), which is off by default; it is never "present".
@@ -1231,7 +1242,7 @@ impl ChannelSvc {
 
     /// Ends the session's standing grants in the policy and tells the
     /// requests that made them. Safe to repeat: an ended grant is gone.
-    async fn end_grants(&self, session: &str) -> Result<(), Status> {
+    pub(crate) async fn end_grants(&self, session: &str) -> Result<(), Status> {
         let id = humata2_access::SessionId::new(session);
         let ended = self.guard.with_policy(|policy, _| policy.end_grants_of(&id));
         for grant in ended {
@@ -1245,7 +1256,7 @@ impl ChannelSvc {
     /// Stops every terminal of the sessions, shells and agents, and saves
     /// that their agents stopped. A holder already gone is as stopped as one
     /// that was asked to.
-    async fn stop_all(&self, sessions: &[String]) -> Result<(), DeleteError> {
+    pub(crate) async fn stop_all(&self, sessions: &[String]) -> Result<(), DeleteError> {
         let store = self.starter.store.clone();
         let wanted: BTreeSet<String> = sessions.iter().cloned().collect();
         let tabs = blocking(move || store.tabs())
@@ -1435,7 +1446,7 @@ fn described(session: &pb::SessionWork) -> String {
 }
 
 /// A plan that no longer matches (NV-27).
-fn stale(message: &str, changes: Vec<String>) -> Status {
+pub(crate) fn stale(message: &str, changes: Vec<String>) -> Status {
     status::failure(
         Code::FailedPrecondition,
         status::error(
@@ -1448,7 +1459,7 @@ fn stale(message: &str, changes: Vec<String>) -> Status {
 
 /// Work that deleting would lose (LD-5): the fix never says to tick the box
 /// alone.
-fn unpushed(session: &str, listed: &SessionListed) -> Status {
+pub(crate) fn unpushed(session: &str, listed: &SessionListed) -> Status {
     let repos = listed
         .repos
         .iter()

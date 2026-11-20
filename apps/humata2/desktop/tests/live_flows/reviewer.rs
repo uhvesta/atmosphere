@@ -12,11 +12,6 @@ use humata2_session::{CloseAction, CloseChoice, Panel, SessionAction, Tab};
 use super::world::World;
 use super::{App, running_session, runtime, typing};
 
-/// The command typed into the reviewer's shell. Its answer, `WIRE42`,
-/// differs from the command line the terminal echoes back.
-const COMMAND: &str = "echo WIRE$((40+2))";
-const ANSWER: &str = "WIRE42";
-
 fn activate(app: &mut App<'_>) {
     app.cx
         .update_window(app.window, |_, window, _| window.activate_window())
@@ -71,12 +66,11 @@ fn select(app: &mut App<'_>, index: usize) {
     app.wait_until("the tab to be selected", |app| selected(app) == Some(index));
 }
 
-/// Types the command and waits for the shell's answer to show.
+/// Types a line to the test agent and waits for its echo to show.
 fn prove_live(app: &mut App<'_>) {
-    typing::ready(app, "$");
-    app.type_text(COMMAND);
+    app.type_text("ping reviewer");
     typing::key(app, "enter");
-    typing::wait_for(app, ANSWER);
+    typing::wait_for(app, "got: ping reviewer");
 }
 
 #[test]
@@ -122,15 +116,9 @@ fn a_reviewer_tab_opens_hides_shows_comes_back_after_a_reboot_and_ends_on_its_cr
     assert!(!full(&app), "full screen gives way to the new tab");
     let reviewer = before;
 
-    // The tab's shell types the agent's command, then the opening prompt
-    // once quiet; wait for both to be done before typing anything else.
-    app.wait_until("the opening prompt to be typed", |app| {
-        app.ui.read(|state| {
-            let shells = state.session.workspace.session(&id).map_or(0, |s| s.shells.len());
-            !(1..=shells).any(|tab| state.session.awaits_opening_prompt(&id, tab))
-        })
-    });
-    typing::wait_for(&mut app, "claude");
+    // D858: OpenAgentTab launches the test agent directly and delivers the
+    // opening prompt in the background.
+    typing::wait_for(&mut app, "got: Look at the diff");
 
     // 2. Hide: the agent's tab is shown; the reviewer is listed and running.
     select(&mut app, 0);
@@ -165,6 +153,18 @@ fn a_reviewer_tab_opens_hides_shows_comes_back_after_a_reboot_and_ends_on_its_cr
         tab_count(app) == before + 1
     });
     assert_eq!(typing::shells_of(&app, &id), Some(shells));
+    let reboot_agent = app.ui.read(|state| {
+        state
+            .session
+            .workspace
+            .session(&id)
+            .and_then(|session| session.terminal_agents.get(&reviewer).copied())
+    });
+    assert_eq!(
+        reboot_agent,
+        Some(Agent::Claude),
+        "D858: reviewer tab agent persists across daemon reboot"
+    );
 
     // 5. End: the × closes the tab; the agent's tab stays.
     // The × asks first; End for good ends this tab's shell.

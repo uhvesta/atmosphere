@@ -927,6 +927,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             requests,
             pending_count,
             page: None,
+            allowed_without_asking_today: self.guard.allowed_without_asking_today(),
         }))
     }
 
@@ -1338,24 +1339,42 @@ impl pb::inbox_service_server::InboxService for Inbox {
         request: Request<pb::AskWhyRequest>,
     ) -> Result<Response<pb::InboxRequest>, Status> {
         let caller = request_caller(&request)?;
+        if !matches!(caller, Caller::User(_)) {
+            return Err(self.guard.refused_status(&Refusal::UserOnly {
+                capability: Some(Capability::InboxAnswer),
+            }));
+        }
         self.guard.require(&caller, &answer())?;
         let request = request.into_inner();
-        let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
-        self.set_why(&id, |request, at| {
-            let asked = request.asked_why.get_or_insert_with(Default::default);
-            // Asking again before the agent answered changes nothing.
-            if asked.asked_at.is_some() && asked.reply.is_empty() {
-                return false;
-            }
-            *asked = pb::AskedWhy {
-                asked_at: Some(timestamp(at)),
-                reply: String::new(),
-                replied_at: None,
-            };
-            true
-        }, &caller)
-        .await
-        .map(Response::new)
+        let id = id_of(request.id.as_ref().map(|id| id.value.clone()))
+            .ok_or_else(|| status::missing("id"))?;
+        match self
+            .set_why(
+                &id,
+                |request, at| {
+                    let asked = request.asked_why.get_or_insert_with(Default::default);
+                    // Asking again before the agent answered changes nothing.
+                    if asked.asked_at.is_some() && asked.reply.is_empty() {
+                        return false;
+                    }
+                    *asked = pb::AskedWhy {
+                        asked_at: Some(timestamp(at)),
+                        reply: String::new(),
+                        replied_at: None,
+                    };
+                    true
+                },
+                &caller,
+            )
+            .await
+        {
+            Ok(updated) => Ok(Response::new(updated)),
+            Err(missing) if missing.code() == Code::NotFound => self
+                .ask_why_on_host(&caller, request, &id, missing)
+                .await
+                .map(Response::new),
+            Err(failed) => Err(failed),
+        }
     }
 
     /// INBOXHOOKS: the agent's answer to Ask why, on a request its own
@@ -1374,7 +1393,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
             ));
         };
         let request = request.into_inner();
-        let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
+        let id = id_of(request.id.as_ref().map(|id| id.value.clone()))
+            .ok_or_else(|| status::missing("id"))?;
         let reply = request.reply.trim().to_owned();
         let length = reply.chars().count();
         if length == 0 || length > MAX_EXPLANATION {
@@ -1385,14 +1405,26 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 "send a shorter explanation that says why the request is needed",
             ));
         }
-        self.set_why(&id, |request, at| {
-            let asked = request.asked_why.get_or_insert_with(Default::default);
-            asked.reply.clone_from(&reply);
-            asked.replied_at = Some(timestamp(at));
-            true
-        }, &caller)
-        .await
-        .map(Response::new)
+        match self
+            .set_why(
+                &id,
+                |request, at| {
+                    let asked = request.asked_why.get_or_insert_with(Default::default);
+                    asked.reply.clone_from(&reply);
+                    asked.replied_at = Some(timestamp(at));
+                    true
+                },
+                &caller,
+            )
+            .await
+        {
+            Ok(updated) => Ok(Response::new(updated)),
+            Err(missing) if missing.code() == Code::NotFound => self
+                .explain_on_host(&caller, request, &id, missing)
+                .await
+                .map(Response::new),
+            Err(failed) => Err(failed),
+        }
     }
 
     /// The asking agent stopped waiting (TP-15). Withdrawing a request
@@ -1705,6 +1737,7 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
         | C::SessionMove
         | C::SessionStopOther
         | C::SessionDeleteOther
+        | C::SessionsDeleteMany
         | C::DeskMoveToChannel
         | C::GitPush => pb::RequestKind::Session,
         C::MachineProvision
@@ -2407,5 +2440,307 @@ mod tests {
             .await
             .unwrap();
         assert!(inbox.pending_ids_of(&["se_1".to_owned()]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ask_why_refuses_agent_and_accepts_forwarded_host_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        let rq = hold_question(&inbox, "se_1", pb::RequestState::Pending).await;
+
+        let by_agent = inbox
+            .ask_why(agent_req(
+                pb::AskWhyRequest { id: id(&rq), ..Default::default() },
+                "se_1",
+            ))
+            .await;
+        assert_eq!(by_agent.unwrap_err().code(), Code::PermissionDenied);
+
+        let mut peer_req = Request::new(pb::AskWhyRequest { id: id(&rq), ..Default::default() });
+        peer_req.extensions_mut().insert(Caller::Peer);
+        assert_eq!(inbox.ask_why(peer_req).await.unwrap_err().code(), Code::PermissionDenied);
+
+        let asked = inbox
+            .ask_why_as(
+                Caller::User(UserVia::Host),
+                pb::AskWhyRequest { id: id(&rq), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert!(asked.asked_why.as_ref().is_some_and(|why| why.asked_at.is_some()));
+        assert_eq!(asked.state, pb::RequestState::Pending as i32);
+    }
+
+    #[tokio::test]
+    async fn explain_ask_routes_up_to_host_when_not_held_locally() {
+        let host_dir = tempfile::tempdir().unwrap();
+        let host = test_inbox(&host_dir);
+        let rq = hold_question(&host, "se_1", pb::RequestState::Pending).await;
+        host.ask_why(user_req(pb::AskWhyRequest { id: id(&rq), ..Default::default() }))
+            .await
+            .unwrap();
+
+        let machine_dir = tempfile::tempdir().unwrap();
+        let machine = test_inbox(&machine_dir);
+        let forwarder = Arc::new(Forwarder::new(false));
+        let (to_host, mut from_machine) = mpsc::channel(4);
+        forwarder.attach(to_host);
+        machine.forwarding(Arc::clone(&forwarder));
+
+        let waiting = {
+            let machine = Arc::clone(&machine);
+            let rq = rq.clone();
+            tokio::spawn(async move {
+                machine
+                    .explain_ask(agent_req(
+                        pb::ExplainAskRequest {
+                            id: id(&rq),
+                            reply: "need fixture rows from the other clone".to_owned(),
+                        },
+                        "se_1",
+                    ))
+                    .await
+            })
+        };
+
+        let sent = tokio::time::timeout(Duration::from_secs(5), from_machine.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Some(pb::machine_to_host::Message::Call(call)) = sent.message else {
+            panic!("expected forwarded ExplainAsk call");
+        };
+        assert_eq!(call.method, "/humata.v1.InboxService/ExplainAsk");
+        let Some(pb::forwarded_call::Principal::Agent(agent)) = call.principal else {
+            panic!("expected agent principal");
+        };
+        assert_eq!(agent.session.map(|s| s.value).as_deref(), Some("se_1"));
+
+        let decoded = pb::ExplainAskRequest::decode(call.request.as_slice()).unwrap();
+        let caller = agent_req((), "se_1").extensions().get::<Caller>().unwrap().clone();
+        let reply = host.explain_as(caller, decoded).await.unwrap();
+        forwarder.answered(pb::ForwardedResult {
+            call_id: call.call_id,
+            outcome: Some(pb::forwarded_result::Outcome::Response(reply.encode_to_vec())),
+        });
+
+        let updated = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            updated.asked_why.as_ref().map(|why| why.reply.as_str()),
+            Some("need fixture rows from the other clone")
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_why_routes_up_to_host_when_not_held_locally() {
+        let host_dir = tempfile::tempdir().unwrap();
+        let host = test_inbox(&host_dir);
+        let rq = hold_question(&host, "se_1", pb::RequestState::Pending).await;
+
+        let machine_dir = tempfile::tempdir().unwrap();
+        let machine = test_inbox(&machine_dir);
+        let forwarder = Arc::new(Forwarder::new(false));
+        let (to_host, mut from_machine) = mpsc::channel(4);
+        forwarder.attach(to_host);
+        machine.forwarding(Arc::clone(&forwarder));
+
+        let waiting = {
+            let machine = Arc::clone(&machine);
+            let rq = rq.clone();
+            tokio::spawn(async move {
+                machine
+                    .ask_why(user_req(pb::AskWhyRequest {
+                        id: id(&rq),
+                        ..Default::default()
+                    }))
+                    .await
+            })
+        };
+
+        let sent = tokio::time::timeout(Duration::from_secs(5), from_machine.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Some(pb::machine_to_host::Message::Call(call)) = sent.message else {
+            panic!("expected forwarded AskWhy call");
+        };
+        assert_eq!(call.method, "/humata.v1.InboxService/AskWhy");
+        assert!(matches!(
+            call.principal,
+            Some(pb::forwarded_call::Principal::User(pb::MachineUser {
+                outside_sessions: true,
+                ..
+            }))
+        ));
+
+        let decoded = pb::AskWhyRequest::decode(call.request.as_slice()).unwrap();
+        let reply = host
+            .ask_why_as(Caller::User(UserVia::Host), decoded)
+            .await
+            .unwrap();
+        forwarder.answered(pb::ForwardedResult {
+            call_id: call.call_id,
+            outcome: Some(pb::forwarded_result::Outcome::Response(reply.encode_to_vec())),
+        });
+
+        let updated = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_inner();
+        assert!(updated.asked_why.as_ref().is_some_and(|why| why.asked_at.is_some()));
+    }
+
+    #[tokio::test]
+    async fn explain_ask_returns_host_unreachable_when_host_is_away_and_holds_request() {
+        let machine_dir = tempfile::tempdir().unwrap();
+        let machine = test_inbox(&machine_dir);
+        let forwarder = Arc::new(Forwarder::new(false));
+        forwarder.remember_held("rq_host");
+        machine.forwarding(forwarder);
+
+        let err = machine
+            .explain_ask(agent_req(
+                pb::ExplainAskRequest {
+                    id: id("rq_host"),
+                    reply: "needed for tests".to_owned(),
+                },
+                "se_1",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::Unavailable);
+        assert!(matches!(
+            status::status_error_of(&err).and_then(|e| e.kind),
+            Some(pb::error::Kind::HostUnreachable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn ask_read_builds_file_access_preview_and_rich_card_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        inbox
+            .store
+            .put_session(&SessionRecord {
+                id: "se_asker".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: String::new(),
+                title: "Ledger entries".to_owned(),
+                agent: "claude".to_owned(),
+                folder: std::path::PathBuf::from("/tmp/asker"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        inbox
+            .store
+            .put_session(&SessionRecord {
+                id: "se_other".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: String::new(),
+                title: "Refund retries".to_owned(),
+                agent: "copilot".to_owned(),
+                folder: std::path::PathBuf::from("/tmp/other"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        inbox
+            .store
+            .put_session_detail(&humata2_store::SessionDetail {
+                session: "se_other".to_owned(),
+                repos: vec![humata2_store::SessionRepo {
+                    owner: "acme".to_owned(),
+                    name: "api".to_owned(),
+                    branch: "refund-retries".to_owned(),
+                    path: std::path::PathBuf::from("/tmp/other/api"),
+                }],
+                model: None,
+                first_message: None,
+                start: humata2_store::StartStep::Done,
+                operation: None,
+                revision: 1,
+            })
+            .unwrap();
+
+        let place = humata2_access::Place {
+            machine: humata2_access::MachineId::new("local"),
+            root: humata2_access::Root::Clone(humata2_access::SessionRef {
+                id: humata2_access::SessionId::new("se_other"),
+                channel: humata2_access::ChannelId::new("ch_1"),
+                machine: humata2_access::MachineId::new("local"),
+            }),
+            path: humata2_access::RepoPath::new("acme/api/src/retry/backoff.rs").unwrap(),
+            entry: humata2_access::Entry::File,
+        };
+        let asked = AccessRequest {
+            capability: Capability::FilesReadOtherSession,
+            channel: humata2_access::ChannelId::new("ch_1"),
+            requester: humata2_access::SessionId::new("se_asker"),
+            call: Call::ReadFiles(place),
+            always_let: None,
+            ahead: false,
+            answer_at: humata2_access::AnswerAt::Host,
+        };
+        let caller = agent_req((), "se_asker").extensions().get::<Caller>().unwrap().clone();
+
+        let pending = inbox
+            .ask_read_reason(
+                &caller,
+                asked,
+                "read",
+                "Reuse the retry backoff policy".to_owned(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(pending.code(), Code::FailedPrecondition);
+
+        let listed = inbox
+            .list_requests(user_req(pb::ListRequestsRequest {
+                agent_inbox: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(listed.requests.len(), 1);
+        let card = &listed.requests[0];
+        assert_eq!(card.reason, "Reuse the retry backoff policy");
+        let Some(pb::request_preview::Preview::FileAccess(access)) =
+            card.preview.as_ref().and_then(|p| p.preview.as_ref())
+        else {
+            panic!("expected FileAccessPreview, got {:?}", card.preview);
+        };
+        assert_eq!(
+            access.source_session.as_ref().map(|s| s.value.as_str()),
+            Some("se_other")
+        );
+        assert_eq!(
+            access.source_machine.as_ref().map(|m| m.value.as_str()),
+            Some("local")
+        );
+        assert_eq!(access.mode, pb::file_access_preview::Mode::ReadThisCall as i32);
+        assert_eq!(access.paths.len(), 1);
+        assert_eq!(access.paths[0].path, "src/retry/backoff.rs");
+        assert_eq!(
+            access.paths[0].repo.as_ref().map(|r| (r.owner.as_str(), r.name.as_str())),
+            Some(("acme", "api"))
+        );
+
+        let from = card.facts.iter().find(|f| f.label == "From").unwrap();
+        assert_eq!(from.lead, "Refund retries");
+        assert!(from.rest.contains("copilot") && from.rest.contains("This Mac"));
+        let files = card.facts.iter().find(|f| f.label == "Files").unwrap();
+        assert_eq!(files.lead, "acme/api/src/retry/backoff.rs");
+        assert!(card.affects.iter().any(|e| e.lead.contains("Refund retries") && !e.warn));
+        assert!(!card.undo_text.is_empty());
     }
 }

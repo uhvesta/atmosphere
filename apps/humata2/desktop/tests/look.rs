@@ -77,6 +77,10 @@ const BEHIND_PALETTE_WHY: &str = "the session behind the palette is frame 01's";
 /// whose mock draws other items than the fixture.
 const BEHIND_NEW_SESSION_WHY: &str =
     "D872: the To-do page, not the board, lies behind the New session dialog";
+/// Home added the Stopped/Ended groups (D871), the To-do card (D874), and the
+/// Select toolbar button (D875) after frames 25/32/34/44/67 were drawn.
+const HOME_UPDATED_WHY: &str =
+    "D871/D874/D875: Home added Stopped/Ended groups, the To-do card, and Select";
 /// The dashboard's figures are computed from the items (D147.9).
 const FIGURES_WHY: &str = "D147.9: the dashboard's figures come from the items";
 /// Controls with no action yet are drawn disabled; the frames draw them live.
@@ -107,19 +111,16 @@ const FRAMES: &[Frame] = &[
         ],
         budget: BUDGET,
     },
-    frame("21-board-kanban"),
-    frame("22-board-item-open"),
-    frame("23-board-table"),
+    // 21-24 (the board) went with the board page (D874); the To-do frames
+    // 21-24 have no native capture compared here yet.
     Frame {
-        name: "24-board-dashboard",
+        name: "25-home",
         masks: &[
-            (Rect(260, 106, 50, 28), FIGURES_WHY),
-            (Rect(770, 106, 96, 28), FIGURES_WHY),
-            (Rect(237, 185, 1043, 335), "D147.9: the frame draws a busier board (bars, a pr-reviews row), and the cards under it move with it"),
+            (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
+            (Rect(380, 60, 760, 700), HOME_UPDATED_WHY),
         ],
         budget: BUDGET,
     },
-    frame("25-home"),
     // 26/27 (the Agent inbox) have no design golden of their own: D871
     // retired them for the card frames 200–204, which draw other requests.
     frame("28-hosts"),
@@ -155,11 +156,17 @@ const FRAMES: &[Frame] = &[
         name: "32-toast",
         masks: &[
             (Rect(240, 8, 170, 36), "the archive that raises the toast leaves Home a Back button (Provisional, LOOK2)"),
+            (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
+            (Rect(380, 60, 760, 620), HOME_UPDATED_WHY),
         ],
         budget: BUDGET,
     },
     // Frame 33 is retired (D128.4): an empty workspace opens Home (34).
-    frame("34-empty-home"),
+    Frame {
+        name: "34-empty-home",
+        masks: &[(Rect(380, 240, 760, 420), HOME_UPDATED_WHY)],
+        budget: BUDGET,
+    },
     Frame {
         name: "35-empty-channel",
         masks: &[
@@ -197,9 +204,26 @@ const FRAMES: &[Frame] = &[
         masks: &[(NARROW_TERMINAL_BODY, TERMINAL_GRID_WHY)],
         budget: BUDGET,
     },
-    frame("44-new-channel"),
+    Frame {
+        name: "44-new-channel",
+        masks: &[
+            (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
+            (Rect(1035, 110, 80, 95), HOME_UPDATED_WHY),
+            (Rect(1075, 390, 40, 145), HOME_UPDATED_WHY),
+            (Rect(390, 560, 340, 175), HOME_UPDATED_WHY),
+            (Rect(985, 580, 130, 145), HOME_UPDATED_WHY),
+        ],
+        budget: BUDGET,
+    },
     // PR: Review a pull request over Home, and Submit review over the review session.
-    frame("67-pr-review-dialog"),
+    Frame {
+        name: "67-pr-review-dialog",
+        masks: &[
+            (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
+            (Rect(377, 515, 523, 245), HOME_UPDATED_WHY),
+        ],
+        budget: BUDGET,
+    },
     Frame {
         name: "68-pr-review-session",
         masks: &[(REVIEW_TERMINAL, TERMINAL_GRID_WHY)],

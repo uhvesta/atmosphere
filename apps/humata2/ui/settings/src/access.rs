@@ -9,7 +9,7 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::model::{AccessRule, Channel, Grant, RuleSetting};
+use humata2_clients::model::{AccessRule, Channel, ChannelId, Grant, RuleSetting};
 use humata2_settings::{
     ACCESS_GROUPS, AccessAction, AccessRow, RowSetting, SettingsAction,
 };
@@ -19,10 +19,22 @@ const FOOTER: &str = "Shell commands, edits and pushes are asked by each agent i
 
 /// The Agent access tab of `channel`.
 pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl IntoElement {
+    page(ui, state, channel.id.clone(), look)
+}
+
+/// Settings > Agent access: the same rows over the rules every channel starts with.
+pub fn global(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
+    page(ui, state, ChannelId::global_rules(), look)
+}
+
+/// The grouped rows over the rules kept under `scope`: a channel's, or the
+/// global ones.
+fn page(ui: &Rc<Ui>, state: &AppState, scope: ChannelId, look: Look) -> impl IntoElement {
+    let scope = &scope;
     let rules = state
         .workspace
         .rules
-        .get(&channel.id)
+        .get(scope)
         .map(Vec::as_slice)
         .unwrap_or_default();
     let mut body = Vec::new();
@@ -30,7 +42,7 @@ pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl
     for group in ACCESS_GROUPS {
         body.push(group_heading(group.title, group.caption, look).into_any_element());
         for row in group.rows {
-            body.push(grouped_row(ui, state, channel, rules, row, n, look).into_any_element());
+            body.push(grouped_row(ui, state, scope, rules, row, n, look).into_any_element());
             for (g, grant) in rules
                 .iter()
                 .filter(|rule| row.capabilities.contains(&rule.capability.as_str()))
@@ -82,7 +94,7 @@ pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl
     if show_all {
         let mut list = Vec::new();
         for (index, rule) in others {
-            list.push(rule_row(ui, state, channel, index, rule, look).into_any_element());
+            list.push(rule_row(ui, state, scope, index, rule, look).into_any_element());
             for (g, grant) in rule.grants.iter().enumerate() {
                 list.push(grant_row(ui, state, 100 + index, g, grant, look).into_any_element());
             }
@@ -153,7 +165,7 @@ fn group_heading(title: &'static str, caption: &'static str, look: Look) -> impl
 fn grouped_row(
     ui: &Rc<Ui>,
     state: &AppState,
-    channel: &Channel,
+    scope: &ChannelId,
     rules: &[AccessRule],
     def: &'static AccessRow,
     index: usize,
@@ -163,7 +175,7 @@ fn grouped_row(
     let pending = def
         .capability_ids()
         .into_iter()
-        .any(|c| state.settings.access.pending.contains(&(channel.id.clone(), c)));
+        .any(|c| state.settings.access.pending.contains(&(scope.clone(), c)));
     // A row with no rule to write (always Ask) is shown, not clickable.
     let editable = !def.capabilities.is_empty() && def.options.len() > 1;
     let control = row()
@@ -182,7 +194,7 @@ fn grouped_row(
             };
             let ui = ui.clone();
             let action = AppAction::Settings(SettingsAction::Access(AccessAction::SetRow {
-                channel: channel.id.clone(),
+                channel: scope.clone(),
                 row: def.key.to_owned(),
                 setting,
             }));
@@ -262,7 +274,7 @@ fn grouped_row(
 fn rule_row(
     ui: &Rc<Ui>,
     state: &AppState,
-    channel: &Channel,
+    scope: &ChannelId,
     index: usize,
     rule: &AccessRule,
     look: Look,
@@ -271,7 +283,7 @@ fn rule_row(
         .settings
         .access
         .pending
-        .contains(&(channel.id.clone(), rule.capability.clone()));
+        .contains(&(scope.clone(), rule.capability.clone()));
     let control = match rule.setting {
         None => div()
             .flex_shrink_0()
@@ -298,7 +310,7 @@ fn rule_row(
                 .map(|(n, (setting, name))| {
                     let ui = ui.clone();
                     let action = AppAction::Settings(SettingsAction::Access(AccessAction::Set {
-                        channel: channel.id.clone(),
+                        channel: scope.clone(),
                         capability: rule.capability.clone(),
                         setting,
                     }));

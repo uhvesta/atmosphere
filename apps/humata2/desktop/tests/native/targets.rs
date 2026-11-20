@@ -2,7 +2,7 @@
 //! base and menu. Ledger's design session has two repos: ledger first, then
 //! api.
 use super::*;
-use humata2_clients::model::{DiffBase, RepoBase};
+use humata2_clients::model::RepoBase;
 use humata2_review::ReviewAction as R;
 
 fn ledger() -> SessionId {
@@ -27,7 +27,7 @@ fn base_of(app: &App, repo: &str) -> RepoBase {
 }
 
 #[test]
-fn a_repository_gets_its_own_base_by_clicks_and_the_header_puts_them_back_on_one() {
+fn a_repository_gets_its_own_base_by_clicks_and_a_row_puts_every_repo_on_its_base() {
     let mut app = changes_app();
     assert!(app.contains("repo-base-0"));
     assert!(app.contains("repo-base-1"));
@@ -44,7 +44,8 @@ fn a_repository_gets_its_own_base_by_clicks_and_the_header_puts_them_back_on_one
     assert!(!app.contains("repo-base-menu"), "a pick closes the menu");
     assert!(matches!(base_of(&app, "api"), RepoBase::Branch(_)));
     assert_eq!(base_of(&app, "ledger"), RepoBase::DefaultBranch, "ledger keeps its base");
-    assert!(app.contains("diff-base-per-repo"));
+    assert!(app.ui.read(|state| state.review.targets_of(&ledger()).per_repo()));
+    assert!(!app.contains("diff-base"), "two repositories have no header base");
 
     // ledger's menu: a commit typed into the filter.
     app.click("repo-base-0");
@@ -54,15 +55,13 @@ fn a_repository_gets_its_own_base_by_clicks_and_the_header_puts_them_back_on_one
     assert_eq!(base_of(&app, "ledger"), RepoBase::Rev("v1.2".into()));
     assert!(matches!(base_of(&app, "api"), RepoBase::Branch(_)));
 
-    // The header's menu sets every repository at once.
-    app.click("diff-base");
-    app.click("diff-base-uncommitted");
-    assert!(!app.ui.read(|state| state.review.targets_of(&ledger()).per_repo()));
-    assert_eq!(
-        app.ui.read(|state| state.review.targets_of(&ledger()).preset),
-        DiffBase::UncommittedOnly
-    );
-    assert!(!app.contains("diff-base-per-repo"));
+    // "Use for every repo" on ledger's row gives api ledger's base too.
+    app.click("repo-base-0");
+    assert!(app.contains("repo-base-0-every"));
+    app.click("repo-base-0-every");
+    assert!(!app.contains("repo-base-menu"));
+    assert_eq!(base_of(&app, "ledger"), RepoBase::Rev("v1.2".into()));
+    assert_eq!(base_of(&app, "api"), RepoBase::Rev("v1.2".into()));
 }
 
 #[test]
@@ -73,11 +72,11 @@ fn a_click_outside_closes_a_repository_menu_and_one_menu_shows_at_a_time() {
     app.click("repo-base-scrim");
     assert!(!app.contains("repo-base-menu"));
 
-    app.click("diff-base");
-    assert!(app.contains("diff-base-menu"));
+    assert!(!app.contains("diff-base-menu"), "two repositories have no header menu");
     app.send(AppAction::Review(R::ToggleRepoBase { repo: "api".into() }));
     assert!(app.contains("repo-base-menu"));
-    assert!(!app.contains("diff-base-menu"));
+    assert!(app.contains("repo-base-1-every"));
+    assert!(!app.contains("repo-base-0-every"), "only api's menu shows");
 }
 
 #[test]

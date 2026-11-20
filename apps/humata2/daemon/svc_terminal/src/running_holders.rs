@@ -383,11 +383,13 @@ fn listed(
                 .map(|record| pb::ChannelId { value: record.channel.clone() }),
             desk: record.as_ref().is_some_and(|record| record.channel == DESK_CHANNEL),
             agent: match (&record, tab.kind) {
-                (Some(record), TabKind::Agent) => session_agent(record),
-                (Some(_), _) => "shell",
-                (None, _) => holder.agent,
-            }
-            .to_owned(),
+                (Some(record), TabKind::Agent) => session_agent(record).to_owned(),
+                (Some(_), _) => crate::agent_tabs::tab_agent(store, &tab.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "shell".to_owned()),
+                (None, _) => holder.agent.to_owned(),
+            },
             pid: holder.pid,
             folder: holder.folder.clone(),
             started: Some(prost_types::Timestamp::from(started)),
@@ -432,7 +434,10 @@ fn listed(
                 .filter(|record| record.channel != DESK_CHANNEL)
                 .map(|record| pb::ChannelId { value: record.channel.clone() }),
             desk: record.as_ref().is_some_and(|record| record.channel == DESK_CHANNEL),
-            agent: "shell".to_owned(),
+            agent: crate::agent_tabs::tab_agent(store, &tab.id)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "shell".to_owned()),
             pid: 0,
             folder,
             started: None,
@@ -661,15 +666,19 @@ pub async fn end(
     let _ = std::fs::remove_file(humata2_holder::stopped_mark_path(&record.holder_socket));
     let _ = std::fs::remove_file(humata2_holder::saved_scrollback_path(&record.holder_socket));
     let (store, id) = (store.clone(), record.id);
-    tokio::task::spawn_blocking(move || store.remove_tab(&id))
-        .await
-        .map_err(|_| RunningError::Task {
-            doing: "removing the ended tab",
-        })?
-        .map_err(|source| RunningError::Store {
-            doing: "remove the ended tab",
-            source,
-        })?;
+    tokio::task::spawn_blocking(move || {
+        store.remove_tab(&id)?;
+        let _ = crate::agent_tabs::clear_tab_agent(&store, &id);
+        Ok::<_, StoreError>(())
+    })
+    .await
+    .map_err(|_| RunningError::Task {
+        doing: "removing the ended tab",
+    })?
+    .map_err(|source| RunningError::Store {
+        doing: "remove the ended tab",
+        source,
+    })?;
     if let Some(session) = &record.session {
         lifecycle.shells_changed(session);
     }
@@ -825,5 +834,20 @@ mod tests {
 
         assert_eq!(store.tab("tb_shell").unwrap(), None);
         assert_eq!(*told.0.lock().unwrap(), vec!["se_1".to_owned()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ending_an_agent_shell_tab_clears_its_persisted_agent_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        session_with_agent(&store, "se_1", "copilot1", AgentState::Stopped);
+        shell(&store, dir.path(), "tb_rev", Some("se_1"));
+        crate::agent_tabs::set_tab_agent(&store, "tb_rev", "codex").unwrap();
+        let told = Told::default();
+
+        end(&store, &told, "tb_rev").await.unwrap();
+
+        assert_eq!(store.tab("tb_rev").unwrap(), None);
+        assert_eq!(crate::agent_tabs::tab_agent(&store, "tb_rev").unwrap(), None);
     }
 }

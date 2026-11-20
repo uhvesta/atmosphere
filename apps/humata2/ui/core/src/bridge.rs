@@ -250,7 +250,7 @@ impl Ui {
                         state.session.clone(),
                         state.review.clone(),
                         state.inbox.clone(),
-                        state.board.clone(),
+                        state.todo.clone(),
                     ),
                     (
                         state.hosts.clone(),

@@ -68,6 +68,11 @@ pub trait InboxGuardPort: Send + Sync {
         machine: &str,
         store: &Store,
     ) -> Result<AgentCaller, StoreError>;
+    /// IN-8: how many agent actions followed the channel's rules or grants
+    /// without asking today. Zero until the guard adapter wires it up.
+    fn allowed_without_asking_today(&self) -> u32 {
+        0
+    }
 }
 
 /// Convenience helper for calling [`InboxGuardPort::with_policy_mut`] with a

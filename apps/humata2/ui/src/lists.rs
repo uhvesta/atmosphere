@@ -16,8 +16,9 @@ use humata2_app::{AppAction, AppState, NeedsRow, Route};
 use humata2_clients::model::{
     Answer, MachineKind, Request, RequestKind, Session, SessionId, Status,
 };
-use humata2_inbox::{Bulk, Group, InboxAction, MigrateStatus};
+use humata2_inbox::{Group, InboxAction, MigrateStatus};
 use humata2_session::{Panel, SessionAction};
+use humata2_ui_machines::machine_page::select_mode::{self, MassDeleteAction, Snapshot, Surface};
 use std::rc::Rc;
 
 pub(crate) fn toolbar(
@@ -57,16 +58,46 @@ pub(crate) fn toolbar(
             )
         })
         .child(div().flex_1())
+        // MASSDELETE (D875): Select enters with nothing ticked; Done leaves.
+        .when(
+            state.route == Route::Home && !state.workspace.sessions.is_empty(),
+            |bar| {
+                let selecting = state.mass_delete.surface == Some(Surface::Home);
+                bar.child(if selecting {
+                    widgets::push_quiet(
+                        ui,
+                        "home-select-done",
+                        "Done",
+                        select_mode::act(MassDeleteAction::Exit),
+                        look,
+                    )
+                    .bg(rgb(look.card))
+                    .border_color(rgb(look.accent))
+                    .text_color(rgb(look.accent))
+                } else {
+                    widgets::push_quiet(
+                        ui,
+                        "home-select",
+                        "Select",
+                        select_mode::act(MassDeleteAction::EnterEmpty(Surface::Home)),
+                        look,
+                    )
+                })
+            },
+        )
         .when(
             state.route == Route::Home && !state.workspace.channels.is_empty(),
             |bar| {
-                bar.child(widgets::push_primary(
-                    ui,
-                    "home-new-session",
-                    "New session",
-                    AppAction::StartNewSession,
-                    look,
-                ))
+                bar.child(
+                    widgets::push_primary(
+                        ui,
+                        "home-new-session",
+                        "New session",
+                        AppAction::StartNewSession,
+                        look,
+                    )
+                    .disabled(state.mass_delete.surface == Some(Surface::Home)),
+                )
             },
         )
         // With no channel yet a session can only start on the Desk (frame 34).
@@ -120,12 +151,25 @@ fn home_row(
     state: &AppState,
     session: &Session,
     request: Option<&Request>,
+    suggestion: Option<String>,
     group: &'static str,
     index: usize,
+    select: Option<&Snapshot>,
+    visible: &Rc<Vec<SessionId>>,
     look: Look,
 ) -> impl IntoElement {
-    let ui2 = ui.clone();
-    let id = session.id.clone();
+    // MASSDELETE (D875): in select mode a click ticks, row buttons go, and a
+    // 14 pt box leads the row.
+    let click = select_mode::row_click(
+        ui,
+        Surface::Home,
+        visible.clone(),
+        session.id.clone(),
+        select.is_some(),
+        AppAction::Navigate(Route::Session(session.id.clone())),
+    );
+    let ticked = select.is_some_and(|snap| snap.ticked(&session.id));
+    let tick = select.map(|snap| select_mode::tick_box(look, 14., snap.tick(&session.id)));
     let asked = request.map(|request| request.id.clone());
     let detail = request.map_or_else(|| session.activity.clone(), asks);
     let place = humata2_clients::desk::place(&state.workspace, &session.channel);
@@ -157,7 +201,7 @@ fn home_row(
     let resumable = crate::session_tabs::offers_resume(session);
     let need = asked.is_some() || session.status == Status::NeedsYou || resumable;
     let label = if asked.is_some() {
-        Some("Review")
+        Some("Answer")
     } else if resumable {
         Some("Resume")
     } else if session.status == Status::NeedsYou {
@@ -179,6 +223,8 @@ fn home_row(
         .border_b_1()
         .border_color(rgb(look.line))
         .cursor_pointer()
+        .when(ticked, |line| line.bg(select_mode::tint(look)))
+        .children(tick)
         .child(chrome::status(session.status))
         .child(
             col()
@@ -212,7 +258,15 @@ fn home_row(
                         ))
                         .child(detail.clone())
                         .test_text(detail),
-                ),
+                )
+                // A to-do the agent suggested waits in To-do; it never raises the row.
+                .children(suggestion.map(|line| {
+                    div()
+                        .mt(px(2.))
+                        .text_size(px(12.))
+                        .text_color(rgb(look.secondary))
+                        .child(line)
+                })),
         )
         .child(
             div()
@@ -220,7 +274,7 @@ fn home_row(
                 .text_color(rgb(look.secondary))
                 .child(session.active.clone()),
         )
-        .children(label.map(|label| {
+        .children(label.filter(|_| select.is_none()).map(|label| {
             let ui = ui.clone();
             let url = open_url.clone();
             let session = session.id.clone();
@@ -253,7 +307,7 @@ fn home_row(
                 }
             })
         }))
-        .on_click(move |_, _, cx| ui2.send(AppAction::Navigate(Route::Session(id.clone())), cx))
+        .on_click(click)
         .test_support()
 }
 fn card(look: Look) -> Div {
@@ -279,6 +333,13 @@ fn group(look: Look, title: String, body: Div) -> Div {
         .child(body)
 }
 
+/// Select mode on Home (MASSDELETE, D875): what is ticked, and the rows in
+/// the order Home shows them, for a Shift-click range.
+struct HomeSelect {
+    snap: Option<Snapshot>,
+    visible: Rc<Vec<SessionId>>,
+}
+
 /// A group of session rows, or `none` in the card when there is no session.
 fn session_group(
     ui: &Rc<Ui>,
@@ -287,6 +348,7 @@ fn session_group(
     id: &'static str,
     sessions: &[&Session],
     none: &'static str,
+    select: &HomeSelect,
     look: Look,
 ) -> Div {
     let body = if sessions.is_empty() {
@@ -300,48 +362,142 @@ fn session_group(
             sessions
                 .iter()
                 .enumerate()
-                .map(|(index, session)| home_row(ui, state, session, None, id, index, look)),
+                .map(|(index, session)| {
+                    home_row(
+                        ui,
+                        state,
+                        session,
+                        None,
+                        None,
+                        id,
+                        index,
+                        select.snap.as_ref(),
+                        &select.visible,
+                        look,
+                    )
+                }),
         )
     };
     group(look, title, body)
 }
 
-/// Home's "Needs you" group: a session row for each session that needs the
-/// person (HM-1), and a row for each pending request with no session on Home.
+/// A to-do an agent suggested from `session`, as the muted line under its
+/// row (D846): it waits in To-do and never holds the agent up.
+fn suggestion(state: &AppState, session: &Session) -> Option<String> {
+    state
+        .todo
+        .items
+        .iter()
+        .find(|entry| {
+            entry.todo.suggested
+                && entry.todo.closed.is_none()
+                && entry.todo.sessions.iter().any(|id| id == session.id.as_str())
+        })
+        .map(|entry| {
+            format!(
+                "Also suggested a to-do, \u{201c}{}\u{201d}. It waits in To-do and isn\u{2019}t holding the agent up.",
+                entry.todo.title
+            )
+        })
+}
+
+/// One of Home's session groups over Home's needs rows. `index` is each
+/// row's place in the whole needs list, so row ids stay stable across the
+/// "Stopped until you answer" and "Ended" groups.
 fn needs_group(
     ui: &Rc<Ui>,
     state: &AppState,
     title: String,
-    rows: &[NeedsRow<'_>],
+    rows: &[(usize, &NeedsRow<'_>)],
+    select: &HomeSelect,
     look: Look,
 ) -> Div {
-    let body = if rows.is_empty() {
-        card(look)
-            .px(px(14.))
-            .py(px(12.))
-            .text_color(rgb(look.tertiary))
-            .child("Nothing needs you.")
-    } else {
-        card(look).overflow_hidden().children(rows.iter().enumerate().map(|(index, row)| {
-            match row {
-                NeedsRow::Session { session, request } => {
-                    home_row(ui, state, session, *request, "home-needs", index, look)
-                        .into_any_element()
-                }
-                NeedsRow::Request(request) => {
-                    request_row(ui, request, index, look).into_any_element()
-                }
-            }
-        }))
-    };
+    let body = card(look).overflow_hidden().children(rows.iter().map(|(index, row)| match row {
+        NeedsRow::Session { session, request } => {
+            let line = request.and_then(|_| suggestion(state, session));
+            home_row(
+                ui,
+                state,
+                session,
+                *request,
+                line,
+                "home-needs",
+                *index,
+                select.snap.as_ref(),
+                &select.visible,
+                look,
+            )
+            .into_any_element()
+        }
+        NeedsRow::Request(request) => request_row(ui, request, *index, look).into_any_element(),
+    }));
     group(look, title, body)
+}
+
+/// Whether `row` holds its agent until the person answers: an agent ask in
+/// the Agent inbox (never a to-do ask, D846), or a session that needs the
+/// person with no ask to show.
+fn is_stopped(row: &NeedsRow<'_>) -> bool {
+    match row {
+        NeedsRow::Session { session, request } => {
+            request.is_some() || session.status == Status::NeedsYou
+        }
+        NeedsRow::Request(_) => true,
+    }
+}
+
+/// Home's To-do row: how many items are open and how many an agent suggested.
+fn todo_group(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let open = state
+        .todo
+        .items
+        .iter()
+        .filter(|entry| entry.todo.closed.is_none())
+        .count();
+    let suggested = state
+        .todo
+        .items
+        .iter()
+        .filter(|entry| entry.todo.closed.is_none() && entry.todo.suggested)
+        .count();
+    let note = match (open, suggested) {
+        (0, _) => "Nothing open".to_owned(),
+        (open, 0) => format!("{open} open"),
+        (open, suggested) => format!("{open} open \u{b7} {suggested} suggested by agents"),
+    };
+    let ui = ui.clone();
+    let body = card(look).child(
+        row()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(9.))
+            .child(
+                col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Your list"))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(look.secondary))
+                            .child(note),
+                    ),
+            )
+            .child(
+                widgets::push_quiet_shape("home-open-todo", "Open To-do", look)
+                    .on_click(move |_, _, cx| ui.send(AppAction::Navigate(Route::Todo), cx)),
+            ),
+    );
+    group(look, "To-do".to_owned(), body)
 }
 
 /// A pending request with no session listed: its title, why it is asked, and
 /// when. The row opens the request.
 fn request_row(ui: &Rc<Ui>, request: &Request, index: usize, look: Look) -> impl IntoElement {
     let ui2 = ui.clone();
+    let ui3 = ui.clone();
     let id = request.id.clone();
+    let id3 = request.id.clone();
     row()
         .id(("home-needs-request", index))
         .role(Role::Link)
@@ -373,6 +529,17 @@ fn request_row(ui: &Rc<Ui>, request: &Request, index: usize, look: Look) -> impl
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
                 .child(request.asked.clone()),
+        )
+        .child(
+            widgets::push_primary_shape(
+                SharedString::from(format!("home-needs-action-{index}")),
+                "Answer",
+                look,
+            )
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                ui3.send(AppAction::Inbox(InboxAction::OpenRequest(id3.clone())), cx)
+            }),
         )
         .on_click(move |_, _, cx| {
             ui2.send(AppAction::Inbox(InboxAction::OpenRequest(id.clone())), cx)
@@ -492,13 +659,55 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
             matches!(s.status, Status::Idle | Status::ProbablyIdle) && !s.activity.is_empty()
         })
         .collect::<Vec<_>>();
+    // A to-do ask waits on its item in To-do, never on Home (D846).
+    let indexed: Vec<(usize, &NeedsRow<'_>)> = needs
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            !matches!(row, NeedsRow::Request(request) if request.operation.starts_with("board."))
+        })
+        .collect();
+    let (stopped, ended): (Vec<_>, Vec<_>) =
+        indexed.into_iter().partition(|(_, row)| is_stopped(row));
+    // MASSDELETE (D875): the rows as shown, top to bottom.
+    let visible: Vec<SessionId> = stopped
+        .iter()
+        .chain(ended.iter())
+        .filter_map(|(_, row)| match row {
+            NeedsRow::Session { session, .. } => Some(session.id.clone()),
+            NeedsRow::Request(_) => None,
+        })
+        .chain(working.iter().map(|s| s.id.clone()))
+        .chain(recent.iter().map(|s| s.id.clone()))
+        .collect();
+    let select = HomeSelect {
+        snap: Snapshot::of(state).filter(|snap| snap.surface == Surface::Home),
+        visible: Rc::new(visible),
+    };
     let groups = col()
         .w_full()
         .max_w(px(720.))
         .gap(px(20.))
         // After a restart (frame 47): what couldn't be resumed and what came back idle.
         .children(crate::restart_report::home_groups(ui, state, look))
-        .child(needs_group(ui, state, counted("Needs you", needs.len()), &needs.rows, look))
+        .children((!stopped.is_empty()).then(|| {
+            needs_group(ui, state, counted("Stopped until you answer", stopped.len()), &stopped, &select, look)
+        }))
+        .children((!ended.is_empty()).then(|| {
+            needs_group(ui, state, counted("Ended", ended.len()), &ended, &select, look)
+        }))
+        .children((stopped.is_empty() && ended.is_empty()).then(|| {
+            group(
+                look,
+                "Needs you".to_owned(),
+                card(look)
+                    .px(px(14.))
+                    .py(px(12.))
+                    .text_color(rgb(look.tertiary))
+                    .child("Nothing needs you."),
+            )
+        }))
         .child(session_group(
             ui,
             state,
@@ -506,8 +715,10 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
             "home-working",
             &working,
             "No sessions are running.",
+            &select,
             look,
-        ));
+        ))
+        .child(todo_group(ui, state, look));
     let groups = if state.workspace.channels.is_empty() {
         groups.child(get_set_up(ui, look)).child(
             div()
@@ -523,17 +734,25 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
             "home-recent",
             &recent,
             "Nothing recent yet.",
+            &select,
             look,
         ))
     };
-    col()
-        .id("home")
-        .size_full()
-        .overflow_y_scroll()
-        .p(px(24.))
-        .items_center()
-        .text_size(px(13.))
-        .child(groups)
+    let bar = select
+        .snap
+        .map(|snap| select_mode::bar(ui, snap, select.visible.to_vec(), "Home", look));
+    col().size_full().child(
+        col()
+            .id("home")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(px(24.))
+            .items_center()
+            .text_size(px(13.))
+            .child(groups),
+    )
+    .children(bar)
 }
 
 pub(crate) use crate::inbox_page::inbox;

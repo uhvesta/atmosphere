@@ -12,6 +12,10 @@ service TerminalService {
   rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
   // SE-9.
   rpc OpenShellTab(OpenShellTabRequest) returns (Tab);
+  // D858: opens a fresh extra tab in a session running `agent` directly
+  // (instead of typing the command into a shell), with an optional opening
+  // prompt delivered once the agent is ready. Always opens a new tab.
+  rpc OpenAgentTab(OpenAgentTabRequest) returns (OpenAgentTabResponse);
   // HO-4 "Open a shell" on a remote machine: a tab of no session, in the
   // machine's Humata root. User-only; agents have session_type at most.
   rpc OpenMachineShell(OpenMachineShellRequest) returns (Tab);
@@ -66,6 +70,9 @@ message Tab {
   // Never the tab's name: `title` stays the user's own.
   optional string program_title = 8;
   optional string pwd = 9;
+  // D858: the agent running in an extra tab opened through OpenAgentTab;
+  // unset for a plain shell tab.
+  AgentId agent = 10;
 }
 
 message OpenMachineShellRequest {
@@ -88,6 +95,25 @@ message OpenShellTabRequest {
   // `..`, a link out of those places, a missing folder and a file are
   // refused. Unset (empty) leaves the start to `repo`.
   string folder = 4;
+}
+
+message OpenAgentTabRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // The agent to run in the new tab (e.g. "claude", "codex", "copilot").
+  // Unset, empty, a plain shell, or unknown is refused with invalid_field "agent".
+  AgentId agent = 3;
+  // Optional opening prompt delivered once the agent is ready (D857, D858).
+  // Empty skips typing.
+  string prompt = 4;
+}
+
+message OpenAgentTabResponse {
+  // The new tab, with `title` set to the agent's label and `agent` set.
+  Tab tab = 1;
+  // The new tab's 1-based index in the session's tab strip (0 is the
+  // session's own agent tab; extra tabs are 1..=N in creation order).
+  uint32 index = 2;
 }
 
 message CloseTabRequest {

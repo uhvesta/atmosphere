@@ -20,7 +20,7 @@ use humata2_clients::model::{
 };
 use humata2_clients::{Clients, DaemonError, Fakes, Workspace, fixture};
 use humata2_inbox::{
-    Bulk, Delegate, Group, History, Inbox, InboxAction as A, InboxState, MigrateStatus, Offer,
+    Delegate, Group, History, Inbox, InboxAction as A, InboxState, MigrateStatus, Offer,
     OldLocalDaemon,
 };
 use tca::{TestClock, TestStore};
@@ -213,49 +213,6 @@ fn a_migrate_item_takes_no_deny_always_reply_or_choice() {
     assert_eq!(store.state().migrate_status(&id), Some(MigrateStatus::Waiting));
 }
 
-// Allow all and Deny all (UP-1).
-
-#[test]
-fn allow_all_skips_the_migrate_item_and_its_count_leaves_it_out() {
-    let (mut store, fakes) = store(vec![gpu_daemon()]);
-    let id = RequestId::new("m-gpu");
-    // The badge counts it; Allow all n doesn't (frame 77: "8 waiting", "Allow all 7").
-    assert_eq!(humata2_inbox::waiting(&store.state().workspace), 3);
-    assert_eq!(store.state().bulk_count(), 2);
-
-    // The Migrate item can't be undone, but Allow all leaves it out, so it
-    // doesn't make Allow all ask first.
-    store.send(A::Bulk(Bulk::ApproveAll), |_| {});
-    assert_eq!(store.state().confirm, None);
-    for _ in 0..2 {
-        store.receive_matching("an answer", |a| matches!(a, A::Answered(_, _)), |_| {});
-    }
-    store.settle();
-    store.skip_received();
-
-    let mut sent: Vec<_> = fakes.daemon.answers().into_iter().map(|(id, _)| id).collect();
-    sent.sort();
-    assert_eq!(sent, vec![RequestId::new("r-edit"), RequestId::new("r-test")]);
-    assert!(shown_ids(store.state()).contains(&id), "the Migrate item still waits");
-    assert_eq!(store.state().migrate_status(&id), Some(MigrateStatus::Waiting));
-}
-
-#[test]
-fn deny_all_skips_the_migrate_item() {
-    let (mut store, fakes) = store(vec![gpu_daemon()]);
-    store.send(A::Bulk(Bulk::DenyAll), |_| {});
-    for _ in 0..2 {
-        store.receive_matching("an answer", |a| matches!(a, A::Answered(_, _)), |_| {});
-    }
-    store.settle();
-    store.skip_received();
-
-    let answers = fakes.daemon.answers();
-    assert_eq!(answers.len(), 2, "{answers:?}");
-    assert!(answers.iter().all(|(id, _)| id.as_str() != "m-gpu"), "{answers:?}");
-    assert!(shown_ids(store.state()).contains(&RequestId::new("m-gpu")));
-}
-
 // Migrate → Migrating… → Failed or Migrated (frames 79–81).
 
 #[test]
@@ -392,8 +349,6 @@ fn an_old_local_daemon_with_a_staged_release_shows_the_apps_own_migrate_item() {
     let groups = store.state().groups();
     assert_eq!(groups[0].0, Group::Humata);
     assert!(groups[0].1.iter().any(|r| r.id == item.id));
-    // It is never sent to the daemon, so Allow all leaves it out as well.
-    assert_eq!(store.state().bulk_count(), 2);
 }
 
 #[test]

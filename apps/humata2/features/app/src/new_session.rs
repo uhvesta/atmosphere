@@ -142,6 +142,35 @@ impl App {
             .find(|item| item.id == id)
             .cloned()
         else {
+            if let Some(entry) = state
+                .todo
+                .items
+                .iter()
+                .find(|entry| entry.todo.key == id.as_str())
+                .cloned()
+            {
+                let effect = self.reduce(state, AppAction::StartNewSession);
+                if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
+                    sheet.title = entry.todo.title;
+                    sheet.item = Some(id);
+                    if let Some(channel) = entry.todo.channel.as_deref().and_then(|name| {
+                        state
+                            .workspace
+                            .channels
+                            .iter()
+                            .find(|c| c.name == name || c.id.as_str() == name)
+                            .map(|c| c.id.clone())
+                    }) {
+                        sheet.machine = state
+                            .workspace
+                            .channel_machines(&channel)
+                            .find(|m| m.online)
+                            .map(|m| m.id.clone());
+                        sheet.channel = Some(channel);
+                    }
+                }
+                return effect;
+            }
             return Effect::none();
         };
         let effect = self.reduce(state, AppAction::StartNewSession);

@@ -1,4 +1,4 @@
-use humata2_clients::model::{MachineId, Scope, SessionId};
+use humata2_clients::model::{MachineId, SessionId};
 use humata2_find::PinnedAction;
 use humata2_palette::Command;
 use humata2_settings::SettingsAction;
@@ -27,7 +27,6 @@ impl App {
         match command {
             Command::Home => self.navigate(state, Route::Home),
             Command::Inbox => self.navigate(state, Route::Inbox),
-            Command::Board => self.navigate(state, Route::Board(Scope::Global)),
             Command::Hosts => self.navigate(state, Route::Hosts),
             Command::Files => self.navigate(state, Route::Files),
             Command::Desk => self.navigate(state, Route::Desk),
@@ -147,7 +146,6 @@ impl App {
             Command::Views => self.navigate(state, Route::Views),
             Command::Todo => self.navigate(state, Route::Todo),
             Command::Machine(id) => self.navigate(state, Route::Machine(id)),
-            Command::ChannelBoard(id) => self.navigate(state, Route::Board(Scope::Channel(id))),
             // The palette asks for the machine itself and sends MoveTo, so
             // this is ⌥⌘M with no session open.
             Command::MoveSession => {
@@ -206,6 +204,21 @@ impl App {
                     thing: thing.to_thing(),
                     on,
                 }),
+            ),
+            Command::SelectSessions => {
+                let surface = match &state.route {
+                    Route::Machine(id) => humata2_mass_delete::Surface::Machine(id.clone()),
+                    Route::Home => humata2_mass_delete::Surface::Home,
+                    _ => humata2_mass_delete::Surface::Sidebar,
+                };
+                self.child(
+                    state,
+                    AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::EnterEmpty(surface)),
+                )
+            }
+            Command::DeleteAllSessions => self.child(
+                state,
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::OpenAll),
             ),
         }
     }

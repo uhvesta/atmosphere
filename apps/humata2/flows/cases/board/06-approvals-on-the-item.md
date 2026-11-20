@@ -1,61 +1,67 @@
-# An agent's ask is answered on the item
+# An agent's ask is answered Yes or No on the item
 
-Layer: verify (Board, the person). Platforms: macOS.
+Layer: verify (To-do, the person). Platforms: macOS.
+
+In BOARDSIMPLE (D830–D874, D846), an agent's pending ask about a To-do item (closing it, editing a field, or suggesting a new item) stays out of the **Agent inbox** (`ListRequestsRequest.agent_inbox = true` filters it out) and sorts into **Needs attention** at the top of **To-do** (and opens directly in the session's **To-do** panel when that session has one pending ask).
 
 ## Starting state
 
-- `#payments` has PAY-1 "Schema", In progress. I made it.
-- A session "Ledger" runs in `#payments` and is on PAY-1. Its agent has just run `humata --wait 600 board move PAY-1 done`. I made the item, so the move asks me.
-- The app is open on the `#payments` board. The Inbox badge shows 1.
+- `#payments` has `PAY-1` "Schema", made by the person.
+- A session "Ledger" runs in `#payments`. Its agent has just run `humata --json --wait 600 board move PAY-1 done` (or MCP `todo_close`). Because the person made the item (and `CAPABILITY_TODO_CLOSE` defaults to **Ask**), the call waits for the person's answer.
+- The app is open on **To-do**.
 
 ## Reproduce headless
 
-- Against a real daemon, with clicks: `bazel test //apps/humata2/desktop:live_boards_test --test_filter=the_items_drawer`. A scripted agent runs the real `humata board move` in its tab and waits. It matches `approving_an_agents_move_from_the_items_drawer_moves_it_and_returns_the_call` and `denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress`.
-- Ask wording on fakes: `bazel test //apps/humata2/features/board:drawer_test --test_filter=the_ask_names_the_change_it_waits_on`.
+- Against a real daemon, clicking `todo-row <key>` then `todo-yes` / `todo-no`: `bazel test //apps/humata2/desktop:live_flows_test --test_filter=todo_asks`. A real `humata --json --wait 600 board move` runs as the session's agent and waits for the drawer click. Covers `approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call` and `denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call`.
+- Native window click on fakes: `bazel test //apps/humata2/desktop:native_test --test_filter=approving_an_items_ask_answers_it_and_leaves_the_other_asks`.
+- Reducer and ask-card rendering on fakes: `bazel test //apps/humata2/features/todo:todo_test //apps/humata2/ui/workspace:workspace_unit_test`.
+- Daemon ask detail population and pending visibility: `bazel test //apps/humata2/daemon/svc_board:svc_board_unit_test --test_filter=domain_item_fills_ask_detail_from_the_inbox_request` and `bazel test //apps/humata2/daemon/humatad:boards_test --test_filter=an_agents_move_waits`.
 - By hand on the rig, no app: in the session tab run `humata --json board move PAY-1 done` (exit 12, prints the request id). As the person: `humata inbox`, `humata inbox approve <id>`, then `humata --json board --channel payments`. Keep each stdout and exit code.
-- Not headless: nothing for the drawer. The same answer from a notification or from a phone is out of scope.
+- Not headless: nothing for the drawer.
 
 ## Steps
 
-1. **I do:** look at the board.
-   **I see:** PAY-1's card is tinted orange, with a line about the ask and **Review**.
-   **State and events:** InboxRequest created (Pending). `BoardItem.pending` holds the ask, for the user only. The app re-reads the item when an ask comes or goes.
-   **Status:** Works (real daemon). `desktop/tests/live_boards.rs::approving_an_agents_move_…`; `daemon/humatad/tests/boards.rs::an_agents_move_waits_and_applies_on_approval_and_only_the_user_sees_it_pending`.
+1. **I do:** look at **To-do**.
+   **I see:** `PAY-1` is in **Needs attention** at the top of the list with an amber `Needs attention · close?` pill (or `new due date?` / `edit?` / `add?` depending on the ask kind).
+   **State and events:** `InboxRequest` created (Pending). `BoardItem.pending` holds the ask for the user only. `LiveTodo::watch` subscribes to `Boards` and `Inbox` and pushes the updated list.
+   **Status:** Works (real daemon). `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call`; `daemon/humatad/tests/boards.rs::an_agents_move_waits_and_applies_on_approval_and_only_the_user_sees_it_pending`.
 
-2. **I do:** click **Review**.
-   **I see:** the drawer, with an orange box: "<agent> asks to move this to Done", the agent's reason in quotes if it gave one, and **Move to Done**, **Keep in progress**, **Open session**.
-   **State and events:** none yet.
-   **Status:** Works (real daemon). Same test. Frame 22 on fakes.
+2. **I do:** click `PAY-1` (`todo-row PAY-1`).
+   **I see:** the drawer opens with the amber ask card on top: the question ("Close Schema?"), the agent's reason, a white detail box with **Evidence** (clickable links), **Change** (`before → after`), **Also** (what else it affects), and **Asked by** (`<agent> · <time ago>`), followed by **Yes** (`todo-yes`), **No** (`todo-no`), **Ask why** (or **Resume the session to ask why** if the asking session ended), and **Open session**.
+   **State and events:** `TodoAction::Open(key)`. `LiveTodo::list_all` enriches pending asks with `ask_detail` from `InboxService.ListRequests`.
+   **Status:** Works (real daemon) for the ask card and buttons: `desktop/tests/live_flows/todo_asks.rs`. Detail fields and links: `daemon/svc_board` unit test `domain_item_fills_ask_detail_from_the_inbox_request` and `ui/workspace/src/todo.rs` unit tests (`the_ask_card_lists_evidence_change_also_and_asker_in_order`, `an_ended_session_cannot_be_asked_why`, `evidence_links_produce_open_evidence_actions`, `only_web_evidence_opens_in_the_browser`).
 
-3. **I do:** click **Move to Done**.
-   **I see:** the box goes. PAY-1 is in Done. The Inbox badge drops to 0.
-   **State and events:** the request is answered Approved. The daemon runs the held move. InboxRequest updated (Approved); BoardItem updated (Done). The agent's `humata` call exits 0 and prints the moved item.
-   **Status:** Works (real daemon). Same test; it reads the agent's exit code and stdout.
+3. **I do:** click **Yes** (`todo-yes`).
+   **I see:** the ask card clears, `PAY-1` closes and leaves **Needs attention**, and no pending request remains on the daemon.
+   **State and events:** `TodoClient::answer(ask_id, true)` calls `InboxService.AnswerRequest(Approve)`. The daemon runs the held change and updates `PAY-1` to `Closed`. The agent's waiting `humata` call exits 0 and prints the moved item. Other items' asks stay untouched.
+   **Status:** Works (real daemon). `desktop/tests/live_flows/todo_asks.rs::approving_an_agents_ask_from_the_todo_drawer_closes_the_item_and_returns_the_call`; isolation across asks: `desktop/tests/native/todo_asks.rs::approving_an_items_ask_answers_it_and_leaves_the_other_asks`, `features/todo/tests/todo.rs::answering_yes_clears_needs_attention`.
 
-4. **I do:** (a second run) click **Keep in progress** instead.
-   **I see:** the box goes. PAY-1 stays In progress.
-   **State and events:** answered Denied. The agent's call ends with a denial, exit 4. Nothing is written to the item.
-   **Status:** Works (real daemon). `::denying_an_agents_move_from_the_items_drawer_keeps_it_in_progress`.
+4. **I do:** (a second run) click **No** (`todo-no`) instead.
+   **I see:** the ask card clears, `PAY-1` stays open, and no pending request remains on the daemon.
+   **State and events:** `TodoClient::answer(ask_id, false)` calls `InboxService.AnswerRequest(Deny)`. The agent's waiting `humata` call exits 4 (denied). Nothing is written to the item.
+   **Status:** Works (real daemon). `desktop/tests/live_flows/todo_asks.rs::denying_an_agents_ask_from_the_todo_drawer_keeps_the_item_open_and_fails_the_call`.
 
-5. **I do:** (a third run) answer the same request from its Inbox card instead of the drawer.
-   **I see:** the same result. The drawer's box goes too.
-   **State and events:** one request, two doors, first answer wins.
-   **Status:** Works (real daemon) for one answer only: `daemon/humatad/tests/inbox.rs::a_request_takes_only_its_first_answer`. Both doors on one request in the app: Code, no test.
+5. **I do:** (a third run) open the session's **To-do** panel while the session has one pending ask.
+   **I see:** the panel opens straight onto that item's drawer with **Yes**, **No** and **Ask why** beside the running terminal (frame 191 / native frames 07 and 12).
+   **State and events:** `todo_panel::open_key` picks the sole asking item in the session.
+   **Status:** Fakes only. `ui/workspace/src/todo_panel.rs::tests::a_session_with_one_question_opens_it`; frames 07 and 12 in `desktop/tests/native/session.rs`.
 
-6. **I do:** the agent asks to rename PAY-1 (an edit ask). I open the drawer.
-   **I see:** "<agent> asks to edit this", each field as before → after, **Apply edit** and **Keep as is**.
-   **Status:** Fakes only. `features/board/tests/drawer.rs::the_ask_names_the_change_it_waits_on`. Unproven live: an edit ask approved from the drawer.
-
-7. **I do:** the agent asks to delete PAY-1. I open the drawer.
-   **I see:** "<agent> asks to delete this", **Delete item** (red) and **Keep item**.
-   **Status:** Fakes only. Same test. Unproven live.
+6. **I do:** an agent suggests a new item (`todo_add`). I see it in **Needs attention** marked `Suggested` with **Accept** / **Dismiss**.
+   **I see:** it has no rank number until I say **Accept** (`AcceptSuggestion`), and **Dismiss** closes it.
+   **State and events:** `TodoService.CreateTodo` from an agent sets `suggested: true`; `UpdateTodo` with `accept_suggestion: true` (user only) promotes it to the ranked list.
+   **Status:** Works (real daemon) in `svc_board`: `daemon/svc_board:svc_board_unit_test`. App UI/reducer: Fakes only (`ui/workspace/src/todo.rs`, `features/todo/src/lib.rs`).
 
 ## Branches
 
+### The answer RPC fails
+
+When `TodoClient::answer` returns an error. The reducer puts the ask back on the item and sets `state.error` so the person sees why.
+**Status:** Fakes only. `features/todo/tests/todo.rs::a_failed_answer_puts_the_ask_back_and_says_so`.
+
 ### The item changed before I approved
 
-When I renamed the item after the agent asked to rename it. Approving runs the write fresh; it ends as a revision conflict for the agent, and my title stays.
-**Status:** Code, no test. D155 says so; `daemon/humatad/src/board_service.rs:858` (`attempt` with `approved`). I found no test that approves a stale ask.
+When I edited the item after the agent asked. Approving runs the write fresh; it ends as a revision conflict for the agent, and my change stays.
+**Status:** Code, no test. D155; `daemon/svc_board` replays with `approved = true`.
 
 ### The item is deleted while an ask waits
 
@@ -64,42 +70,41 @@ When I run `humata board rm PAY-1`. The ask is withdrawn and the agent's call en
 
 ### The daemon restarts while an ask waits
 
-When humatad2 restarts. The ask is gone, the card loses its tint, and the agent's waiting call ends. The agent must ask again.
-**Status:** Code, no test. D155: "Asks don't survive a daemon restart". Reboots are meant to lose nothing, so this is a gap.
+When `humatad2` restarts. The ask is gone, the item leaves Needs attention, and the agent's waiting call ends. The agent must ask again.
+**Status:** Code, no test. D155: "Asks don't survive a daemon restart".
 
 ### The agent stops waiting
 
-When the agent's call was made with `--json` and no `--wait`. It returns pending at once (exit 12) and the ask stays answerable. Approving still moves the item (TP-13).
-**Status:** Works (real daemon) for MCP: `daemon/mcp/tests/waiting.rs::a_request_that_returned_pending_survives_the_agent_exiting` (fake daemon), and the held call in `boards.rs` above.
+When the agent's call was made with `--json` and no `--wait` (or MCP `wait_seconds: 0`). It returns pending at once (exit 12) and the ask stays answerable on the item. Approving still applies it (TP-13).
+**Status:** Works (real daemon) for the held call in `boards.rs`; MCP side: Fakes only, `daemon/mcp/tests/waiting.rs::a_request_that_returned_pending_survives_the_agent_exiting`.
 
 ## Expected outcomes
 
-- [ ] A card and a table row with an ask offer **Review**.
-- [ ] The drawer names who asks, for what, and why.
-- [ ] Approving applies the change and returns it to the agent; denying changes nothing and returns a denial.
-- [ ] The Inbox card and the drawer answer the same request.
+- [ ] An item with an agent's pending ask sorts into **Needs attention** with a kind-specific pill (`close?`, `new due date?`, `add?`).
+- [ ] The drawer's ask card shows the question, reason, evidence, before → after change, what else it affects, who asked, and **Yes** / **No**.
+- [ ] Clicking **Yes** applies the change, clears the request, and returns success to the waiting agent; clicking **No** leaves the item unchanged, clears the request, and returns denial to the agent.
+- [ ] Answering one item's ask leaves other items' asks intact.
 - [ ] Deleting the item withdraws its asks.
 
 ## Status summary
 
 | Step or branch | Status | Evidence |
 |---|---|---|
-| 1 Card shows the ask | Works (real daemon) | `live_boards.rs::approving_…` |
-| 2 Review opens the box | Works (real daemon) | same |
-| 3 Move to Done | Works (real daemon) | same |
-| 4 Keep in progress | Works (real daemon) | `live_boards.rs::denying_…` |
-| 5 From the Inbox card | Works (real daemon) for one answer | `inbox.rs::a_request_takes_only_its_first_answer` |
-| 6 Edit ask | Fakes only | `drawer.rs::the_ask_names_the_change_it_waits_on` |
-| 7 Delete ask | Fakes only | same |
-| Stale approve | Code, no test | `board_service.rs:858` |
+| 1 Item in Needs attention | Works (real daemon) | `live_flows/todo_asks.rs`, `boards.rs::an_agents_move_waits_…` |
+| 2 Drawer ask card & detail | Works (real daemon) for card; unit-tested for detail/links | `live_flows/todo_asks.rs`, `svc_board_unit_test`, `workspace_unit_test` |
+| 3 Yes closes & returns call | Works (real daemon) | `live_flows/todo_asks.rs`, `native/todo_asks.rs` |
+| 4 No keeps open & fails call | Works (real daemon) | `live_flows/todo_asks.rs` |
+| 5 Session To-do panel auto-open | Fakes only | `todo_panel.rs` tests, native frames 07 & 12 |
+| 6 Suggested item Accept/Dismiss | Works in `svc_board`; UI Fakes only | `svc_board_unit_test` |
+| Answer error rollback | Fakes only | `features/todo/tests/todo.rs::a_failed_answer_puts_the_ask_back_and_says_so` |
+| Stale approve | Code, no test | D155 |
 | Item deleted | Works (real daemon) | `boards.rs::deleting_an_item_withdraws_…` |
 | Daemon restart | Code, no test | D155 |
-| Agent not waiting | Works (real daemon), partly fakes | `waiting.rs` |
+| Agent not waiting | Works (real daemon) in daemon; MCP Fakes only | `waiting.rs`, `boards.rs` |
 
 ## Gaps and likely bugs
 
-- Likely bug: the card's line is fixed text, "Asks to move to Done", for every ask: an edit, a delete, a move to In review (`ui/src/board.rs:421`, `ui/src/panel_board.rs:170`). The drawer's box is right. Confirm with a move-to-In-review ask and read the card.
-- Likely bug: an ask does not survive a daemon restart (D155). The person sees the card vanish with no word, and the agent's call just ends.
-- Not built: a create ask on the board. An agent's new Global item waits in the Inbox only; no board shows it.
-- The reason line is empty when the agent used the `humata` command, which can't send one (case 13).
-- Edit and delete asks are proven only on fakes.
+- Likely bug: an ask does not survive a daemon restart (D155). The ask vanishes with no notice and the agent's waiting call ends.
+- The reason line is empty when the agent used `humata board move`, which cannot pass `--reason` yet (case 13).
+- Clicking **No** in the To-do drawer sends an empty denial note (no note input on the To-do ask card yet).
+- Field-edit asks and suggested-item Accept/Dismiss are proven on fakes and daemon unit tests, not yet in a live UI flow.

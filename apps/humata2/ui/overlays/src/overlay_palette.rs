@@ -71,7 +71,9 @@ impl Overlays {
             {
                 let selected = at == palette.cursor;
                 let ui = ui.clone();
+                let danger = entry.command == Command::DeleteAllSessions;
                 let color = if selected { 0xffffff } else { look.secondary };
+                let name_color = if danger && !selected { Some(0xff453a) } else { None };
                 let glyph = match &entry.command {
                     Command::Session(id) => {
                         if palette
@@ -88,6 +90,8 @@ impl Overlays {
                     Command::File { .. } => IconName::FileCode,
                     Command::Channel(_) => IconName::FolderGit2,
                     Command::Fork => IconName::GitFork,
+                    Command::SelectSessions => IconName::ListChecks,
+                    Command::DeleteAllSessions => IconName::Trash,
                     Command::TerminalFullScreen => IconName::Maximize2,
                     Command::TogglePanel => IconName::Columns2,
                     Command::Pin { .. } => IconName::Pin,
@@ -109,15 +113,21 @@ impl Overlays {
                     .when(selected, |x| {
                         x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
                     })
-                    .child(chrome::icon(glyph, color, 15.))
+                    .child(chrome::icon(glyph, name_color.unwrap_or(color), 15.))
                     .child(
                         div()
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .when_some(name_color, |x, red| x.text_color(rgb(red)))
                             .child(entry.title.clone()),
                     );
-                if index == 3 {
+                // The two session-deleting entries carry a note, not a shortcut.
+                let noted = matches!(
+                    entry.command,
+                    Command::SelectSessions | Command::DeleteAllSessions
+                );
+                if index == 3 && !noted {
                     item = item.child(div().flex_1()).child(
                         div()
                             .px(px(5.))

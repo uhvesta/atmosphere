@@ -3,14 +3,26 @@
 //! design frames.
 use super::*;
 
-/// FK-1 to FK-5: kind cards, Fork from, agent, machine, branch and a preview;
-/// Fork sends exactly what the dialog shows.
+/// FK-1 to FK-5, D873: the dialog opens collapsed on Code + context with its
+/// facts line; More options shows the kind cards and fields; Fork sends
+/// exactly what the dialog holds.
 #[test]
 fn the_fork_dialog_matches_frame_62_and_forks_what_it_shows() {
     use humata2_clients::model::{ForkKind, MachineId};
     let mut app = App::new(fixture::design());
     app.open("ledger", Panel::Changes);
     app.click("session-fork");
+    // Collapsed: no kind cards or fields, only the facts.
+    assert!(app.contains("fork-facts"));
+    assert!(app.contains("fork-more-options"));
+    assert!(!app.contains("fork-kind-0-on"));
+    assert!(!app.contains("fork-from"));
+    assert!(!app.contains("fork-agent"));
+    assert!(!app.contains("fork-machine"));
+    assert!(!app.contains("fork-branch"));
+    assert!(!app.contains("fork-preview"));
+    app.snapshot("fork-dialog");
+    app.click("fork-more-options");
     // Code + context is picked first, on Now, the same agent and machine,
     // with a branch suggested.
     assert!(app.contains("fork-kind-0-on"));
@@ -18,10 +30,10 @@ fn the_fork_dialog_matches_frame_62_and_forks_what_it_shows() {
     assert!(app.contains("fork-agent"));
     assert!(app.contains("fork-machine"));
     assert!(app.contains("fork-branch"));
-    assert!(app.contains("fork-preview"));
+    assert!(app.contains("fork-facts"));
     let branch = app.ui.read(|s| s.session.fork.as_ref().unwrap().branch.clone());
     assert!(!branch.is_empty());
-    app.snapshot("fork-dialog");
+    app.snapshot("fork-dialog-expanded");
 
     // Before an earlier turn, on another machine.
     app.send(AppAction::Session(SessionAction::ForkBeforeTurn(Some(2))));
@@ -36,13 +48,19 @@ fn the_fork_dialog_matches_frame_62_and_forks_what_it_shows() {
     assert_eq!(sent.branch, branch);
     assert!(app.ui.read(|s| s.session.fork.is_none()));
 
-    // Code only has no Fork from: a fresh agent has no turns to cut at.
+    // Code only has no Fork from: a fresh agent has no turns to cut at. The
+    // dialog opens collapsed again.
     app.click("session-fork");
+    assert!(!app.contains("fork-kind-2"));
+    app.click("fork-more-options");
     app.click("fork-kind-2");
     assert!(!app.contains("fork-from"));
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
-    app.click("fork-kind-1");
+    app.click("fork-more-options");
     app.snapshot("fork-dialog-dark");
+    app.click("fork-more-options");
+    app.click("fork-kind-1");
+    app.snapshot("fork-dialog-expanded-dark");
     app.click("fork-cancel");
     assert!(app.ui.read(|s| s.session.fork.is_none()));
 }

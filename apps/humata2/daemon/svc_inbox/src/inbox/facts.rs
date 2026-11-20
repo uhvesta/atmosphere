@@ -4,10 +4,12 @@
 //! that asked. All of it is worked out here from what the card already
 //! holds, in names rather than ids.
 
-use humata2_access::Capability;
+use std::fmt::Write as _;
+
+use humata2_access::{Capability, Entry, Place, Root};
 use humata2_daemon_ports::Names;
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::BoardItemRecord;
+use humata2_store::{BoardItemRecord, Store};
 
 /// The rows a card shows under its title.
 #[derive(Debug, Default)]
@@ -23,7 +25,195 @@ pub(super) fn details(preview: &pb::request_preview::Preview, names: &Names) -> 
     match preview {
         pb::request_preview::Preview::CrossMachineCopy(copy) => copy_details(copy, names),
         pb::request_preview::Preview::Move(preview) => move_details(preview, names),
+        pb::request_preview::Preview::FileAccess(access) => file_access_details(access, names),
         _ => Details::default(),
+    }
+}
+
+/// The rows for a file-read ask whose `FileAccessPreview` and policy `Place`
+/// are both known, resolving session titles, agents and channel names from
+/// `store` so the card shows names instead of ids (IN-10, INBOXHOOKS).
+pub(super) fn file_read_details(
+    access: &pb::FileAccessPreview,
+    place: &Place,
+    store: &Store,
+    names: &Names,
+) -> Details {
+    let machine = machine_name(&access.source_machine, names);
+    let mut session_title: Option<String> = None;
+    let mut session_agent: Option<String> = None;
+    let from = match &place.root {
+        Root::Clone(session) | Root::Pastes(session) => {
+            let record = store.session(session.id.as_str()).ok().flatten();
+            let title = record
+                .as_ref()
+                .map(|r| r.title.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| session.id.to_string());
+            let agent = record
+                .as_ref()
+                .map(|r| r.agent.clone())
+                .filter(|a| !a.is_empty());
+            session_title = Some(title.clone());
+            session_agent.clone_from(&agent);
+            let mut rest = String::new();
+            if let Some(agent) = &agent {
+                let _ = write!(rest, " ({agent}'s session)");
+            }
+            if matches!(place.root, Root::Pastes(_)) {
+                rest.push_str(" · pasted files");
+            }
+            if !machine.is_empty() {
+                let _ = write!(rest, " · {machine}");
+            }
+            fact("From", title, rest)
+        }
+        Root::Shared(channel) => {
+            let name = channel_name(store, channel.as_str());
+            fact("From", machine.clone(), format!(" · {name} · shared"))
+        }
+        Root::ChannelFolder(channel) => {
+            let name = channel_name(store, channel.as_str());
+            fact("From", machine.clone(), format!(" · {name}"))
+        }
+        Root::MainClone { channel, repo } => {
+            let name = channel_name(store, channel.as_str());
+            fact("From", machine.clone(), format!(" · {name} · main clone ({repo})"))
+        }
+        Root::Home | Root::Received | Root::Outside => fact("From", machine.clone(), String::new()),
+    };
+    let files_text = format_paths(&access.paths);
+    let files_row = if files_text.is_empty() {
+        fact("Files", "The whole folder".to_owned(), String::new())
+    } else if place.entry == Entry::Folder {
+        fact("Files", files_text, " · folder".to_owned())
+    } else {
+        fact("Files", files_text, String::new())
+    };
+    let (access_row, undo_text) = access_and_undo(access.mode);
+    let mut affects = Vec::new();
+    match (session_title, session_agent) {
+        (Some(title), Some(agent)) => affects.push(pb::CardEffect {
+            warn: false,
+            lead: format!("Nothing changes in {title}"),
+            rest: format!("; {agent} isn't interrupted"),
+        }),
+        (Some(title), None) => affects.push(pb::CardEffect {
+            warn: false,
+            lead: format!("Nothing changes in {title}"),
+            rest: "; this is a read, not a copy or edit".to_owned(),
+        }),
+        (None, _) => affects.push(pb::CardEffect {
+            warn: false,
+            lead: format!("Nothing changes on {machine}"),
+            rest: "; this is a read, not a copy or edit".to_owned(),
+        }),
+    }
+    if place.entry == Entry::Folder {
+        affects.push(pb::CardEffect {
+            warn: false,
+            lead: "Lists names and sizes only".to_owned(),
+            rest: "; file contents are not read".to_owned(),
+        });
+    } else {
+        affects.push(pb::CardEffect {
+            warn: false,
+            lead: "Reads only what is named above".to_owned(),
+            rest: "; other files stay unreadable".to_owned(),
+        });
+    }
+    Details {
+        facts: vec![from, files_row, access_row],
+        affects,
+        undo_text,
+    }
+}
+
+fn channel_name(store: &Store, id: &str) -> String {
+    store
+        .channel(id)
+        .ok()
+        .flatten()
+        .map(|channel| channel.name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| id.to_owned())
+}
+
+fn format_paths(paths: &[pb::RepoPath]) -> String {
+    paths
+        .iter()
+        .map(|entry| {
+            let repo = entry
+                .repo
+                .as_ref()
+                .filter(|r| !r.owner.is_empty() && !r.name.is_empty())
+                .map(|r| format!("{}/{}", r.owner, r.name))
+                .unwrap_or_default();
+            match (repo.is_empty(), entry.path.is_empty()) {
+                (_, true) => repo,
+                (true, false) => entry.path.clone(),
+                (false, false) => format!("{repo}/{}", entry.path),
+            }
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn access_and_undo(mode: i32) -> (pb::CardFact, String) {
+    match pb::file_access_preview::Mode::try_from(mode) {
+        Ok(pb::file_access_preview::Mode::CopyIntoClone) => (
+            fact("Access", "Copy into clone".to_owned(), String::new()),
+            "By hand: delete the copied files. The originals are untouched.".to_owned(),
+        ),
+        Ok(pb::file_access_preview::Mode::CopyIntoShared) => (
+            fact("Access", "Copy into shared".to_owned(), String::new()),
+            "By hand: delete the copied files. The originals are untouched.".to_owned(),
+        ),
+        _ => (
+            fact("Access", "Read only".to_owned(), " · for this call".to_owned()),
+            "Nothing changes; there is nothing to undo.".to_owned(),
+        ),
+    }
+}
+
+fn file_access_details(access: &pb::FileAccessPreview, names: &Names) -> Details {
+    let machine = machine_name(&access.source_machine, names);
+    let session = access
+        .source_session
+        .as_ref()
+        .map(|id| id.value.as_str())
+        .filter(|id| !id.is_empty());
+    let from = match session {
+        Some(session) if !machine.is_empty() => {
+            fact("From", session.to_owned(), format!(" · {machine}"))
+        }
+        Some(session) => fact("From", session.to_owned(), String::new()),
+        None => fact("From", machine.clone(), String::new()),
+    };
+    let files_text = format_paths(&access.paths);
+    let files_row = fact(
+        "Files",
+        if files_text.is_empty() {
+            "The whole folder".to_owned()
+        } else {
+            files_text
+        },
+        String::new(),
+    );
+    let (access_row, undo_text) = access_and_undo(access.mode);
+    let affects = vec![pb::CardEffect {
+        warn: false,
+        lead: match session {
+            Some(session) => format!("Nothing changes in {session}"),
+            None => format!("Nothing changes on {machine}"),
+        },
+        rest: "; this is a read, not a copy or edit".to_owned(),
+    }];
+    Details {
+        facts: vec![from, files_row, access_row],
+        affects,
+        undo_text,
     }
 }
 
@@ -395,5 +585,87 @@ mod tests {
         assert_eq!(working_on(&items, "s2"), "Working on PAY-3 Ledger schema v2");
         assert_eq!(working_on(&items, "s1"), "");
         assert_eq!(working_on(&items, "s9"), "");
+    }
+
+    #[test]
+    fn a_file_read_preview_names_source_paths_access_mode_and_calm_effects() {
+        let names = Names::of_host("host");
+        let preview = pb::FileAccessPreview {
+            source_session: Some(pb::SessionId {
+                value: "se_other".to_owned(),
+            }),
+            source_machine: Some(pb::MachineId {
+                value: "host".to_owned(),
+            }),
+            mode: pb::file_access_preview::Mode::ReadThisCall as i32,
+            paths: vec![pb::RepoPath {
+                repo: Some(pb::RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "api".to_owned(),
+                }),
+                path: "src/retry/backoff.rs".to_owned(),
+            }],
+        };
+        let got = details(&pb::request_preview::Preview::FileAccess(preview), &names);
+        let from = got.facts.iter().find(|f| f.label == "From").unwrap();
+        let files = got.facts.iter().find(|f| f.label == "Files").unwrap();
+        let access = got.facts.iter().find(|f| f.label == "Access").unwrap();
+        assert_eq!(from.lead, "se_other");
+        assert!(from.rest.contains("This Mac"));
+        assert_eq!(files.lead, "acme/api/src/retry/backoff.rs");
+        assert_eq!(access.lead, "Read only");
+        assert!(!got.affects.is_empty());
+        assert!(got.affects.iter().all(|effect| !effect.warn));
+        assert!(!got.undo_text.is_empty());
+    }
+
+    #[test]
+    fn file_read_details_resolves_session_title_and_agent_from_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .put_session(&humata2_store::SessionRecord {
+                id: "se_other".to_owned(),
+                channel: "ch_pay".to_owned(),
+                machine: "devbox-1".to_owned(),
+                title: "Refund retries".to_owned(),
+                agent: "copilot".to_owned(),
+                folder: std::path::PathBuf::from("/work/refund"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let place = Place {
+            machine: humata2_access::MachineId::new("devbox-1"),
+            root: Root::Clone(humata2_access::SessionRef {
+                id: humata2_access::SessionId::new("se_other"),
+                channel: humata2_access::ChannelId::new("ch_pay"),
+                machine: humata2_access::MachineId::new("devbox-1"),
+            }),
+            path: humata2_access::RepoPath::new("acme/api/src/backoff.rs").unwrap(),
+            entry: Entry::File,
+        };
+        let access = pb::FileAccessPreview {
+            source_session: Some(pb::SessionId {
+                value: "se_other".to_owned(),
+            }),
+            source_machine: Some(pb::MachineId {
+                value: "devbox-1".to_owned(),
+            }),
+            mode: pb::file_access_preview::Mode::ReadThisCall as i32,
+            paths: vec![pb::RepoPath {
+                repo: Some(pb::RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "api".to_owned(),
+                }),
+                path: "src/backoff.rs".to_owned(),
+            }],
+        };
+        let names = Names::of_host("host").naming("devbox-1", "devbox-1");
+        let got = file_read_details(&access, &place, &store, &names);
+        let from = got.facts.iter().find(|f| f.label == "From").unwrap();
+        assert_eq!(from.lead, "Refund retries");
+        assert!(from.rest.contains("copilot") && from.rest.contains("devbox-1"));
+        assert!(got.affects.iter().any(|e| e.lead.contains("Refund retries") && e.rest.contains("copilot")));
+        assert!(got.affects.iter().all(|e| !e.warn));
     }
 }

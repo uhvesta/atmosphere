@@ -29,6 +29,7 @@ pub mod history;
 mod inbox;
 mod link;
 pub mod marks;
+mod mass_delete;
 mod message;
 mod read_marks;
 mod repos;

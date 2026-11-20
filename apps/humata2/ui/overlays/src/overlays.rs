@@ -23,6 +23,9 @@ use humata2_ui_core::widgets::col;
 mod add_machine;
 #[path = "overlay_desk.rs"]
 mod desk;
+// MASSDELETE (D875): the delete sheet for many sessions.
+#[path = "overlay_delete_sessions.rs"]
+mod delete_sessions;
 #[path = "overlay_archive.rs"]
 mod archive;
 #[path = "overlay_close.rs"]
@@ -65,6 +68,7 @@ enum Kind {
     Archive,
     Close,
     Continue,
+    DeleteSessions,
     Desk,
     Fork,
     Move,
@@ -119,6 +123,7 @@ pub struct Overlays {
     pr: pr_review::Inputs,
     sheet: FocusHandle,
     desk: desk::Inputs,
+    delete_sessions: delete_sessions::Inputs,
     add_machine: add_machine::AddMachineDialog,
     shown: Option<Kind>,
     restore: Option<FocusHandle>,
@@ -230,6 +235,7 @@ impl Overlays {
         let channel_add_repo = channel_add_repo::Inputs::new(window, cx, &mut subscriptions);
         let session_repo = session_add_repo::query_input(window, cx, &mut subscriptions);
         let desk = desk::Inputs::new(window, cx, &mut subscriptions);
+        let delete_sessions = delete_sessions::Inputs::new(window, cx, &mut subscriptions);
         let pr = pr_review::Inputs::new(window, cx, &mut subscriptions);
         let add_machine =
             add_machine::AddMachineDialog::new(ui.clone(), AppAction::AddMachine, window, cx);
@@ -251,6 +257,7 @@ impl Overlays {
             session_repo,
             sheet: cx.focus_handle(),
             desk,
+            delete_sessions,
             add_machine,
             shown: None,
             restore: None,
@@ -274,10 +281,8 @@ impl Overlays {
         match top {
             Some(Kind::Palette) => self.query.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewSession) => self.title.update(cx, |input, cx| input.focus(window, cx)),
-            Some(Kind::Fork) => self
-                .fork_branch
-                .update(cx, |input, cx| input.focus(window, cx)),
-            Some(Kind::Move | Kind::Continue | Kind::Archive | Kind::Close | Kind::RunningEnd | Kind::RunningAdopt) => {
+            // Return forks from the dialog itself (D873).
+            Some(Kind::Fork | Kind::Move | Kind::Continue | Kind::Archive | Kind::Close | Kind::RunningEnd | Kind::RunningAdopt) => {
                 window.focus(&self.sheet, cx);
             }
             Some(Kind::Rename) => self
@@ -292,6 +297,7 @@ impl Overlays {
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
             Some(kind @ (Kind::PrReview | Kind::SubmitReview)) => self.pr_focus(kind, window, cx),
             Some(Kind::Desk) => self.desk_focus(window, cx),
+            Some(Kind::DeleteSessions) => self.delete_sessions_focus(window, cx),
             Some(Kind::AddMachine) => self.add_machine.focus(window, cx),
             // The buttons take focus as they are clicked or tabbed to.
             Some(Kind::MachineStop | Kind::MachineStart) => {}
@@ -460,6 +466,7 @@ impl Render for Overlays {
             .read(|state| state.add_machine.open.then(|| state.add_machine.clone()));
         let root_change = self.ui.read(root::RootView::read);
         let running = self.ui.read(running::RunningView::read);
+        let delete_view = self.ui.read(delete_sessions::View::read);
         let shown = top
             .as_ref()
             .map(kind)
@@ -478,6 +485,7 @@ impl Render for Overlays {
                     .map(|view| if view.is_end() { Kind::RunningEnd } else { Kind::RunningAdopt })
             })
             .or_else(|| root_change.is_some().then_some(Kind::RootChange))
+            .or_else(|| delete_view.is_some().then_some(Kind::DeleteSessions))
             .or_else(|| self.pr_kind());
         self.follow_focus(shown, window, cx);
         let ui = self.ui.clone();
@@ -543,6 +551,11 @@ impl Render for Overlays {
                 .as_ref()
                 .map(|view| self.root_dialog(view, look, &ui, window, cx))
         });
+        let content = content.or_else(|| {
+            delete_view
+                .as_ref()
+                .map(|view| self.delete_sessions_dialog(view, look, &ui, window, cx))
+        });
         let content = content.or_else(|| self.pr_overlay(look, &ui, window, cx));
         let layer = div().absolute().top_0().left_0().size_full();
         let layer = match content {
@@ -552,6 +565,9 @@ impl Render for Overlays {
                 let outside = match shown {
                     Some(Kind::Close) => {
                         AppAction::Session(SessionAction::Close(humata2_session::CloseAction::Cancel))
+                    }
+                    Some(Kind::DeleteSessions) => {
+                        AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::Cancel)
                     }
                     Some(Kind::RunningEnd) => {
                         AppAction::MachinePage(humata2_hosts::MachinePageAction::Running(
@@ -593,7 +609,7 @@ impl Render for Overlays {
                                 Some(Kind::Palette | Kind::Move | Kind::Continue | Kind::Rename | Kind::RootChange) => 110.,
                                 Some(Kind::Archive | Kind::Close | Kind::RunningEnd | Kind::RunningAdopt | Kind::MachineStop) => 120.,
                                 Some(Kind::MachineStart) => 180.,
-                                Some(Kind::Fork | Kind::SubmitReview) => 24.,
+                                Some(Kind::Fork | Kind::SubmitReview | Kind::DeleteSessions) => 24.,
                                 Some(Kind::NewSession | Kind::Desk) => 70.,
                                 Some(Kind::ChannelAddRepo) => 60.,
                                 Some(Kind::AddMachine) => 60.,

@@ -61,7 +61,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 10. **I do:** Open the session panel for the session on `PAY-1` and look at its board.
     **I see:** The panel shows the channel's board, with this session's own items first, then the rest of the channel's items.
     **State and events:** The panel reads the channel's items, with the session's items first.
-    **Status:** Works (real daemon): `desktop/tests/live_boards.rs::the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first`. Fake-client version: `features/board/tests/scope.rs::the_session_panel_shows_its_channel_board_with_its_own_items_first`. The listing of session items from the daemon is Works (real daemon): `clients/live/tests/boards.rs::a_session_board_item_is_listed_on_that_sessions_board`.
+    **Status:** Fakes only since the board page went (D874): the panel is the session's To-do panel, `desktop/tests/panels.rs::board_lists_the_channels_items_and_expands_without_losing_the_session`. The listing of session items from the daemon is Works (real daemon): `clients/live/tests/boards.rs::a_session_board_item_is_listed_on_that_sessions_board`.
 
 11. **I do:** Press Move on the session that works on `PAY-1` and pick box-1. Repeat for a second heavy session on `PAY-4`. The shortcut is ⌥⌘M, with a session open.
     **I see:** The Move dialog shows the plan: the branch, the size, and what stays on This Mac until the move finishes. Each session's terminal is read-only while it moves. When each move ends, the session shows as running on box-1.
@@ -179,7 +179,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 | 7. Loop refused with its names | Works (real daemon) | `daemon/humatad/tests/boards.rs::a_dependency_that_closes_a_loop_is_refused_with_the_loop` |
 | 8. Board updates as items move | Works (real daemon) | `clients/live/tests/boards.rs::a_move_after_subscribing_is_pushed_as_an_item_change` |
 | 9. Dashboard figures open their items | Works (real daemon) | `desktop/tests/live_boards.rs::the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_counts`; fakes: `features/board/tests/presentation.rs::dashboard_drills_show_exactly_the_counted_items` |
-| 10. Session panel shows the channel board | Works (real daemon) | `desktop/tests/live_boards.rs::the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first`; fakes: `features/board/tests/scope.rs::the_session_panel_shows_its_channel_board_with_its_own_items_first` |
+| 10. Session panel shows the channel board | Fakes only (D874: now the To-do panel) | `desktop/tests/panels.rs::board_lists_the_channels_items_and_expands_without_losing_the_session` |
 | 11. Move two sessions to box-1 | Works (real daemon) | `daemon/humatad/tests/move_session.rs::moving_from_this_mac_frees_its_folder_only_after_it_runs_on_box_1` |
 | 11a. The ⌥⌘M key press | Works (real daemon) | `desktop/tests/live_flows/keys.rs::the_move_key_asks_for_a_machine_in_a_session_and_says_why_nothing_moves_outside_one` |
 | 12. Add box-2 with host key | Works (real daemon) | `daemon/humatad/tests/machines.rs::a_machine_is_added_once_its_host_key_is_confirmed_then_removed_by_plan` |

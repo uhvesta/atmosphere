@@ -31,7 +31,7 @@ use crate::remote_work::{HostOp, MachineOutcome, RemoteWork, channel_steps};
 use crate::status;
 
 mod add;
-mod delete;
+pub(crate) mod delete;
 // REPOS (RL-5): the repo search reuses CH-3's listing.
 pub(crate) use humata2_svc_channels::gh_repos;
 pub(crate) use delete::{finish_restore, pick_place};

@@ -11,13 +11,13 @@ name = "humata2_app"
 path = "src/lib.rs"
 
 [dependencies]
-humata2-board = { path = "../board" }
 humata2-clients = { path = "../../clients" }
 humata2-desk = { path = "../desk" }
 humata2-files = { path = "../files" }
 humata2-find = { path = "../find" }
 humata2-hosts = { path = "../hosts" }
 humata2-inbox = { path = "../inbox" }
+humata2-mass-delete = { path = "../mass_delete" }
 humata2-palette = { path = "../palette" }
 humata2-pr-review = { path = "../pr_review" }
 humata2-review = { path = "../review" }

@@ -67,8 +67,6 @@ pub enum Command {
     Home,
     /// Go to the Inbox.
     Inbox,
-    /// Go to the global board.
-    Board,
     /// Go to Hosts.
     Hosts,
     /// Go to Files.
@@ -100,6 +98,11 @@ pub enum Command {
     ContinueInChannel,
     /// Stop the open session's agent; the session stays (SE-7).
     StopAgent,
+    /// Enter select mode on the current surface (MASSDELETE, D875).
+    SelectSessions,
+    /// Open the delete-all plan (MASSDELETE, D875): shown, in red, only
+    /// when the query names it.
+    DeleteAllSessions,
     /// Open a channel.
     Channel(ChannelId),
     /// Open a session.
@@ -162,8 +165,6 @@ pub enum Command {
     Todo,
     /// Open a host's page.
     Machine(MachineId),
-    /// Open a channel's board.
-    ChannelBoard(ChannelId),
     /// Move the open session to another machine; the palette asks which.
     MoveSession,
     /// Move a session to a machine, as the palette asked.
@@ -240,7 +241,7 @@ pub enum Group {
     Files,
     /// Channels.
     Channels,
-    /// Commands, views, hosts' pages, boards and Settings.
+    /// Commands, views, hosts' pages and Settings.
     Commands,
     /// The machines Move session asks between.
     Machines,
@@ -646,7 +647,13 @@ impl PaletteState {
         for entry in self.all() {
             // A terminal is searched on its title and machine (its hint),
             // never its session's status word.
-            let search = if matches!(entry.command, Command::Session(_) | Command::Terminal { .. }) {
+            let search = if matches!(
+                entry.command,
+                Command::Session(_)
+                    | Command::Terminal { .. }
+                    | Command::SelectSessions
+                    | Command::DeleteAllSessions
+            ) {
                 format!("{} {}", entry.title, entry.hint)
             } else {
                 entry.title.clone()
@@ -659,6 +666,12 @@ impl PaletteState {
                 .as_ref()
                 .and_then(|id| self.workspace.session(id))
                 .is_some_and(|session| fuzzy(query, &session.title).is_some());
+            // Delete all sessions… appears only when the query names it, and
+            // ranks below every other match.
+            if entry.command == Command::DeleteAllSessions && query.is_empty() {
+                continue;
+            }
+            let last = if entry.command == Command::DeleteAllSessions { 1_000_000 } else { 0 };
             if let Some(score) = fuzzy(query, &search).or_else(|| contextual.then_some(0)) {
                 let recent = self
                     .recent
@@ -668,7 +681,7 @@ impl PaletteState {
                 let direct = fuzzy(query, &entry.title).is_some();
                 // A session's terminals sit just below the session (D784).
                 let terminal = if matches!(entry.command, Command::Terminal { .. }) { 100 } else { 0 };
-                scored.push((score + recent + if direct { 10_000 } else { 0 } - terminal, entry));
+                scored.push((score + recent + if direct { 10_000 } else { 0 } - terminal - last, entry));
             }
         }
         scored
@@ -796,7 +809,6 @@ impl PaletteState {
         let mut entries: Vec<Entry> = [
             (Command::Home, "Go to Home", "⌘1"),
             (Command::Inbox, "Go to Inbox", "⌘2"),
-            (Command::Board, "Go to Board", ""),
             (Command::Hosts, "Go to Hosts", "⌘4"),
             (Command::Files, "Go to Files", "⌘5"),
             (Command::Desk, "Go to Desk", ""),
@@ -822,6 +834,22 @@ impl PaletteState {
         .collect();
         entries.extend(self.report_entries());
         entries.extend(self.mark_entries());
+        let deletable = self
+            .workspace
+            .sessions
+            .iter()
+            .filter(|session| !self.workspace.desk.sessions.contains_key(&session.id))
+            .count();
+        entries.push(Entry {
+            command: Command::SelectSessions,
+            title: "Select sessions…".to_owned(),
+            hint: "Tick sessions, channels or machines, then delete them".to_owned(),
+        });
+        entries.push(Entry {
+            command: Command::DeleteAllSessions,
+            title: "Delete all sessions…".to_owned(),
+            hint: format!("{deletable} sessions · shows the plan first"),
+        });
         if self.in_session {
             entries.push(Entry {
                 command: Command::NewTerminalTab,
@@ -956,13 +984,6 @@ impl PaletteState {
                 command: Command::Machine(machine.id.clone()),
                 title: machine.name.clone(),
                 hint: "Machine".to_owned(),
-            });
-        }
-        for channel in &self.workspace.channels {
-            entries.push(Entry {
-                command: Command::ChannelBoard(channel.id.clone()),
-                title: format!("#{} board", channel.name),
-                hint: "Board".to_owned(),
             });
         }
         for section in Section::ALL {

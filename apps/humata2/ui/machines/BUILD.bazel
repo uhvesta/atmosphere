@@ -16,6 +16,7 @@ rust_library(
         "//apps/humata2/features/app",
         "//apps/humata2/features/files",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/mass_delete",
         "//apps/humata2/ui/core",
         "@crates//:gpui-kit",
     ],

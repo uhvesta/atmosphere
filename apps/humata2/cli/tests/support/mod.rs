@@ -314,6 +314,13 @@ impl Console for FakeConsole {
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "nothing typed"))
     }
 
+    fn line(&self, _prompt: &str) -> io::Result<String> {
+        self.secrets
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "nothing typed"))
+    }
+
     fn confirm(&self, _prompt: &str) -> io::Result<bool> {
         self.confirms
             .borrow_mut()

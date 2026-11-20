@@ -555,6 +555,21 @@ pub async fn repo_diff(
     read_diffs(conn, session, base, vec![repo_ref]).await
 }
 
+/// Whether a `GetFileDiff` error belongs to this one file (DS-36) rather than
+/// the connection, daemon version, or repository configuration.
+fn file_read_error(error: &DaemonError) -> Option<String> {
+    match error {
+        DaemonError::Refused { .. }
+        | DaemonError::NotFound { .. }
+        | DaemonError::Conflict { .. } => Some(error.to_string()),
+        DaemonError::Offline { .. }
+        | DaemonError::MigrationNeeded { .. }
+        | DaemonError::NoDefaultBranch { .. }
+        | DaemonError::NotServedYet { .. }
+        | DaemonError::Scripted { .. } => None,
+    }
+}
+
 /// The changes of the repositories in `repos` (all of the session's when
 /// empty), each file fetched whole, page after page.
 async fn read_diffs(
@@ -582,10 +597,12 @@ async fn read_diffs(
         let mut files = Vec::new();
         for summary in &listed.files {
             let mut lines = Vec::new();
+            let mut error = None;
             if !summary.binary {
+                let file_what = format!("{name}/{}", summary.path);
                 let mut from = None;
                 loop {
-                    let page = diffs(conn)
+                    let page = match diffs(conn)
                         .get_file_diff(pb::GetFileDiffRequest {
                             session: id.clone(),
                             base: wire_base(base),
@@ -598,8 +615,18 @@ async fn read_diffs(
                             ..pb::GetFileDiffRequest::default()
                         })
                         .await
-                        .map_err(|status| conn.error(&status, WHAT))?
-                        .into_inner();
+                    {
+                        Ok(reply) => reply.into_inner(),
+                        Err(status) => {
+                            let failed = conn.error(&status, &file_what);
+                            if let Some(reason) = file_read_error(&failed) {
+                                lines.clear();
+                                error = Some(reason);
+                                break;
+                            }
+                            return Err(failed);
+                        }
+                    };
                     for hunk in &page.hunks {
                         if !hunk.continued {
                             lines.push(line(LineKind::Hunk, 0, 0, &hunk.header));
@@ -644,7 +671,7 @@ async fn read_diffs(
                 old_path,
                 similarity: summary.similarity,
                 binary: summary.binary,
-                error: None,
+                error,
                 old_mode: summary.old_mode,
                 new_mode: summary.new_mode,
                 tier: file_tier(summary.tier),
@@ -883,5 +910,59 @@ mod tests {
             old_side(&wire.repos[0]),
             Some(SpecBase::PullRequestBase(pb::PullRequestBaseRef {}))
         );
+    }
+
+    #[test]
+    fn per_file_errors_are_captured_while_connection_errors_abort() {
+        use humata2_clients::Operation;
+        use humata2_clients::model::{MachineId, MigrateThing};
+
+        let file_errors = [
+            DaemonError::Refused {
+                what: "acme/api/src/a.rs".into(),
+                reason: "blob unreadable".into(),
+            },
+            DaemonError::NotFound {
+                what: "acme/api/src/a.rs".into(),
+            },
+            DaemonError::Conflict {
+                what: "acme/api/src/a.rs".into(),
+                reason: "changed".into(),
+            },
+        ];
+        for error in &file_errors {
+            assert!(
+                file_read_error(error).is_some(),
+                "expected per-file error to be captured: {error:?}"
+            );
+        }
+
+        let fatal_errors = [
+            DaemonError::Offline {
+                machine: MachineId::new("ma_1"),
+            },
+            DaemonError::NoDefaultBranch {
+                repo: "acme/api".into(),
+            },
+            DaemonError::MigrationNeeded {
+                thing: MigrateThing::Daemon,
+                machine: MachineId::new("ma_1"),
+                request: None,
+            },
+            DaemonError::NotServedYet {
+                what: "diffs".into(),
+            },
+            DaemonError::Scripted {
+                operation: Operation::Diffs,
+                message: "boom".into(),
+            },
+        ];
+        for error in &fatal_errors {
+            assert_eq!(
+                file_read_error(error),
+                None,
+                "expected fatal error to abort read_diffs: {error:?}"
+            );
+        }
     }
 }

@@ -110,3 +110,16 @@ fn no_with_a_note_sends_the_note() {
     assert_eq!(answered, Some(Answer::Denied { reply: Some("use the replica".to_owned()) }));
     store.finish();
 }
+
+#[test]
+fn today_summary_omits_zero_rule_count_and_pluralizes_nonzero_counts() {
+    assert_eq!(humata2_inbox::today_summary(2, 0), "Today: 2 answered ·");
+    assert_eq!(
+        humata2_inbox::today_summary(0, 1),
+        "Today: 0 answered · 1 action followed your rules without asking ·"
+    );
+    assert_eq!(
+        humata2_inbox::today_summary(2, 31),
+        "Today: 2 answered · 31 actions followed your rules without asking ·"
+    );
+}

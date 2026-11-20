@@ -82,10 +82,11 @@ fn route(app: &App) -> Route {
     app.ui.read(|s| s.route.clone())
 }
 
-/// VW-8 on the board page: a board view's Showing bar is drawn there, and
-/// Revert brings the session page back.
+/// VW-8 on the To-do page: a board view opens the To-do list narrowed to
+/// its channel (D874), its Showing bar is drawn there, and Revert brings the
+/// session page back.
 #[test]
-fn a_board_view_shows_its_bar_on_the_board_and_revert_goes_back() {
+fn a_board_view_shows_its_bar_on_the_todo_list_and_revert_goes_back() {
     use humata2_clients::model::{ChannelId, Scope};
     let mut app = App::new(fixture::design_session(Status::Working));
     app.open("ledger", Panel::Journal);
@@ -100,7 +101,9 @@ fn a_board_view_shows_its_bar_on_the_board_and_revert_goes_back() {
     app.settle();
 
     app.click("offer-open");
-    assert_eq!(route(&app), Route::Board(board));
+    assert_eq!(route(&app), Route::Todo);
+    assert!(app.contains("todo-row PAY-3"));
+    assert!(!app.contains("todo-row INF-2"));
     assert!(app.contains("view-revert"));
     assert!(app.contains("view-keep"));
 

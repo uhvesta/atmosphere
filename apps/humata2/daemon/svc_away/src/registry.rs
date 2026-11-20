@@ -1,6 +1,6 @@
 //! The calls a machine forwards to its host for its agents (AWAY, D227).
 //! One table lists the methods that go up: the board reads, the board
-//! writes with the name each has in the journal, two Inbox calls and the
+//! writes with the name each has in the journal, four Inbox calls and the
 //! repo library's reads (RL-12), the machine lookups only the host can
 //! answer, and the file reads and transfers that reach other machines
 //! (D768). Beside it are the machine's end of
@@ -32,6 +32,10 @@ pub enum Method {
     WaitForAnswer,
     /// An agent's withdrawal of one (D268).
     WithdrawRequest,
+    /// INBOXHOOKS: the owner's Ask why on a request the host holds.
+    AskWhy,
+    /// INBOXHOOKS: an agent's answer to Ask why on a request the host holds.
+    ExplainAsk,
     /// REPOS (RL-12, D568): the library stays on the host, so a machine's
     /// agents search it there.
     SearchRepos,
@@ -110,6 +114,17 @@ static WITHDRAW_REQUEST: Row = Row {
     journal: None,
 };
 
+static ASK_WHY: Row = Row {
+    method: Method::AskWhy,
+    name: "/humata.v1.InboxService/AskWhy",
+    journal: None,
+};
+static EXPLAIN_ASK: Row = Row {
+    method: Method::ExplainAsk,
+    name: "/humata.v1.InboxService/ExplainAsk",
+    journal: None,
+};
+
 static SEARCH_REPOS: Row = Row {
     method: Method::SearchRepos,
     name: "/humata.v1.RepoService/SearchRepos",
@@ -148,7 +163,7 @@ static START_TRANSFER: Row = Row {
     journal: None,
 };
 
-static ROWS: [&Row; 16] = [
+static ROWS: [&Row; 18] = [
     &LIST_ITEMS,
     &GET_ITEM,
     &GET_ITEM_HISTORY,
@@ -158,6 +173,8 @@ static ROWS: [&Row; 16] = [
     &DELETE_ITEM,
     &WAIT_FOR_ANSWER,
     &WITHDRAW_REQUEST,
+    &ASK_WHY,
+    &EXPLAIN_ASK,
     &SEARCH_REPOS,
     &LIST_REPO_LIBRARY,
     &LIST_MACHINES,
@@ -191,6 +208,8 @@ impl Method {
             Self::DeleteItem => &DELETE_ITEM,
             Self::WaitForAnswer => &WAIT_FOR_ANSWER,
             Self::WithdrawRequest => &WITHDRAW_REQUEST,
+            Self::AskWhy => &ASK_WHY,
+            Self::ExplainAsk => &EXPLAIN_ASK,
             Self::SearchRepos => &SEARCH_REPOS,
             Self::ListRepoLibrary => &LIST_REPO_LIBRARY,
             Self::ListMachines => &LIST_MACHINES,
@@ -481,12 +500,34 @@ impl Forwarder {
         request: Vec<u8>,
         key: Option<pb::IdempotencyKey>,
     ) -> Result<Vec<u8>, Status> {
-        Ok(self.try_call(session, row, request, key).await?)
+        let principal = pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
+            session: Some(pb::SessionId {
+                value: session.to_owned(),
+            }),
+            pid: 0,
+        });
+        Ok(self.try_call(principal, row, request, key).await?)
+    }
+
+    /// Sends `request` to `method`'s host for a user authenticated on this
+    /// machine outside every session terminal (for example Ask why on a
+    /// request the host holds), and returns the host's response bytes.
+    pub async fn call_as_user(
+        &self,
+        row: &'static Row,
+        request: Vec<u8>,
+        key: Option<pb::IdempotencyKey>,
+    ) -> Result<Vec<u8>, Status> {
+        let principal = pb::forwarded_call::Principal::User(pb::MachineUser {
+            presence: None,
+            outside_sessions: true,
+        });
+        Ok(self.try_call(principal, row, request, key).await?)
     }
 
     async fn try_call(
         &self,
-        session: &str,
+        principal: pb::forwarded_call::Principal,
         row: &'static Row,
         request: Vec<u8>,
         key: Option<pb::IdempotencyKey>,
@@ -510,12 +551,7 @@ impl Forwarder {
         };
         let call = pb::ForwardedCall {
             call_id,
-            principal: Some(pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
-                session: Some(pb::SessionId {
-                    value: session.to_owned(),
-                }),
-                pid: 0,
-            })),
+            principal: Some(principal),
             method: row.name.to_owned(),
             request,
             deadline: None,
@@ -617,6 +653,18 @@ mod tests {
     }
 
     #[test]
+    fn the_ask_why_calls_are_forwarded_reads_that_are_never_journaled() {
+        for (name, method) in [
+            ("/humata.v1.InboxService/AskWhy", Method::AskWhy),
+            ("/humata.v1.InboxService/ExplainAsk", Method::ExplainAsk),
+        ] {
+            let row = by_name(name).expect("registered");
+            assert_eq!(row.method, method);
+            assert!(row.journal.is_none() && !row.reads_board());
+        }
+    }
+
+    #[test]
     fn every_method_finds_its_own_row_by_name() {
         for method in [
             Method::ListItems,
@@ -628,6 +676,8 @@ mod tests {
             Method::DeleteItem,
             Method::WaitForAnswer,
             Method::WithdrawRequest,
+            Method::AskWhy,
+            Method::ExplainAsk,
             Method::SearchRepos,
             Method::ListRepoLibrary,
             Method::ListMachines,
@@ -894,5 +944,40 @@ mod tests {
             host_says(kind(pb::error::Kind::HostUnreachable(pb::HostUnreachable::default()))),
             Code::Unavailable
         );
+    }
+
+    #[tokio::test]
+    async fn a_user_call_goes_up_with_a_user_principal_and_gets_the_hosts_response() {
+        let forwarder = Arc::new(Forwarder::new(false));
+        let (to_host, mut from_machine) = mpsc::channel(4);
+        forwarder.attach(to_host);
+        let waiting = {
+            let forwarder = Arc::clone(&forwarder);
+            tokio::spawn(async move {
+                forwarder
+                    .call_as_user(Method::AskWhy.row(), vec![4, 5], None)
+                    .await
+            })
+        };
+        let sent = tokio::time::timeout(BOUND, from_machine.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Some(pb::machine_to_host::Message::Call(call)) = sent.message else {
+            panic!("the machine sent a call");
+        };
+        assert_eq!(call.method, "/humata.v1.InboxService/AskWhy");
+        assert_eq!(call.request, vec![4, 5]);
+        let Some(pb::forwarded_call::Principal::User(user)) = call.principal else {
+            panic!("a user made the call");
+        };
+        assert!(user.outside_sessions);
+        forwarder.answered(pb::ForwardedResult {
+            call_id: call.call_id,
+            outcome: Some(pb::forwarded_result::Outcome::Response(vec![7, 8])),
+        });
+        let answer = tokio::time::timeout(BOUND, waiting).await.unwrap().unwrap();
+        assert_eq!(answer.unwrap(), vec![7, 8]);
     }
 }

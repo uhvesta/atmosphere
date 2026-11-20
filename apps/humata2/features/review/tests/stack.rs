@@ -4,12 +4,12 @@
 use std::sync::Arc;
 
 use humata2_clients::fixture;
-use humata2_clients::model::{DiffBase, RepoBase, RepoDiffSpec, SessionId, Status};
+use humata2_clients::model::{DiffBase, FileDiff, RepoBase, RepoDiff, RepoDiffSpec, SessionId, Status};
 use humata2_clients::views::{LayerDrift, LayerRepoView, LayerView, PlanView, StackView};
 use humata2_clients::{FakeDaemon, Workspace};
 use humata2_review::stack::{StackHeader, Tier, WholeEntry, pull_request_label, whole_groups};
-use humata2_review::{Review, ReviewAction as A, ReviewState};
-use tca::{TestClock, TestStore};
+use humata2_review::{ListCursor, Review, ReviewAction as A, ReviewState};
+use tca::{Reducer, TestClock, TestStore};
 
 fn session() -> SessionId {
     SessionId::new("ledger")
@@ -444,4 +444,66 @@ fn layers_listing_no_files_group_nothing() {
     let stack = listing(&[&[], &[]]);
     let repos = vec![("acme/api", vec![("a.rs", Tier::Key)])];
     assert_eq!(whole_groups(&stack, &repos), None);
+}
+
+/// A stack's Whole view draws layer 1's `b.rs` above layer 2's `a.rs`, though
+/// the diff lists `a.rs` first.
+fn whole_stack_out_of_diff_order() -> ReviewState {
+    let mut state = stacked();
+    let files = ["a.rs", "b.rs"].map(|path| FileDiff {
+        path: path.to_owned(),
+        ..FileDiff::default()
+    });
+    let mut workspace = workspace();
+    workspace.diffs = vec![RepoDiff {
+        session: session(),
+        repo: "acme/api".to_owned(),
+        base: "main".to_owned(),
+        files: files.to_vec(),
+        comments: Vec::new(),
+    }];
+    state.workspace = Arc::new(workspace);
+    state.plans.insert(
+        session(),
+        PlanView {
+            stack: Some(listing(&[&[("acme/api", "b.rs")], &[("acme/api", "a.rs")]])),
+            ..PlanView::default()
+        },
+    );
+    state
+}
+
+fn step(state: &mut ReviewState, action: A) {
+    let clock = Arc::new(TestClock::new());
+    let daemon = FakeDaemon::new(workspace(), clock.clone());
+    let _effect = Review::new(Arc::new(daemon), clock).reduce(state, action);
+}
+
+fn opened(state: &ReviewState) -> Option<(String, String)> {
+    state.saved.selected.get(&session()).cloned()
+}
+
+#[test]
+fn next_and_previous_file_follow_the_whole_stack_as_drawn() {
+    let mut state = whole_stack_out_of_diff_order();
+    step(&mut state, A::NextFile);
+    assert_eq!(opened(&state), Some(("acme/api".to_owned(), "a.rs".to_owned())));
+    step(&mut state, A::PrevFile);
+    assert_eq!(opened(&state), Some(("acme/api".to_owned(), "b.rs".to_owned())));
+}
+
+#[test]
+fn the_list_cursor_follows_the_whole_stack_as_drawn() {
+    let mut state = whole_stack_out_of_diff_order();
+    step(&mut state, A::ListDown);
+    assert_eq!(
+        state.list_cursor(&session()),
+        Some(&ListCursor::File { repo: "acme/api".to_owned(), path: "b.rs".to_owned() }),
+        "the first press places the cursor on the open file, the first drawn"
+    );
+    step(&mut state, A::ListDown);
+    assert_eq!(
+        state.list_cursor(&session()),
+        Some(&ListCursor::File { repo: "acme/api".to_owned(), path: "a.rs".to_owned() }),
+    );
 }

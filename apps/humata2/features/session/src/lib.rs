@@ -162,6 +162,9 @@ pub struct ForkDraft {
     pub turns: Option<Vec<PastTurn>>,
     /// The list open under a row.
     pub picker: Option<ForkPicker>,
+    /// Whether More options is open (D873). Per dialog: closed on every open
+    /// unless the caller preset something other than the default.
+    pub more: bool,
     /// The running step of the fork operation while the dialog waits.
     pub progress: Option<humata2_clients::progress::OpProgress>,
     /// The operation id `progress` follows; latched by the first fork update.
@@ -652,6 +655,8 @@ pub enum SessionAction {
     StartFork(ForkKind),
     /// Choose how the fork shares code and conversation.
     ForkKind(ForkKind),
+    /// Open or close the dialog's More options (D873).
+    ForkMoreOptions,
     /// The fork dialog's title changed.
     ForkTitle(String),
     /// Make the fork.
@@ -1739,6 +1744,8 @@ impl Reducer for Sessions {
                     branch,
                     turns: None,
                     picker: None,
+                    // Only a preset other than Code + context opens it.
+                    more: kind != ForkKind::Worktree,
                     progress: None,
                     op: None,
                 });
@@ -1755,6 +1762,14 @@ impl Reducer for Sessions {
                         if fork.picker == Some(ForkPicker::From) {
                             fork.picker = None;
                         }
+                    }
+                }
+            }
+            SessionAction::ForkMoreOptions => {
+                if let Some(fork) = &mut state.fork {
+                    fork.more = !fork.more;
+                    if !fork.more {
+                        fork.picker = None;
                     }
                 }
             }
@@ -1779,6 +1794,7 @@ impl Reducer for Sessions {
                     && let Some(fork) = &mut state.fork
                 {
                     fork.agent = (Some(agent) != parent).then_some(agent);
+                    fork.more |= fork.agent.is_some();
                     fork.picker = None;
                 }
             }
@@ -1788,6 +1804,7 @@ impl Reducer for Sessions {
                     && let Some(fork) = &mut state.fork
                 {
                     fork.machine = (Some(&machine) != parent.as_ref()).then_some(machine);
+                    fork.more |= fork.machine.is_some();
                     fork.picker = None;
                 }
             }

@@ -266,7 +266,7 @@ fn inbox(look: Look, side: Side, note: &'static str, tab: usize, rows: Vec<Div>,
     page(
         look,
         side,
-        toolbar(look, "Inbox", Some(note), vec![segmented(look, &["Waiting", "Answered", "All"], tab)]),
+        toolbar(look, "Agent inbox", Some(note), vec![segmented(look, &["Waiting", "Answered", "All"], tab)]),
         div()
             .flex()
             .text_size(px(12.5))

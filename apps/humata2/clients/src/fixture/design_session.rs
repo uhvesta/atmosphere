@@ -304,7 +304,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             ],
             Status::NeedsYou => &[
                 (Speaker::Agent, ""),
-                (Speaker::Agent, "● humata board_item_move PAY-3 → Done"),
+                (Speaker::Agent, "● humata todo_close PAY-3"),
                 (Speaker::System, "  ⎿ ⏳ waiting for your approval (Inbox)"),
                 (Speaker::Agent, ""),
                 (

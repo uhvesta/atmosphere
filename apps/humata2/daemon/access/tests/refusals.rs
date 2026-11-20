@@ -619,8 +619,9 @@ fn the_capability_list_matches_the_trace_matrix() {
     // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305, PROVIDER_IMPORT
     // with D792.
     assert_eq!(count(Tier::AskNoAllow), 3);
-    // MACHINE_SCRIPT_RUN joined them with D688.
-    assert_eq!(count(Tier::NeverByDefault), 5);
+    // MACHINE_SCRIPT_RUN joined them with D688; SESSIONS_DELETE_MANY joined
+    // with MASSDELETE (D876).
+    assert_eq!(count(Tier::NeverByDefault), 6);
     assert_eq!(count(Tier::UserOnly), 11);
     assert_eq!(count(Tier::Peer), 2);
     // Rules exist for the agent tiers only.

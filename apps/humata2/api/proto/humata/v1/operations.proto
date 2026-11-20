@@ -62,6 +62,8 @@ enum OperationKind {
   // SEAM (MACHINESCRIPTS, D687). One step per script step, keyed
   // `step:<n>`; GRPC.md §7.
   OPERATION_KIND_MACHINE_SCRIPT = 21;
+  // MASSDELETE (D876): deleting many sessions in one go.
+  OPERATION_KIND_DELETE_SESSIONS = 22;
 }
 
 enum OperationState {

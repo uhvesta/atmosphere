@@ -11,6 +11,7 @@ use crate::model::{
     RepoDiff, RequestId, RuleSetting, Scope, Session, SessionFile, SessionId, SetupId, Transfer,
     TransferId,
 };
+use crate::mass_delete::{DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan};
 use crate::workspace::Workspace;
 
 /// How many events a subscriber may fall behind before it is told to
@@ -253,6 +254,8 @@ pub enum Operation {
     EndRunningHolder,
     /// [`Daemon::adopt_running_holder`].
     AdoptRunningHolder,
+    /// [`Terminals::open_agent_tab`].
+    OpenAgentTab,
 }
 
 /// Why a daemon call failed.
@@ -601,6 +604,19 @@ pub trait Daemon: Send + Sync + 'static {
         let what = format!("What archiving {session} would lose");
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
+    /// What one bulk delete of many sessions would end, leave alone and keep
+    /// running (MASSDELETE), read before it is deleted.
+    fn plan_delete_sessions(&self, scope: &DeleteScope) -> Reply<DeleteSessionsPlan> {
+        let what = format!("Planning the delete of {scope:?}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Deletes the sessions a plan's token names (MASSDELETE). A delete whose
+    /// sessions changed since the plan deletes nothing and answers the new plan.
+    fn delete_sessions(&self, token: &str, delete_unpushed_work: bool, typed_count: u32) -> Reply<DeleteSessionsOutcome> {
+        let _ = (delete_unpushed_work, typed_count);
+        let what = format!("Deleting sessions under plan {token}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Archives a session; its forks keep running. With `push_first` its
     /// unpushed work is committed, pushed and opened as pull requests first;
     /// without it, that work is deleted with the session.
@@ -769,6 +785,21 @@ pub trait Terminals: Send + Sync + 'static {
     /// here). The tab is always new: nothing is attached.
     fn open_in(&self, session: &SessionId, _agent: Agent, folder: &str) -> Reply<(usize, Session)> {
         let what = format!("Starting a terminal for {session} in {folder}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// D858: opens a fresh extra tab in `session` running `agent` directly
+    /// (never attaching tab 0 or an earlier tab), with an optional opening
+    /// `prompt` delivered once the agent is ready. Returns the new tab's
+    /// 1-based index and the updated session.
+    fn open_agent_tab(
+        &self,
+        session: &SessionId,
+        agent: Agent,
+        prompt: &str,
+    ) -> Reply<(usize, Session)> {
+        let _ = prompt;
+        let what = format!("Starting {} in a new tab of {session}", agent.name());
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
 

@@ -280,6 +280,7 @@ rule named until the user changes the rule (IN-18).
 | `channel_create` | `channel.create` / CreateChannel | CHANNEL_CREATE (Ask) | `{name, repos, machines}` → `{channel}` | | host |
 | `session_stop`, `session_archive` of another session | `session.*` | SESSION_STOP_OTHER (**Ask me**, D306; archive joins this row, D21) | `{session}` | | waits for the user |
 | `session_delete` of another session | `session.*` | SESSION_DELETE_OTHER (**Never**, D306) | `{session}` | | denied at once |
+| `sessions_delete_many` | `session.delete_many` | SESSIONS_DELETE_MANY (**Never** by default, D876); listed only when not Never | `{session_ids}` or `{channel}` or `{machine}`; never all, never its own session | delete several sessions with one plan; a plan that ends a running terminal always asks you (PER-32) | host |
 | `session_restore`, `session_rebuild` | `session.restore` / RestoreSession, `session.rebuild` / RebuildSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask, D21) | `{session, machine?, reason}` → `{operation_id}` | an archived session back, or rebuilt from its record (SL-4) | host |
 | `channel_rename`, `channel_add_repo`, `channel_remove_repo`, `channel_add_machine`, `channel_remove_machine` | `channel.*` | CHANNEL_CHANGE (**Never**) | | | denied at once |
 | `machine_remove`, `machine_forget`, `machine_delete` | `machine.*` | MACHINE_DESTROY (**Never**) | | | denied at once |

@@ -1,4 +1,3 @@
-use humata2_board::BoardAction;
 use humata2_inbox::InboxAction;
 use humata2_palette::PaletteAction;
 use humata2_review::comments::CommentsAction;
@@ -51,6 +50,7 @@ impl AppState {
             || self.pr_dialog.open
             || self.pr_submit.step != humata2_pr_review::submit::Step::Closed
             || self.hosts.root_change.is_some()
+            || self.mass_delete.sheet.is_some()
     }
 }
 
@@ -71,6 +71,12 @@ impl App {
                 state.palette.open = false;
             }
             return Effect::none();
+        }
+        if state.mass_delete.sheet.is_some() {
+            return self.child(
+                state,
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::Escape),
+            );
         }
         // Escape leaves Submit review unposted; while it posts, it holds the
         // keys and stays until the posts answer.
@@ -178,17 +184,17 @@ impl App {
         if state.session.fork.is_some() {
             return self.child(state, AppAction::Session(SessionAction::CancelFork));
         }
-        if state.inbox.confirm.is_some() {
-            return self.child(state, AppAction::Inbox(InboxAction::CancelBulk));
-        }
         if state.inbox.reply.is_some() {
             return self.child(state, AppAction::Inbox(InboxAction::CancelReply));
         }
-        if state.board.new_title.is_some() {
-            return self.child(state, AppAction::Board(BoardAction::CancelNew));
-        }
-        if state.board.drawer.is_some() && matches!(state.route, Route::Board(_)) {
-            return self.child(state, AppAction::Board(BoardAction::Close));
+        // Escape closes the To-do drawer, on the page and on a channel's To-do tab.
+        let todo_shown = match &state.route {
+            Route::Todo => true,
+            Route::Channel(id) => state.channel_pages.get(id).is_some_and(|v| v.tab == crate::channel::Tab::Board),
+            _ => false,
+        };
+        if todo_shown && state.todo.open.is_some() {
+            return self.child(state, AppAction::Todo(crate::TodoAction::Close));
         }
         if state.panel() == Some(Panel::Changes)
             && let Some(id) = state.session.open.clone()
@@ -199,6 +205,12 @@ impl App {
                 .is_some_and(|held| held.editing.is_some())
         {
             return self.child(state, AppAction::Comments(CommentsAction::Cancel(id)));
+        }
+        if state.mass_delete.selecting() {
+            return self.child(
+                state,
+                AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::Escape),
+            );
         }
         // Last of all: Escape leaves a full-screen panel. An open menu takes
         // the key first (the base menu closes; the others own their keys).

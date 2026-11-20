@@ -13,6 +13,7 @@ rust_library(
         "src/lib.rs",
         "src/link.rs",
         "src/marks.rs",
+        "src/mass_delete.rs",
         "src/message.rs",
         "src/read_marks.rs",
         "src/repos.rs",

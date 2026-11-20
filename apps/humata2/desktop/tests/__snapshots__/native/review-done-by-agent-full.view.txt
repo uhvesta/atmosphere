@@ -9,16 +9,14 @@ Complementary "Diff"
   RadioGroup "Show"
     RadioButton "All changes" selected
     RadioButton "Since I last looked"
-  Button "Against main"
-    text "main"
-  text "against"
+  #diff-repos-count
+    text "2 repos"
   #changes-files
     #repo-row-0
       Button "Collapse ledger"
       text "ledger"
       Button "ledger: against main" collapsed
-        text "against"
-        text "main"
+        text "against main"
       #repo-totals-0
         text "+41"
         text "−0"
@@ -33,8 +31,7 @@ Complementary "Diff"
       Button "Collapse api"
       text "api"
       Button "api: against main" collapsed
-        text "against"
-        text "main"
+        text "against main"
       #repo-totals-1
         text "+143"
         text "−24"

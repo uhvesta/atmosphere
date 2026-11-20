@@ -58,6 +58,7 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("channel_create", "Create a channel", Some(Ask)),
     ("session_stop_other", "Stop or archive any session but itself", Some(Ask)),
     ("session_delete_other", "Delete any session but itself", Some(Never)),
+    ("sessions_delete_many", "Delete many sessions at once", Some(Never)),
     ("channel_change", "Change channel settings or repos", Some(Never)),
     ("machine_destroy", "Remove, forget or delete machines", Some(Never)),
     ("machine_script_run", "Run machine scripts", Some(Ask)),
@@ -75,9 +76,9 @@ fn defaults() -> Vec<AccessRule> {
 }
 
 /// Every channel's rules at their defaults, plus the example grant of
-/// frame 49 on the payments channel when there is one.
+/// frame 49 on the payments channel when there is one, and the global rules.
 pub(super) fn rules(channels: &[ChannelId]) -> BTreeMap<ChannelId, Vec<AccessRule>> {
-    channels
+    let mut all: BTreeMap<_, _> = channels
         .iter()
         .map(|channel| {
             let mut rules = defaults();
@@ -95,5 +96,8 @@ pub(super) fn rules(channels: &[ChannelId]) -> BTreeMap<ChannelId, Vec<AccessRul
             }
             (channel.clone(), rules)
         })
-        .collect()
+        .collect();
+    // What every channel starts with, kept under its own key.
+    all.insert(ChannelId::global_rules(), defaults());
+    all
 }

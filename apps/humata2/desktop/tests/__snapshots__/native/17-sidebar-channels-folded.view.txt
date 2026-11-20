@@ -26,10 +26,9 @@ Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Diff"
   #panel-header
-    Button "Against main"
-      text "main"
     text "Diff"
-    text "against"
+    #diff-repos-count
+      text "2 repos"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
   Button "Files" collapsed

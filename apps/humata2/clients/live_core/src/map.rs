@@ -317,6 +317,37 @@ pub fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNames) -> 
     };
     let first = session.repos.first();
     let fork = session.fork_origin.as_ref();
+    let (shells, terminal_agents) = if !session.shell_tabs.is_empty() {
+        let mut shells = Vec::with_capacity(session.shell_tabs.len());
+        let mut terminal_agents = BTreeMap::new();
+        for (pos, entry) in session.shell_tabs.iter().enumerate() {
+            shells.push(entry.label.clone());
+            if let Some(agent_id) = entry.agent.as_ref().filter(|id| !id.value.is_empty()) {
+                let kind = agents.agent(&agent_id.value);
+                if kind != Agent::Shell {
+                    terminal_agents.insert(pos + 1, kind);
+                }
+            }
+        }
+        (shells, terminal_agents)
+    } else {
+        let mut shells = Vec::new();
+        let mut terminal_agents = BTreeMap::new();
+        for (pos, tab) in tabs
+            .iter()
+            .filter(|tab| tab.kind == pb::tab::Kind::Shell as i32)
+            .enumerate()
+        {
+            shells.push(tab.title.clone());
+            if let Some(agent_id) = tab.agent.as_ref().filter(|id| !id.value.is_empty()) {
+                let kind = agents.agent(&agent_id.value);
+                if kind != Agent::Shell {
+                    terminal_agents.insert(pos + 1, kind);
+                }
+            }
+        }
+        (shells, terminal_agents)
+    };
     Session {
         id: session_id(session.id.as_ref()),
         channel: ChannelId::new(
@@ -359,12 +390,8 @@ pub fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNames) -> 
         last_used: String::new(),
         activity: String::new(),
         transcript: Vec::new(),
-        shells: tabs
-            .iter()
-            .filter(|tab| tab.kind == pb::tab::Kind::Shell as i32)
-            .map(|tab| tab.title.clone())
-            .collect(),
-        terminal_agents: BTreeMap::new(),
+        shells,
+        terminal_agents,
         archived: session.status == pb::SessionStatus::Archived as i32,
         recovery,
         resume_failed: session.resume_failed.as_ref().and_then(resume_failure),

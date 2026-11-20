@@ -130,7 +130,7 @@ fn inbox_page(look: Look, groups: Vec<Div>, open: Div) -> Div {
     page(
         look,
         Side::at("Agent inbox"),
-        toolbar(look, "Inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
+        toolbar(look, "Agent inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
         div()
             .flex()
             .text_size(px(12.5))

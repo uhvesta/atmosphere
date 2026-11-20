@@ -178,7 +178,7 @@ fn screen_question(look: Look, screen: Screen) -> Div {
     page(
         look,
         Side::at("Agent inbox"),
-        toolbar(look, "Inbox", Some("5 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
+        toolbar(look, "Agent inbox", Some("5 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
         div()
             .flex()
             .text_size(px(12.5))

@@ -194,6 +194,8 @@ enum Capability {
   CAPABILITY_TODO_SUGGEST = 72;
   // An agent closing a to-do item. Ask me by default.
   CAPABILITY_TODO_CLOSE = 73;
+  // Delete many sessions at once; never by default, never the agent's own session.
+  CAPABILITY_SESSIONS_DELETE_MANY = 74;
 }
 
 // A rule's setting for one capability in one channel.

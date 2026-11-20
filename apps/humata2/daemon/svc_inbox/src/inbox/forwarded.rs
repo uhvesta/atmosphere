@@ -211,6 +211,68 @@ impl Inbox {
         Err(HostHeld::NoAnswer { id }.into())
     }
 
+    /// A user on a machine asks why on request `id`, which this Inbox doesn't
+    /// hold (`missing` is why). While the host is linked the call goes up as a
+    /// trusted peer user; away, a request the host is known to hold is
+    /// host_unreachable; any other is `missing`.
+    pub(super) async fn ask_why_on_host(
+        &self,
+        caller: &Caller,
+        request: pb::AskWhyRequest,
+        id: &str,
+        missing: Status,
+    ) -> Result<pb::InboxRequest, Status> {
+        let (Caller::User(_), Some(forwarder)) = (caller, self.forwarder.get()) else {
+            return Err(missing);
+        };
+        if !forwarder.forwards() {
+            return if forwarder.host_holds(id) {
+                Err(HostHeld::Away { id: id.to_owned() }.into())
+            } else {
+                Err(missing)
+            };
+        }
+        let key = request.idempotency_key.clone();
+        let bytes = forwarder
+            .call_as_user(Method::AskWhy.row(), request.encode_to_vec(), key)
+            .await
+            .map_err(|failed| lost(forwarder, id, "asking why on", failed))?;
+        pb::InboxRequest::decode(bytes.as_slice()).map_err(|source| {
+            HostHeld::Unreadable {
+                id: id.to_owned(),
+                source,
+            }
+            .into()
+        })
+    }
+
+    /// An agent explains request `id`, which this Inbox doesn't hold
+    /// (`missing` is why); as for [`Inbox::withdraw_on_host`].
+    pub(super) async fn explain_on_host(
+        &self,
+        caller: &Caller,
+        request: pb::ExplainAskRequest,
+        id: &str,
+        missing: Status,
+    ) -> Result<pb::InboxRequest, Status> {
+        let (forwarder, session) = match self.route(caller, id) {
+            Route::Up { forwarder, session } => (Arc::clone(forwarder), session),
+            Route::Away => return Err(HostHeld::Away { id: id.to_owned() }.into()),
+            Route::Nowhere => return Err(missing),
+        };
+        let bytes = forwarder
+            .call(&session, Method::ExplainAsk.row(), request.encode_to_vec(), None)
+            .await
+            .map_err(|failed| lost(&forwarder, id, "explaining", failed))?;
+        pb::InboxRequest::decode(bytes.as_slice()).map_err(|source| {
+            HostHeld::Unreadable {
+                id: id.to_owned(),
+                source,
+            }
+            .into()
+        })
+    }
+
     /// The host's side of a forwarded withdrawal: `request` as `caller`.
     pub async fn withdraw_as(
         &self,
@@ -221,6 +283,30 @@ impl Inbox {
         let mut asked = Request::new(request);
         asked.extensions_mut().insert(caller);
         self.withdraw_request(asked).await.map(tonic::Response::into_inner)
+    }
+
+    /// The host's side of a forwarded Ask why: `request` as `caller`.
+    pub async fn ask_why_as(
+        &self,
+        caller: Caller,
+        request: pb::AskWhyRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        use pb::inbox_service_server::InboxService;
+        let mut asked = Request::new(request);
+        asked.extensions_mut().insert(caller);
+        self.ask_why(asked).await.map(tonic::Response::into_inner)
+    }
+
+    /// The host's side of a forwarded ExplainAsk: `request` as `caller`.
+    pub async fn explain_as(
+        &self,
+        caller: Caller,
+        request: pb::ExplainAskRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        use pb::inbox_service_server::InboxService;
+        let mut asked = Request::new(request);
+        asked.extensions_mut().insert(caller);
+        self.explain_ask(asked).await.map(tonic::Response::into_inner)
     }
 }
 

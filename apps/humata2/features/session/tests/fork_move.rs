@@ -1,7 +1,7 @@
 //! The Fork, Move and Archive dialogs' reducer paths (FK-1 to FK-5, MV-1 to
 //! MV-3, MV-7 to MV-9).
 use humata2_clients::{
-    Clients, FakeDaemon, fixture,
+    FakeDaemon, fixture,
     model::{Agent, ForkKind, MachineId, SessionId},
 };
 use humata2_session::{ForkPicker, SessionAction as A, SessionState, Sessions};
@@ -30,6 +30,60 @@ fn opening_the_fork_dialog_suggests_a_branch_beside_the_parents() {
     assert!(draft.branch.contains("ledger-schema-migration"));
     assert_eq!(draft.before_turn, None);
     assert_eq!(draft.machine, None);
+}
+
+#[test]
+fn the_fork_dialog_opens_collapsed_and_more_options_toggles() {
+    let (mut store, _) = store("ledger");
+    store.send(A::StartFork(ForkKind::Worktree), |_| {});
+    assert!(!store.state().fork.as_ref().expect("open").more);
+    store.send(A::ForkMoreOptions, |_| {});
+    assert!(store.state().fork.as_ref().expect("open").more);
+    store.send(A::ForkMoreOptions, |_| {});
+    assert!(!store.state().fork.as_ref().expect("open").more);
+}
+
+#[test]
+fn a_preset_other_than_code_and_context_opens_the_dialog_expanded() {
+    for kind in [ForkKind::Conversation, ForkKind::Shared] {
+        let (mut store, _) = store("ledger");
+        store.send(A::StartFork(kind), |_| {});
+        assert!(store.state().fork.as_ref().expect("open").more);
+    }
+}
+
+#[test]
+fn an_agent_or_machine_unlike_the_parents_expands_and_the_parents_own_does_not() {
+    let (mut first, _) = store("ledger");
+    first.send(A::StartFork(ForkKind::Worktree), |_| {});
+    first.send(A::ForkAgent(Agent::Claude), |_| {});
+    first.send(A::ForkMachine(MachineId::new("devbox-1")), |_| {});
+    assert!(!first.state().fork.as_ref().expect("open").more);
+    first.send(A::ForkAgent(Agent::Codex), |_| {});
+    assert!(first.state().fork.as_ref().expect("open").more);
+
+    let (mut second, _) = store("ledger");
+    second.send(A::StartFork(ForkKind::Worktree), |_| {});
+    second.send(A::ForkMachine(MachineId::new("this-mac")), |_| {});
+    assert!(second.state().fork.as_ref().expect("open").more);
+}
+
+#[test]
+fn a_turn_preset_alone_keeps_the_dialog_collapsed() {
+    let (mut store, _) = store("ledger");
+    store.send(A::StartFork(ForkKind::Worktree), |_| {});
+    store.send(A::ForkBeforeTurn(Some(2)), |_| {});
+    assert!(!store.state().fork.as_ref().expect("open").more);
+}
+
+#[test]
+fn more_options_is_not_remembered_across_opens() {
+    let (mut store, _) = store("ledger");
+    store.send(A::StartFork(ForkKind::Worktree), |_| {});
+    store.send(A::ForkMoreOptions, |_| {});
+    store.send(A::CancelFork, |_| {});
+    store.send(A::StartFork(ForkKind::Worktree), |_| {});
+    assert!(!store.state().fork.as_ref().expect("open").more);
 }
 
 #[test]

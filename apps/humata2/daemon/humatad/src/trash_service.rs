@@ -298,6 +298,108 @@ fn restore_at_free_place(
     trash.restore_to(id, &place)
 }
 
+/// The proto tag of the field a deleted session's channel rides in, ahead of
+/// the item's other data: a field the item's reader doesn't know is skipped,
+/// so the rest reads as before.
+const CHANNEL_TAG: &str = "7a";
+
+/// `data` (from [`caller_data`]) that also names `channel`, the channel a
+/// deleted session belonged to. A channel too long to name here is left out.
+pub(crate) fn with_channel(data: &str, channel: &str) -> String {
+    match u8::try_from(channel.len()) {
+        Ok(len) if len > 0 && len < 128 => {
+            let hex: String = channel.bytes().map(|byte| format!("{byte:02x}")).collect();
+            format!("{CHANNEL_TAG}{len:02x}{hex}{data}")
+        }
+        _ => data.to_owned(),
+    }
+}
+
+/// The channel [`with_channel`] kept, if the item names one.
+fn channel_in(data: &str) -> Option<String> {
+    let rest = data.strip_prefix(CHANNEL_TAG)?;
+    let len = usize::from(u8::from_str_radix(rest.get(..2)?, 16).ok()?);
+    let hex = rest.get(2..2 + 2 * len)?;
+    let bytes: Option<Vec<u8>> = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+        .collect();
+    String::from_utf8(bytes?).ok()
+}
+
+/// What bringing deleted sessions back can fail on.
+#[derive(Debug, thiserror::Error)]
+enum SessionRestoreError {
+    #[error("the folder {} could not be read", folder.display())]
+    Read {
+        folder: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("session {session}'s records could not be brought back")]
+    Store {
+        session: String,
+        #[source]
+        source: humata2_store::StoreError,
+    },
+}
+
+/// Brings back the sessions whose records the folder at `folder` carries as
+/// side files: the deleted session's own `SIDE_FILE` and one per context
+/// fork that went with it (`SIDE_FILE.fork-<id>`). Each comes back archived,
+/// with the undo window an archive gets. `original` is where the folder was
+/// before the trash, `folder` where it is now, `session` the one deleted.
+/// Blocking.
+fn finish_restore_sessions(
+    store: &humata2_store::Store,
+    folder: &Path,
+    original: &Path,
+    session: &str,
+) -> Result<(), SessionRestoreError> {
+    use humata2_store::{ArchiveRow, ArchiveState, SIDE_FILE, Take};
+    let read = |source| SessionRestoreError::Read { folder: folder.to_owned(), source };
+    let moves: Vec<(PathBuf, PathBuf)> = if original == folder {
+        Vec::new()
+    } else {
+        vec![(original.to_owned(), folder.to_owned())]
+    };
+    let mut sides: Vec<(Option<String>, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(folder).map_err(read)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == SIDE_FILE {
+            sides.push((None, entry.path()));
+        } else if let Some(id) = name.strip_prefix(&format!("{SIDE_FILE}.fork-")) {
+            sides.push((Some(id.to_owned()), entry.path()));
+        }
+    }
+    let now = now_ms();
+    for (fork, side) in sides {
+        let ids: Vec<String> = match fork {
+            Some(id) => vec![id],
+            None => vec![session.to_owned()],
+        };
+        for id in ids {
+            let failed = |source| SessionRestoreError::Store { session: id.clone(), source };
+            store
+                .import_moved_session(&id, &side, Take::Everything, &moves)
+                .map_err(failed)?;
+            if store.archive(&id).map_err(failed)?.is_none() {
+                store
+                    .put_archive(&ArchiveRow {
+                        session_id: id.clone(),
+                        archived_unix_ms: now,
+                        state: ArchiveState::Archived,
+                        summary: Vec::new(),
+                        free_after_unix_ms: now.saturating_add(crate::session_service::archive_undo_window_ms()),
+                    })
+                    .map_err(failed)?;
+            }
+        }
+        let _ = std::fs::remove_file(&side);
+    }
+    Ok(())
+}
+
 /// A trash library failure the caller can't fix from the request.
 fn trash_failure(error: &TrashError, doing: &str) -> Status {
     status::internal(
@@ -451,6 +553,33 @@ impl pb::trash_service_server::TrashService for TrashSvc {
                 target,
             },
         )?;
+        // A deleted session comes back into its channel: with the channel
+        // gone it would be an orphan, so nothing is touched.
+        if let (Some(pb::EntityRef { entity: Some(pb::entity_ref::Entity::Session(session)) }), Some(channel)) =
+            (&was, channel_in(&item.caller_data))
+            && let Some(store) = self.store.get().cloned()
+        {
+            let wanted = channel.clone();
+            let known = blocking(move || store.channel(&wanted)).await?;
+            let known = known.map_err(|error| status::store(error, &self.machine, "check the session's channel"))?;
+            if known.is_none() && channel != humata2_sessions::DESK_CHANNEL {
+                return Err(status::failure(
+                    Code::FailedPrecondition,
+                    status::error(
+                        format!(
+                            "session {} can't be restored: its channel {channel} was deleted, so there is nowhere to put it back. Nothing was restored and the item is still in the trash",
+                            session.value
+                        ),
+                        "restore the channel from the trash first, then restore the session; or ask for the session to be restored to the Desk, if the Desk exists",
+                        pb::error::Kind::NotFound(pb::NotFound {
+                            kind: pb::EntityKind::Channel as i32,
+                            id: channel.clone(),
+                            in_trash: true,
+                        }),
+                    ),
+                ));
+            }
+        }
         // CD-4, CD-5: a channel Desk session comes back only with its
         // channel and its target.
         let mut place = None;
@@ -467,6 +596,26 @@ impl pb::trash_service_server::TrashService for TrashSvc {
             _ => None,
         };
         let restoring = channel_store.clone();
+        // MASSDELETE: a deleted session's folder carries its records in
+        // side files; they come back archived (LD-7).
+        let session_store = match &was {
+            Some(pb::EntityRef {
+                entity: Some(pb::entity_ref::Entity::Session(_)),
+            }) => Some(self.store.get().cloned().ok_or_else(|| {
+                status::internal(
+                    "this humatad2 was started without its state, so a deleted session can't come back; restart Humata on this machine and restore it again",
+                    "",
+                )
+            })?),
+            _ => None,
+        };
+        let original = item.original.clone();
+        let deleted_session = match &was {
+            Some(pb::EntityRef {
+                entity: Some(pb::entity_ref::Entity::Session(id)),
+            }) => id.value.clone(),
+            _ => String::new(),
+        };
         let placed = blocking(move || {
             let trash = bin.get()?;
             restore_at_free_place(&trash, &wanted, channel_store.as_deref(), place.as_deref()).map_err(|error| match error {
@@ -493,6 +642,20 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         // CD-4: a restored channel Desk session reopens.
         if let Some(desk) = self.desk.get().and_then(DeskHandle::get) {
             desk.after_restore(&caller, &id, &placed).await?;
+        }
+        if let Some(store) = session_store {
+            let folder = placed.clone();
+            blocking(move || finish_restore_sessions(&store, &folder, &original, &deleted_session))
+                .await?
+                .map_err(|error| {
+                    status::internal(
+                        format!(
+                            "the session's folder is back, but bringing the session back failed: {}. The folder is safe where it is: fix the cause the message names, then restore the item again",
+                            status::chain(&error)
+                        ),
+                        "",
+                    )
+                })?;
         }
         // A file or folder trashed inside a channel names that channel too;
         // only a deleted channel's own folder carries its records' side file.

@@ -155,6 +155,24 @@ impl BoardInbox for InboxAdapter {
         self.0.withdraw_as(local, request).await
     }
 
+    async fn ask_why_as(
+        &self,
+        caller: Caller,
+        request: pb::AskWhyRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        let local = to_local_caller(&caller);
+        self.0.ask_why_as(local, request).await
+    }
+
+    async fn explain_as(
+        &self,
+        caller: Caller,
+        request: pb::ExplainAskRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        let local = to_local_caller(&caller);
+        self.0.explain_as(local, request).await
+    }
+
     async fn approved_on(
         &self,
         machine: &str,
@@ -180,6 +198,8 @@ fn away_method(method: Method) -> away::Method {
         Method::DeleteItem => away::Method::DeleteItem,
         Method::WaitForAnswer => away::Method::WaitForAnswer,
         Method::WithdrawRequest => away::Method::WithdrawRequest,
+        Method::AskWhy => away::Method::AskWhy,
+        Method::ExplainAsk => away::Method::ExplainAsk,
         Method::SearchRepos => away::Method::SearchRepos,
         Method::ListRepoLibrary => away::Method::ListRepoLibrary,
         Method::ListMachines => away::Method::ListMachines,

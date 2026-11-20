@@ -1500,14 +1500,16 @@ fn decision_card(
             .border_t_1()
             .border_color(rgb(look.line))
             .child(footer.flex_1().min_w_0())
-            .child(
-                col()
-                    .ml_auto()
-                    .flex_shrink_0()
-                    .items_end()
-                    .children(note)
-                    .children(reply_link),
-            )
+            .when(note.is_some() || reply_link.is_some(), |r| {
+                r.child(
+                    col()
+                        .ml_auto()
+                        .flex_shrink_0()
+                        .items_end()
+                        .children(note)
+                        .children(reply_link),
+                )
+            })
     } else {
         // Panel width: everything stacks and wraps inside the card.
         col()

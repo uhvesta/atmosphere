@@ -580,6 +580,7 @@ const READ_ONLY: &[Rpc] = &[
     rpc::session::PREVIEW_FORK,
     rpc::session::PLAN_ARCHIVE,
     rpc::session::PLAN_DELETE,
+    rpc::session::PLAN_DELETE_SESSIONS,
     rpc::session::PLAN_DROP_REPO,
     rpc::session::PLAN_PUSH,
     rpc::session::READ_CONVERSATION,

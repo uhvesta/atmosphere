@@ -35,7 +35,7 @@ pub fn state_words(state: ViewState) -> &'static str {
 pub fn kind_words(content: &ViewContent) -> &'static str {
     match content {
         ViewContent::Walkthrough(_) => "Review",
-        ViewContent::Board(_) | ViewContent::SessionBoard { .. } => "Board",
+        ViewContent::Board(_) | ViewContent::SessionBoard { .. } => "To-do",
         ViewContent::PullRequest => "Pull request",
         ViewContent::ReviewPlan(_) => "Review plan",
         ViewContent::Summary => "View",
@@ -86,7 +86,7 @@ fn quiet_link(
 }
 
 /// The Showing bar (VW-8): the view on screen, with Revert and Keep. The
-/// session page and the board page both draw it.
+/// session page and the To-do page both draw it.
 pub fn showing_bar(
     ui: &Rc<Ui>,
     state: &AppState,

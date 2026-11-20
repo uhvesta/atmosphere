@@ -1,5 +1,5 @@
 {
-  "checksum": "bbf0649a3df9df9ed5ba09bb2bb446724ce1556a161adbdd387ada4d8f1e68a9",
+  "checksum": "6d9523fa99d5f6e2ad6a2867d3722de9a2cf66dce2032a9a6371a9e2d8992781",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -18547,29 +18547,6 @@
       ],
       "version": "0.0.0"
     },
-    "humata2-board 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "humata2_board",
-      "name": "humata2-board",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "humata2_board",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
-    },
     "humata2-chunk 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -19412,6 +19389,23 @@
         {
           "Library": {
             "crate_name": "humata2_marks",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-mass-delete 0.0.0": {
+      "common_attrs": {
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_mass_delete",
+      "name": "humata2-mass-delete",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_mass_delete",
             "crate_root": "src/lib.rs"
           }
         }
@@ -20317,9 +20311,17 @@
         ],
         "edition": "2024"
       },
+      "library_target_name": "humatad2",
       "name": "humatad2",
       "repository": null,
-      "targets": [],
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humatad2",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
       "version": "0.0.0"
     },
     "hybrid-array 0.4.15": {
@@ -53441,7 +53443,6 @@
     "humata2-access 0.0.0": "apps/humata2/daemon/access",
     "humata2-app 0.0.0": "apps/humata2/features/app",
     "humata2-app-peer 0.0.0": "apps/humata2/daemon/app_peer",
-    "humata2-board 0.0.0": "apps/humata2/features/board",
     "humata2-chunk 0.0.0": "apps/humata2/chunk",
     "humata2-cli 0.0.0": "apps/humata2/cli",
     "humata2-clients 0.0.0": "apps/humata2/clients",
@@ -53464,6 +53465,7 @@
     "humata2-machines 0.0.0": "apps/humata2/daemon/machines",
     "humata2-markdown 0.0.0": "apps/humata2/markdown",
     "humata2-marks 0.0.0": "apps/humata2/daemon/marks",
+    "humata2-mass-delete 0.0.0": "apps/humata2/features/mass_delete",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",
     "humata2-mirror 0.0.0": "apps/humata2/daemon/mirror",
     "humata2-opencode 0.0.0": "apps/humata2/daemon/opencode",

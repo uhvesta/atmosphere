@@ -303,14 +303,12 @@ fn a_long_repo_and_branch_stay_inside_the_panel() {
             let panel = window.find("side-panel").bounds();
             assert!(within(&window.find("repo-toggle-0").bounds(), &panel));
             assert!(within(&window.find("repo-branch-0").bounds(), &panel));
-            // The base keeps "against" in view, left of the totals.
-            let base = window.find("repo-base-0").bounds();
-            let totals = window.find("repo-totals-0").bounds();
+            // One repository: the base sits in the header (D868), inside the
+            // panel, and the repository head has none.
+            let base = window.find("diff-base").bounds();
+            assert!(within(&base, &panel));
             assert!(base.size.width > px(40.), "the base keeps \"against\" in view");
-            assert!(
-                base.origin.x + base.size.width <= totals.origin.x + px(0.5),
-                "the base ends before the totals start"
-            );
+            assert!(window.try_find(gpui_kit::SharedString::from("repo-base-0")).is_none());
             // The file's name keeps room beside a long repo and folder.
             for id in ["diff-file-bar-name", "diff-file-header-name"] {
                 if let Some(name) = window.try_find(gpui_kit::SharedString::from(id)) {

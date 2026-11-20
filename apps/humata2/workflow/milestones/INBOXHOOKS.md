@@ -167,3 +167,19 @@ Hooks are the only path we invest in. Existing screen reads may stay while they 
   - Recording native goldens 26/27/117
   - Fable judging 205–210
   - Removing dead Bulk reducer code
+
+### Batch 3 (minion INBOXHOOKS, 2026-11-19, after 3c4c7346 / 0.3.9; unbuilt)
+- Done: MCP `session_move` handler; `inbox_explain` tool + `asked_why` hint (`Reply::PendingAskedWhy`); central empty-reason refusal (`Operation::requires_reason`); AskWhy/ExplainAsk in svc_away's registry; Home's stopped group (207); frame 209 notification content (`features/inbox/src/notice.rs`); global Agent access page (live via Get/SetDefaultRules); empty Agent inbox text; dead Bulk code removed; "Agent inbox" labels in uxsimple/screen_question/roam/upgrade mocks; request card footer 8 px gap fix.
+- Fable: 205, 207, 208, 210 approved; 206 and 209 rejected (check rings, 209 toast height and list rhythm) and fixed in `agent_inbox_more.rs`, to re-judge after a render.
+- Left: host-side replay for forwarded AskWhy/ExplainAsk (svc_board Method/ROWS/replay + `svc_inbox` route-up, not this lane's files); the "actions followed your rules" count (IN-8); file-read preview.
+
+### Batch 4 (Gemini lane, 2026-11-19; unbuilt)
+- Done:
+  - Host-side forwarding of `AskWhy` and `ExplainAsk`: `svc_away::Forwarder::call_as_user` (sends `Principal::User(MachineUser { outside_sessions: true })`); `svc_board` `Method::{AskWhy, ExplainAsk}`, `ROWS`, `BoardInbox::{ask_why_as, explain_as}`, and `replay.rs` `run_forwarded` routing (accepting outside-sessions peer `MachineUser` as `Caller::User(UserVia::Host)` for `AskWhy`, refusing agents and in-session users, and routing `ExplainAsk` for sessions placed on the forwarding machine); `svc_inbox` `ask_why`/`explain_ask` route-up (`ask_why_on_host`, `explain_on_host`) + host entry points (`ask_why_as`, `explain_as`) + explicit user-only guard in `ask_why` allowing `Caller::User(UserVia::Host)` and refusing `Agent`/`Script`/`Peer`. In-process unit tests in `svc_away`, `svc_board`, and `svc_inbox`. Seam lines written for `daemon/humatad/src/wire_board.rs`.
+  - File-read preview: `svc_inbox` `deferred.rs` now populates `FileAccessPreview` (resolving repo prefix via `store.session_detail`, source session, source machine, `MODE_READ_THIS_CALL`) and `facts.rs` fills `facts` (`From`, `Files`, `Access`), calm `affects` (resolving source session title/agent and channel name from `Store`), and `undo_text` for every `Call::ReadFiles` ask; added `Inbox::ask_read_reason` so `ReadFileRequest.reason` can flow through via a small seam in `svc_files`/`wire_files.rs`. Unit tests in `svc_inbox` (`facts.rs` and `inbox.rs`).
+  - IN-8 ("actions followed your rules" count): added default `InboxGuardPort::allowed_without_asking_today` in `svc_inbox/src/ports.rs`, `humata2_inbox::today_summary` in `features/inbox/src/lib.rs` (tested in `agent_inbox.rs`), and wired `ui/workspace/src/inbox_page.rs` to call `today_summary(answered, 0)`. Designed full end-to-end seam lines for `inbox.proto`, `guard.rs`, `wire_inbox.rs`, `svc_inbox/src/inbox.rs`, `clients/src/workspace.rs`, `clients/live_daemon/src/{inbox,daemon}.rs`, and the 1-line swap in `inbox_page.rs`.
+- Left:
+  - Apply seam lines (`wire_board.rs`; IN-8 seams across `inbox.proto`/`guard.rs`/`wire_inbox.rs`/`clients`/`inbox_page.rs`; optional `ReadFileRequest.reason` seam in `svc_files`/`wire_files.rs`; D871 Batch 4 note in `DECISIONS.md`).
+  - Build and test the focused targets; re-judge frames 206 and 209 with Fable (carried over from Batch 3).
+
+

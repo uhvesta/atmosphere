@@ -48,6 +48,16 @@ id!(
     /// A channel: a team of sessions around some repositories.
     ChannelId
 );
+
+impl ChannelId {
+    /// The key the global access rules (what every channel starts with) are
+    /// kept under in [`Workspace::rules`]; no channel can be named this.
+    #[must_use]
+    pub fn global_rules() -> Self {
+        Self::new("~global")
+    }
+}
+
 id!(
     /// A session: one agent or shell in a terminal.
     SessionId

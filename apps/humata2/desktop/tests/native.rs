@@ -224,8 +224,6 @@ fn folder() -> Snapshots {
 // SEAM: archiving with unsubmitted PR drafts (D513).
 #[path = "native/archive_drafts.rs"]
 mod archive_drafts;
-#[path = "native/board.rs"]
-mod board;
 #[path = "native/channel.rs"]
 mod channel;
 #[path = "native/channel_desk.rs"]
@@ -295,6 +293,8 @@ mod stop;
 mod targets;
 #[path = "native/terminal.rs"]
 mod terminal;
+#[path = "native/todo_asks.rs"]
+mod todo_asks;
 #[path = "native/views.rs"]
 mod views;
 #[path = "native/channel_desk_target.rs"]

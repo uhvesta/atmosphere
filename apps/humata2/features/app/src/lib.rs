@@ -58,16 +58,16 @@ pub use views::Snapshot;
 use std::sync::Arc;
 use std::time::Duration;
 
-use humata2_board::{Board, BoardAction, BoardState};
 pub use humata2_todo_feature::TodoAction;
 use humata2_todo_feature::{Todo, TodoState};
-use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, Scope, SessionId, ViewId};
+use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, SessionId, ViewId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_desk::{Desk, DeskAction, DeskState};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_find::{Find, FindAction, FindState, PinnedAction, PinnedSection, PinnedState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
+use humata2_mass_delete::{MassDelete, MassDeleteAction, MassDeleteState};
 use humata2_palette::{Palette, PaletteAction, PaletteState};
 use humata2_pr_review::ask::{Ask, AskState};
 pub use humata2_pr_review::ask::AskAction;
@@ -149,8 +149,6 @@ pub struct AppState {
     pub comments: CommentsState,
     /// The Inbox.
     pub inbox: InboxState,
-    /// Boards.
-    pub board: BoardState,
     /// The To-do list.
     pub todo: TodoState,
     /// The Desk.
@@ -197,6 +195,8 @@ pub struct AppState {
     pub add_machine: humata2_hosts::AddMachineState,
     /// A machine's page (frame 59).
     pub machine_page: humata2_hosts::MachinePageState,
+    /// Select mode and the delete-many-sessions sheet (MASSDELETE, D875).
+    pub mass_delete: MassDeleteState,
     next_toast: u64,
     /// Sessions whose file list was asked for, once, when the palette first
     /// opened with them; events keep those lists current.
@@ -207,6 +207,28 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The agents the open session's machine lacks, per the last health read
+    /// of it. Empty while that machine's health is unknown, so every agent
+    /// draws as installed until it is read.
+    #[must_use]
+    pub fn missing_agents(&self) -> Vec<humata2_clients::model::Agent> {
+        let Some(id) = self.session.open.as_ref() else {
+            return Vec::new();
+        };
+        let Some(session) = self.workspace.session(id) else {
+            return Vec::new();
+        };
+        let Some(detail) = self.hosts.health.get(&session.machine) else {
+            return Vec::new();
+        };
+        let found = &detail.health.agents;
+        humata2_clients::model::Agent::ALL
+            .into_iter()
+            .filter(|agent| *agent != humata2_clients::model::Agent::Shell)
+            .filter(|agent| !found.iter().any(|(have, _)| have == agent))
+            .collect()
+    }
+
     /// The daemon version the app has for `machine`: what the hosts page
     /// last read from it, else what the workspace reports. `None` when
     /// neither knows it.
@@ -256,15 +278,6 @@ impl AppState {
             review: ReviewState::default(),
             comments: CommentsState::default(),
             inbox: InboxState::default(),
-            board: BoardState {
-                scope: match &saved.route {
-                    Route::Board(scope) => scope.clone(),
-                    Route::Channel(id) => Scope::Channel(id.clone()),
-                    _ => Scope::Global,
-                },
-                view: saved.board.clone(),
-                ..Default::default()
-            },
             todo: TodoState::new(humata2_todo_feature::View::default(), today()),
             hosts: HostsState {
                 selected: saved.selected_host.clone(),
@@ -290,6 +303,7 @@ impl AppState {
             view_step: std::collections::BTreeMap::new(),
             add_machine: humata2_hosts::AddMachineState::default(),
             machine_page: humata2_hosts::MachinePageState::default(),
+            mass_delete: MassDeleteState::default(),
             next_toast: 0,
             files_asked: std::collections::BTreeSet::new(),
             last_saved: saved.clone(),
@@ -345,7 +359,6 @@ impl AppState {
             full_screens: self.full_screens.clone(),
             channels: self.channel_pages.clone(),
             selected_host: self.hosts.selected.clone(),
-            board: self.board.view.clone(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
@@ -443,7 +456,7 @@ pub enum AppAction {
     StartNewChannel,
     /// ⌘/.
     ShowShortcuts,
-    /// Start a session for this board item.
+    /// Start a session for this To-do item.
     StartNewForItem(ItemId),
     /// The New session sheet changed.
     NewSession(NewSessionAction),
@@ -483,8 +496,6 @@ pub enum AppAction {
     Comments(CommentsAction),
     /// The Inbox.
     Inbox(InboxAction),
-    /// A board.
-    Board(BoardAction),
     /// The To-do list.
     Todo(TodoAction),
     /// Hosts.
@@ -528,6 +539,8 @@ pub enum AppAction {
     AddMachine(humata2_hosts::AddMachineAction),
     /// A machine's page.
     MachinePage(humata2_hosts::MachinePageAction),
+    /// Select mode and deleting many sessions (MASSDELETE, D875).
+    MassDelete(MassDeleteAction),
 }
 
 /// Today in UTC, for ranking by due date.
@@ -547,7 +560,6 @@ pub struct App {
     review: Review,
     comments: Comments,
     inbox: Inbox,
-    board: Board,
     todo: Todo,
     desk: Desk,
     hosts: Hosts,
@@ -562,6 +574,7 @@ pub struct App {
     pr_submit: Submit,
     pr_heads: Heads,
     pr_info: Info,
+    mass_delete: MassDelete,
 }
 
 impl App {
@@ -574,7 +587,6 @@ impl App {
             review: Review::new(clients.daemon.clone(), clients.clock.clone()),
             comments: Comments::new(clients.comments.clone(), clients.clock.clone()),
             inbox: Inbox::new(clients.clone()),
-            board: Board::new(clients.clone()),
             todo: Todo::new(clients.todo.clone(), today),
             desk: Desk::new(clients.desk.clone()),
             hosts: Hosts::new(clients.clone()),
@@ -589,6 +601,7 @@ impl App {
             pr_submit: Submit::new(clients.pull_requests.clone(), clients.comments.clone()),
             pr_heads: Heads::new(clients.pull_requests.clone()),
             pr_info: Info::new(clients.pull_requests.clone(), clients.review_chat.clone()),
+            mass_delete: MassDelete::new(clients.daemon.clone()),
             clients,
         }
     }
@@ -627,10 +640,6 @@ impl App {
                 .inbox
                 .reduce(&mut state.inbox, action)
                 .map(AppAction::Inbox),
-            AppAction::Board(action) => self
-                .board
-                .reduce(&mut state.board, action)
-                .map(AppAction::Board),
             AppAction::Todo(action) => self
                 .todo
                 .reduce(&mut state.todo, action)
@@ -687,6 +696,10 @@ impl App {
                 .pr_info
                 .reduce(&mut state.pr_info, action)
                 .map(AppAction::PrInfo),
+            AppAction::MassDelete(action) => self
+                .mass_delete
+                .reduce(&mut state.mass_delete, action)
+                .map(AppAction::MassDelete),
             // Escape's machine-page cancels (DismissConfirm, D784's
             // CancelEnd and CancelAdopt) reach the page's reducer.
             AppAction::MachinePage(action) => self.machine_page(state, action),
@@ -696,7 +709,6 @@ impl App {
 
     /// Handles what a feature asked for.
     fn delegate(&self, state: &mut AppState, action: &AppAction) -> Effect<AppAction> {
-        use humata2_board::Delegate as B;
         use humata2_files::Delegate as F;
         use humata2_hosts::Delegate as H;
         use humata2_inbox::Delegate as I;
@@ -802,11 +814,6 @@ impl App {
                 // follow its events, as after any daemon restart.
                 I::Reconnect => Effect::merge([self.load(), self.follow()]),
             },
-            AppAction::Board(BoardAction::Delegate(delegate)) => match delegate {
-                B::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
-                B::Toast(text) => state.toast(text.clone(), &clock),
-                B::Refresh => self.load(),
-            },
             AppAction::Hosts(HostsAction::Delegate(delegate)) => match delegate {
                 H::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 H::Toast(text) => state.toast(text.clone(), &clock),
@@ -882,6 +889,9 @@ impl App {
             | AppAction::PrFollower(FollowerAction::Delegate(_))
             | AppAction::PrSubmit(SubmitAction::Delegate(_))
             | AppAction::PrHeads(HeadsAction::Delegate(_)) => self.pr_review_delegate(state, action),
+            AppAction::MassDelete(MassDeleteAction::Delegate(
+                humata2_mass_delete::Delegate::Toast(text),
+            )) => state.toast(text.clone(), &clock),
             _ => Effect::none(),
         }
     }
@@ -1140,6 +1150,28 @@ impl App {
                 state.navigation_overlay = false;
                 Effect::none()
             }
+            // A missing agent can't be picked; opening the menu reads the
+            // session's machine for what it has.
+            AppAction::Review(ReviewAction::AgentTabPicked(agent))
+                if state.missing_agents().contains(&agent) =>
+            {
+                Effect::none()
+            }
+            AppAction::Review(ReviewAction::ToggleAgentTabMenu) => {
+                let machine = state
+                    .session
+                    .open
+                    .as_ref()
+                    .and_then(|id| state.workspace.session(id))
+                    .map(|session| session.machine.clone());
+                let toggle = self.child(state, AppAction::Review(ReviewAction::ToggleAgentTabMenu));
+                match machine {
+                    Some(machine) if state.review.agent_tab_menu => toggle.and(
+                        self.child(state, AppAction::Hosts(HostsAction::ReadHealth(machine))),
+                    ),
+                    _ => toggle,
+                }
+            }
             AppAction::Hosts(HostsAction::StartAdd) => {
                 let navigate = self.switch(state, Route::Hosts);
                 Effect::merge([
@@ -1173,24 +1205,15 @@ impl App {
             // The view opens web links itself (cx.open_url).
             AppAction::Todo(TodoAction::OpenEvidence(_)) => Effect::none(),
             AppAction::Todo(TodoAction::StartReview(key)) => self.start_todo_review(state, &key),
+            AppAction::Todo(TodoAction::StartSession(key)) => {
+                self.start_new_for_item(state, ItemId::new(key))
+            }
             // Do next opens New session filled from the top item; Skip moves
             // on to the next one and fills it again.
             AppAction::Todo(action @ (TodoAction::DoNext | TodoAction::SkipDoNext)) => {
                 let moved = self.child(state, AppAction::Todo(action));
                 let fill = self.fill_do_next(state);
                 moved.and(fill)
-            }
-            AppAction::Board(BoardAction::SetScope(scope)) => {
-                if matches!(state.route, Route::Board(_)) {
-                    state.route = Route::Board(scope.clone());
-                }
-                self.child(state, AppAction::Board(BoardAction::SetScope(scope)))
-            }
-            AppAction::Board(BoardAction::GlobalOnly(only)) => {
-                if matches!(state.route, Route::Board(_)) {
-                    state.route = Route::Board(Scope::Global);
-                }
-                self.child(state, AppAction::Board(BoardAction::GlobalOnly(only)))
             }
             AppAction::Channel(action) => {
                 let Route::Channel(id) = state.route.clone() else {
@@ -1205,10 +1228,7 @@ impl App {
                             id,
                         ))),
                     ),
-                    channel::Tab::Board => self.child(
-                        state,
-                        AppAction::Board(BoardAction::SetScope(Scope::Channel(id))),
-                    ),
+                    channel::Tab::Board => Effect::merge(self.channel_todo(state, id)),
                     _ => Effect::none(),
                 }
             }
@@ -1248,7 +1268,49 @@ impl App {
                 }
                 self.child(state, AppAction::Session(SessionAction::NewTerminalTab))
             }
+            AppAction::Session(SessionAction::OpenAgentTab { agent, prompt }) => {
+                if state.missing_agents().contains(&agent)
+                    || state.session.opening_terminal
+                    || agent == humata2_clients::model::Agent::Shell
+                {
+                    return Effect::none();
+                }
+                let Some(session) = state.session.open.clone() else {
+                    return Effect::none();
+                };
+                let group = state
+                    .session
+                    .terminal_menu
+                    .or_else(|| state.session.view().map(|v| v.focused_group))
+                    .unwrap_or(0);
+                state.session.terminal_menu = None;
+                state.session.opening_terminal = true;
+                let terminals = self.clients.terminals.clone();
+                Effect::future(async move {
+                    let result = terminals.open_agent_tab(&session, agent, &prompt).await;
+                    AppAction::Session(SessionAction::AgentTabOpened {
+                        session,
+                        group,
+                        result,
+                    })
+                })
+            }
             AppAction::Session(action @ SessionAction::AgentTabOpened { .. }) => {
+                if let SessionAction::AgentTabOpened {
+                    session,
+                    result: Ok((tab, updated)),
+                    ..
+                } = &action
+                {
+                    if let Some(agent) = updated.terminal_agents.get(tab).copied() {
+                        state.session.agent_tabs.insert((session.clone(), *tab), agent);
+                    }
+                    upsert(
+                        &mut Arc::make_mut(&mut state.workspace).sessions,
+                        updated.clone(),
+                        |a, b| a.id == b.id,
+                    );
+                }
                 let effect = self.child(state, AppAction::Session(action));
                 state.session.keep_agent_tabs(Arc::make_mut(&mut state.workspace));
                 effect
@@ -1382,7 +1444,6 @@ impl App {
             | AppAction::Review(_)
             | AppAction::Comments(_)
             | AppAction::Inbox(_)
-            | AppAction::Board(_)
             | AppAction::Todo(_)
             | AppAction::Hosts(_)
             | AppAction::Files(_)
@@ -1397,7 +1458,8 @@ impl App {
             | AppAction::PrSubmit(_)
             | AppAction::PrHeads(_)
             | AppAction::PrInfo(_)
-            | AppAction::Desk(_)) => {
+            | AppAction::Desk(_)
+            | AppAction::MassDelete(_)) => {
                 let delegated = self.delegate(state, &action);
                 let effect = self.child(state, action);
                 effect.and(delegated)

@@ -1,0 +1,15 @@
+[package]
+name = "humata2-mass-delete"
+description = "Deleting many sessions: select mode and the one confirming sheet."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_mass_delete"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }

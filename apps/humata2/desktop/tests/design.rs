@@ -26,8 +26,6 @@ mod mock_sidebar;
 mod todo;
 #[path = "design/desk.rs"]
 mod desk;
-#[path = "design/board.rs"]
-mod board;
 #[path = "design/channel.rs"]
 mod channel;
 #[path = "design/channel_tabs.rs"]
@@ -212,10 +210,6 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("18-channel-sessions", LIGHT, channel::sessions),
     ("19-channel-activity", DARK, channel::activity),
     ("20-channel-repos-machines", LIGHT, channel::repos),
-    ("21-board-kanban", LIGHT, board::kanban),
-    ("22-board-item-open", DARK, board::drawer),
-    ("23-board-table", LIGHT, board::table),
-    ("24-board-dashboard", DARK, board::dashboard),
     ("25-home", LIGHT, pages::home_list),
     ("28-hosts", LIGHT, pages::hosts),
     ("29-settings", DARK, pages::settings),
@@ -313,7 +307,7 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("115-inbox-screen-question-dark", DARK, screen_question::focused),
     ("116-inbox-screen-question-no-terminal", LIGHT, screen_question::offline_screen),
     // PROGRESS: the shared progress line and run time.
-    ("122-new-session-cloning", LIGHT, |look| overlays::new_session_cloning(look, board::kanban(look))),
+    ("122-new-session-cloning", LIGHT, |look| overlays::new_session_cloning(look, todo::list(look))),
     ("123-session-moving-unmeasured-step", LIGHT, fork_move::moving_unmeasured),
     ("124-session-working-elapsed", LIGHT, session::working_elapsed),
     ("125-migrate-holders-count", DARK, upgrade::holders_moving),

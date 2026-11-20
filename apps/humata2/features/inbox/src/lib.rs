@@ -1,13 +1,13 @@
 //! The Inbox (IN-1–10): what sessions ask the person, newest first. Each
 //! request shows why it is asked, what it would do and what the agent was
 //! doing, and is answered with Approve, Always…, Deny, or Deny and reply.
-//! Approve all and Deny all ask first when something can't be undone
-//! (IN-9).
 //!
 //! A Migrate item (UP-1, D281) comes from Humata, not a session: it is VIP,
-//! sits in its own "Humata" group, and is answered only with Migrate. Bulk
-//! answers leave it out. An old local daemon can't hold one, so the app
-//! holds its own for it until the daemon does (D374).
+//! sits in its own "Humata" group, and is answered only with Migrate. An old local daemon can't hold one, so
+//! the app holds its own for it until the daemon does (D374).
+
+mod notice;
+pub use notice::{Notice, notification};
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -30,15 +30,6 @@ pub enum Filter {
     Channel(ChannelId),
     /// One session's, as its side panel shows them.
     Session(SessionId),
-}
-
-/// A bulk answer waiting for confirmation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Bulk {
-    /// Approve every shown request.
-    ApproveAll,
-    /// Deny every shown request.
-    DenyAll,
 }
 
 /// Which answers are included in the wide Inbox list.
@@ -150,8 +141,6 @@ pub struct InboxState {
     pub pending: BTreeSet<RequestId>,
     /// The requests whose "Allow this for the rest of the session" box is ticked (IN-14).
     pub always: BTreeSet<RequestId>,
-    /// A bulk answer waiting for "Are you sure?".
-    pub confirm: Option<Bulk>,
     /// What went wrong last.
     pub error: Option<String>,
     /// The old local daemon the app holds its own Migrate item for.
@@ -179,6 +168,21 @@ pub fn waiting(workspace: &Workspace) -> usize {
         .iter()
         .filter(|request| request.answer.is_none())
         .count()
+}
+
+/// The empty Agent inbox's summary line (frame 200, IN-8). Omits the
+/// rule-followed count when `allowed_without_asking` is 0 (such as from a
+/// daemon that doesn't report it yet).
+#[must_use]
+pub fn today_summary(answered: usize, allowed_without_asking: u32) -> String {
+    if allowed_without_asking == 0 {
+        format!("Today: {answered} answered ·")
+    } else {
+        let noun = if allowed_without_asking == 1 { "action" } else { "actions" };
+        format!(
+            "Today: {answered} answered · {allowed_without_asking} {noun} followed your rules without asking ·"
+        )
+    }
 }
 
 impl InboxState {
@@ -371,16 +375,6 @@ impl InboxState {
         true
     }
 
-    /// How many shown waiting requests Allow all and Deny all answer: every
-    /// one but the Migrate items and agents' provider imports (D792).
-    #[must_use]
-    pub fn bulk_count(&self) -> usize {
-        self.shown()
-            .into_iter()
-            .filter(|request| request.answer.is_none() && request.answered_in_bulk())
-            .count()
-    }
-
     /// Every Migrate item the Inbox knows, the app's own included, with the
     /// phase it shows (a click in flight reads Migrating).
     #[must_use]
@@ -536,12 +530,6 @@ pub enum InboxAction {
     SendReply,
     /// Drop the reply.
     CancelReply,
-    /// Approve all or Deny all was clicked.
-    Bulk(Bulk),
-    /// "Are you sure?" was answered yes.
-    ConfirmBulk,
-    /// "Are you sure?" was answered no.
-    CancelBulk,
     /// The daemon took an answer, or didn't.
     Answered(RequestId, Result<(), DaemonError>),
     /// Open the session that asked the selected request.
@@ -608,24 +596,6 @@ impl Inbox {
             let result = daemon.answer(&id, answer).await;
             InboxAction::Answered(id, result)
         })
-    }
-
-    fn bulk(&self, state: &mut InboxState, bulk: Bulk) -> Effect<InboxAction> {
-        let ids: Vec<_> = state
-            .shown()
-            .into_iter()
-            .filter(|request| request.answer.is_none() && request.answered_in_bulk())
-            .map(|request| request.id.clone())
-            .collect();
-        let answer = match bulk {
-            Bulk::ApproveAll => Answer::Approved,
-            Bulk::DenyAll => Answer::Denied { reply: None },
-        };
-        Effect::merge(
-            ids.into_iter()
-                .map(|id| self.answer(state, id, answer.clone()))
-                .collect::<Vec<_>>(),
-        )
     }
 
     fn migrate(&self, state: &mut InboxState, id: RequestId) -> Effect<InboxAction> {
@@ -980,25 +950,6 @@ impl Reducer for Inbox {
                 }
             }
             InboxAction::CancelReply => state.reply = None,
-            InboxAction::Bulk(bulk) => {
-                let risky = state
-                    .shown()
-                    .iter()
-                    .any(|request| {
-                        request.answer.is_none() && request.answered_in_bulk() && !request.undoable
-                    });
-                if bulk == Bulk::ApproveAll && risky {
-                    state.confirm = Some(bulk);
-                } else {
-                    return self.bulk(state, bulk);
-                }
-            }
-            InboxAction::ConfirmBulk => {
-                if let Some(bulk) = state.confirm.take() {
-                    return self.bulk(state, bulk);
-                }
-            }
-            InboxAction::CancelBulk => state.confirm = None,
             InboxAction::Answered(id, result) => {
                 state.pending.remove(&id);
                 state.always.remove(&id);

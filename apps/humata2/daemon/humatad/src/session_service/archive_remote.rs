@@ -2000,6 +2000,7 @@ mod tests {
             away_left_out: None,
             review: None,
             moved: None,
+            shell_tabs: Vec::new(),
         }
     }
 

@@ -221,6 +221,7 @@ pub fn changes(
                         cursor,
                         (font_size, line_height, cell_width),
                         width,
+                        f32::from(window.viewport_size().height),
                     );
                 }
                 col()
@@ -281,10 +282,11 @@ pub fn changes(
     );
     // DS-28, DS-34: the files stay, dimmed, until the new diff arrives.
     let loading = fetch.is_some_and(|fetch| fetch.loading);
-    // RV-6: above 20 changed files a field filters the list.
+    // RV-6, DS-9: above 20 changed files a field filters the list (in a pull
+    // request review too, where a large PR can span hundreds of files).
     let filter_field = session_id
         .as_ref()
-        .filter(|id| !has_plan && !inline && state.review.file_filter_shown(id))
+        .filter(|id| !has_plan && state.review.file_filter_shown(id))
         .map(|id| file_filter_field(ui, look, documents, id));
     let list = col()
         .p(px(8.))
@@ -695,24 +697,28 @@ pub fn changes(
         .unwrap_or_else(|| picked_base_name(state, &current_base));
     let review_base = diffs.first().map_or_else(String::new, |diff| diff.base.clone());
     let menu_open = state.review.base_menu && !crate::panel_stack::hides_base_picker(&state.review);
-    // The repositories are compared with different bases: the header says
-    // so instead of naming one (frames 84, 85).
-    let per_repo = session_id
-        .as_ref()
-        .is_some_and(|id| state.review.compares_per_repo(id));
+    // D868: with two or more repositories the header names the count, not a
+    // base; each repository row states and changes its own.
+    let per_repo = diffs.len() >= 2;
     let toggle = ui.clone();
     // The base chip's words: its label, and what its hover shows.
-    let base_chip = if per_repo {
-        "Comparing per repo".to_owned()
-    } else {
-        format!("Against {base}")
-    };
+    let base_chip = format!("Against {base}");
+    let repos_line = per_repo.then(|| {
+        row().gap(px(6.)).child(
+            secondary(look, format!("{} repos", diffs.len()))
+                .id("diff-repos-count")
+                .test_support()
+                .flex_shrink_0(),
+        )
+    });
     let head = diff_header(
             ui,
             state,
             full,
             Some(
-                row().gap(px(6.)).when(!per_repo, |line| line.child(secondary(look, "against").flex_shrink_0())).child(
+                (match repos_line {
+                    Some(line) => line,
+                    None => row().gap(px(6.)).child(secondary(look, "against").flex_shrink_0()).child(
                     div()
                         .relative()
                         .min_w_0()
@@ -728,25 +734,15 @@ pub fn changes(
                                 .border_color(rgb(look.line))
                                 .bg(rgb(look.fill))
                                 .cursor_pointer()
-                                .map(|chip| {
-                                    if per_repo {
-                                        chip.child(
-                                            text("Comparing per repo")
-                                                .id("diff-base-per-repo")
-                                                .test_support(),
-                                        )
-                                    } else {
-                                        // The full base stays in the aria label;
-                                        // the chip shows its start and an ellipsis.
-                                        chip.child(
-                                            text(base.clone())
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis(),
-                                        )
-                                    }
-                                })
+                                .child(
+                                    // The full base stays in the aria label;
+                                    // the chip shows its start and an ellipsis.
+                                    text(base.clone())
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis(),
+                                )
                                 .child(
                                     div()
                                         .flex_shrink_0()
@@ -768,7 +764,8 @@ pub fn changes(
                             wrap.child(deferred(base_scrim(ui)))
                                 .child(deferred(base_menu(ui, state, look)))
                         }),
-                ).when(full, |line| line.child(since_switch(ui, state, look))),
+                )})
+                .when(full, |line| line.child(since_switch(ui, state, look))),
             ),
             look,
         );
@@ -979,7 +976,8 @@ pub fn changes(
                                 .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
                                 .min_w_0()
                                 .overflow_hidden()
-                                .whitespace_nowrap(),
+                                .whitespace_nowrap()
+                                .text_ellipsis(),
                             line,
                         )
                         .test_support()

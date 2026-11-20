@@ -544,7 +544,30 @@ pub enum SessionCommand {
         #[arg(long)]
         end: bool,
     },
-    Delete { session: String },
+    /// Delete sessions for good: the ids given, every session of a channel or
+    /// machine, or all of them. Shows the plan, then asks.
+    Delete {
+        /// Sessions by id or name; leave out with --channel, --machine or --all.
+        #[arg(conflicts_with_all = ["delete_channel", "delete_machine", "all"])]
+        sessions: Vec<String>,
+        /// Every session of this channel, live and archived.
+        // The id differs from the global --channel's, so the two don't clash.
+        #[arg(long, id = "delete_channel", value_name = "NAME|ID", conflicts_with_all = ["sessions", "delete_machine", "all"])]
+        channel: Option<String>,
+        /// Every session on this machine, live and archived.
+        // The id differs from the global --machine's, so the two don't clash.
+        #[arg(long, id = "delete_machine", value_name = "NAME|ID", conflicts_with_all = ["sessions", "delete_channel", "all"])]
+        machine: Option<String>,
+        /// Every channel session, live and archived (the Desk's are left out).
+        #[arg(long, conflicts_with_all = ["sessions", "delete_channel", "delete_machine"])]
+        all: bool,
+        /// Delete the sessions' unpushed work too (CH-24).
+        #[arg(long)]
+        delete_work: bool,
+        /// With --all: the number of sessions the plan shows, to confirm it.
+        #[arg(long, value_name = "N")]
+        count: Option<u32>,
+    },
     Restore {
         session: String,
         /// Bring it back stopped, as End for good's undo does.

@@ -227,7 +227,7 @@ pub fn repo_search_field(ui: &Rc<Ui>, look: Look, field: RepoField<'_>) -> Div {
 
 fn heading(look: Look, text: String) -> impl IntoElement {
     div()
-        .pt(px(3.))
+        .pt(px(4.))
         .text_size(px(11.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(look.tertiary))

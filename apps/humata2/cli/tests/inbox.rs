@@ -174,6 +174,7 @@ async fn approve_all_answers_only_what_is_pending_now() {
             ],
             pending_count: 2,
             page: None,
+            allowed_without_asking_today: 0,
         },
     );
     let console = FakeConsole::pipe();

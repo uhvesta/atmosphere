@@ -42,6 +42,7 @@ Document "Machine devbox-1"
   Button "Stop all sessions…"
   Button "Reconnect now"
   #machine-overview
+    Button "Select"
     Group "Health"
       Status "Disk 97% used"
       Button "Set value…"

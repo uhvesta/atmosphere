@@ -1,7 +1,7 @@
-//! New agent tab ⌄ in the full-screen Diff header (UXSIMPLE 3-3, 3-4): a
-//! second agent opens as a tab in the session's own tab strip, the same
-//! thing the strip's `+` does, and full screen gives way so the Diff sits
-//! beside it.
+//! New agent tab ⌄ in the full-screen Diff header (UXSIMPLE 3-3, 3-4; D858):
+//! a second agent opens directly as a fresh tab in the session's own tab strip
+//! via `TerminalService.OpenAgentTab` (keeping its label and agent kind on the
+//! daemon), and full screen gives way so the Diff sits beside it.
 use super::*;
 use humata2_clients::model::Agent;
 use humata2_session::SessionAction;
@@ -36,6 +36,10 @@ pub(super) fn button(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
 /// Terminal, a rule, then the agents Settings offers, the last pick marked.
 fn menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
     let last = state.review.last_agent_tab;
+    // Installed agents first, the ones the machine lacks after them.
+    let missing = state.missing_agents();
+    let mut offered = state.settings.offered_agents();
+    offered.sort_by_key(|agent| missing.contains(agent));
     humata2_ui_core::action_menu::card("new-agent-tab-menu", 330., look)
         .top(px(30.))
         .right(px(0.))
@@ -55,13 +59,13 @@ fn menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
         )
         .child(entry(ui, Agent::Shell, last, look))
         .child(div().mx(px(6.)).my(px(4.)).h(px(1.)).bg(rgb(look.line)))
-        .children(
-            state
-                .settings
-                .offered_agents()
-                .into_iter()
-                .map(|agent| entry(ui, agent, last, look)),
-        )
+        .children(offered.into_iter().map(|agent| {
+            if missing.contains(&agent) {
+                missing_entry(agent, look).into_any_element()
+            } else {
+                entry(ui, agent, last, look).into_any_element()
+            }
+        }))
         .test_support()
 }
 
@@ -104,6 +108,9 @@ fn entry(ui: &Rc<Ui>, agent: Agent, last: Option<Agent>, look: Look) -> impl Int
         })
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
+            if !shell && ui.read(|state| state.missing_agents().contains(&agent)) {
+                return;
+            }
             ui.send(AppAction::Review(ReviewAction::AgentTabPicked(agent)), cx);
             ui.send(AppAction::Session(SessionAction::ToggleWiden), cx);
             if shell {
@@ -116,10 +123,14 @@ fn entry(ui: &Rc<Ui>, agent: Agent, last: Option<Agent>, look: Look) -> impl Int
                 );
                 return;
             }
-            // The wording is fixed now, from what the Diff shows.
+            // The wording is fixed now, from what the Diff shows; the daemon's
+            // OpenAgentTab launches the agent directly and delivers it (D858).
             let prompt = ui.read(|state| {
                 let id = state.session.open.as_ref()?;
-                let session = state.session.workspace.session(id)?;
+                let session = state
+                    .workspace
+                    .session(id)
+                    .or_else(|| state.session.workspace.session(id))?;
                 Some(humata2_review::opening_prompt::opening_prompt(
                     &state.review,
                     session,
@@ -132,5 +143,22 @@ fn entry(ui: &Rc<Ui>, agent: Agent, last: Option<Agent>, look: Look) -> impl Int
                 );
             }
         })
+        .test_support()
+}
+
+/// An agent the session's machine lacks: dimmed, with no hover and no click.
+fn missing_entry(agent: Agent, look: Look) -> impl IntoElement {
+    let command = agent.command();
+    row()
+        .id(SharedString::from(format!("new-agent-tab-{command}")))
+        .flex_1()
+        .gap(px(8.))
+        .h(px(28.))
+        .px(px(10.))
+        .text_size(px(12.5))
+        .text_color(rgb(look.secondary))
+        .opacity(0.6)
+        .child(div().size(px(7.)).rounded_full().bg(rgb(look.line)))
+        .child(text(SharedString::from(format!("{command} · not installed"))))
         .test_support()
 }

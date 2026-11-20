@@ -42,8 +42,6 @@ pub struct SavedUi {
     pub full_screens: BTreeMap<SessionId, FullScreen>,
     /// Each channel's selected tab, filters and folds.
     pub channels: BTreeMap<ChannelId, crate::channel::View>,
-    /// The Board representation and filters.
-    pub board: humata2_board::View,
     /// What the sidebar folded.
     pub folding: Folding,
     /// Settings.
@@ -52,7 +50,9 @@ pub struct SavedUi {
     pub review: ReviewSaved,
     /// Which sessions show resolved comments.
     pub comments: CommentsSaved,
-    /// Recent palette picks.
+    /// Recent palette picks. A pick this build no longer offers, such as
+    /// an earlier build's Go to Board (D874), is left out.
+    #[serde(deserialize_with = "known_commands")]
     pub recent: Vec<Command>,
     /// The selected machine in Hosts.
     pub selected_host: Option<MachineId>,
@@ -60,6 +60,12 @@ pub struct SavedUi {
     pub connected: BTreeSet<MachineId>,
     /// How the Desk's Open list is sorted.
     pub desk_sort: humata2_desk::Sort,
+}
+
+/// The saved picks this build knows, in their order.
+fn known_commands<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Command>, D::Error> {
+    let saved = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(saved.into_iter().filter_map(|pick| serde_json::from_value(pick).ok()).collect())
 }
 
 impl SavedUi {

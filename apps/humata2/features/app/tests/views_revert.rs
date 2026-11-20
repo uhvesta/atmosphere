@@ -1,13 +1,14 @@
 //! Flow 26.12, VW-6 to VW-9, P8 on the fakes: an agent's view opens only when
 //! the person chooses Open it, Revert puts back exactly what they had (the
-//! route, the terminal tab, the panel, full screen, the board's scope and
+//! route, the terminal tab, the panel, full screen, the To-do filter and
 //! each repository's diff base) and never touches their comments, Keep
-//! leaves the view, a board view's Revert brings the board's scope back, and
+//! leaves the view, a board view opens the To-do list narrowed to its scope
+//! (D874) and its Revert brings the person's filter back, and
 //! a review plan opens the Diff panel with a base per repository. Views stack:
 //! reverting the top one shows the one under it, Close of the top shows the
 //! one under it, and opening the view showing again changes nothing. A
 //! walkthrough step opens its file beside the view, and a session's board
-//! view opens that session's board.
+//! view opens the To-do list narrowed to that session.
 use humata2_app::layout::FullScreen;
 use humata2_app::{App, AppAction as A, AppState, Route};
 use humata2_clients::comments::{Anchor, Comment, FakeComments, Side};
@@ -22,6 +23,7 @@ use humata2_clients::{Clients, fixture};
 use humata2_review::ReviewAction;
 use humata2_review::comments::CommentsAction;
 use humata2_session::{Panel, SessionAction, Tab, TabGroup};
+use humata2_todo_feature::{ChannelPick, SessionPick, TodoAction, ViewFilter};
 use humata2_views::ViewsAction;
 use std::future::Future;
 use std::sync::Arc;
@@ -144,7 +146,7 @@ struct Seen {
     full_screen: Option<FullScreen>,
     full_screens: Option<FullScreen>,
     collapsed: bool,
-    board: Scope,
+    todo: ViewFilter,
     targets: Option<DiffTargets>,
 }
 
@@ -165,25 +167,39 @@ fn seen(state: &AppState) -> Seen {
         full_screen: state.full_screen(),
         full_screens: state.full_screens.get(&ledger()).copied(),
         collapsed: state.layout.panel.collapsed,
-        board: state.board.scope.clone(),
+        todo: state.todo.view.filter.clone(),
         targets: state.review.targets.get(&ledger()).cloned(),
     }
 }
 
 /// The person's own setup on Ledger's page: its shell tab, the Diff panel
-/// full screen, a board scoped to the channel, and api on its own base.
+/// full screen, To-do narrowed to the channel, and api on its own base.
 fn set_up_own_page(rig: &mut Rig) {
     rig.act(A::Session(SessionAction::SelectTab(1)));
     rig.act(A::Session(SessionAction::SetPanel(Some(Panel::Changes))));
     rig.act(A::ToggleFullScreen(FullScreen::Panel));
-    rig.act(A::Board(humata2_board::BoardAction::SetScope(
-        Scope::Channel(payments()),
-    )));
+    rig.act(A::Todo(TodoAction::SetFilter(in_payments())));
     rig.act(A::Review(ReviewAction::PickRepoBase {
         session: ledger(),
         repo: "acme/api".to_owned(),
         base: RepoBase::Branch("release/2.4".to_owned()),
     }));
+}
+
+/// The To-do list narrowed to #payments, as a board view of it opens it.
+fn in_payments() -> ViewFilter {
+    ViewFilter {
+        channel: Some(ChannelPick::Channel(payments().as_str().to_owned())),
+        ..ViewFilter::default()
+    }
+}
+
+/// A filter of the person's own, which a board view's Revert brings back.
+fn searching() -> ViewFilter {
+    ViewFilter {
+        search: "cut-over".to_owned(),
+        ..ViewFilter::default()
+    }
 }
 
 fn walkthrough(views: &FakeViews) -> ViewId {
@@ -340,7 +356,7 @@ fn keep_ends_the_showing_and_leaves_the_view_open() {
 }
 
 #[test]
-fn reverting_a_board_view_brings_back_the_page_and_the_boards_scope() {
+fn reverting_a_board_view_brings_back_the_page_and_the_todo_filter() {
     let (mut rig, id) = rig(|views| {
         views.offer_view(
             &ledger(),
@@ -350,14 +366,12 @@ fn reverting_a_board_view_brings_back_the_page_and_the_boards_scope() {
             ViewContent::Board(Scope::Channel(payments())),
         )
     });
-    rig.act(A::Board(humata2_board::BoardAction::SetScope(
-        Scope::Global,
-    )));
+    rig.act(A::Todo(TodoAction::SetFilter(searching())));
     let before = seen(rig.state());
 
     rig.act(A::Views(ViewsAction::Open(id.clone())));
-    assert_eq!(rig.state().route, Route::Board(Scope::Channel(payments())));
-    assert_eq!(rig.state().board.scope, Scope::Channel(payments()));
+    assert_eq!(rig.state().route, Route::Todo);
+    assert_eq!(rig.state().todo.view.filter, in_payments());
     assert_eq!(rig.showing(), Some(id.clone()));
 
     rig.act(A::Views(ViewsAction::Revert));
@@ -505,15 +519,13 @@ fn board_view(views: &FakeViews) -> ViewId {
 #[test]
 fn reverting_a_second_view_shows_the_first_again_and_a_second_revert_puts_back_the_page() {
     let (mut rig, under, top) = two(board_view);
-    rig.act(A::Board(humata2_board::BoardAction::SetScope(
-        Scope::Global,
-    )));
+    rig.act(A::Todo(TodoAction::SetFilter(searching())));
     let before = seen(rig.state());
 
     rig.act(A::Views(ViewsAction::Open(under.clone())));
     let under_open = seen(rig.state());
     rig.act(A::Views(ViewsAction::Open(top.clone())));
-    assert_eq!(rig.state().route, Route::Board(Scope::Channel(payments())));
+    assert_eq!(rig.state().route, Route::Todo);
     assert_eq!(rig.showing(), Some(top.clone()));
 
     // The board view goes; the walkthrough shows again, as it was.
@@ -673,7 +685,7 @@ fn a_step_in_a_repository_the_session_does_not_have_opens_no_file() {
 }
 
 #[test]
-fn a_session_board_view_opens_the_sessions_board_and_revert_comes_back() {
+fn a_session_board_view_opens_the_sessions_todo_list_and_revert_comes_back() {
     let (mut rig, id) = rig(|views| {
         views.offer_view(
             &ledger(),
@@ -686,18 +698,18 @@ fn a_session_board_view_opens_the_sessions_board_and_revert_comes_back() {
             },
         )
     });
-    rig.act(A::Board(humata2_board::BoardAction::SetScope(
-        Scope::Global,
-    )));
+    rig.act(A::Todo(TodoAction::SetFilter(searching())));
     let before = seen(rig.state());
 
     rig.act(A::Views(ViewsAction::Open(id.clone())));
-    let scope = Scope::Session {
-        channel: payments(),
-        session: ledger(),
-    };
-    assert_eq!(rig.state().route, Route::Board(scope.clone()));
-    assert_eq!(rig.state().board.scope, scope);
+    assert_eq!(rig.state().route, Route::Todo);
+    assert_eq!(
+        rig.state().todo.view.filter,
+        ViewFilter {
+            session: Some(SessionPick::Session(ledger().as_str().to_owned())),
+            ..ViewFilter::default()
+        }
+    );
     assert_eq!(rig.showing(), Some(id.clone()));
 
     rig.act(A::Views(ViewsAction::Revert));

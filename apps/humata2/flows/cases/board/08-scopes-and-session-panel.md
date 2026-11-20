@@ -12,7 +12,7 @@ Layer: verify (Board, the person). Platforms: macOS.
 ## Reproduce headless
 
 - Scope rules on fakes: `bazel test //apps/humata2/features/board:scope_test`.
-- Against a real daemon: `bazel test //apps/humata2/desktop:live_boards_test --test_filter=the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first`, and `bazel test //apps/humata2/daemon/humatad:boards_test --test_filter=a_session_and_its_forks`.
+- The session's To-do panel, on fakes: `bazel test //apps/humata2/desktop:panels_test --test_filter=board_lists_the_channels_items_and_expands_without_losing_the_session`. Against a real daemon: `bazel test //apps/humata2/daemon/humatad:boards_test --test_filter=a_session_and_its_forks`.
 - Panel frames: `bazel test //apps/humata2/desktop:native_test --test_filter=session_lifecycle_and_full_screen_reference_images` (frames 07 and 12). The Desk panel: `bazel test //apps/humata2/features/desk:board_test`.
 - By hand on the rig: `humata --json board --global`, `humata --json board --channel payments`, `humata --json board --session Ledger`. Keep the three outputs side by side.
 - Not headless: nothing.
@@ -43,7 +43,7 @@ Layer: verify (Board, the person). Platforms: macOS.
 
 6. **I do:** open the Ledger session and its **Board** panel.
    **I see:** the header names `#payments`. Lanes one under another: In progress, In review, To do, Backlog, Done, empty ones left out. Ledger's own item comes first in its lane, with an accent outline.
-   **Status:** Works (real daemon). `desktop/tests/live_boards.rs::the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first`. Frame 07 on fakes.
+   **Status:** Fakes only since the board page went (D874): the panel is now the session's To-do panel. `desktop/tests/panels.rs::board_lists_the_channels_items_and_expands_without_losing_the_session`. Frame 07 on fakes.
 
 7. **I do:** click **Expand panel**.
    **I see:** the lanes side by side, all five, each with a count and **+**.

@@ -51,9 +51,6 @@ Complementary "Diff"
     #repo-row-0
       Button "Collapse acme/api"
       text "acme/api"
-      Button "acme/api: against main" collapsed
-        text "against"
-        text "main"
       #repo-totals-0
         text "+6"
         text "−2"

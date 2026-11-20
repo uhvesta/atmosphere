@@ -2440,6 +2440,14 @@ mod tests {
             Err(Status::unimplemented("not used"))
         }
 
+        async fn plan_delete_sessions(&self, _: Request<pb::PlanDeleteSessionsRequest>) -> Result<Response<pb::DeleteSessionsPlan>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
+        async fn delete_sessions(&self, _: Request<pb::DeleteSessionsRequest>) -> Result<Response<pb::DeleteSessionsResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
         async fn rebuild_session(&self, _: Request<pb::RebuildSessionRequest>) -> Result<Response<pb::Operation>, Status> {
             Err(Status::unimplemented("not used"))
         }

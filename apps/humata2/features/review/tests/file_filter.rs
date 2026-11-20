@@ -90,3 +90,31 @@ fn the_filter_is_kept_per_session() {
         assert!(!shown_for(20));
         assert!(shown_for(21));
     }
+
+    #[test]
+    fn a_pull_request_review_with_more_than_twenty_files_filters_like_plain_diff() {
+        let mut workspace = fixture::design();
+        let pr_session = SessionId::new("pr-review");
+        if let Some(session) = workspace.sessions.first_mut() {
+            session.id = pr_session.clone();
+            session.pull_request_review = true;
+        }
+        workspace.diffs.clear();
+        let api_files: Vec<String> = (0..21).map(|n| format!("src/handler_{n}.rs")).collect();
+        workspace.diffs.push(files("pr-review", "acme/api", &api_files));
+        workspace
+            .diffs
+            .push(files("pr-review", "acme/web", &["ui/checkout.tsx".to_owned()]));
+        let mut state = ReviewState {
+            workspace: Arc::new(workspace),
+            ..ReviewState::default()
+        };
+        assert!(state.file_filter_shown(&pr_session));
+        filter(&mut state, "pr-review", "checkout");
+        assert!(state.file_visible(&pr_session, "ui/checkout.tsx"));
+        assert!(!state.file_visible(&pr_session, "src/handler_0.rs"));
+        assert_eq!(
+            state.visible_files(&pr_session),
+            vec![("acme/web".to_owned(), "ui/checkout.tsx".to_owned())]
+        );
+    }

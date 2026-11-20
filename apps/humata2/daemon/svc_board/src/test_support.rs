@@ -70,6 +70,20 @@ impl BoardInbox for NoopInbox {
     ) -> Result<pb::InboxRequest, Status> {
         Err(Status::unimplemented("noop"))
     }
+    async fn ask_why_as(
+        &self,
+        _caller: Caller,
+        _request: pb::AskWhyRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        Err(Status::unimplemented("noop"))
+    }
+    async fn explain_as(
+        &self,
+        _caller: Caller,
+        _request: pb::ExplainAskRequest,
+    ) -> Result<pb::InboxRequest, Status> {
+        Err(Status::unimplemented("noop"))
+    }
     async fn approved_on(
         &self,
         _machine: &str,

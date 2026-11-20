@@ -150,6 +150,13 @@ pub const GROUPS: &[AccessGroup] = &[
                 &["own_session_end", "session_stop_other", "session_delete_other"],
                 AskLands::AgentInbox,
             ),
+            row(
+                "sessions-delete-many",
+                "Delete many sessions at once",
+                "Never ends a running terminal without asking you",
+                &["sessions_delete_many"],
+                AskLands::AgentInbox,
+            ),
         ],
     },
     AccessGroup {

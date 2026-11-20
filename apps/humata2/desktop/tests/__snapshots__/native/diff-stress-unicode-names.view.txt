@@ -55,9 +55,6 @@ Complementary "Diff"
     #repo-row-0
       Button "Collapse api"
       text "api"
-      Button "api: against main" collapsed
-        text "against"
-        text "main"
       #repo-totals-0
         text "+3"
         text "−0"
@@ -126,8 +123,8 @@ Tab "claude" selected
 Tab "zsh"
   Button "Close zsh"
 Button "New terminal"
-Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
-  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata todo_close PAY-3\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata todo_close PAY-3\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
   #terminal-replica
     #terminal-pane
       #terminal focused

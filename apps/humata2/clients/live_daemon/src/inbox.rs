@@ -641,10 +641,12 @@ impl Shared {
         mapped
     }
 
-    /// The requests waiting for the user.
-    pub(crate) async fn load_requests(&self) -> Result<Vec<Request>, DaemonError> {
+    /// The requests waiting for the user, plus the IN-8 count of agent actions
+    /// allowed today without asking.
+    pub(crate) async fn load_requests(&self) -> Result<(Vec<Request>, u32), DaemonError> {
         self.read_titles().await?;
         let mut requests = Vec::new();
+        let mut allowed_without_asking_today = 0;
         let mut token = String::new();
         loop {
             let reply = self
@@ -665,16 +667,24 @@ impl Shared {
                 .await
                 .map_err(|status| self.error(&status, "The Inbox"))?
                 .into_inner();
+            allowed_without_asking_today = reply.allowed_without_asking_today;
             requests.extend(reply.requests.iter().map(|each| self.map_request(each)));
             token = reply.page.map(|page| page.next_page_token).unwrap_or_default();
             if token.is_empty() {
-                return Ok(requests);
+                return Ok((requests, allowed_without_asking_today));
             }
         }
     }
 
     /// One channel's rules and the grants under them.
     pub(crate) async fn read_rules(&self, channel: &ChannelId) -> Result<Vec<AccessRule>, DaemonError> {
+        if *channel == ChannelId::global_rules() {
+            let defaults = self.default_rules().await?;
+            return Ok(self.map_rules(&pb::ChannelRules {
+                rules: defaults.rules,
+                ..pb::ChannelRules::default()
+            }));
+        }
         let reply = self
             .access()
             .get_channel_rules(pb::GetChannelRulesRequest {
@@ -701,7 +711,19 @@ impl Shared {
         for channel in channels {
             all.insert(channel.clone(), self.read_rules(channel).await?);
         }
+        let global = ChannelId::global_rules();
+        all.insert(global.clone(), self.read_rules(&global).await?);
         Ok(all)
+    }
+
+    /// The rules every channel starts with (Settings › Agent access).
+    async fn default_rules(&self) -> Result<pb::DefaultRules, DaemonError> {
+        Ok(self
+            .access()
+            .get_default_rules(pb::GetDefaultRulesRequest {})
+            .await
+            .map_err(|status| self.error(&status, "The default access rules"))?
+            .into_inner())
     }
 
     pub(crate) async fn answer_request(
@@ -781,6 +803,31 @@ impl Shared {
                 "Humata's daemon has no access kind called {capability}; update Humata and the daemon to the same version"
             ),
         })?;
+        if channel == ChannelId::global_rules() {
+            // The defaults are set as a whole: change this one row and send
+            // the rest back as they were, against the revision just read.
+            let mut defaults = self.default_rules().await?;
+            let wanted = decision(setting) as i32;
+            match defaults.rules.iter_mut().find(|rule| rule.capability == value as i32) {
+                Some(rule) => rule.decision = wanted,
+                None => defaults.rules.push(pb::Rule {
+                    capability: value as i32,
+                    decision: wanted,
+                    grants: Vec::new(),
+                }),
+            }
+            self.access()
+                .set_default_rules(pb::SetDefaultRulesRequest {
+                    idempotency_key: fresh_key(),
+                    rules: defaults.rules,
+                    away: defaults.away,
+                    expected_revision: defaults.revision,
+                    presence: None,
+                })
+                .await
+                .map_err(|status| self.error(&status, WHAT))?;
+            return Ok(());
+        }
         self.access()
             .set_channel_rule(pb::SetChannelRuleRequest {
                 idempotency_key: fresh_key(),

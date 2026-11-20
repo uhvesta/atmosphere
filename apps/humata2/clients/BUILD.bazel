@@ -66,6 +66,16 @@ rust_library(
     deps = CLIENT_DEPS + [":api"],
 )
 
+# The unit tests inside :clients (its fakes, e.g. the fake MASSDELETE).
+rust_test(
+    name = "clients_unit_test",
+    crate = ":clients",
+    deps = [
+        "//libs/tca-rust:tca",
+        "@crates//:tokio",
+    ],
+)
+
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),

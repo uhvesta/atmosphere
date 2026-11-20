@@ -198,6 +198,16 @@ pub trait BoardInbox: Send + Sync {
         caller: Caller,
         request: pb::WithdrawRequestRequest,
     ) -> Result<pb::InboxRequest, Status>;
+    async fn ask_why_as(
+        &self,
+        caller: Caller,
+        request: pb::AskWhyRequest,
+    ) -> Result<pb::InboxRequest, Status>;
+    async fn explain_as(
+        &self,
+        caller: Caller,
+        request: pb::ExplainAskRequest,
+    ) -> Result<pb::InboxRequest, Status>;
     async fn approved_on(
         &self,
         machine: &str,
@@ -226,6 +236,8 @@ pub enum Method {
     DeleteItem,
     WaitForAnswer,
     WithdrawRequest,
+    AskWhy,
+    ExplainAsk,
     SearchRepos,
     ListRepoLibrary,
     ListMachines,
@@ -296,6 +308,16 @@ const ROWS: &[Row] = &[
     Row {
         method: Method::WithdrawRequest,
         name: "/humata.v1.InboxService/WithdrawRequest",
+        journal: None,
+    },
+    Row {
+        method: Method::AskWhy,
+        name: "/humata.v1.InboxService/AskWhy",
+        journal: None,
+    },
+    Row {
+        method: Method::ExplainAsk,
+        name: "/humata.v1.InboxService/ExplainAsk",
         journal: None,
     },
     Row {

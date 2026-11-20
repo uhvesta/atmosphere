@@ -260,7 +260,7 @@ pub fn terminal(look: Look, term: Term) -> Div {
             .child(div().flex_1())
             .child(input_box(look, true)),
         Term::NeedsYou => body
-            .child(tl(look.term_text, "● humata board_item_move PAY-3 → Done"))
+            .child(tl(look.term_text, "● humata todo_close PAY-3"))
             .child(tl(ORANGE, "  ⎿ ⏳ waiting for your approval (Inbox)"))
             .child(tl(look.term_text, ""))
             .child(tl(ORANGE, "? Drop the old ledger_entries index before the switch, or keep"))

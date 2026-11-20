@@ -1,11 +1,11 @@
 //! Showing a prepared view and putting back what the person had (VW-6 to
-//! VW-9, P8): Open it takes a snapshot of the page, the panel, the board's
-//! scope and each repository's diff base, then shows the view; Revert puts
+//! VW-9, P8): Open it takes a snapshot of the page, the panel, the To-do
+//! filter and each repository's diff base, then shows the view; Revert puts
 //! each of them back and never touches the person's comments.
 
 use humata2_clients::model::{DiffTargets, RepoDiffSpec, Scope, SessionId, ViewId};
+use humata2_todo_feature::{ChannelPick, SessionPick, TodoAction, ViewFilter};
 use humata2_clients::views::{PlanView, ViewContent, WalkthroughStep};
-use humata2_board::BoardAction;
 use humata2_review::ReviewAction;
 use humata2_session::{Panel, SessionAction, Tab, TabGroup};
 use humata2_views::{Delegate, ViewsAction};
@@ -28,7 +28,7 @@ pub struct Snapshot {
     widened: bool,
     full_screen: Option<FullScreen>,
     collapsed: bool,
-    board: Scope,
+    todo: ViewFilter,
     targets: Option<DiffTargets>,
     plan: Option<PlanView>,
     /// The stack layer showing, by title; goes back with the plan (D800).
@@ -49,11 +49,26 @@ impl Snapshot {
             widened: page.widened,
             full_screen: state.full_screens.get(session).copied(),
             collapsed: state.layout.panel.collapsed,
-            board: state.board.scope.clone(),
+            todo: state.todo.view.filter.clone(),
             targets: state.review.targets.get(session).cloned(),
             plan: state.review.plans.get(session).cloned(),
             layer: state.review.layer.get(session).cloned().flatten(),
         }
+    }
+}
+
+/// The To-do filter that shows what a board view's scope held.
+fn todo_filter(scope: &Scope) -> ViewFilter {
+    match scope {
+        Scope::Global => ViewFilter::default(),
+        Scope::Channel(id) => ViewFilter {
+            channel: Some(ChannelPick::Channel(id.as_str().to_owned())),
+            ..ViewFilter::default()
+        },
+        Scope::Session { session, .. } => ViewFilter {
+            session: Some(SessionPick::Session(session.as_str().to_owned())),
+            ..ViewFilter::default()
+        },
     }
 }
 
@@ -257,23 +272,19 @@ impl App {
         let snapshot = Snapshot::take(state, &session);
         state.view_snapshots.push((id.clone(), snapshot));
         match record.content {
-            ViewContent::Board(scope) => self.navigate(state, Route::Board(scope)),
+            // A board view opens the To-do list narrowed the same way (D874).
+            ViewContent::Board(scope) => self.open_todo(state, todo_filter(&scope)),
             ViewContent::SessionBoard {
                 session: board, ..
             } => {
-                let channel = state
-                    .workspace
-                    .session(&board)
-                    .map(|known| known.channel.clone());
-                match channel {
-                    Some(channel) => self.navigate(
-                        state,
-                        Route::Board(Scope::Session {
-                            channel,
-                            session: board,
-                        }),
-                    ),
-                    None => self.open_view_tab(state, id, &session),
+                if state.workspace.session(&board).is_some() {
+                    let filter = ViewFilter {
+                        session: Some(SessionPick::Session(board.as_str().to_owned())),
+                        ..ViewFilter::default()
+                    };
+                    self.open_todo(state, filter)
+                } else {
+                    self.open_view_tab(state, id, &session)
                 }
             }
             ViewContent::ReviewPlan(plan) => {
@@ -321,6 +332,13 @@ impl App {
         );
         let file = self.sync_view_file(state, id);
         go.and(tab).and(file)
+    }
+
+    /// Opens the To-do list showing `filter`.
+    fn open_todo(&self, state: &mut AppState, filter: ViewFilter) -> Effect<AppAction> {
+        let go = self.navigate(state, Route::Todo);
+        let shown = self.child(state, AppAction::Todo(TodoAction::SetFilter(filter)));
+        go.and(shown)
     }
 
     fn go_to_session(&self, state: &mut AppState, session: &SessionId) -> Effect<AppAction> {
@@ -385,8 +403,8 @@ impl App {
         if snap.route == Route::Session(session.clone()) {
             state.panel_collapsed.insert(session.clone(), snap.collapsed);
         }
-        if state.board.scope != snap.board {
-            effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(snap.board))));
+        if state.todo.view.filter != snap.todo {
+            effects.push(self.child(state, AppAction::Todo(TodoAction::SetFilter(snap.todo))));
         }
         // The diff bases go back as they were, and the diff is read again
         // when they differ. Comments are not touched here.

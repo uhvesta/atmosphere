@@ -11,6 +11,10 @@ use crate::daemon::{Daemon, rpc};
 use crate::error::CliError;
 use crate::resolve;
 
+// The file sits beside this one, in commands/, with the other command files.
+#[path = "sessions_delete.rs"]
+mod sessions_delete;
+
 pub(super) async fn attach<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     session: Option<String>,
@@ -354,23 +358,23 @@ pub(super) async fn session<D: Daemon, C: Console>(
             };
             archive(ctx, &session, choice, end).await
         }
-        SessionCommand::Delete { session } => {
-            let id = Some(ctx.session(&session).await?);
-            let delete = pb::DeleteSessionRequest {
-                idempotency_key: ctx.key(),
-                id: id.clone(),
-                plan: None,
-            };
-            ctx.planned(
-                rpc::session::PLAN_DELETE,
-                &pb::PlanDeleteRequest { id },
-                |plan: &pb::DeletePlan| plan.token.clone(),
-                move |plan| async move {
-                    ctx.json(
-                        rpc::session::DELETE_SESSION,
-                        &pb::DeleteSessionRequest { plan, ..delete },
-                    )
-                    .await
+        SessionCommand::Delete {
+            sessions,
+            channel,
+            machine,
+            all,
+            delete_work,
+            count,
+        } => {
+            sessions_delete::run(
+                ctx,
+                sessions_delete::Bulk {
+                    sessions,
+                    channel,
+                    machine,
+                    all,
+                    delete_work,
+                    count,
                 },
             )
             .await

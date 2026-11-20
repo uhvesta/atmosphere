@@ -80,6 +80,24 @@ fn a_row_whose_rules_differ_reads_mixed() {
 }
 
 #[test]
+fn delete_many_sessions_is_a_files_and_sessions_row_that_reads_never_by_default() {
+    let (_store, daemon, channel) = setup();
+    let files = &ACCESS_GROUPS[1];
+    let position = files
+        .rows
+        .iter()
+        .position(|r| r.key == "session-end")
+        .expect("session-end is in FILES AND SESSIONS");
+    assert_eq!(files.rows[position + 1].key, "sessions-delete-many");
+    let delete_many = row("sessions-delete-many");
+    assert_eq!(delete_many.capabilities, &["sessions_delete_many"]);
+    assert_eq!(
+        delete_many.setting(&rules(&daemon, &channel)),
+        RowSetting::Is(RuleSetting::Never)
+    );
+}
+
+#[test]
 fn to_do_rows_ask_in_to_do_and_the_rest_in_the_agent_inbox() {
     let todo = &ACCESS_GROUPS[0];
     for r in todo.rows {
@@ -115,4 +133,32 @@ fn the_other_rules_list_toggles() {
     store.send(SettingsAction::Access(A::ToggleAll), |s| {
         s.access.show_all = false;
     });
+}
+
+#[test]
+fn the_global_pages_row_writes_the_global_rules_not_a_channels() {
+    let (mut store, daemon, channel) = setup();
+    let global = ChannelId::global_rules();
+    let end = row("session-end");
+    let channel_before = rules(&daemon, &channel);
+    store.send(
+        SettingsAction::Access(A::SetRow {
+            channel: global.clone(),
+            row: end.key.to_owned(),
+            setting: RuleSetting::Never,
+        }),
+        |_| {},
+    );
+    for _ in end.capabilities {
+        store.receive_matching(
+            "a rule written",
+            |a| matches!(a, SettingsAction::Access(A::Done { result: Ok(()), .. })),
+            |_| {},
+        );
+    }
+    assert_eq!(
+        end.setting(&rules(&daemon, &global)),
+        RowSetting::Is(RuleSetting::Never)
+    );
+    assert_eq!(rules(&daemon, &channel), channel_before);
 }

@@ -865,6 +865,20 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
                 in_channel(agent, &session.channel, need(capability))
             }
         }
+        // Deleting many at once: each session is checked alone, and an agent
+        // never deletes its own session this way (its own end is
+        // OwnSessionEnd); the user does that one from the app.
+        (C::SessionsDeleteMany, Target::Session(session)) if session.id == me.id => {
+            refuse(Refusal::UserOnly {
+                capability: Some(capability),
+            })
+        }
+        (C::SessionsDeleteMany, Target::Session(session)) => {
+            in_channel(agent, &session.channel, need(capability))
+        }
+        // The bulk RPCs gate the whole plan once; the daemon leaves the
+        // agent's own session out of it and refuses scope all.
+        (C::SessionsDeleteMany, Target::Global) => need(capability),
         (C::OwnSessionManage, Target::Session(session)) if session.id == me.id => {
             need(C::OwnSessionManage)
         }

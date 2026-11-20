@@ -70,6 +70,9 @@ RadioButton "Start or fork a session: Never"
 RadioButton "End a session or a terminal: Allow"
 RadioButton "End a session or a terminal: Ask"
 RadioButton "End a session or a terminal: Never"
+RadioButton "Delete many sessions at once: Allow"
+RadioButton "Delete many sessions at once: Ask"
+RadioButton "Delete many sessions at once: Never" selected
 RadioButton "Read other channels’ to-dos and files: Allow" selected
 RadioButton "Read other channels’ to-dos and files: Ask"
 RadioButton "Read other channels’ to-dos and files: Never"

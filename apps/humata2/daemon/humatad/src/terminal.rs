@@ -186,6 +186,9 @@ pub(crate) struct TerminalsConfig {
     /// This start, which brings back the shells whose holders died with the
     /// last run: an attach to one waits for it rather than call it gone.
     pub(crate) started: Arc<crate::restart::Started>,
+    /// D858: configured agents and home folder for `OpenAgentTab`.
+    pub(crate) agents: humata2_sessions::Agents,
+    pub(crate) home: PathBuf,
 }
 
 /// The service. Its state sits behind an `Arc` so a call waiting for the
@@ -919,6 +922,14 @@ impl Core {
                 .and_then(Result::ok)
                 .unwrap_or_default()
         };
+        let tab_agent = {
+            let (store, id) = (self.config.store.clone(), tab.id.clone());
+            blocking(move || humata2_svc_terminal::agent_tabs::tab_agent(&store, &id))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+        };
         pb::Tab {
             id: Some(pb::TabId {
                 value: tab.id.clone(),
@@ -936,6 +947,7 @@ impl Core {
             machine: tab.session.is_none().then(|| pb::MachineId {
                 value: self.config.machine.clone(),
             }),
+            agent: tab_agent.map(|value| pb::AgentId { value }),
         }
     }
 
@@ -1028,6 +1040,96 @@ impl Core {
             self.config.tell.session(session, pb::Change::Updated, None).await;
         }
         Ok(described)
+    }
+
+    /// D858: starts `agent` directly under a holder of its own in `session`'s
+    /// folder, saves its tab with persisted `label` and `agent` kind, and
+    /// schedules `prompt` delivery once the agent is ready.
+    async fn open_agent(
+        &self,
+        session: &SessionRecord,
+        agent: &str,
+        prompt: String,
+    ) -> Result<pb::OpenAgentTabResponse, Status> {
+        let config = &self.config;
+        let tab_uuid = uuid::Uuid::new_v4();
+        let id = format!("tb_{}", tab_uuid.simple());
+        let socket = holder_socket(&config.holders, tab_uuid);
+        let log = config.logs.join(format!("{id}.log"));
+        let identities = config.identities.clone();
+        let (mint_id, mint_record) = (id.clone(), session.clone());
+        let token = blocking(move || identities.mint(&mint_id, &mint_record))
+            .await?
+            .map_err(|error| {
+                status::store(error, &config.machine, "save the tab's session token")
+            })?;
+        let env = identity::tab_env(token, &config.socket);
+        let launch = humata2_svc_terminal::AgentTabLaunch {
+            holder: config.holder.clone(),
+            holder_socket: socket.clone(),
+            log: log.clone(),
+            home: config.home.clone(),
+            cwd: session.folder.clone(),
+            env,
+            cols: INITIAL_COLS,
+            rows: INITIAL_ROWS,
+            scrollback_bytes: config.scrollback_bytes,
+        };
+        let (canonical_agent, spec) =
+            humata2_svc_terminal::agent_tabs::build_holder_spec(&config.agents, agent, &launch)
+                .map_err(|error| humata2_svc_terminal::agent_tabs::to_status(&error))?;
+        let (builds, tab_id_copy) = (config.builds.clone(), id.clone());
+        blocking(move || builds.record_shell(&tab_id_copy)).await?;
+        let spawned = match blocking(move || humata2_holder::spawn(&spec)).await? {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                self.revoke(&id).await;
+                return Err(holder_failed("start the agent tab", &error, &log));
+            }
+        };
+        let tab = TabRecord {
+            id,
+            session: Some(session.id.clone()),
+            kind: TabKind::Shell,
+            title: canonical_agent.clone(),
+            holder_socket: socket.clone(),
+            holder_pid: spawned.pid,
+            created_unix_ms: unix_ms(),
+            holder_generation: 0,
+        };
+        let store = config.store.clone();
+        let saved = tab.clone();
+        let agent_name = canonical_agent.clone();
+        let index = match blocking(move || {
+            humata2_svc_terminal::agent_tabs::save_agent_tab(&store, &saved, &agent_name)
+        })
+        .await?
+        {
+            Ok(index) => index,
+            Err(error) => {
+                if let Err(end_err) = holder_end::shut_or_end(
+                    &tab.holder_socket,
+                    tab.holder_pid,
+                    &format!("new agent tab {}", tab.id),
+                )
+                .await
+                {
+                    crate::log::say!("humatad2: {end_err}");
+                }
+                self.revoke(&tab.id).await;
+                return Err(humata2_svc_terminal::agent_tabs::to_status(&error));
+            }
+        };
+        let described = self.describe(&tab).await;
+        self.config
+            .tell
+            .session(&session.id, pb::Change::Updated, None)
+            .await;
+        humata2_svc_terminal::agent_tabs::deliver_prompt(socket, prompt);
+        Ok(pb::OpenAgentTabResponse {
+            tab: Some(described),
+            index,
+        })
     }
 
     /// Ends `tab`'s session token. A failure to save that is left for the
@@ -1384,6 +1486,38 @@ impl Core {
         Ok(Gated::Done(tab))
     }
 
+    async fn agent_in_session(
+        &self,
+        caller: &Caller,
+        request: pb::OpenAgentTabRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::OpenAgentTabResponse>, Status> {
+        let key = idempotency("OpenAgentTab", request.idempotency_key.clone());
+        let session = id_of(request.session.clone().map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let session = self.session(&session).await?;
+        desk_service::refuse_if_closed(&self.config.store, &self.config.machine, &session.id)
+            .await?;
+        if let Some(asked) = self.gate_input(caller, self.session_target(&session), approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some((machine, remote)) = self.elsewhere(&session) {
+            return Ok(Gated::Done(
+                remote.open_agent_tab(&machine, request).await?.into_inner(),
+            ));
+        }
+        if let Some(Outcome::AgentTab(reply)) = self.recall(key.as_deref()) {
+            return Ok(Gated::Done(reply));
+        }
+        let agent = request
+            .agent
+            .map(|agent| agent.value)
+            .unwrap_or_default();
+        let reply = self.open_agent(&session, &agent, request.prompt).await?;
+        self.remember(key, Outcome::AgentTab(reply.clone()));
+        Ok(Gated::Done(reply))
+    }
+
     async fn shell_on_machine(
         &self,
         caller: &Caller,
@@ -1483,7 +1617,11 @@ impl Core {
             return Err(status::internal(status::chain(&error), ""));
         }
         let store = self.config.store.clone();
-        blocking(move || store.remove_tab(&id))
+        blocking(move || {
+            store.remove_tab(&id)?;
+            let _ = humata2_svc_terminal::agent_tabs::clear_tab_agent(&store, &id);
+            Ok::<_, StoreError>(())
+        })
             .await?
             .map_err(|error| status::store(error, &self.config.machine, "forget the closed tab"))?;
         self.writers.forget(&tab.id);
@@ -1806,6 +1944,30 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         .await
     }
 
+    async fn open_agent_tab(
+        &self,
+        request: Request<pb::OpenAgentTabRequest>,
+    ) -> Result<Response<pb::OpenAgentTabResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.agent_in_session(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.OpenAgentTabResponse",
+            first,
+            move || async move { core.agent_in_session(&who, request, true).await },
+        )
+        .await
+    }
+
     async fn open_machine_shell(
         &self,
         request: Request<pb::OpenMachineShellRequest>,
@@ -2058,6 +2220,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
 #[derive(Clone)]
 enum Outcome {
     Tab(pb::Tab),
+    AgentTab(pb::OpenAgentTabResponse),
     Closed,
     Paste(pb::PasteImageResponse),
     Typed(pb::TypeResponse),

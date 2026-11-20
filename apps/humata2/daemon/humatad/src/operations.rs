@@ -1012,6 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn a_burst_of_unit_updates_publishes_a_few_versions_and_ends_on_the_last() {
         let progress = running(&["clone:app"]);
+        let mut changes = progress.tracked.operation.subscribe();
         let units = progress.units();
         let before = progress.operation().version;
         for done in 0..1000 {
@@ -1024,8 +1025,21 @@ mod tests {
             after_burst - before
         );
 
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        let settled = progress.operation();
+        let Ok(settled) = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = changes.borrow_and_update().clone();
+                if current.version > after_burst {
+                    return current;
+                }
+                if changes.changed().await.is_err() {
+                    panic!("operation watch closed before trailing flush");
+                }
+            }
+        })
+        .await
+        else {
+            panic!("the trailing value was not published before the deadline");
+        };
         assert!(
             settled.version > after_burst,
             "the trailing value was published"

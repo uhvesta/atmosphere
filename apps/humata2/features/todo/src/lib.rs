@@ -434,6 +434,9 @@ pub enum TodoAction {
     /// Starts the review of a pull request review item (by key). The app
     /// routes it to the pull request review start; the list does not change.
     StartReview(String),
+    /// Starts a new session for this item (by key). The app routes it to
+    /// `AppAction::StartNewForItem`; the list does not change.
+    StartSession(String),
     /// Opens the session an item belongs to. The app routes it.
     OpenSession(String),
     /// Opens an item's history. The app routes it.
@@ -583,6 +586,7 @@ impl Reducer for Todo {
             TodoAction::AskWhy(_)
             | TodoAction::OpenSession(_)
             | TodoAction::StartReview(_)
+            | TodoAction::StartSession(_)
             | TodoAction::ShowHistory(_)
             | TodoAction::OpenEvidence(_) => Effect::none(),
             TodoAction::ShowWhatChanged => {

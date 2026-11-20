@@ -603,6 +603,9 @@ message ListRequestsResponse {
   repeated InboxRequest requests = 1;
   uint32 pending_count = 2;
   PageResponse page = 3;
+  // IN-8: agent actions allowed today by a channel rule, grant, desk switch
+  // or review push setting without asking the user.
+  uint32 allowed_without_asking_today = 4;
 }
 
 message GetRequestRequest { RequestId id = 1; }

@@ -353,6 +353,8 @@ pub(super) fn file_row_also(
         .when_some(stat_word, |row, word| {
             row.child(
                 text(word)
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_size(px(11.))
                     .text_color(rgb(look.secondary)),
             )
@@ -360,11 +362,15 @@ pub(super) fn file_row_also(
         .when(stat_word.is_none(), |row| {
             row.child(
                 text(format!("+{}", file.added))
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_size(px(11.))
                     .text_color(rgb(GREEN)),
             )
             .child(
                 text(format!("−{}", file.removed))
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_size(px(11.))
                     .text_color(rgb(RED)),
             )
@@ -825,4 +831,99 @@ pub(super) fn file_filter_field(ui: &Rc<Ui>, look: Look, documents: &Documents, 
                 .text_color(rgb(look.text)),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_note, repo_label, split_path};
+    use humata2_clients::model::{DiffLine, FileChange, FileDiff, LineKind};
+
+    fn code_line(text: &str) -> DiffLine {
+        DiffLine {
+            kind: LineKind::Added,
+            old: None,
+            new: Some(1),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn repo_label_strips_one_leading_slash() {
+        assert_eq!(repo_label("/large"), "large");
+        assert_eq!(repo_label("acme/api"), "acme/api");
+        assert_eq!(repo_label("api"), "api");
+    }
+
+    #[test]
+    fn split_path_separates_directory_and_file_name() {
+        assert_eq!(split_path("src/net/client.rs"), ("src/net/", "client.rs"));
+        assert_eq!(split_path("README.md"), ("", "README.md"));
+        assert_eq!(split_path("a/b/c/d.rs"), ("a/b/c/", "d.rs"));
+    }
+
+    #[test]
+    fn file_note_covers_binary_rename_mode_empty_deleted_and_error() {
+        let binary = FileDiff {
+            path: "logo.png".into(),
+            binary: true,
+            ..FileDiff::default()
+        };
+        assert!(file_note(&binary).is_some_and(|note| note.to_lowercase().contains("binary")));
+
+        let renamed = FileDiff {
+            path: "src/http.rs".into(),
+            change: FileChange::Renamed,
+            old_path: Some("src/net.rs".into()),
+            similarity: 92,
+            lines: vec![code_line("fn a() {}")],
+            ..FileDiff::default()
+        };
+        let note = file_note(&renamed).expect("rename note");
+        assert!(note.contains("src/net.rs") && note.contains("92%"), "{note}");
+
+        let exact_rename = FileDiff {
+            similarity: 100,
+            ..renamed
+        };
+        let note = file_note(&exact_rename).expect("exact rename note");
+        assert!(note.contains("src/net.rs") && !note.contains("100%"), "{note}");
+
+        let mode_only = FileDiff {
+            path: "run.sh".into(),
+            old_mode: 100_644,
+            new_mode: 100_755,
+            ..FileDiff::default()
+        };
+        let note = file_note(&mode_only).expect("mode note");
+        assert!(note.contains("644") && note.contains("755"), "{note}");
+
+        let empty_added = FileDiff {
+            path: "empty.txt".into(),
+            change: FileChange::Added,
+            ..FileDiff::default()
+        };
+        assert!(file_note(&empty_added).is_some());
+
+        let deleted = FileDiff {
+            path: "old.rs".into(),
+            change: FileChange::Deleted,
+            ..FileDiff::default()
+        };
+        assert!(file_note(&deleted).is_some());
+
+        let errored = FileDiff {
+            path: "bad.rs".into(),
+            error: Some("clone locked".into()),
+            ..FileDiff::default()
+        };
+        assert_eq!(file_note(&errored).as_deref(), Some("clone locked"));
+
+        let plain = FileDiff {
+            path: "src/lib.rs".into(),
+            added: 1,
+            lines: vec![code_line("let x = 1;")],
+            ..FileDiff::default()
+        };
+        assert_eq!(file_note(&plain), None);
+    }
 }

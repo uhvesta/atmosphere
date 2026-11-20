@@ -13,7 +13,7 @@ use std::sync::Arc;
 use humata2_app::Route;
 use humata2_clients::Workspace;
 use humata2_clients::fixture;
-use humata2_clients::model::{ChannelId, MachineId, Scope, SessionId};
+use humata2_clients::model::{ChannelId, MachineId, SessionId};
 use humata2_palette::{Command, Marked, Palette, PaletteAction as A, PaletteState, PullRef, ReportStatus};
 use humata2_settings::{Row, Section};
 use tca::Reducer;
@@ -189,8 +189,7 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
     Some(match at {
         None => Command::Home,
         Some(Command::Home) => Command::Inbox,
-        Some(Command::Inbox) => Command::Board,
-        Some(Command::Board) => Command::Hosts,
+        Some(Command::Inbox) => Command::Hosts,
         Some(Command::Hosts) => Command::Files,
         Some(Command::Files) => Command::Desk,
         Some(Command::Desk) => Command::NewDeskSession,
@@ -238,8 +237,7 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
         Some(Command::ShowShortcuts) => Command::Views,
         Some(Command::Views) => Command::Todo,
         Some(Command::Todo) => Command::Machine(s.machine.clone()),
-        Some(Command::Machine(_)) => Command::ChannelBoard(s.channel.clone()),
-        Some(Command::ChannelBoard(_)) => Command::MoveSession,
+        Some(Command::Machine(_)) => Command::MoveSession,
         Some(Command::MoveSession) => Command::MoveTo {
             session: here(),
             machine: s.machine.clone(),
@@ -281,7 +279,9 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
             ..
         }) => Command::SettingsSection(Section::General),
         Some(Command::SettingsSection(_)) => Command::SettingsRow(Row::LongLines),
-        Some(Command::SettingsRow(_)) => return None,
+        Some(Command::SettingsRow(_)) => Command::SelectSessions,
+        Some(Command::SelectSessions) => Command::DeleteAllSessions,
+        Some(Command::DeleteAllSessions) => return None,
     })
 }
 
@@ -323,7 +323,6 @@ fn reach(command: &Command) -> Reach {
         } => Reach::Typing,
         Command::Home
         | Command::Inbox
-        | Command::Board
         | Command::Hosts
         | Command::Files
         | Command::Desk
@@ -364,10 +363,12 @@ fn reach(command: &Command) -> Reach {
         | Command::Views
         | Command::Todo
         | Command::Machine(_)
-        | Command::ChannelBoard(_)
         | Command::MoveSession
         | Command::SettingsSection(_)
-        | Command::SettingsRow(_) => Reach::Typing,
+        | Command::SettingsRow(_)
+        | Command::SelectSessions => Reach::Typing,
+        // D875: Delete all sessions is hidden on empty query and only appears when typed.
+        Command::DeleteAllSessions => Reach::Pasting("Delete all sessions".to_owned()),
     }
 }
 
@@ -391,9 +392,7 @@ fn next_route(at: Option<&Route>, s: &Samples) -> Option<Route> {
     Some(match at {
         None => Route::Home,
         Some(Route::Home) => Route::Inbox,
-        Some(Route::Inbox) => Route::Board(Scope::Global),
-        Some(Route::Board(Scope::Global)) => Route::Board(Scope::Channel(s.channel.clone())),
-        Some(Route::Board(Scope::Channel(_) | Scope::Session { .. })) => Route::Channel(s.channel.clone()),
+        Some(Route::Inbox) => Route::Channel(s.channel.clone()),
         Some(Route::Channel(_)) => Route::Session(s.session.clone()),
         Some(Route::Session(_)) => Route::Hosts,
         Some(Route::Hosts) => Route::Files,
@@ -411,10 +410,6 @@ fn route_command(route: &Route) -> Command {
     match route {
         Route::Home => Command::Home,
         Route::Inbox => Command::Inbox,
-        Route::Board(Scope::Global) => Command::Board,
-        Route::Board(Scope::Channel(id) | Scope::Session { channel: id, .. }) => {
-            Command::ChannelBoard(id.clone())
-        }
         Route::Channel(id) => Command::Channel(id.clone()),
         Route::Session(id) => Command::Session(id.clone()),
         Route::Hosts => Command::Hosts,

@@ -1,6 +1,6 @@
 [package]
 name = "humata2-ui-workspace"
-description = "Sidebar, channel, session tabs, terminals, board, file manager, inbox, and session panels for Humata 2's GPUI desktop UI."
+description = "Sidebar, channel, session tabs, terminals, To-do, file manager, inbox, and session panels for Humata 2's GPUI desktop UI."
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true

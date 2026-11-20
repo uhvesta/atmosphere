@@ -4069,13 +4069,13 @@ dependencies = [
 name = "humata2-app"
 version = "0.0.0"
 dependencies = [
- "humata2-board",
  "humata2-clients",
  "humata2-desk",
  "humata2-files",
  "humata2-find",
  "humata2-hosts",
  "humata2-inbox",
+ "humata2-mass-delete",
  "humata2-palette",
  "humata2-pr-review",
  "humata2-review",
@@ -4099,15 +4099,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
-]
-
-[[package]]
-name = "humata2-board"
-version = "0.0.0"
-dependencies = [
- "humata2-clients",
- "serde",
- "tca-rust",
 ]
 
 [[package]]
@@ -4372,6 +4363,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-mass-delete"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "tca-rust",
+]
+
+[[package]]
 name = "humata2-mcp"
 version = "0.0.0"
 dependencies = [
@@ -4568,7 +4567,6 @@ version = "0.0.0"
 dependencies = [
  "gpui-kit",
  "humata2-app",
- "humata2-board",
  "humata2-clients",
  "humata2-desk",
  "humata2-files",

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use humata2_clients::desk::{Access, DeskClient, DeskSession, Document, Switch};
 use humata2_clients::model::{
-    Agent, ChannelId, Item, ItemStatus, Machine, MachineId, Session, SessionId,
+    Agent, ChannelId, Machine, MachineId, Session, SessionId,
 };
 use humata2_clients::{DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
@@ -58,26 +58,6 @@ pub struct Row<'a> {
     pub session: &'a Session,
     /// Its folder, repos, access and when it was last used.
     pub desk: &'a DeskSession,
-}
-
-/// An item in a Desk session's Board panel (DK-4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LaneItem<'a> {
-    /// The item.
-    pub item: &'a Item,
-    /// Whether the session whose panel this is added it.
-    pub added: bool,
-}
-
-/// One lane of a Desk session's Board panel (DK-4): a status and every
-/// board's items in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Lane<'a> {
-    /// The lane's status.
-    pub status: ItemStatus,
-    /// Its items: the ones the session added first, then the rest, each in
-    /// the order the workspace holds them.
-    pub items: Vec<LaneItem<'a>>,
 }
 
 /// The Desk page's state.
@@ -179,38 +159,6 @@ impl DeskState {
     #[must_use]
     pub fn record(&self, id: &SessionId) -> Option<&DeskSession> {
         self.workspace.desk.sessions.get(id)
-    }
-
-    /// The lanes of `session`'s Board panel (DK-4, BD-7): every board's
-    /// items by status, in the compact board's order (active lanes first), leaving out the lanes
-    /// with nothing in them. A Desk session has no board of its own
-    /// (DK-12), so this is every item there is.
-    #[must_use]
-    pub fn board(&self, session: &SessionId) -> Vec<Lane<'_>> {
-        let workspace: &Workspace = &self.workspace;
-        let added = |item: &Item| {
-            workspace
-                .item_details
-                .get(&item.id)
-                .is_some_and(|details| details.created_by.as_ref() == Some(session))
-        };
-        ItemStatus::COMPACT
-            .into_iter()
-            .filter_map(|status| {
-                let mut items: Vec<LaneItem<'_>> = workspace
-                    .items
-                    .iter()
-                    .filter(|item| item.status == status)
-                    .map(|item| LaneItem {
-                        item,
-                        added: added(item),
-                    })
-                    .collect();
-                // A stable sort: each half keeps the workspace's order.
-                items.sort_by_key(|entry| !entry.added);
-                (!items.is_empty()).then_some(Lane { status, items })
-            })
-            .collect()
     }
 
     /// Whether the New desk session form, Clean up… or Copy is open.

@@ -1344,3 +1344,21 @@ Owner's ask. Skills and docs only, no code. `render-humata-review` now prepares 
 - Tests: `daemon/access:provider_import_test`, `daemon/humatad:provider_import_test`, `daemon/humatad:mcp_test`, `features/inbox:provider_import_test`, `clients/live` card test, `daemon/mcp:schemas_test`.
 - Verified: not yet run (this agent may not run bazel; commands handed to main).
 - Open: the held call doesn't survive a daemon restart; no forwarding from a machine's daemon; an in-session `humata provider import` doesn't ask; no Settings import UI.
+
+### (uncommitted): the board page and its crate are gone; To-do is the one list (D874, BOARDSIMPLE)
+
+- Asked: main asked to delete `Route::Board`, the board crate and kanban page, the Scope picker, with their tests, and to tidy the loose ends of D872.
+- Changed: `features/board`, `ui/workspace/src/{board,panel_board}.rs` and `ui/desk/src/desk_board.rs` are deleted, along with the Desk's lanes and the palette's board commands. Saved board routes now open To-do, and stale palette picks are dropped. The channel's To-do tab is the To-do list narrowed to that channel. Board views open To-do filtered, and the To-do page shows their Showing bar. Pinned board items open in To-do. The Ledger transcript now reads `todo_close PAY-3`.
+- Tests:
+  - `features/app:presentation_test`: an earlier build's board state restores.
+  - `features/app:views_revert_test`: board views open To-do filtered, and Revert brings back the filter.
+  - `features/app:every_action_test`.
+  - `desktop:native_test`:
+    - `todo_asks`: the ask approve moved here from the board, and a channel tab shows only that channel's items.
+    - `views`.
+  - Removed: `live_boards_test`, the live_flows board_{drawer,conflict,revision} tests, and the board crate's own tests.
+- Verified: not run (no builds in this lane).
+- Open:
+  - The board goldens for 21–24 (design and native) are now orphans.
+  - These need re-recording: frame 122 (design), the session-transcript view.txt snapshots, and the channel's empty-state frame.
+  - The flows/cases/board docs still describe board screens.

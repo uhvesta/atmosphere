@@ -14,7 +14,6 @@ rust_library(
     deps = [
         "//apps/humata2/clients:api",
         "//apps/humata2/features/app",
-        "//apps/humata2/features/board",
         "//apps/humata2/features/files",
         "//apps/humata2/features/find",
         "//apps/humata2/features/hosts",

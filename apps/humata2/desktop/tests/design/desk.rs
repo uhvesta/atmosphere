@@ -109,7 +109,7 @@ pub fn empty_channel(look: Look) -> Div {
                 .text_size(px(12.5))
                 .child(tab("Sessions", true))
                 .child(tab("Agent inbox", false))
-                .child(tab("Board", false))
+                .child(tab("To-do", false))
                 .child(tab("Repos and machines", false))
                 .child(tab("Agent access", false))
                 .child(tab("Activity", false)),
@@ -136,7 +136,7 @@ pub fn empty_channel(look: Look) -> Div {
                         .child(step(look, IconName::Server, "Pick machines", "This Mac is in. Add others to run sessions there.", button(look, Kind::Secondary, "Add a machine…")))
                         .child(step(look, IconName::SquareTerminal, "Start a session", "An agent's TUI or a plain shell. Works without a repo, in an empty folder.", button(look, Kind::Secondary, "New session"))),
                 )
-                .child(secondary(look, "The board is empty too: add items from the Board tab, or ask an agent to.")),
+                .child(secondary(look, "The To-do list is empty too: add items from the To-do tab, or ask an agent to.")),
         ),
     )
 }

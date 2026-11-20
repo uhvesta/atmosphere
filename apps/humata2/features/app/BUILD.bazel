@@ -5,12 +5,12 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # restarts. State, actions and effects only; the views are in
 # //apps/humata2/ui.
 FEATURES = [
-    "board",
     "desk",
     "files",
     "find",
     "hosts",
     "inbox",
+    "mass_delete",
     "palette",
     "pr_review",
     "review",

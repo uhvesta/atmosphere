@@ -12,6 +12,7 @@ use humata2_clients::{
     Reply, RunningHolder, SwitchChange, UnpushedWork,
     Workspace,
 };
+use humata2_clients::mass_delete::{DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan};
 use crate::humata2_grpc::humata::v1 as pb;
 
 use crate::connection::{LiveDaemon, Shared, fresh_key, key_of, not_in_this_release};
@@ -216,7 +217,7 @@ impl Shared {
                 break;
             }
         }
-        let requests = self.load_requests().await?;
+        let (requests, allowed_without_asking_today) = self.load_requests().await?;
         let ids: Vec<ChannelId> = channels.iter().map(|channel| channel.id.clone()).collect();
         let rules = self.load_rules(&ids).await?;
         let restart = self.read_restart().await;
@@ -236,6 +237,7 @@ impl Shared {
             sessions,
             restarts: restart.into_iter().collect(),
             requests,
+            allowed_without_asking_today,
             rules,
             desk,
             ..Workspace::default()
@@ -789,7 +791,7 @@ pub(crate) use humata2_clients_live_core::bad_repo;
 
 /// An answer that is not in this release.
 /// One repository's unpushed work, as a sentence for the archive dialog.
-fn unpushed(repo: &pb::UnpushedRepo) -> UnpushedWork {
+pub(crate) fn unpushed(repo: &pb::UnpushedRepo) -> UnpushedWork {
     let name = repo
         .repo
         .as_ref()
@@ -1031,6 +1033,23 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         let session = session.clone();
         Box::pin(async move { shared.plan_archive(session).await })
+    }
+
+    fn plan_delete_sessions(&self, scope: &DeleteScope) -> Reply<DeleteSessionsPlan> {
+        let shared = self.shared.clone();
+        let scope = scope.clone();
+        Box::pin(async move { shared.plan_delete_sessions(scope).await })
+    }
+
+    fn delete_sessions(
+        &self,
+        token: &str,
+        delete_unpushed_work: bool,
+        typed_count: u32,
+    ) -> Reply<DeleteSessionsOutcome> {
+        let shared = self.shared.clone();
+        let token = token.to_owned();
+        Box::pin(async move { shared.delete_sessions(&token, delete_unpushed_work, typed_count).await })
     }
 
     fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive> {

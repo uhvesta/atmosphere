@@ -97,6 +97,13 @@ fn empty(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .filter(|session| session.status == Status::Working)
         .count();
     let answered = state.workspace.requests.iter().filter(|request| request.answer.is_some()).count();
+    // To-dos an agent suggested or asked about: they wait in To-do for you.
+    let attention = state
+        .todo
+        .items
+        .iter()
+        .filter(|entry| entry.todo.closed.is_none() && (entry.todo.suggested || entry.todo.ask.is_some()))
+        .count();
     let history = state.inbox.show_answered;
     let teal = if look.text > look.content { 0x35c4b5 } else { 0x0f766e };
     let link = |ui: &Rc<Ui>, id: &'static str, label: &'static str, action: AppAction| {
@@ -145,7 +152,8 @@ fn empty(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 .text_color(rgb(look.secondary))
                 .line_height(relative(1.5))
                 .child(format!(
-                    "{working} agents are working. An agent stops and asks here before it moves or copies files or sessions, needs new access, or has a question for you."
+                    "{working} {} working. An agent stops and asks here before it moves or copies files or sessions, needs new access, or has a question for you.",
+                    if working == 1 { "agent is" } else { "agents are" }
                 )),
         )
         .child(
@@ -153,14 +161,21 @@ fn empty(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 .mt(px(10.))
                 .gap(px(4.))
                 .text_color(rgb(look.secondary))
-                .child(format!("Today: {answered} answered ·"))
+                .child(humata2_inbox::today_summary(
+                    answered,
+                    state.workspace.allowed_without_asking_today,
+                ))
                 .child(link(ui, "inbox-empty-history", if history { "Back to waiting" } else { "History" }, AppAction::Inbox(InboxAction::ToggleHistory))),
         )
         .child(
             row()
                 .gap(px(4.))
                 .text_color(rgb(look.secondary))
-                .child("Changes to your to-dos wait in To-do ·")
+                .child(if attention == 0 {
+                    "Changes to your to-dos wait in To-do ·".to_owned()
+                } else {
+                    format!("{attention} to-dos need attention when you get to them ·")
+                })
                 .child(link(ui, "inbox-empty-todo", "Open To-do", AppAction::Navigate(humata2_app::Route::Todo))),
         )
 }

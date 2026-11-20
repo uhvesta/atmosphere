@@ -927,13 +927,16 @@ impl SessionSvc {
     /// session", Never by default), so a call the rule refuses is refused
     /// and one it sends to Ask waits for the user, and only then does the
     /// call say deleting isn't built.
-    pub(super) async fn delete_of<T>(
+    pub(super) async fn delete_of<T, Fut>(
         &self,
         caller: &Caller,
         id: Option<pb::SessionId>,
         approved: bool,
-        method: &str,
-    ) -> Result<Gated<T>, Status> {
+        run: impl FnOnce() -> Fut,
+    ) -> Result<Gated<T>, Status>
+    where
+        Fut: std::future::Future<Output = Result<T, Status>>,
+    {
         Self::refuse_peer(caller)?;
         let id = session_id(id)?;
         let loaded = self.load(&id).await?;
@@ -950,7 +953,7 @@ impl SessionSvc {
         )? {
             return Ok(Gated::Ask(asked));
         }
-        Err(status::not_built(method))
+        Ok(Gated::Done(run().await?))
     }
 
     /// End for good can't be resumed (D784): an archived session comes back

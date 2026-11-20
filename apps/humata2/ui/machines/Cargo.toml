@@ -16,4 +16,5 @@ humata2-app = { path = "../../features/app" }
 humata2-clients = { path = "../../clients" }
 humata2-files = { path = "../../features/files" }
 humata2-hosts = { path = "../../features/hosts" }
+humata2-mass-delete = { path = "../../features/mass_delete" }
 humata2-ui-core = { path = "../core" }

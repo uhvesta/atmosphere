@@ -333,6 +333,24 @@ impl pb::session_service_server::SessionService for SessionLocalSvc {
         Err(not_built_status("DeleteSession"))
     }
 
+    async fn plan_delete_sessions(
+        &self,
+        request: Request<pb::PlanDeleteSessionsRequest>,
+    ) -> Result<Response<pb::DeleteSessionsPlan>, Status> {
+        let _port = self.archive_port()?;
+        let _ = request;
+        Err(not_built_status("PlanDeleteSessions"))
+    }
+
+    async fn delete_sessions(
+        &self,
+        request: Request<pb::DeleteSessionsRequest>,
+    ) -> Result<Response<pb::DeleteSessionsResponse>, Status> {
+        let _port = self.archive_port()?;
+        let _ = request;
+        Err(not_built_status("DeleteSessions"))
+    }
+
     async fn rebuild_session(
         &self,
         request: Request<pb::RebuildSessionRequest>,

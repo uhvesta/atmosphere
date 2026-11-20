@@ -1,4 +1,4 @@
-//! The Desk in the sidebar (DK-1, DK-12, D793): a Desk row under Board and,
+//! The Desk in the sidebar (DK-1, DK-12, D793): a Desk row under To-do and,
 //! while it is not folded, on every page, the Desk sessions under it: the
 //! one showing and the ones used last, up to the cap Settings sets, in the
 //! order they were started (frames 25, 36; D148), then "K more" for the rest.

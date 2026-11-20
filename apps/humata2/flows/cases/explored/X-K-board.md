@@ -136,7 +136,7 @@ Phase 1 (map from code and snapshots, no run). Steps marked PENDING RUN need the
 - **Action:** Open the Board panel of a session with items (snapshot 07).
 - **Result:** Own items of the session first, then the channel's items (`session_panel`).
 - **Evidence:** `apps/humata2/desktop/tests/__snapshots__/native/07-session-board-panel.view.txt` (and `07-session-board-panel.png`); design golden `desktop/tests/__snapshots__/design/07-session-board-panel.png`.
-- **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=session_lifecycle_and_full_screen_reference_images` exits 0. Also `bazel test //apps/humata2/desktop:live_boards_test --test_filter=the_session_panel_shows_its_channels_board_with_the_sessions_own_items_first`.
+- **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=session_lifecycle_and_full_screen_reference_images` exits 0. Also `bazel test //apps/humata2/desktop:panels_test --test_filter=board_lists_the_channels_items_and_expands_without_losing_the_session`.
 
 ### 15. Full-screen board from the session panel
 

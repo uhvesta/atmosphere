@@ -180,8 +180,8 @@ async fn setting_the_delete_rule_to_ask_makes_a_delete_wait_for_the_user() {
         .await
         .unwrap_err();
 
-    // Deleting isn't built, so the plan answers that, but it asks nothing.
-    assert!(planned.is_err_and(|refused| refused.code() != Code::PermissionDenied));
+    // The plan only reads: it answers a plan and asks nothing.
+    assert!(planned.is_ok());
     assert_eq!(asked_by_plan, 0);
     pending(&waiting);
     let held = inbox(&scene.daemon).await;
@@ -290,10 +290,9 @@ async fn approving_a_delete_under_ask_runs_the_delete_and_denying_it_does_not() 
     let ran = waited(&mut mcp, &approved).await;
     let refused = waited(&mut mcp, &denied).await;
 
-    // Deleting isn't built yet: once approved, the delete itself runs and
-    // gives its own answer, not the plan's or a second request.
-    assert_eq!(ran["isError"], true, "{ran}");
-    assert_ne!(ran["structuredContent"]["error"]["kind"], "denied", "{ran}");
+    // Once approved, the delete itself runs and gives its own answer, not
+    // the plan's or a second request.
+    assert_eq!(ran["isError"], false, "{ran}");
     assert_eq!(refused["isError"], true, "{refused}");
     assert_eq!(refused["structuredContent"]["error"]["kind"], "denied", "{refused}");
     assert_eq!(inbox(&scene.daemon).await.len(), 2, "no second request after the answers");

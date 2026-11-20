@@ -26,6 +26,9 @@ use humata2_hosts::page::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub mod select_mode;
+use select_mode::{Snapshot, Surface, Tick};
+
 const GREEN: u32 = 0x30d158;
 const ORANGE: u32 = 0xff9f0a;
 const RED: u32 = 0xff453a;
@@ -326,6 +329,17 @@ pub fn machine_page(
         Tab::Storage => div().id("machine-storage").flex_1().into_any_element(),
     };
     page = page.child(body);
+    // MASSDELETE (D875): the bottom bar while select mode is on this page.
+    if let Some(machine) = state.machine.clone().map(Surface::Machine)
+        && let Some(snap) = Snapshot::on(ui, &machine)
+    {
+        let visible = state
+            .detail
+            .iter()
+            .flat_map(|detail| detail.sessions.iter().cloned())
+            .collect();
+        page = page.child(select_mode::bar(ui, snap, visible, context.name.clone(), look));
+    }
     if let Some(dialog) = &state.skills {
         page = page.child(skills_sheet(ui, wrap, dialog, context, look));
     }
@@ -690,14 +704,30 @@ fn left(
     };
     let stopped = delivered(state).is_some();
     let mut sessions = card(look).overflow_hidden();
-    let listed = detail
+    let listed: Vec<&Session> = detail
         .sessions
         .iter()
-        .filter_map(|id| context.sessions.iter().find(|session| &session.id == id));
-    for (index, session) in listed.enumerate() {
+        .filter_map(|id| context.sessions.iter().find(|session| &session.id == id))
+        .collect();
+    // MASSDELETE (D875): select mode on this machine's page.
+    let surface = state.machine.clone().map(Surface::Machine);
+    let snap = surface.as_ref().and_then(|surface| Snapshot::on(ui, surface));
+    let visible = Rc::new(listed.iter().map(|session| session.id.clone()).collect::<Vec<_>>());
+    for (index, session) in listed.iter().copied().enumerate() {
+        let click = surface.clone().map(|surface| {
+            select_mode::row_click(
+                ui,
+                surface,
+                visible.clone(),
+                session.id.clone(),
+                snap.is_some(),
+                wrap(MachinePageAction::OpenSession(session.id.clone())),
+            )
+        });
         let ui = ui.clone();
         let action = wrap(MachinePageAction::OpenSession(session.id.clone()));
         let halted = stopped || session.status.is_stopped();
+        let ticked = snap.as_ref().is_some_and(|snap| snap.ticked(&session.id));
         sessions = sessions.child(
             row()
                 .id(("machine-session", index))
@@ -709,6 +739,10 @@ fn left(
                 .border_b_1()
                 .border_color(rgb(look.line))
                 .cursor_pointer()
+                .when(ticked, |line| line.bg(select_mode::tint(look)))
+                .children(snap.as_ref().map(|snap| {
+                    select_mode::tick_box(look, 14., snap.tick(&session.id))
+                }))
                 .child(if halted {
                     chrome::stopped()
                 } else {
@@ -749,7 +783,10 @@ fn left(
                         .text_color(rgb(look.tertiary))
                         .child(Status::Stopped.label())
                 }))
-                .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+                .on_click(move |event, window, cx| match &click {
+                    Some(click) => click(event, window, cx),
+                    None => ui.send(action.clone(), cx),
+                })
                 .test_support(),
         );
     }
@@ -807,6 +844,39 @@ fn left(
                 .test_support(),
         );
     }
+    let heading = label(
+        look,
+        {
+            let count = running_count.unwrap_or(detail.sessions.len());
+            match (&context.lost_at, state.stop().is_some_and(|stop| !stop.delivered)) {
+                (Some(at), true) => format!("Sessions on it · {count} · as last seen at {at}"),
+                _ => format!("Sessions on it · {count}"),
+            }
+        },
+    );
+    // The heading offers Select; in select mode it is the select-all box.
+    let heading = match (&snap, running_card.is_none() && !listed.is_empty()) {
+        (Some(snap), _) => select_all_heading(ui, snap, &visible, &context.name, look)
+            .into_any_element(),
+        (None, true) => {
+            let enter = link(
+                ui,
+                "machine-select",
+                "Select",
+                select_mode::act(select_mode::MassDeleteAction::EnterEmpty(
+                    surface.clone().unwrap_or(Surface::Home),
+                )),
+                look,
+            )
+            .text_size(px(11.));
+            row()
+                .items_center()
+                .child(div().flex_1().child(heading))
+                .when(surface.is_some(), |line| line.child(enter))
+                .into_any_element()
+        }
+        (None, false) => heading.into_any_element(),
+    };
     col()
         .flex_1()
         .min_w_0()
@@ -814,16 +884,7 @@ fn left(
         .child(
             col()
                 .gap(px(6.))
-                .child(label(
-                    look,
-                    {
-                        let count = running_count.unwrap_or(detail.sessions.len());
-                        match (&context.lost_at, state.stop().is_some_and(|stop| !stop.delivered)) {
-                            (Some(at), true) => format!("Sessions on it · {count} · as last seen at {at}"),
-                            _ => format!("Sessions on it · {count}"),
-                        }
-                    },
-                ))
+                .child(heading)
                 .child(match running_card {
                     Some(listed) => listed.id("machine-running").test_support().into_any_element(),
                     None => sessions.into_any_element(),
@@ -840,6 +901,71 @@ fn left(
         .children(scripts_section(ui, wrap, state, context, look))
 }
 
+/// The sessions list's heading in select mode: the box that ticks every
+/// session on the machine, "Select all on {machine}", "{k} of {n}" and Done.
+fn select_all_heading(
+    ui: &Rc<Ui>,
+    snap: &Snapshot,
+    visible: &Rc<Vec<humata2_clients::model::SessionId>>,
+    machine: &str,
+    look: Look,
+) -> impl IntoElement {
+    let ticked = visible.iter().filter(|id| snap.ticked(id)).count();
+    let all = !visible.is_empty() && ticked == visible.len();
+    let toggle = if all {
+        select_mode::MassDeleteAction::SelectNothing
+    } else {
+        select_mode::MassDeleteAction::SelectAllVisible(visible.to_vec())
+    };
+    let (ui_box, ui_done) = (ui.clone(), ui.clone());
+    let tick = if all {
+        Tick::On
+    } else if ticked > 0 {
+        Tick::Dash
+    } else {
+        Tick::Off
+    };
+    row()
+        .id("machine-select-all")
+        .role(Role::CheckBox)
+        .aria_label(format!("Select all on {machine}"))
+        .aria_selected(all)
+        .gap(px(8.))
+        .child(
+            row()
+                .id("machine-select-all-box")
+                .gap(px(8.))
+                .cursor_pointer()
+                .child(select_mode::tick_box(look, 14., tick))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Select all on {machine}")),
+                )
+                .child(dim(look, format!("{ticked} of {}", visible.len())))
+                .on_click(move |_, _, cx| {
+                    ui_box.send(select_mode::act(toggle.clone()), cx);
+                }),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .id("machine-select-done")
+                .role(Role::Button)
+                .aria_label("Done")
+                .text_size(px(12.))
+                .text_color(rgb(look.accent))
+                .cursor_pointer()
+                .child("Done")
+                .on_click(move |_, _, cx| {
+                    ui_done.send(select_mode::act(select_mode::MassDeleteAction::Exit), cx);
+                })
+                .test_support(),
+        )
+        .test_support()
+}
+
 /// A run's colour: green passed, red failed, orange going.
 fn script_outcome_color(look: Look, outcome: ScriptOutcome) -> u32 {
     match outcome {
@@ -848,6 +974,12 @@ fn script_outcome_color(look: Look, outcome: ScriptOutcome) -> u32 {
         ScriptOutcome::Running => ORANGE,
         ScriptOutcome::Skipped => look.secondary,
     }
+}
+
+/// Only a running machine script step shows the sweep (PROGRESS T9); a
+/// finished or failed step never carries progress.
+fn script_step_sweeps(outcome: ScriptOutcome) -> bool {
+    outcome == ScriptOutcome::Running
 }
 
 /// The last lines of a step's output, in the page's mono face.
@@ -1002,6 +1134,29 @@ fn scripts_section(
                                 .text_color(rgb(script_outcome_color(look, step.outcome)))
                                 .child(format!("Step {}: {} \u{b7} {}", step.index + 1, step.label, step.outcome.label())),
                         )
+                        .when(script_step_sweeps(step.outcome), |x| {
+                            x.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "machine-script-step-progress-{index}-{}",
+                                        step.index
+                                    )))
+                                    .role(Role::ProgressIndicator)
+                                    .aria_label("Running")
+                                    .test_support()
+                                    .px(px(12.))
+                                    .pb(px(4.))
+                                    .child(widgets::progress_bar(
+                                        look,
+                                        None,
+                                        widgets::BarMetrics::line(look),
+                                        SharedString::from(format!(
+                                            "machine-script-step-sweep-{name}-{}",
+                                            step.index
+                                        )),
+                                    )),
+                            )
+                        })
                         .when(!step.tail.is_empty(), |x| x.child(script_tail(look, &step.tail, look.secondary)));
                 }
             }
@@ -1962,5 +2117,22 @@ mod loading_sweep_tests {
     #[test]
     fn a_page_with_detail_does_not_show_the_sweep_in_place_of_it() {
         assert!(!sweep_without_detail(true, true));
+    }
+}
+
+#[cfg(test)]
+mod script_sweep_tests {
+    use ::core::prelude::v1::test;
+
+    use super::script_step_sweeps;
+    use humata2_clients::machines::ScriptOutcome;
+
+    #[test]
+    fn only_a_running_script_step_sweeps() {
+        assert!(script_step_sweeps(ScriptOutcome::Running));
+        assert!(!script_step_sweeps(ScriptOutcome::Failed));
+        assert!(!script_step_sweeps(ScriptOutcome::TimedOut));
+        assert!(!script_step_sweeps(ScriptOutcome::Passed));
+        assert!(!script_step_sweeps(ScriptOutcome::Skipped));
     }
 }

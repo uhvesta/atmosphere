@@ -5108,6 +5108,15 @@ RV-9: the inline PR review's repository chevron does something (pick by Fable 5.
 - **Agent access:** Agent access settings are grouped Allow/Ask/Never rows, each row writing several capabilities. A row whose rules disagree reads Mixed. Rules no row covers sit behind "Show Other rules".
 - **Reverse:** drop `asked_why` from `WaitResponse`, drop the AskWhy/ExplainAsk RPCs, and allow an empty reason on MoveSession. Requiring `reason` on every asking MCP tool was tried and reverted: it refused reads such as `board_items_list` and `file_read`, so it needs a narrower list of tools that ask.
 - Design frames 26/27, the old two-pane Inbox, are retired: 200–204 replace them.
+- Batch 3 (2026-11-19):
+  - An asking MCP tool whose schema requires `reason` refuses an empty or blank one in one central check; reads keep an optional reason.
+  - `inbox_explain` answers the owner's Ask why, and `inbox_wait` says `asked_why` with `next: inbox_explain`. Forwarding AskWhy/ExplainAsk to the host is only listed in svc_away's registry; the host-side replay in svc_board is not wired.
+  - Frame 209's notification is built as content only (`humata2_inbox::notification`, never for to-do asks, no Yes). Posting an OS notification waits for NOTIFY (0.6.1).
+  - Settings › Agent access shows the same rows as a channel, over the default rules (kept under `ChannelId::global_rules()` in the client; live reads/writes go through Get/SetDefaultRules).
+- Batch 4 (2026-11-19):
+  - Host-side forwarding of `AskWhy` and `ExplainAsk`: `svc_away::Forwarder::call_as_user` carries `Principal::User(MachineUser { outside_sessions: true })`; `svc_board` replays `AskWhy` as `Caller::User(UserVia::Host)` (refusing agents and in-session users) and `ExplainAsk` for sessions placed on the forwarding machine; `svc_inbox` routes missing `AskWhy`/`ExplainAsk` up to the host and allows `Caller::User(UserVia::Host)` on `AskWhy`.
+  - File-read asks (`Call::ReadFiles`) now build `FileAccessPreview` with `From` (resolved session title/agent or channel name), `Files`, `Access`, calm `affects`, and `undo_text`.
+  - IN-8 count formatting lives in `humata2_inbox::today_summary` (omitting the rule-followed clause when `0`), wired end-to-end through `ListRequestsResponse.allowed_without_asking_today` and `Guard::allowed_without_asking_today`.
 
 ## D872: Session panels show the To-do list, Desk sessions too (BOARDSIMPLE manager, 2026-11-19). Provisional
 
@@ -5118,3 +5127,95 @@ RV-9: the inline PR review's repository chevron does something (pick by Fable 5.
 - After Fable's re-judge, the session panel's drawer follows frame 191: no key line, channel, sessions, waits-on or description rows; one 74 pt label column on the ask card with wrapping values; Due is the date field plus a word ("tomorrow") with the shortcuts on a second line; Impact a row under Effort; "ticked by claude" right of STEPS and "Add a step…" under the steps (page and panel); the History · Pin · Hide until… footer pinned to the panel's bottom. Frame 12 is laid out while Ledger works, like 07 and design 12. The panel's accessible name and the channel tab say "To-do" (tab id stays `channel-tab-Board`).
 - The live test that the session panel shows the channel's board with the session's items first is removed: the panel shows the To-do list now (panels_test covers it).
 - **Reverse:** restore the `desk_board` branch in `ui/src/panels.rs` and the `Route::Board` targets.
+
+## D873: The Fork dialog opens collapsed on Code + context (DIFFUI manager, ruled by Fable, 2026-11-19). Provisional
+- The Fork dialog opens collapsed on Code + context: the title, one sentence stating the selected kind's consequence, one muted facts line ("Agent · machine · branch <name>", plus "· before turn N" when forking from a turn), and a footer with a quiet "More options" chevron button at the left and Cancel / Fork at the right. The Preview block and the "Same agent" check line are removed; the different-agent summary notice stays, shown only when the agent differs. More options is a per-dialog disclosure, closed on every open and never remembered, that reveals in order the three kind cards (replacing the sentence), Fork from, Agent, Machine and Branch with its hint, under the existing per-kind hiding rules; the facts line stays and updates live. The dialog opens expanded only when the caller presets a kind other than Code + context or an agent or machine different from the parent; a turn preset alone stays collapsed. Width is unchanged, height hugs the content up to the existing maximum and then scrolls. Return forks and Esc cancels as before, with initial focus on Fork. Goldens for frame 62 are re-recorded in collapsed and expanded states, light and dark.
+- Amends D102, D188 (UXSIMPLE review: "Fork opens on Code + context with the other kinds and fields under More options").
+- **Reverse:** render the dialog always expanded and restore the Preview block and check line (the D102/D188 layout), then re-record the previous goldens.
+
+## D874: The board page and its crate are gone; To-do is the one list (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- `Route::Board`, the `humata2_board` crate (kanban, table, dashboard, drawer, the Scope picker), the palette's "Go to Board" and "#channel board", the Desk's lanes and the unused board panel are deleted with their tests. Finishes D872's "until its code is removed".
+- **Saved state from earlier builds:** a saved board route, in the route or the trail, opens the To-do list; a saved "Go to Board" palette pick is dropped; the old `board` view key is ignored. Nothing fails to restore.
+- **Channel page:** its To-do tab (id still `channel-tab-Board`) is the To-do list narrowed to that channel. The empty-channel hint says "The To-do list is empty too: add items from the To-do tab, or ask an agent to."
+- **Agent views:** a board view (a channel's or the whole board) opens the To-do list with the matching channel filter; a session's board view opens it narrowed to that session. Its Showing bar leads the To-do page, and Revert puts the person's own filter back. The view tab calls these "To-do".
+- **Pins:** a pinned board item opens on the To-do list with its drawer (the item's key is the board item's id).
+- A channel's narrowing stays on the To-do list until the person picks All, like any other filter.
+- Kept: session VIP (NV-23), Inbox VIP Migrate cards, and the board item's `vip` field the migration reads (D833, D837). The daemon's board service and the agent capabilities stay; only the desktop's board went.
+- Frames 21-24 of the board, their look_test entries and design module are removed; frame 122 draws the To-do list behind the New session dialog.
+- **Reverse:** restore `features/board`, `ui/workspace/src/board.rs`, `panel_board.rs`, `ui/desk/src/desk_board.rs` and the route from git.
+
+## D875: Deleting many sessions: select mode and one confirming sheet (MASSDELETE manager, Fable 5.2 design, 2026-11-19). Provisional
+
+Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m2-6; see FRAMES.md there).
+- **Entering:** ⌘-click a session row in the sidebar, on Home or on a machine page; Home's toolbar "Select"; the "Select" link beside a machine page's "Sessions on it · N"; context menu "Select sessions…"; palette "Select sessions…". The sidebar has no permanent control. Select mode belongs to the list it was entered in, and leaving the page exits it. **Reverse:** add a Select control to the Channels header, or make the selection app-wide.
+- **Ticks:** golden checkboxes, 13 pt in the sidebar's left gutter and 14 pt before the status dot on Home and the machine page. Ticked rows are faintly tinted. In select mode a row click toggles; row buttons are hidden and New session is dimmed. **Reverse:** keep row buttons live.
+- **Whole channel or machine:**
+  - In the sidebar, a channel's fold chevron becomes a tri-state box, and so does each Hosts row. Offline machines and empty channels show a dashed box that can't be ticked.
+  - On pages, the bar's "Select" menu offers "Every session in a channel", "Every session on a machine", "Everything on Home ⌘A" and "Nothing".
+  - Desktop picks are live sessions only; archived sessions are deleted only through "Delete all sessions…".
+  - **Reverse:** include archived in channel or machine picks.
+- **Context forks:** they are ticked automatically with a paler tick that can't be cleared, and they count ("4 selected · 3 picked · 1 fork goes along"). The sheet title uses the plan's count. **Reverse:** add them only in the sheet.
+- **Action bar:**
+  - In the sidebar, a card above Settings: "N selected", a note, Cancel, and an outlined red "Delete N sessions…".
+  - On pages, a 48 pt bottom bar with the count, the note, the Select menu, key hints, Cancel and Delete.
+  - Keys: ⌘A, Shift-click range, Space, arrows, Return or ⌘⌫ opens the sheet, Escape exits. Cancelling the sheet keeps the ticks.
+- **Entries elsewhere:**
+  - Palette "Delete all sessions…" appears in red only when the query matches, ranked below other matches, with no shortcut.
+  - Settings > Storage gets a "Sessions" card with the "Delete all sessions…" danger button.
+- **Sheet:** 700 wide, in the delete-channel style.
+  - Order: title with the count ("Delete 4 sessions?", "Delete all 23 sessions?"); the scope line; a totals block outside the scroll area (terminals that end, never-pushed work, forks, unreachable machines); the list grouped by channel; the grey trash box; the count field (all only); the footer with a hint, Cancel and Delete.
+  - Each row names each terminal that ends with its state, and its unpushed work, with a "Delete that work too" box per session.
+  - A context fork going along is indented under "Goes with <parent>"; forks that stay get one line.
+  - In delete-all, sessions with nothing to lose fold to one line per channel. The list scrolls and the sheet never passes the window.
+- **Delete all:**
+  - Type the number that will be deleted; unreachable sessions are not counted.
+  - The button is a filled red "Delete all N sessions", the app's only filled red, live only when the count matches and every work box is ticked.
+  - A picked set uses the outlined danger button.
+- **Stale plan (NV-27):** the sheet stays open with an amber notice: "Something changed since this plan. Nothing was deleted.", one line per change, then "This is the new plan. Check it and delete again." Changed rows are tagged "changed". Only those rows' work boxes clear, and the count field clears if the count changed.
+- **Unreachable machines:** one totals line plus a last group "<machine> · can't reach, left alone · N sessions". If nothing is reachable the button stays off.
+- **After:** a toast, "Deleted N sessions. They are in the trash on {machines} for 30 days.", with no action. The sheet and select mode close, and forks that stayed move up.
+- The strings are in Fable's report, which is copied into the MASSDELETE lane. Workers copy the frames exactly.
+- **Reverse:** remove the select mode and the sheet; the CLI stays.
+
+## D876: Bulk session delete in the daemon, CLI and agent access (MASSDELETE manager, 2026-11-19). Provisional
+
+- **One path:**
+  - `PlanDeleteSessions`/`DeleteSessions` take a scope (picked ids, a channel, a machine, or all), give one token (10 min, one use) and do one delete.
+  - The old one-id `PlanDelete`/`DeleteSession`, never built until now, call the same code with one id and keep their gates (OwnSessionEnd, SessionDeleteOther).
+  - A channel or machine scope includes archived sessions. The desktop sends its live-only picks as ids.
+- **Stale plan (NV-27):** the delete re-lists. Any new or gone session, terminal, unpushed work or fork answers `changed` with the new plan and the changes in words, and touches nothing. A terminal's state change alone (working to idle) is not a change.
+- **Per session:** intent note, end terminals, withdraw inbox requests, end grants, the record exported to a side file in the folder, the folder to the machine's trash (`was` = Session), then the record removed. A restart finishes a cut delete. Restoring from the trash brings the session back archived, with its folder and work.
+- **Forks and Desk:** context-only forks go with their parent (D187); code forks stay. Desk sessions are never in a bulk scope; Clean up deletes them (D306).
+- **Machines:** offline machines are listed as left alone and not touched. Every reachable machine passes a check before any machine deletes. A machine that fails after the check leaves its sessions, and the error names what went.
+- **Unpushed work:** it blocks unless the request says to delete it (per session in the sheet, `--delete-work` in the CLI). Scope all needs the typed count to equal the number that will be deleted, and a present user.
+- **CLI:** `humata2 sessions delete [<id>...] | --channel | --machine | --all`, plus `--delete-work` and `--count N`.
+  - `--yes` never skips the count for `--all`.
+  - `--dry-run` prints the plan.
+  - A stale plan prints the changes and exits non-zero.
+- **Agents:**
+  - New capability `sessions_delete_many` (74), Never by default, needing the host. It has an Agent access row "Delete many sessions at once" under FILES AND SESSIONS.
+  - An agent never gets scope all, and never its own session.
+  - A plan that ends running terminals always goes to the owner's Agent inbox, even under Allow (PER-32).
+  - The MCP tool `sessions_delete_many` is listed only while the caller's rule is not Never (`notifications/tools/list_changed` when that flips).
+- **Reverse:** drop the two RPCs and the capability; the one-id RPCs go back to not built.
+
+## D877: Inline PR review virtualization box height and per-file diff errors (DIFFVIEW Gemini lane, 2026-11-19). Provisional
+
+- **PR review virtual box (DS-29):** inline PR review files above 1,500 lines (`REVIEW_VIRTUAL_FROM`) render in a virtual `gpui_kit::list` box of height `((viewport_height - 104) * 0.6).clamp(160, 720)` with no invented border (matching frame 68's code block styling). Files at or under 1,500 lines keep inline blocks unchanged.
+- **Per-file errors in `clients/live_diff` (DS-36):** after `GetDiff` succeeds for a repository, a file-scoped `GetFileDiff` failure (`Refused`, `NotFound`, `Conflict`) records `FileDiff.error` and clears that file's lines so the rest of the repository still loads; transport/version/config errors (`Offline`, `NoDefaultBranch`, `MigrationNeeded`, `NotServedYet`, `Scripted`) still abort the read.
+- **Reverse:** restore unbounded inline rendering in `review_code` and restore `?` propagation on `get_file_diff` in `clients/live_diff/src/diff.rs`.
+
+## D878: Extra terminal tabs persist label and agent on the daemon, and OpenAgentTab launches agents directly (REVIEWER Gemini lane, 2026-11-19; D858 items 1–2). Provisional
+
+- `Session.shell_tabs` (`repeated ShellTab { tab, label, agent }`) and `Tab.agent` carry every extra terminal tab's persisted label (`TabRecord.title`) and agent kind (`tab_agent:<tab_id>` in the daemon store), so agent-tab labels, dots, and counts survive daemon and app restarts without client-side memory.
+- `TerminalService.OpenAgentTab { idempotency_key, session, agent, prompt } -> { tab, index }` resolves a non-shell agent via `Agents`, spawns it directly under its own holder with a fresh conversation id in the session folder, persists its label and agent kind, notifies session subscribers, and delivers `prompt` in the background once the agent reads keys. Plain shells are refused with `InvalidArgument` (`OpenShellTab` stays for shells).
+- Extra agent tabs stay `TabKind::Shell` in `tabs` so they sit after tab 0, remain closable via `CloseTab` / `End for good`, and never hijack session-wide `typing_tab`.
+- **Reverse:** remove `OpenAgentTab` and `Tab.agent` from `terminal.proto`, remove `ShellTab` / `shell_tabs` from `sessions.proto`, drop `svc_terminal/src/agent_tabs.rs`, and restore `AppAction::Session(SessionAction::OpenAgentTab)` pass-through to client-side shell typing.
+
+## D879: Visual review and design rulings for 0.3.10 batch (judged by Gemini, 2026-11-19). Provisional
+
+- **Changed goldens reviewed (judged by Gemini):** PASS on `native/diff-stress-pr-huge-file`, `native/fork-dialog{,-dark,-expanded,-expanded-dark}`, `native/01-session-working-light`, `native/11-panel-full-screen-diff`, `panels/changes-light`, `native/35-empty-channel`, `design/122-new-session-cloning`, `design/206-session-after-yes`, `design/209-agent-inbox-notification-dark`, `native/26-inbox`, `native/25-home`, and `native/72-stop-confirm`. Fixed `design/35-empty-channel` tab label from `"Board"` to `"To-do"` in `desktop/tests/design/desk.rs`.
+- **DIFFVIEW DS-29 virtualized PR box border (judged by Gemini):** keep the `> 1,500`-line PR review virtual box borderless (`look.term` fill, no 1 px hairline border), matching frame 68's inline code blocks. **Reverse:** add `.border_1().border_color(rgb(look.line))` in `ui/changes/src/panel_changes/review_header.rs`.
+- **TODOLIVE / BOARDSIMPLE New session sheet (judged by Gemini):** keep `ui/overlays/src/overlay_new_session.rs` on the approved frame 31 layout (`31-new-session`) for 0.3.10 and keep `StartNewForItem` leaving `first_message` empty (deferring any `b4-3` sheet redraw to a post-0.3.10 pass). **Reverse:** add a `b4-3` mode to `overlay_new_session.rs`, prefill `first_message` in `features/app/src/new_session.rs`, and re-record `31` and `122`.
+- **D868 design frames (judged by Gemini):** design frames `01`, `02`, `11`, and `84–86` should be updated to match D868 (`"2 repos"` header count and per-repo `"against <base>"` chips) in a follow-up design-fixture pass. **Reverse:** keep D739/pre-D868 design fixtures.

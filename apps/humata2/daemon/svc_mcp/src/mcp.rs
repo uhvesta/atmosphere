@@ -4,6 +4,7 @@
 //! process only turns tools into gRPC calls and answers back.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -23,6 +24,7 @@ use tonic::{Code, Request, Status};
 use crate::ports::TOKEN_HEADER;
 
 mod boards;
+mod delete_many;
 mod todo;
 // REPOS (CH-21)
 mod session_repo;
@@ -55,6 +57,9 @@ struct GrpcDaemon {
     token: Mutex<Option<SessionToken>>,
     /// The release this binary is, named on every call (UP-1).
     bundle: Option<tonic::metadata::AsciiMetadataValue>,
+    /// Whether `tools/list` offers `sessions_delete_many`: learned from the
+    /// caller's rule at connect, so false until then (D876).
+    delete_many_offered: AtomicBool,
 }
 
 /// The bundle id of the release this binary was installed with: the sha256
@@ -86,6 +91,7 @@ impl GrpcDaemon {
             channel,
             token: Mutex::new(None),
             bundle: bundle_id(),
+            delete_many_offered: AtomicBool::new(false),
         }
     }
 
@@ -988,6 +994,35 @@ impl GrpcDaemon {
         Ok(applied(json!({ "withdrawn": true }), None))
     }
 
+    /// `inbox_explain` (INBOXHOOKS): the agent's answer to the user's Ask why
+    /// on its own request. The request stays pending.
+    async fn inbox_explain(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(explain_request(&call.arguments))?;
+        self.inbox()
+            .explain_ask(request)
+            .await
+            .map_err(|status| self.failed(&status))?;
+        Ok(applied(json!({ "explained": true }), None))
+    }
+
+    /// `session_move` (INBOXHOOKS): asks to move a session, the caller's own
+    /// without `session`, to another machine. The daemon asks the user when
+    /// the rule says so and refuses a move with no reason.
+    async fn session_move(&self, call: Call) -> Result<Reply, ToolError> {
+        let id = self.named_session(&call.arguments).await?;
+        let request = self.request(move_request(&call.arguments, key(&call), id))?;
+        let operation = self
+            .sessions()
+            .move_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({ "operation": operation.id.map(|id| id.value) }),
+            None,
+        ))
+    }
+
     /// `inbox_mine`: the caller's own requests.
     async fn inbox_mine(&self, call: Call) -> Result<Reply, ToolError> {
         let session = self.own_session().await?;
@@ -1224,6 +1259,9 @@ impl Daemon for GrpcDaemon {
     /// The tools `call` dispatches below; every other one answers
     /// `not_built`, so `tools/list` leaves it out. Keep the two in step.
     fn serves(&self, operation: Operation) -> bool {
+        if operation == Operation::SessionsDeleteMany {
+            return self.delete_many_offered();
+        }
         matches!(
             operation,
             Operation::Whoami |
@@ -1258,6 +1296,8 @@ impl Daemon for GrpcDaemon {
             Operation::FileRead |
             Operation::InboxWithdraw |
             Operation::InboxMine |
+            Operation::InboxExplain |
+            Operation::SessionMove |
             Operation::AccessExplain |
             Operation::BoardItemsList |
             Operation::BoardItemGet |
@@ -1284,10 +1324,13 @@ impl Daemon for GrpcDaemon {
 
     async fn bind(&self, token: &SessionToken) -> Result<(), ToolError> {
         *lock(&self.token) = Some(token.clone());
-        self.agent().await.map(|_| ())
+        self.agent().await?;
+        self.ask_delete_many_rule().await;
+        Ok(())
     }
 
     async fn call(&self, call: Call) -> Result<Reply, ToolError> {
+        refuse_empty_reason(call.operation, &call.arguments)?;
         let reply = match call.operation {
             Operation::Whoami => self.whoami().await,
             Operation::InboxAsk => self.ask(call).await,
@@ -1318,6 +1361,7 @@ impl Daemon for GrpcDaemon {
             Operation::SessionStop => self.session_stop(call).await,
             Operation::SessionArchive => self.session_archive(call).await,
             Operation::SessionDelete => self.session_delete(call).await,
+            Operation::SessionsDeleteMany => self.sessions_delete_many(call).await,
             Operation::SessionFork => self.session_fork(call).await,
             Operation::SessionContinueInChannel => self.session_continue_in_channel(call).await,
             Operation::SessionAddRepo => self.session_add_repo(call).await, // REPOS (CH-21)
@@ -1326,6 +1370,8 @@ impl Daemon for GrpcDaemon {
             Operation::FileRead => self.file_read(call).await,
             Operation::InboxWithdraw => self.inbox_withdraw(call).await,
             Operation::InboxMine => self.inbox_mine(call).await,
+            Operation::InboxExplain => self.inbox_explain(call).await,
+            Operation::SessionMove => self.session_move(call).await,
             Operation::AccessExplain => self.access_explain(call).await,
             Operation::BoardItemsList => self.board_items_list(call).await,
             Operation::BoardItemGet => self.board_item_get(call).await,
@@ -1411,6 +1457,48 @@ impl Daemon for GrpcDaemon {
     }
 }
 
+/// `inbox_explain`'s arguments as the daemon takes them.
+fn explain_request(arguments: &Map<String, Value>) -> pb::ExplainAskRequest {
+    pb::ExplainAskRequest {
+        id: Some(pb::RequestId {
+            value: text(arguments, "request_id"),
+        }),
+        reply: text(arguments, "text"),
+    }
+}
+
+/// `session_move`'s arguments as the daemon takes them.
+fn move_request(
+    arguments: &Map<String, Value>,
+    key: pb::IdempotencyKey,
+    id: pb::SessionId,
+) -> pb::MoveSessionRequest {
+    pb::MoveSessionRequest {
+        idempotency_key: Some(key),
+        id: Some(id),
+        to: Some(pb::MachineId {
+            value: text(arguments, "machine"),
+        }),
+        reason: text(arguments, "reason"),
+    }
+}
+
+/// A tool whose schema requires `reason` is refused when it is empty or
+/// only whitespace: the schema checks that it is there, not that it says
+/// anything. Tools that take `reason` as optional are never refused.
+fn refuse_empty_reason(operation: Operation, arguments: &Map<String, Value>) -> Result<(), ToolError> {
+    if !operation.requires_reason() || !text(arguments, "reason").trim().is_empty() {
+        return Ok(());
+    }
+    Err(ToolError {
+        kind: ErrorKind::InvalidField,
+        message: format!("{} needs a reason, and the one sent is empty", operation.tool_name()),
+        fix: "pass reason, saying in a sentence why the task needs this; the user sees it on the request".to_owned(),
+        retry: None,
+        details: Map::new(),
+    })
+}
+
 /// What the daemon's answer to an Inbox request means for the call.
 fn outcome(response: pb::WaitResponse) -> Result<Reply, ToolError> {
     let id = RequestId::new(response.id.map(|id| id.value).unwrap_or_default());
@@ -1418,6 +1506,9 @@ fn outcome(response: pb::WaitResponse) -> Result<Reply, ToolError> {
         return Err(tool_error(Code::FailedPrecondition, error));
     }
     match pb::RequestState::try_from(response.state) {
+        Ok(pb::RequestState::Pending) if response.asked_why => {
+            Ok(Reply::PendingAskedWhy { request: id })
+        }
         Ok(pb::RequestState::Pending) => Ok(Reply::Pending { request: id }),
         Ok(pb::RequestState::Answered | pb::RequestState::Approved) => {
             let result = match response.answer.and_then(|answer| answer.answer) {
@@ -2691,5 +2782,68 @@ mod review_plan_tests {
         .unwrap();
         let tiers: Vec<i32> = plan.importance.iter().map(|i| i.tier).collect();
         assert_eq!(tiers, [Tier::Key as i32, Tier::Normal as i32, Tier::Skim as i32]);
+    }
+}
+
+#[cfg(test)]
+mod inbox_hook_tests {
+    use super::*;
+
+    fn arguments(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn an_empty_or_blank_reason_is_refused_where_the_schema_requires_it() {
+        for reason in [json!(""), json!("  \n\t")] {
+            let args = arguments(json!({ "machine": "m", "reason": reason }));
+            let error = refuse_empty_reason(Operation::SessionMove, &args).expect_err("refused");
+            assert_eq!(error.kind, ErrorKind::InvalidField);
+            assert!(!error.fix.is_empty());
+        }
+        let said = arguments(json!({ "machine": "m", "reason": "the build needs more RAM" }));
+        assert!(refuse_empty_reason(Operation::SessionMove, &said).is_ok());
+    }
+
+    #[test]
+    fn a_read_without_a_reason_is_not_refused() {
+        assert!(!Operation::SessionInfo.requires_reason());
+        assert!(refuse_empty_reason(Operation::SessionInfo, &Map::new()).is_ok());
+        assert!(refuse_empty_reason(Operation::InboxWait, &Map::new()).is_ok());
+    }
+
+    #[test]
+    fn inbox_explain_takes_no_reason_and_maps_to_the_explain_request() {
+        assert!(!Operation::InboxExplain.requires_reason());
+        let sent = explain_request(&arguments(json!({ "request_id": "r1", "text": "it needs RAM" })));
+        assert_eq!(sent.id.map(|id| id.value), Some("r1".to_owned()));
+        assert_eq!(sent.reply, "it needs RAM");
+    }
+
+    #[test]
+    fn session_move_carries_its_reason_to_the_daemon() {
+        let key = pb::IdempotencyKey { value: "k".to_owned() };
+        let sent = move_request(
+            &arguments(json!({ "machine": "m2", "reason": "more RAM" })),
+            key,
+            pb::SessionId { value: "s1".to_owned() },
+        );
+        assert_eq!(sent.reason, "more RAM");
+        assert_eq!(sent.to.map(|machine| machine.value), Some("m2".to_owned()));
+    }
+
+    fn pending(asked_why: bool) -> pb::WaitResponse {
+        pb::WaitResponse {
+            id: Some(pb::RequestId { value: "r1".to_owned() }),
+            state: pb::RequestState::Pending as i32,
+            asked_why,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pending_wait_carries_the_hint_only_when_the_user_asked_why() {
+        assert!(matches!(outcome(pending(true)), Ok(Reply::PendingAskedWhy { .. })));
+        assert!(matches!(outcome(pending(false)), Ok(Reply::Pending { .. })));
     }
 }

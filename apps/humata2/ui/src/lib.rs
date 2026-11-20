@@ -15,7 +15,7 @@ pub use humata2_ui_core::{
     repo_search_field, theme, widgets,
 };
 pub use humata2_ui_desk::{
-    channel_desk, desk, desk_bar, desk_board, desk_files, desk_info, sidebar_desk,
+    channel_desk, desk, desk_bar, desk_files, desk_info, sidebar_desk,
 };
 pub use humata2_ui_machines::{
     away_left_out, hosts, machine_page, machine_running, transfers_tray,
@@ -24,8 +24,7 @@ pub use humata2_ui_overlays::{overlays, palette_hits};
 pub use humata2_ui_report::{record, record_video, report_view};
 pub use humata2_ui_settings::{access, settings, settings_providers, settings_repositories};
 pub use humata2_ui_workspace::{
-    board, channel, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_board,
-    panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed,
+    channel, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed,
     session_tabs, sidebar, sidebar_pinned, terminals, todo, view_tab,
 };
 

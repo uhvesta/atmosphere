@@ -254,6 +254,13 @@ impl<D: Daemon> Shared<D> {
                     );
                 }
                 Incoming::Request { id, method, params } => {
+                    // What `tools/list` offers can depend on the caller's
+                    // rules, which the daemon's bind learns (D876): wait for
+                    // the binding, as a call does. A failed bind still lists
+                    // the tools the daemon serves without it.
+                    if method == "tools/list" {
+                        let _ = self.ensure_bound().await;
+                    }
                     let reply = match answer(&method, &params, |operation| {
                         self.daemon.serves(operation)
                     }) {

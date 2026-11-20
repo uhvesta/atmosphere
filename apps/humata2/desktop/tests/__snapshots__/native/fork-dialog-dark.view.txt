@@ -50,23 +50,15 @@ Button "Toggle side panel"
 Button "Session actions"
 Label "Ledger schema migration 2"
 Dialog "Fork session" focused
-  RadioButton "fork-kind-0"
-  RadioButton "fork-kind-1-on" selected
-  RadioButton "fork-kind-2"
-  Button "Now"
-  text "Fork from"
-  Button "Claude Code"
-  text "Agent"
-  Button "This Mac"
-  text "Machine"
-  Group "Preview"
+  Group "Fork facts"
+  Button "More options"
   Button "Cancel"
   Button "Fork"
 Tab "claude" selected
   Button "Close claude"
 Button "New terminal"
-Log "Terminal output" description="Forked from “Ledger schema migration” before turn 2 (Code + context)\nConversation copied\n~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  text "Forked from “Ledger schema migration” before turn 2 (Code + context)\nConversation copied\n~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+Log "Terminal output" description="Forked from “Ledger schema migration” before turn 2 (Code + context)\nConversation copied\n~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata todo_close PAY-3\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "Forked from “Ledger schema migration” before turn 2 (Code + context)\nConversation copied\n~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata todo_close PAY-3\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   #terminal-replica
     #terminal-pane
       #terminal

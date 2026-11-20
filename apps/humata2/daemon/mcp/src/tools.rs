@@ -144,6 +144,8 @@ operations! {
     /// `InboxService.WaitForAnswer`. The server runs it with
     /// [`crate::Daemon::wait`], never [`crate::Daemon::call`].
     InboxWait => "inbox_wait", "inbox.wait";
+    /// `InboxService.ExplainAsk` of the caller's own request.
+    InboxExplain => "inbox_explain", "inbox.explain";
     /// `InboxService.WithdrawRequest`.
     InboxWithdraw => "inbox_withdraw", "inbox.withdraw";
     /// `InboxService.ListRequests` of the caller.
@@ -190,6 +192,9 @@ operations! {
     SessionArchive => "session_archive", "session.archive";
     /// `SessionService.PlanDelete` and `DeleteSession`.
     SessionDelete => "session_delete", "session.delete";
+    /// `SessionService.PlanDeleteSessions` and `DeleteSessions` for picked
+    /// sessions, one channel or one machine; never all (MASSDELETE, D876).
+    SessionsDeleteMany => "sessions_delete_many", "session.delete_many";
     /// `SessionService.MoveSession`.
     SessionMove => "session_move", "session.move";
     /// `DeskService.MoveDeskSessionToChannel` of the caller's own Desk session.
@@ -245,6 +250,12 @@ operations! {
 }
 
 impl Operation {
+    /// True when the tool's schema requires `reason`. A call with it empty
+    /// or blank must be refused: the schema only checks that it is there.
+    pub fn requires_reason(self) -> bool {
+        input_schema(self).requires("reason")
+    }
+
     pub(crate) fn from_tool_name(name: &str) -> Option<Self> {
         Self::ALL
             .iter()
@@ -362,6 +373,7 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::DeskMoveToChannel => "desk_move_to_channel",
         Capability::SessionStopOther => "session_stop_other",
         Capability::SessionDeleteOther => "session_delete_other",
+        Capability::SessionsDeleteMany => "sessions_delete_many",
         Capability::MachineSessionsStop => "machine_sessions_stop",
         Capability::ChannelChange => "channel_change",
         Capability::MachineDestroy => "machine_destroy",
@@ -1235,6 +1247,14 @@ fn definition(operation: Operation) -> Definition {
                 opt("wait_seconds", wait_seconds()),
             ]),
         ),
+        Op::InboxExplain => define(
+            "Answer the user's Ask why on one of your Inbox requests: say, briefly, why the task needs it. The request stays pending; call inbox_wait again afterwards.",
+            Effect::Change,
+            object(vec![
+                req("request_id", string()),
+                req("text", string().max_length(1000)),
+            ]),
+        ),
         Op::InboxWithdraw => define(
             "Withdraw one of your Inbox requests; the user can no longer answer it.",
             Effect::Remove,
@@ -1384,6 +1404,16 @@ fn definition(operation: Operation) -> Definition {
         ),
         Op::SessionDelete => session_end(
             "Delete a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",
+        ),
+        Op::SessionsDeleteMany => define(
+            "Delete several sessions at once: the session_ids you name, or every session of one channel or one machine. Never your own session, never all. Asks the user first; a session with unpushed work blocks the delete.",
+            Effect::Remove,
+            asks(vec![
+                opt("session_ids", array(session()).describe("Sessions to delete, from topology_get")),
+                opt("channel", string().describe("A channel id from channels_list")),
+                opt("machine", machine()),
+            ])
+            .exactly_one_of(&["session_ids", "channel", "machine"]),
         ),
         Op::SessionMove => define(
             "Move a session, your own without session, to another machine. Usually asks the user first.",

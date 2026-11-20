@@ -1755,35 +1755,74 @@ pub(crate) fn drawer(
                 .into_any_element()
             }
         }))
-        .children((!narrow).then(|| footer(send, state, t, look).mt(px(12.)).pt(px(10.))))
+        .children((!narrow).then(|| footer(send, state, t, look, true).mt(px(12.)).pt(px(10.))))
 }
 
-/// The drawer's History · Pin · Hide until… row. On the page it ends the
-/// drawer; the session panel pins it under the scrolling drawer.
-pub(crate) fn footer(send: &Send, state: &TodoState, t: &Todo, look: Look) -> Div {
+/// What the drawer's start-session button says (frames b1-2 and b4-2).
+pub(crate) fn start_session_label(t: &Todo) -> &'static str {
+    if t.sessions.is_empty() || t.ask_detail.session_ended {
+        "Start a session on this"
+    } else {
+        "Start another session on this"
+    }
+}
+
+/// The drawer's footer. On the page (`start_session == true`, frames b1-2 and
+/// b4-2), a button on the left starts a new session for the item (except on
+/// suggested and pull-request review items) and History · Pin · Hide until…
+/// sits on the right; in the session panel (`start_session == false`, frame
+/// 191), only History · Pin · Hide until… is drawn.
+pub(crate) fn footer(
+    send: &Send,
+    state: &TodoState,
+    t: &Todo,
+    look: Look,
+    start_session: bool,
+) -> Div {
     let key = &t.key;
-    row()
+    let start = (start_session && !t.suggested && t.review.is_none()).then(|| {
+        quiet(
+            send,
+            "todo-start-session",
+            start_session_label(t),
+            A::StartSession(key.clone()),
+            look,
+        )
+    });
+    let history = link(send, "todo-history", "History", A::ShowHistory(key.clone()), look);
+    let pin = if t.pin.is_some() {
+        link(send, "todo-pin", "Unpin", A::Unpin(key.clone()), look)
+    } else {
+        link(send, "todo-pin", "Pin", A::Pin(key.clone()), look)
+    };
+    let hide = if t.hide_until.is_some() {
+        link(send, "todo-hide", "Stop hiding", A::HideUntil(key.clone(), None), look)
+    } else {
+        link(
+            send,
+            "todo-hide",
+            "Hide until…",
+            A::HideUntil(key.clone(), Some(hide_day(state.today))),
+            look,
+        )
+    };
+    let base = row()
         .gap(px(8.))
         .border_t_1()
-        .border_color(rgb(look.line))
-        .child(link(send, "todo-history", "History", A::ShowHistory(key.clone()), look))
-        .child(div().flex_1())
-        .child(if t.pin.is_some() {
-            link(send, "todo-pin", "Unpin", A::Unpin(key.clone()), look)
-        } else {
-            link(send, "todo-pin", "Pin", A::Pin(key.clone()), look)
-        })
-        .child(if t.hide_until.is_some() {
-            link(send, "todo-hide", "Stop hiding", A::HideUntil(key.clone(), None), look)
-        } else {
-            link(
-                send,
-                "todo-hide",
-                "Hide until…",
-                A::HideUntil(key.clone(), Some(hide_day(state.today))),
-                look,
-            )
-        })
+        .border_color(rgb(look.line));
+    match start {
+        Some(button) => base
+            .child(button)
+            .child(div().flex_1())
+            .child(history)
+            .child(pin)
+            .child(hide),
+        None => base
+            .child(history)
+            .child(div().flex_1())
+            .child(pin)
+            .child(hide),
+    }
 }
 
 /// Who ticked the steps done: the agent that asks about the item, "claude"
@@ -2060,5 +2099,31 @@ mod tests {
         assert_eq!(links.len(), t.ask_detail.evidence.len());
         assert_eq!(links[0].1, Some(A::OpenEvidence("commits".to_owned())));
         assert_eq!(links.last().and_then(|(_, a)| a.clone()), None);
+    }
+
+    #[test]
+    fn start_session_label_tracks_running_sessions() {
+        let s = state();
+        let fresh = s
+            .items
+            .iter()
+            .map(|e| &e.todo)
+            .find(|t| t.sessions.is_empty() && t.review.is_none() && !t.suggested)
+            .expect("an item with no session");
+        assert_eq!(start_session_label(fresh), "Start a session on this");
+        let running = s
+            .items
+            .iter()
+            .map(|e| &e.todo)
+            .find(|t| !t.sessions.is_empty() && !t.ask_detail.session_ended)
+            .expect("an item with a running session");
+        assert_eq!(start_session_label(running), "Start another session on this");
+        let ended = s
+            .items
+            .iter()
+            .map(|e| &e.todo)
+            .find(|t| t.ask_detail.session_ended)
+            .expect("an item whose session ended");
+        assert_eq!(start_session_label(ended), "Start a session on this");
     }
 }

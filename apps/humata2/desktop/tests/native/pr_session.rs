@@ -721,3 +721,78 @@ fn scroll_in_a_review_keeps_the_gutter_still() {
     assert!((gutter_after - gutter).abs() < 0.5, "the gutter keeps its x");
     assert!(code_after < code - 50., "the code slides left");
 }
+
+/// DV-5 step 5 / DS-29: a pull request file over 1,500 lines draws in its own
+/// bounded box with a virtual list, scrolls to its end, and scrolls to a
+/// distant agent focus inside that box.
+#[test]
+fn a_huge_file_in_a_pull_request_review_scrolls_in_its_own_box() {
+    let huge: Vec<DiffLine> = (1..=4_000)
+        .map(|n| line(LineKind::Added, None, Some(n), &format!("    let row_{n} = {n};")))
+        .collect();
+    let mut app = review_with(vec![file("src/huge.rs", huge)]);
+    app.open(REVIEW, Panel::Changes);
+    app.send(AppAction::Review(ReviewAction::SelectFile {
+        repo: "acme/api".to_owned(),
+        path: "src/huge.rs".to_owned(),
+    }));
+    app.draw();
+    app.draw();
+
+    const CODE: &str = "change-code acme/api/src/huge.rs";
+    assert!(app.contains("change-line-0"), "first lines are drawn");
+    assert!(!app.contains("change-line-3999"), "distant lines are virtualized out");
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let panel = window.find("side-panel").bounds();
+            let code = window.find(CODE).bounds();
+            assert!(code.size.height > px(100.), "box is usable");
+            assert!(code.size.height < panel.size.height * 0.85, "box is bounded below panel height");
+        })
+        .expect("window stays open");
+
+    // Agent focus far down scrolls inside the file's own virtual list.
+    agent_focuses(&mut app, 1, "src/huge.rs", 2_500);
+    for _ in 0..3 {
+        app.draw();
+    }
+    assert!(app.contains("review-focus-2500"), "distant focused line comes into view");
+
+    // Scrolling the box reaches the last line and drops the first.
+    for _ in 0..3 {
+        scroll_over(&mut app, CODE, 0., -10_000_000.);
+    }
+    assert!(app.contains("change-line-3999"), "last line is drawn");
+    assert!(!app.contains("change-line-0"), "first line scrolled out");
+}
+
+/// DS-24: a binary file in an inline pull request review shows its note as its
+/// body instead of an empty code area.
+#[test]
+fn a_binary_file_in_a_pull_request_review_says_binary() {
+    let binary = FileDiff {
+        path: "assets/logo.png".to_owned(),
+        binary: true,
+        ..FileDiff::default()
+    };
+    let mut app = review_with(vec![binary]);
+    app.open(REVIEW, Panel::Changes);
+    app.send(AppAction::Review(ReviewAction::SelectFile {
+        repo: "acme/api".to_owned(),
+        path: "assets/logo.png".to_owned(),
+    }));
+    assert!(app.contains("change-file-empty"));
+    assert!(!app.contains("change-file-note"));
+}
+
+/// DS-9: a pull request review with more than 20 changed files shows the
+/// "Filter files" field.
+#[test]
+fn a_pull_request_review_with_more_than_twenty_files_shows_a_filter() {
+    let more: Vec<FileDiff> = (0..22)
+        .map(|n| file(&format!("src/extra_{n:02}.rs"), vec![line(LineKind::Added, None, Some(1), "let x = 1;")]))
+        .collect();
+    let mut app = review_with(more);
+    shown(&mut app);
+    assert!(app.contains("changes-file-filter"));
+}

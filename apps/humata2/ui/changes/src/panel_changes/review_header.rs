@@ -135,6 +135,117 @@ fn reveal_focus(
     cx.refresh_windows();
 }
 
+/// Scrolls a virtualized review file's list so the focused row is inside its
+/// view, once per focus (DV-5 step 5, DS-29). Waits for the list to be laid out.
+fn reveal_virtual_focus(list: &ListState, key: (String, u64), index: usize, cx: &mut App) {
+    if REVEALED.with(|held| held.borrow().as_ref() == Some(&key)) {
+        return;
+    }
+    if list.viewport_bounds().size.height <= px(0.) {
+        cx.refresh_windows();
+        return;
+    }
+    list.scroll_to_reveal_item(index);
+    REVEALED.with(|held| *held.borrow_mut() = Some(key));
+    cx.refresh_windows();
+}
+
+/// Bounded height for a virtualized pull request review file's box (DV-5 step 5,
+/// DS-29): about 60% of the panel's body height (window minus header, file bar,
+/// and footer), clamped so tiny and very tall windows stay usable.
+fn review_box_height(viewport_height: f32) -> f32 {
+    ((viewport_height - 104.) * 0.6).clamp(160., 720.)
+}
+
+/// Identity of a repository diff's files for caching [`bottom_up`] order
+/// (DV-5 step 5): path, lines slice pointer and length, and line counts.
+type OrderKey = Vec<(String, usize, usize, u32, u32)>;
+
+fn order_key(files: &[humata2_clients::model::FileDiff]) -> OrderKey {
+    files
+        .iter()
+        .map(|file| {
+            (
+                file.path.clone(),
+                file.lines.as_ptr() as usize,
+                file.lines.len(),
+                file.added,
+                file.removed,
+            )
+        })
+        .collect()
+}
+
+thread_local! {
+    /// Cached bottom-up file order per `(session, repo)` so a frame never
+    /// joins every file's text again while the diff hasn't changed (DV-5).
+    static ORDER_CACHE: RefCell<HashMap<(SessionId, String), (OrderKey, Vec<usize>)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The bottom-up order of `diff.files`, cached across frames for unchanged
+/// diffs (DV-5 step 5). Empty and single-file diffs skip joining altogether.
+fn review_order(diff: &RepoDiff) -> Vec<usize> {
+    if diff.files.len() <= 1 {
+        return (0..diff.files.len()).collect();
+    }
+    let key = order_key(&diff.files);
+    let slot = (diff.session.clone(), diff.repo.clone());
+    ORDER_CACHE.with(|held| {
+        let mut cache = held.borrow_mut();
+        if let Some((saved, order)) = cache.get(&slot)
+            && *saved == key
+        {
+            return order.clone();
+        }
+        let texts: Vec<String> = diff
+            .files
+            .iter()
+            .map(|file| {
+                file.lines
+                    .iter()
+                    .filter(|line| is_code(line))
+                    .map(|line| line.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        let ordered: Vec<OrderFile> = diff
+            .files
+            .iter()
+            .zip(&texts)
+            .map(|(file, text)| OrderFile { path: &file.path, text })
+            .collect();
+        let order = bottom_up(&ordered);
+        cache.insert(slot, (key, order.clone()));
+        order
+    })
+}
+
+/// Draws a file's dim note line (`change-file-note`, DS-24) above `code` when
+/// there is something to say about it; returns `code` bare when there is not,
+/// so normal files keep frame 68's exact element tree.
+fn with_review_note(look: Look, note: Option<String>, code: AnyElement) -> AnyElement {
+    let Some(note) = note else {
+        return code;
+    };
+    let whole = note.clone();
+    let line = secondary(look, note)
+        .id("change-file-note")
+        .test_support()
+        .flex_shrink_0()
+        .text_size(px(12.))
+        .px(px(10.))
+        .py(px(4.))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis();
+    col()
+        .child(full_text(line, whole))
+        .child(code)
+        .into_any_element()
+}
+
 /// One repository of a review drawn inline (frame 68): its group row, then,
 /// when it holds the picked file, its files bottom-up (leaf changes first),
 /// the picked file's code right under its row. Other repositories are folded.
@@ -150,6 +261,7 @@ pub(super) fn review_repo(
     cursor: Option<&humata2_review::ListCursor>,
     (font_size, line_height, cell_width): (f32, f32, f32),
     width: f32,
+    viewport_height: f32,
 ) -> AnyElement {
     let open = picked.is_some_and(|(held, _)| held.repo == diff.repo);
     // Frame 68: the repo row, its file and the file's code, 4 apart.
@@ -161,30 +273,15 @@ pub(super) fn review_repo(
     if !open {
         return group.into_any_element();
     }
-    let texts: Vec<String> = diff
-        .files
-        .iter()
-        .map(|file| {
-            file.lines
-                .iter()
-                .filter(|line| is_code(line))
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect();
-    let ordered: Vec<OrderFile> = diff
-        .files
-        .iter()
-        .zip(&texts)
-        .map(|(file, text)| OrderFile { path: &file.path, text })
-        .collect();
     // DS-26: the open file's head stays at the top of the review's view
     // while its lines scroll, and leaves with the file's last line.
     let mut pinned: Option<(usize, usize, (String, ScrollHandle, f32))> = None;
     let mut children = 1;
-    for index in bottom_up(&ordered) {
+    for index in review_order(diff) {
         let file = &diff.files[index];
+        if !state.review.file_visible(&diff.session, &file.path) {
+            continue;
+        }
         let on = picked.is_some_and(|(held, f)| held.repo == diff.repo && f.path == file.path);
         let ring = at_file(cursor, &diff.repo, &file.path);
         if on {
@@ -216,6 +313,7 @@ pub(super) fn review_repo(
                 file,
                 (font_size, line_height, cell_width),
                 width,
+                viewport_height,
             ));
         }
     }
@@ -265,7 +363,10 @@ fn note_pinned(
 }
 
 /// The picked file's code in a review, with the agent's focus marked and
-/// scrolled to.
+/// scrolled to. Files above [`REVIEW_VIRTUAL_FROM`] lines draw inside their own
+/// bounded-height virtual list (DV-5 step 5, DS-29); shorter files keep frame
+/// 68's inline blocks. Files with no code lines draw their note as their body
+/// (DS-24, DS-36).
 #[allow(clippy::too_many_arguments)]
 fn review_code(
     ui: &Rc<Ui>,
@@ -277,7 +378,33 @@ fn review_code(
     file: &humata2_clients::model::FileDiff,
     (font_size, line_height, cell_width): (f32, f32, f32),
     width: f32,
+    viewport_height: f32,
 ) -> AnyElement {
+    let note = file_note(file);
+    let coded = file.lines.iter().any(is_code);
+    if !coded {
+        return col()
+            .id("change-file-empty")
+            .test_support()
+            .items_center()
+            .justify_center()
+            .p(px(12.))
+            .bg(rgb(look.term))
+            .child(
+                secondary(
+                    look,
+                    note.unwrap_or_else(|| {
+                        if file.added + file.removed > 0 {
+                            "The changed lines aren't available".to_owned()
+                        } else {
+                            "No changes to show".to_owned()
+                        }
+                    }),
+                )
+                .text_size(px(12.)),
+            )
+            .into_any_element();
+    }
     let avail = width - 16.;
     let name = format!("{}/{}", diff.repo, file.path);
     let scroll = documents.session_diff_view(&diff.session, &name);
@@ -330,6 +457,53 @@ fn review_code(
         focus.and_then(|focus| focus.line().map(|line| (focus.place.side, line))),
         shift,
     );
+    if file.lines.len() > REVIEW_VIRTUAL_FROM {
+        // DV-5 step 5, DS-29: a huge review file lives in its own bounded box
+        // (~60% of the panel's height) with a virtual list so only visible rows
+        // are built each frame.
+        let list_state = scroll.rows(&file.lines, state.review.wrap, avail, line_height);
+        let reveal_list = list_state.clone();
+        let reveal = focus
+            .zip(rows.focus_index)
+            .map(|(focus, row)| ((format!("{}|{name}", session.id), focus.seq), row));
+        let rows = Rc::new(rows);
+        let (session_id, repo, path) = (diff.session.clone(), diff.repo.clone(), file.path.clone());
+        let guess = scroll.clone();
+        let code = col()
+            .on_children_prepainted(move |_, _, cx| {
+                guess.guess_heights(line_height);
+                if let Some((key, row)) = reveal.clone() {
+                    reveal_virtual_focus(&reveal_list, key, row, cx);
+                }
+            })
+            .on_scroll_wheel(sideways)
+            .id(SharedString::from(format!("change-code {name}")))
+            .role(Role::Code)
+            .aria_label(name)
+            .test_support()
+            .h(px(review_box_height(viewport_height)))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .font_family("Menlo")
+            .text_size(px(font_size))
+            .line_height(px(line_height))
+            .bg(rgb(look.term))
+            .child(
+                gpui_kit::list(list_state, move |index, _, _| {
+                    rows.ui
+                        .read(|state| {
+                            file_lines(state, &session_id, &repo, &path)
+                                .map(|lines| rows.item(lines, index))
+                        })
+                        .unwrap_or_else(|| div().into_any_element())
+                })
+                .flex_1()
+                .w_full()
+                .py(px(6.)),
+            )
+            .into_any_element();
+        return with_review_note(look, note, code);
+    }
     // Frame 68 draws each run of code lines as its own block and the cards
     // between the blocks, 4 apart; a card keeps the panel's line height.
     let block = || {
@@ -362,7 +536,7 @@ fn review_code(
     let reveal = focus
         .zip(focus_part)
         .map(|(focus, part)| ((format!("{}|{name}", session.id), focus.seq), part));
-    col()
+    let code = col()
         .gap(px(4.))
         .on_children_prepainted(move |children, _, cx| {
             if let Some((key, row)) = reveal.clone() {
@@ -375,7 +549,8 @@ fn review_code(
         .aria_label(name)
         .test_support()
         .children(parts)
-        .into_any_element()
+        .into_any_element();
+    with_review_note(look, note, code)
 }
 
 /// A repository's group row in a review (frame 68): its name, its pull
@@ -400,12 +575,15 @@ pub(super) fn review_repo_head(
         .find(|clone| clone.repo == diff.repo || clone.repo.rsplit('/').next() == Some(diff.repo.as_str()))
         .map_or("", |clone| clone.branch.as_str());
     let name = diff.repo.rsplit('/').next().unwrap_or(diff.repo.as_str());
-    // The folded row opens the repository's first file; a repository with
-    // no files has nothing to open, so its row is not a click target.
+    // The folded row opens the repository's first visible file; a repository
+    // with no visible files has nothing to open, so its row is not a click target.
     let first = if open {
         None
     } else {
-        diff.files.first().map(|file| file.path.clone())
+        diff.files
+            .iter()
+            .find(|file| state.review.file_visible(&diff.session, &file.path))
+            .map(|file| file.path.clone())
     };
     let ui = ui.clone();
     let repo = diff.repo.clone();
@@ -1028,6 +1206,13 @@ pub(super) fn repo_head(
         })
         .map(|clone| clone.branch.clone())
         .filter(|own| !own.is_empty() && own != branch);
+    let many = state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|each| each.session == diff.session)
+        .count()
+        >= 2;
     let toggle = ui.clone();
     let repo = diff.repo.clone();
     let label = if folded { "Expand" } else { "Collapse" };
@@ -1085,7 +1270,9 @@ pub(super) fn repo_head(
                 own,
             )
         }))
-        .child(repo_base(ui, state, look, documents, index, diff))
+        // D868: with one repository the header's chip names the base, so the
+        // head shows name and counts only.
+        .when(many, |head| head.child(repo_base(ui, state, look, documents, index, diff)))
         .child(div().flex_1())
         .child(
             row()
@@ -1128,11 +1315,7 @@ pub(super) fn repo_base(
         .as_ref()
         .filter(|picker| picker.repo == diff.repo);
     let open = picker.is_some();
-    // Another session's branch has no per-repository form: the base shows,
-    // but only the header's menu changes it (VIEWS P1).
-    let fixed = state.session.open.as_ref().is_some_and(|id| {
-        matches!(state.review.targets_of(id).preset, DiffBase::OtherSession(_))
-    });
+    let words = repo_base_words(state, diff);
     // Every repository row says what it compares against in words, even
     // while the bases agree (UXSIMPLE 1-2, reverses D739's chevron-only
     // chip): a bare chevron didn't say what it changed.
@@ -1140,7 +1323,7 @@ pub(super) fn repo_base(
     let toggle = ui.clone();
     let repo = diff.repo.clone();
     let id = SharedString::from(format!("repo-base-{index}"));
-    let spoken = format!("{}: against {}", diff.repo, diff.base);
+    let spoken = format!("{}: {words}", diff.repo);
     let pick = move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
         toggle.send(
             AppAction::Review(ReviewAction::ToggleRepoBase { repo: repo.clone() }),
@@ -1155,20 +1338,12 @@ pub(super) fn repo_base(
         .min_w_0()
         .overflow_hidden()
         .text_color(rgb(tone))
-        .child(text("against").flex_shrink_0().mr(px(3.)))
         // A long base (the daemon's "not reviewed yet: …") ends in
         // an ellipsis rather than pushing Push & PR out of the panel.
-        .child(
-            text(diff.base.clone())
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis(),
-        )
-        .when(!fixed, |chip| {
-            chip.cursor_pointer()
-                .hover(|chip| chip.text_color(rgb(look.accent)))
-                .on_click(pick)
-        })
+        .child(text(words.clone()).min_w_0().overflow_hidden().text_ellipsis())
+        .cursor_pointer()
+        .hover(|chip| chip.text_color(rgb(look.accent)))
+        .on_click(pick)
         .test_support();
     // The chip is a button, so its role wins over the label's.
     let against = full_text(chip, spoken).role(Role::Button);
@@ -1177,7 +1352,7 @@ pub(super) fn repo_base(
     // characters, so it can't slide over the totals.
     // A short base never shrinks; a long one keeps "against" and about ten
     // characters before its ellipsis, and the repo name gives way first.
-    let long = diff.base.chars().count() > 10;
+    let long = words.chars().count() > 18;
     div()
         .relative()
         .when(long, |wrap| wrap.min_w(px(112.)).flex_shrink(4.))
@@ -1186,8 +1361,66 @@ pub(super) fn repo_base(
         // Deferred, so the menu paints over the panel and takes the clicks
         // there; the scrim first, then the menu.
         wrap.child(deferred(repo_base_scrim(ui)))
-            .child(deferred(repo_base_menu(ui, state, look, documents, picker)))
+            .child(deferred(repo_base_menu(ui, state, look, documents, picker, index)))
     })
+}
+
+/// The branch another session's clone of `repo` is on, when it has one.
+fn other_session_branch(other: &Session, repo: &str) -> Option<String> {
+    other
+        .clones
+        .iter()
+        .find(|clone| clone.repo == repo || clone.repo.rsplit('/').next() == Some(repo))
+        .map(|clone| clone.branch.clone())
+        .filter(|branch| !branch.is_empty())
+}
+
+/// The sessions of the open session's channel whose branch in `repo` can be
+/// a base, with that branch (D868: the header menu's "Another session's
+/// branch", expressed as a per-repository branch).
+fn other_sessions_in<'a>(state: &'a AppState, repo: &str) -> Vec<(&'a Session, String)> {
+    let Some(here) = state
+        .session
+        .open
+        .as_ref()
+        .and_then(|id| state.workspace.session(id))
+    else {
+        return Vec::new();
+    };
+    state
+        .workspace
+        .sessions
+        .iter()
+        .filter(|other| other.channel == here.channel && other.id != here.id && !other.archived)
+        .filter_map(|other| other_session_branch(other, repo).map(|branch| (other, branch)))
+        .collect()
+}
+
+/// What a repository's row says it is compared with, in words (D868).
+fn repo_base_words(state: &AppState, diff: &RepoDiff) -> String {
+    let Some(session) = state.session.open.as_ref() else {
+        return format!("against {}", diff.base);
+    };
+    let targets = state.review.targets_of(session);
+    match targets.of(&diff.repo) {
+        RepoBase::Uncommitted => "uncommitted only".to_owned(),
+        RepoBase::Branch(branch) => other_sessions_in(state, &diff.repo)
+            .into_iter()
+            .find(|(_, theirs)| *theirs == branch)
+            .map_or_else(
+                || format!("against {}", diff.base),
+                |(other, _)| format!("against {}'s branch", other.title),
+            ),
+        _ => {
+            if let DiffBase::OtherSession(id) = &targets.preset
+                && let Some(other) = state.workspace.session(id)
+                && !targets.repos.contains_key(&diff.repo)
+            {
+                return format!("against {}'s branch", other.title);
+            }
+            format!("against {}", diff.base)
+        }
+    }
 }
 
 /// The layer behind a repository's base menu: a click on it closes the menu
@@ -1215,6 +1448,7 @@ fn repo_base_menu(
     look: Look,
     documents: &Documents,
     picker: &RepoPicker,
+    index: usize,
 ) -> impl IntoElement {
     let Some(session) = state.session.open.clone() else {
         return col().id("repo-base-menu").test_support();
@@ -1347,6 +1581,20 @@ fn repo_base_menu(
         }
     }
     items.push(line());
+    // Another session's branch (the header menu's section), as this
+    // repository's branch in that session.
+    let others = other_sessions_in(state, &picker.repo);
+    if !others.is_empty() {
+        items.push(heading("Another session's branch"));
+        for (other, branch) in others {
+            items.push(pick(
+                SharedString::from(format!("repo-base-{}-other-{}", index, other.id)),
+                format!("{}'s branch", other.title),
+                RepoBase::Branch(branch),
+            ));
+        }
+        items.push(line());
+    }
     // The filter's words as a branch, tag or commit; a name that doesn't
     // resolve fails in the read that follows, with a fix (VIEWS P3).
     let typed = picker.filter.trim().to_owned();
@@ -1370,6 +1618,23 @@ fn repo_base_menu(
             RepoBase::Rev(typed),
         ));
     }
+    items.push(line());
+    let every_session = session.clone();
+    let every_repo = picker.repo.clone();
+    items.push(
+        base_row(
+            ui,
+            SharedString::from(format!("repo-base-{}-every", index)),
+            "Use for every repo",
+            false,
+            AppAction::Review(ReviewAction::UseRepoBaseForEvery {
+                session: every_session,
+                repo: every_repo,
+            }),
+            look,
+        )
+        .into_any_element(),
+    );
     col()
         .id("repo-base-menu")
         .role(Role::ListBox)
@@ -1471,7 +1736,31 @@ fn push_control(ui: &Rc<Ui>, state: &AppState, look: Look, repo: &str) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::drafts_count;
+    use super::{drafts_count, review_box_height, review_order};
+    use humata2_clients::model::{DiffLine, FileDiff, LineKind, RepoDiff, SessionId};
+
+    fn diff_with(session: &str, repo: &str, files: Vec<(&str, &str)>) -> RepoDiff {
+        RepoDiff {
+            session: SessionId::new(session),
+            repo: repo.to_owned(),
+            base: "main".to_owned(),
+            files: files
+                .into_iter()
+                .map(|(path, text)| FileDiff {
+                    path: path.to_owned(),
+                    added: 1,
+                    lines: vec![DiffLine {
+                        kind: LineKind::Added,
+                        old: None,
+                        new: Some(1),
+                        text: text.to_owned(),
+                    }],
+                    ..FileDiff::default()
+                })
+                .collect(),
+            comments: Vec::new(),
+        }
+    }
 
     #[test]
     fn the_count_names_who_wrote_the_drafts_when_it_fits() {
@@ -1488,5 +1777,48 @@ mod tests {
     #[test]
     fn no_drafts_reads_no_drafts() {
         assert_eq!(drafts_count("claude", 0, 0, |_| false), "No drafts");
+    }
+
+    #[test]
+    fn review_box_height_is_about_sixty_percent_of_panel_and_bounded() {
+        let standard = review_box_height(760.);
+        assert!(standard > 350. && standard < 450., "standard height was {standard}");
+        assert!(review_box_height(900.) > standard);
+        assert!((review_box_height(200.) - 160.).abs() < f32::EPSILON);
+        assert!((review_box_height(2000.) - 720.).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn review_order_puts_used_files_first_and_updates_when_files_change() {
+        let first = diff_with(
+            "se_order_cache",
+            "acme/api",
+            vec![
+                ("src/handler.rs", "    refund::issue(cents)?;"),
+                ("src/refund.rs", "pub fn issue(cents: u64) {}"),
+            ],
+        );
+        assert_eq!(review_order(&first), vec![1, 0]);
+        // Repeat call hits the cache and keeps the exact order.
+        assert_eq!(review_order(&first), vec![1, 0]);
+
+        // When the diff's files change, the cached order invalidates.
+        let reversed = diff_with(
+            "se_order_cache",
+            "acme/api",
+            vec![
+                ("src/refund.rs", "pub fn issue(cents: u64) {}"),
+                ("src/handler.rs", "    refund::issue(cents)?;"),
+            ],
+        );
+        assert_eq!(review_order(&reversed), vec![0, 1]);
+    }
+
+    #[test]
+    fn review_order_handles_empty_and_single_file_diffs() {
+        let empty = diff_with("se_order_small", "acme/api", Vec::new());
+        assert!(review_order(&empty).is_empty());
+        let single = diff_with("se_order_small", "acme/api", vec![("src/only.rs", "fn a() {}")]);
+        assert_eq!(review_order(&single), vec![0]);
     }
 }

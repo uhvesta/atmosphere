@@ -124,6 +124,9 @@ pub enum HostsAction {
     StartAdd,
     /// Inspect a particular machine.
     Select(MachineId),
+    /// Read a machine's health without selecting it, as a menu that lists
+    /// its installed agents opens.
+    ReadHealth(MachineId),
     /// Connect was clicked.
     Connect(MachineId),
     /// The reconnect finished.
@@ -229,6 +232,9 @@ impl Reducer for Hosts {
                     state.selected = Some(id.clone());
                     return self.read_health(id);
                 }
+            }
+            HostsAction::ReadHealth(id) => {
+                return self.read_health(id);
             }
             // A failed read keeps what was there; it is not a connect error.
             HostsAction::Health(machine, result) => {

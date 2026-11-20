@@ -103,6 +103,10 @@ const LISTED_METHODS: [(&str, &[&str]); 8] = [
             // own git and gh, in its own clones.
             "PlanPush",
             "PushAndOpenPullRequests",
+            // MASSDELETE: the host plans and checks a delete of a machine's
+            // sessions there, then deletes them; the machine trashes its own.
+            "PlanDeleteSessions",
+            "DeleteSessions",
         ],
     ),
     (

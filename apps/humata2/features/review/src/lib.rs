@@ -373,18 +373,124 @@ impl ReviewState {
             .collect()
     }
 
-    /// Every file of `session`'s changes in panel order, as `(repo, path)`.
+    /// Every file of `session`'s changes in the order the panel draws them,
+    /// as `(repo, path)`.
     fn panel_files(&self, session: &SessionId) -> Vec<(String, String)> {
-        self.workspace
+        self.drawn_rows(session, false)
+            .into_iter()
+            .filter_map(|row| match row {
+                ListCursor::File { repo, path } => Some((repo, path)),
+                ListCursor::Repo(_) => None,
+            })
+            .collect()
+    }
+
+    /// The rows of `session`'s file list exactly as the panel draws them:
+    /// each repository's row and its files, with Whole stack's captions left
+    /// out (they are not files), a plan's rows with each repository's skim
+    /// files where the folded row sits, else the diff's own order. Drawing
+    /// and stepping share this order. A folded repository's files are left
+    /// out when `skip_folded`.
+    fn drawn_rows(&self, session: &SessionId, skip_folded: bool) -> Vec<ListCursor> {
+        let diffs: Vec<&RepoDiff> = self
+            .workspace
             .diffs
             .iter()
             .filter(|diff| &diff.session == session)
-            .flat_map(|diff| {
-                diff.files
-                    .iter()
-                    .map(move |file| (diff.repo.clone(), file.path.clone()))
-            })
-            .collect()
+            .collect();
+        let folded = |repo: &str| {
+            skip_folded && self.collapsed.contains(&(session.clone(), repo.to_owned()))
+        };
+        let file = |repo: &str, path: &str| ListCursor::File {
+            repo: repo.to_owned(),
+            path: path.to_owned(),
+        };
+        let has = |repo: &str, path: &str| {
+            diffs
+                .iter()
+                .any(|diff| diff.repo == repo && diff.files.iter().any(|each| each.path == path))
+        };
+        let mut rows = Vec::new();
+        let Some(layout) = self.plan_layout(session) else {
+            for diff in &diffs {
+                rows.push(ListCursor::Repo(diff.repo.clone()));
+                if folded(&diff.repo) {
+                    continue;
+                }
+                rows.extend(diff.files.iter().map(|each| file(&diff.repo, &each.path)));
+            }
+            return rows;
+        };
+        let grouped = layout
+            .rows
+            .iter()
+            .any(|row| matches!(row, PlanRow::Group { .. }));
+        if self.stack_of(session).is_some() && !grouped {
+            // A stack without groups: repository head, its files (Whole
+            // stack by layer), then its skim files.
+            let whole = self.whole_groups(session, &layout, &diffs);
+            for (index, diff) in diffs.iter().enumerate() {
+                rows.push(ListCursor::Repo(diff.repo.clone()));
+                if folded(&diff.repo) {
+                    continue;
+                }
+                match whole.as_ref().and_then(|groups| groups.get(index)) {
+                    Some(entries) => {
+                        for entry in entries {
+                            if let stack::WholeEntry::File { path, .. } = entry
+                                && has(&diff.repo, path)
+                            {
+                                rows.push(file(&diff.repo, path));
+                            }
+                        }
+                    }
+                    None => {
+                        for row in &layout.rows {
+                            if let PlanRow::File { repo, path, .. } = row
+                                && *repo == diff.repo
+                                && has(repo, path)
+                            {
+                                rows.push(file(repo, path));
+                            }
+                        }
+                    }
+                }
+                for skim in layout.skims.iter().filter(|skim| skim.repo == diff.repo) {
+                    for path in &skim.paths {
+                        if has(&diff.repo, path) {
+                            rows.push(file(&diff.repo, path));
+                        }
+                    }
+                }
+            }
+            return rows;
+        }
+        // A plan: every repository's row first, then the plan's rows with a
+        // skim row before the row it names.
+        rows.extend(diffs.iter().map(|diff| ListCursor::Repo(diff.repo.clone())));
+        let mut skims = layout.skims.iter().peekable();
+        let push_skim = |rows: &mut Vec<ListCursor>, skim: &PlanSkim| {
+            for path in &skim.paths {
+                if has(&skim.repo, path) && !folded(&skim.repo) {
+                    rows.push(file(&skim.repo, path));
+                }
+            }
+        };
+        for (at, row) in layout.rows.iter().enumerate() {
+            while let Some(skim) = skims.next_if(|skim| skim.after == at) {
+                push_skim(&mut rows, skim);
+            }
+            if let PlanRow::File { repo, path, .. } = row
+                && has(repo, path)
+                && !folded(repo)
+            {
+                rows.push(file(repo, path));
+            }
+        }
+        for skim in skims {
+            push_skim(&mut rows, skim);
+        }
+        rows
     }
 
     /// The file `session` shows: the one picked, or the first when none is
@@ -806,6 +912,14 @@ pub enum ReviewAction {
         repo: String,
         /// What its changes are compared with.
         base: RepoBase,
+    },
+    /// Give every repository of `session` the base `repo` is compared with
+    /// now, and close the repository menu (D868, "Use for every repo").
+    UseRepoBaseForEvery {
+        /// The session.
+        session: SessionId,
+        /// The repository whose base the others take, as `owner/name`.
+        repo: String,
     },
     /// Open one repository's base menu, or close it if it is open; any
     /// other menu closes (RV-31).
@@ -1430,6 +1544,21 @@ impl Reducer for Review {
                 sync_saved(state);
                 return self.fetch(state, &session);
             }
+            ReviewAction::UseRepoBaseForEvery { session, repo } => {
+                state.repo_picker = None;
+                if state.shows_stack(&session) {
+                    return Effect::none();
+                }
+                let before = state.targets_of(&session);
+                let base = before.of(&repo);
+                let repos = repos_of(state, &session);
+                let targets = state.targets.entry(session.clone()).or_insert(before);
+                for each in repos {
+                    targets.pick(&each, base.clone());
+                }
+                sync_saved(state);
+                return self.fetch(state, &session);
+            }
             ReviewAction::Retry => {
                 if let Some(session) = state.session.clone() {
                     return self.fetch(state, &session);
@@ -1836,18 +1965,7 @@ fn toggle_repo(state: &mut ReviewState, repo: String) {
 /// The rows of `session`'s file list in order (DS-84): each repository's
 /// row, then its files unless it is folded.
 fn list_rows(state: &ReviewState, session: &SessionId) -> Vec<ListCursor> {
-    let mut rows = Vec::new();
-    for diff in state.workspace.diffs.iter().filter(|diff| &diff.session == session) {
-        rows.push(ListCursor::Repo(diff.repo.clone()));
-        if state.collapsed.contains(&(session.clone(), diff.repo.clone())) {
-            continue;
-        }
-        rows.extend(diff.files.iter().map(|file| ListCursor::File {
-            repo: diff.repo.clone(),
-            path: file.path.clone(),
-        }));
-    }
-    rows
+    state.drawn_rows(session, true)
 }
 
 /// The open session and the row its cursor is on, when it is on a row the

@@ -435,6 +435,7 @@ fn the_fork_dialog_creates_the_selected_kind_and_can_cancel() {
     app.open("ledger", Panel::Info);
     app.click("session-fork");
     assert!(app.contains("fork-create"));
+    app.click("fork-more-options");
     app.click("fork-kind-1");
     app.send(AppAction::Session(SessionAction::ForkTitle(
         "Review the migration".into(),

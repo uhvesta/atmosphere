@@ -42,6 +42,7 @@ Document "Machine devbox-1"
   #machine-overview
     Status "Sessions stopped"
       Button "Start sessions"
+    Button "Select"
     Group "Health"
       Status "Disk 97% used"
       Button "Set value…"

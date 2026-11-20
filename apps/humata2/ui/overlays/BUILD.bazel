@@ -17,6 +17,7 @@ rust_library(
         "//apps/humata2/features/desk",
         "//apps/humata2/features/find",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/mass_delete",
         "//apps/humata2/features/palette",
         "//apps/humata2/features/pr_review",
         "//apps/humata2/features/session",

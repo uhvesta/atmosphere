@@ -198,6 +198,7 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
     app.settle();
     assert!(printed_ends_with(&app, &(id, 0), b"~/humata\r\n$ "));
     app.click("session-fork");
+    app.click("fork-more-options");
     app.click("fork-kind-2");
     app.click("fork-create");
     let fork = app.ui.read(|s| s.session.open.clone()).unwrap();

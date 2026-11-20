@@ -234,9 +234,22 @@ fn plan_repo_line(
         .h(px(24.))
         .px(px(4.))
         .pr(px(4.))
-        .child(icon(IconName::FolderGit2, look.secondary, 12.))
-        .child(text(repo_label(&diff.repo).to_owned()).font_weight(FontWeight::SEMIBOLD))
-        .child(repo_base(ui, state, look, documents, index, diff))
+        .min_w_0()
+        .whitespace_nowrap()
+        .child(div().flex_shrink_0().child(icon(IconName::FolderGit2, look.secondary, 12.)))
+        .child(
+            text(repo_label(&diff.repo).to_owned())
+                .font_weight(FontWeight::SEMIBOLD)
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis(),
+        )
+        // D868: with one repository the header's chip names the base.
+        .when(
+            state.workspace.diffs.iter().filter(|each| each.session == diff.session).count() >= 2,
+            |line| line.child(repo_base(ui, state, look, documents, index, diff)),
+        )
         .child(div().flex_1())
 }
 

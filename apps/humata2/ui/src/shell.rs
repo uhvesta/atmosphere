@@ -43,7 +43,6 @@ pub struct Shell {
     channel_filter_id: Option<ChannelId>,
     channel_filter_value: String,
     _channel_filter_subscription: Subscription,
-    board_inputs: crate::board::Inputs,
     todo_inputs: crate::todo::Inputs,
     applied_theme: Option<humata2_settings::Theme>,
     files_name: Entity<InputState>,
@@ -118,7 +117,6 @@ impl Shell {
                 }
             },
         );
-        let board_inputs = crate::board::Inputs::new(&ui, window, cx);
         let todo_inputs = {
             let ui = ui.clone();
             let send: crate::todo::Send =
@@ -175,7 +173,6 @@ impl Shell {
             channel_filter_id: None,
             channel_filter_value: String::new(),
             _channel_filter_subscription: channel_filter_subscription,
-            board_inputs,
             todo_inputs,
             applied_theme: None,
             files_name,
@@ -473,8 +470,6 @@ impl Render for Shell {
             }
         }
         self.ui
-            .read(|state| self.board_inputs.sync(state, window, cx));
-        self.ui
             .read(|state| self.todo_inputs.sync(&state.todo, window, cx));
         let ui = self.ui.clone();
         let body = match load {
@@ -509,7 +504,6 @@ impl Render for Shell {
                     &ui,
                     state,
                     self.channel_filter.clone(),
-                    &self.board_inputs,
                     &self.todo_inputs,
                     self.files_name.clone(),
                     &self.terminals,
@@ -541,9 +535,6 @@ impl Render for Shell {
                         crate::hosts::toolbar(&ui, look).into_any_element()
                     } else if matches!(state.route, Route::Desk) {
                         crate::desk::toolbar(&ui, state, collapsed, look).into_any_element()
-                    } else if matches!(state.route, Route::Board(_)) {
-                        crate::board::toolbar(&ui, state, &self.board_inputs, look)
-                            .into_any_element()
                     } else if let Route::Channel(id) = &state.route
                         && let Some(channel) = state.workspace.channel(id)
                     {

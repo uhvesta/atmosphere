@@ -705,3 +705,29 @@ fn the_wrap_switch_flips_long_lines() {
     app.click("diff-wrap");
     assert_eq!(wrapping(&app), (first, first));
 }
+
+/// D868: two repositories read "N repos" in the header and no base chip; the
+/// base lives on each repository's row.
+#[test]
+fn two_repositories_name_their_count_and_have_no_header_base() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Changes);
+    assert!(app.contains("diff-repos-count"));
+    assert!(!app.contains("diff-base"));
+    assert!(app.contains("repo-base-0"));
+}
+
+/// D868: one repository keeps the header's base chip, and its head shows no
+/// second one.
+#[test]
+fn one_repository_keeps_the_header_base_and_its_head_has_none() {
+    let mut workspace = fixture::design();
+    workspace
+        .diffs
+        .retain(|d| d.session != SessionId::new("ledger") || d.repo == "api");
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    assert!(app.contains("diff-base"));
+    assert!(!app.contains("diff-repos-count"));
+    assert!(!app.contains("repo-base-0"));
+}

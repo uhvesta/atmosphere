@@ -803,6 +803,7 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::SessionMove
         | C::SessionStopOther
         | C::SessionDeleteOther
+        | C::SessionsDeleteMany
         | C::PrSubmit
         | C::UserReviewState
         | C::TerminalInput => S::Session,

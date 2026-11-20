@@ -226,6 +226,7 @@ fn a_code_only_fork_copies_the_files_into_a_fresh_conversation() {
     let mut app = open_parent(&runtime, &parent);
 
     open_dialog(&mut app);
+    app.click(Role::Button, "More options");
     assert!(app.view().contains("Fork from"), "Code + context offers Fork from");
     app.click(Role::RadioButton, "fork-kind-2");
     app.wait_until("Code only to be picked", |app| {
@@ -288,6 +289,7 @@ fn a_context_only_fork_carries_the_conversation_and_shares_the_parents_files() {
         .expect("the parent is in the app");
 
     open_dialog(&mut app);
+    app.click(Role::Button, "More options");
     app.click(Role::RadioButton, "fork-kind-1");
     app.wait_until("Context only to be picked", |app| {
         app.ui.read(|state| {
@@ -335,6 +337,7 @@ fn a_fork_from_before_a_turn_carries_the_conversation_up_to_it() {
     let mut app = open_parent(&runtime, &parent);
 
     open_dialog(&mut app);
+    app.click(Role::Button, "More options");
     // The pop-up shows where the fork starts; it is "Now" until another is
     // picked. Opening it asks the daemon for the turns.
     app.click(Role::Button, "Now");

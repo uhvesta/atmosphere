@@ -27,7 +27,6 @@ pub fn title(state: &AppState) -> String {
     match &state.route {
         Route::Home => "Home".to_owned(),
         Route::Inbox => "Agent inbox".to_owned(),
-        Route::Board(_) => "Board".to_owned(),
         Route::Todo => "To-do".to_owned(),
         Route::Channel(id) => state
             .workspace
@@ -61,7 +60,6 @@ pub fn page(
     ui: &Rc<Ui>,
     state: &AppState,
     channel_filter: Entity<InputState>,
-    board_inputs: &crate::board::Inputs,
     todo_inputs: &crate::todo::Inputs,
     files_name: Entity<InputState>,
     terminals: &crate::terminals::Terminals,
@@ -89,9 +87,6 @@ pub fn page(
             Look::of(cx),
         )
         .into_any_element(),
-        Route::Board(_) => {
-            crate::board::page(ui, state, board_inputs, Look::of(cx)).into_any_element()
-        }
         Route::Todo => todo_page(ui, state, todo_inputs, Look::of(cx)).into_any_element(),
         Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
@@ -100,14 +95,9 @@ pub fn page(
                     .into_any_element()
             },
             |channel| {
-                crate::channel::page(
-                    ui,
-                    state,
-                    channel,
-                    channel_filter,
-                    board_inputs,
-                    Look::of(cx),
-                )
+                // The channel's To-do tab is the To-do list, narrowed to it (D874).
+                let todo = || todo_page(ui, state, todo_inputs, look).into_any_element();
+                crate::channel::page(ui, state, channel, channel_filter, &todo, look)
             },
         ),
         Route::Session(id) => state
@@ -784,12 +774,32 @@ mod tests {
     }
 }
 
-/// The To-do page, sending the list's actions into the app.
+/// The To-do page, sending the list's actions into the app. A board view
+/// being shown opens here (D874), so its Showing bar (VW-8) leads the page.
 fn todo_page(ui: &Rc<Ui>, state: &AppState, inputs: &crate::todo::Inputs, look: Look) -> Div {
-    let ui = ui.clone();
-    let send: crate::todo::Send = Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx));
+    let showing = state
+        .views
+        .showing
+        .as_ref()
+        .and_then(|showing| state.views.record(&showing.id))
+        .filter(|record| {
+            matches!(
+                record.content,
+                humata2_clients::views::ViewContent::Board(_)
+                    | humata2_clients::views::ViewContent::SessionBoard { .. }
+            )
+        });
+    let bar = showing.map(|record| crate::view_tab::showing_bar(ui, state, record, look));
+    let send: crate::todo::Send = {
+        let ui = ui.clone();
+        Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx))
+    };
     let sessions = |id: &str| session_chip(state, id);
-    crate::todo::page(&send, &state.todo, inputs, &sessions, look)
+    col()
+        .size_full()
+        .min_h_0()
+        .children(bar)
+        .child(crate::todo::page(&send, &state.todo, inputs, &sessions, look).flex_1().min_h_0())
 }
 
 /// A session as the To-do list's chips show it.

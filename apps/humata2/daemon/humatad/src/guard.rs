@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
     AccessRequest, Agent, AwayRule, Call, Capability, Context, Effect, MachineId, PeerLink,
-    Policy, Principal, Refusal, SessionKind, Verdict,
+    Policy, Principal, Refusal, SessionKind, Source, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::watch;
@@ -46,6 +46,9 @@ pub struct Guard {
     /// agents is one of the rules, and a machine without them would read
     /// it as off (D266).
     rules: watch::Sender<bool>,
+    /// IN-8: `(utc_day, count)` of agent actions allowed today by a rule/grant
+    /// without asking.
+    allowed_today: Mutex<(u64, u32)>,
 }
 
 /// What a check allows.
@@ -98,6 +101,24 @@ impl Guard {
             link: Arc::new(HostLink::new(!matches!(role, pb::DaemonRole::Machine))),
             revision: watch::Sender::new(next_revision(0)),
             rules: watch::Sender::new(!matches!(role, pb::DaemonRole::Machine)),
+            allowed_today: Mutex::new((utc_day_now(), 0)),
+        }
+    }
+
+    /// IN-8: how many agent actions followed rules or grants without asking today (UTC day).
+    pub fn allowed_without_asking_today(&self) -> u32 {
+        let today = utc_day_now();
+        let state = lock(&self.allowed_today);
+        if state.0 == today { state.1 } else { 0 }
+    }
+
+    fn record_allowed_today(&self) {
+        let today = utc_day_now();
+        let mut state = lock(&self.allowed_today);
+        if state.0 == today {
+            state.1 = state.1.saturating_add(1);
+        } else {
+            *state = (today, 1);
         }
     }
 
@@ -234,6 +255,15 @@ impl Guard {
                     "",
                 )
             })?;
+        if let Verdict::Allowed { source, .. } = &verdict
+            && matches!(caller, Caller::Agent(_))
+            && matches!(
+                source,
+                Source::Rule | Source::Grant(_) | Source::DeskSwitch | Source::ReviewPushSetting
+            )
+        {
+            self.record_allowed_today();
+        }
         match verdict {
             Verdict::Allowed {
                 effect: Effect::Apply,
@@ -435,6 +465,7 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
         C::DeskMoveToChannel => P::DeskMoveToChannel,
         C::SessionStopOther => P::SessionStopOther,
         C::SessionDeleteOther => P::SessionDeleteOther,
+        C::SessionsDeleteMany => P::SessionsDeleteMany,
         C::MachineSessionsStop => P::MachineSessionsStop,
         C::ChannelChange => P::ChannelChange,
         C::MachineDestroy => P::MachineDestroy,
@@ -458,6 +489,12 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn utc_day_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 86_400)
 }
 
 /// The refusal for a call that needs the Mac while it is away, marked for

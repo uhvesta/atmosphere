@@ -35,6 +35,8 @@ pub struct Workspace {
     pub terminal_peers: BTreeMap<(SessionId, usize), usize>,
     /// Inbox requests, newest first, answered ones included.
     pub requests: Vec<Request>,
+    /// IN-8: agent actions allowed today by rules or grants without asking.
+    pub allowed_without_asking_today: u32,
     /// Board items on every board.
     pub items: Vec<Item>,
     /// Descriptions, ownership, history and approvals for board items.

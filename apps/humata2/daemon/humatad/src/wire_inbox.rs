@@ -142,6 +142,10 @@ impl InboxGuardPort for GuardAdapter {
     ) -> Result<AgentCaller, StoreError> {
         crate::identity::resolve_fork(crate::identity::agent_caller_of(record, machine), store)
     }
+
+    fn allowed_without_asking_today(&self) -> u32 {
+        self.0.allowed_without_asking_today()
+    }
 }
 
 pub(crate) struct MigrateApproverAdapter(pub(crate) crate::upgrade::items::Approver);

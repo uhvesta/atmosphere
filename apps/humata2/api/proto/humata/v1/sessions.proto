@@ -50,6 +50,12 @@ service SessionService {
   // LD-5: to trash, after the unpushed-work check.
   rpc PlanDelete(PlanDeleteRequest) returns (DeletePlan);
   rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+  // MASSDELETE: one plan for many sessions (picked ids, a channel, a
+  // machine or all), one token, one delete. LD-5: each session's folder and
+  // records go to its machine's trash. NV-27: a delete whose sessions
+  // changed since the plan deletes nothing and answers the new plan.
+  rpc PlanDeleteSessions(PlanDeleteSessionsRequest) returns (DeleteSessionsPlan);
+  rpc DeleteSessions(DeleteSessionsRequest) returns (DeleteSessionsResponse);
   // SL-4, LD-11: rebuild an archived-by-forget session on another machine.
   rpc RebuildSession(RebuildSessionRequest) returns (Operation);
   // CH-21.
@@ -162,6 +168,16 @@ message AwayWritesLeftOut {
   google.protobuf.Timestamp at = 5;
 }
 
+// D858: an extra terminal tab of a session (shell or added agent), kept
+// on the daemon so its label and agent survive app restarts and reloads.
+message ShellTab {
+  TabId tab = 1;
+  string label = 2;
+  // Unset for a plain shell tab; set for an agent tab opened through
+  // TerminalService.OpenAgentTab.
+  AgentId agent = 3;
+}
+
 message Session {
   SessionId id = 1;
   ChannelId channel = 2;
@@ -225,6 +241,9 @@ message Session {
   // daemon saw it; kept across daemon restarts. The session tab header
   // shows "Working · 2m 10s" from it. Unset when not known.
   google.protobuf.Timestamp status_since = 35;
+  // D858: extra terminal tabs after the primary agent (oldest first), with
+  // each tab's daemon-kept label and agent kind.
+  repeated ShellTab shell_tabs = 36;
 
   enum SummarySource {
     SUMMARY_SOURCE_UNSPECIFIED = 0;
@@ -519,6 +538,104 @@ message DeleteSessionRequest {
 
 message DeleteSessionResponse {
   TrashItemId trash_item = 1;
+}
+
+// MASSDELETE: what one bulk delete covers.
+message DeleteScope {
+  message Picked { repeated SessionId ids = 1; }
+  oneof scope {
+    Picked sessions = 1;
+    // A channel's or a machine's sessions, live and archived. The desktop
+    // sends its live-only picks as Picked ids instead (D876).
+    ChannelId channel = 2;
+    MachineId machine = 3;
+    // Every channel session, live and archived. Desk sessions are not in
+    // it: the Desk's Clean up deletes them.
+    bool all = 4;
+  }
+}
+
+message PlanDeleteSessionsRequest {
+  DeleteScope scope = 1;
+}
+
+message SessionToDelete {
+  SessionId session = 1;
+  string title = 2;
+  ChannelId channel = 3;
+  MachineId machine = 4;
+  bool archived = 5;
+  repeated UnpushedRepo unpushed = 6;
+  // Agent and shell terminals this delete ends (PER-32: confirming this
+  // plan is the owner ending them).
+  uint32 running_terminals = 7;
+  // Set on a context-only fork pulled in because it works in this parent's
+  // folder (D187).
+  SessionId goes_with = 8;
+  // Each terminal that ends, named with its state ("claude", "zsh"), so
+  // the sheet can say "Ends 2 running terminals: claude (waiting for you),
+  // zsh." running_terminals is their count.
+  repeated TerminalEnding terminals = 9;
+  // A live session whose agent has exited: nothing running, not archived.
+  bool exited = 10;
+}
+
+message TerminalEnding {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_WORKING = 1;
+    STATE_WAITING_FOR_YOU = 2;
+    STATE_IDLE = 3;
+  }
+  string name = 1;
+  State state = 2;
+}
+
+// Sessions on a machine that can't be reached: not deleted.
+message LeftAlone {
+  MachineId machine = 1;
+  // From the host's last pointers (SL-3).
+  repeated SessionWork sessions = 2;
+}
+
+message DeleteSessionsPlan {
+  repeated SessionToDelete sessions = 1;
+  repeated LeftAlone left_alone = 2;
+  // Code forks of a deleted session: they keep their folder and run on.
+  repeated SessionWork forks_staying = 3;
+  uint32 desk_sessions_left_out = 4;
+  PlanToken token = 5;
+  // Scope all: DeleteSessions needs typed_count equal to sessions_size.
+  bool needs_count = 6;
+}
+
+message DeleteSessionsRequest {
+  IdempotencyKey idempotency_key = 1;
+  PlanToken plan = 2;
+  // Without it, any session with unpushed work refuses the whole delete.
+  bool delete_unpushed_work = 3;
+  uint32 typed_count = 4;
+  // Host to session machine only: re-list and answer changed or an empty
+  // Deleted, touching nothing. Lets every machine pass its check before
+  // any machine deletes.
+  bool check_only = 5;
+}
+
+message DeleteSessionsResponse {
+  message Deleted {
+    uint32 sessions = 1;
+    repeated TrashItemId trash_items = 2;
+    Operation operation = 3;
+  }
+  message Changed {
+    DeleteSessionsPlan plan = 1;
+    // In words, e.g. "\"Ledger\" now has 2 unpushed commits".
+    repeated string changes = 2;
+  }
+  oneof result {
+    Deleted deleted = 1;
+    Changed changed = 2;
+  }
 }
 
 message RebuildSessionRequest {
