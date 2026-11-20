@@ -55,6 +55,10 @@ fn starting_a_session_from_the_todo_drawer_opens_the_prefilled_new_session_dialo
     // Suggested and pull-request review items do not offer Start a session on this.
     app.click("todo-row SUG-1");
     assert!(!app.contains("todo-start-session"));
+    // The ranked list runs past the window once the drawer is open. The
+    // list itself is not an observed element, so the wheel goes to the row
+    // just clicked and bubbles up to the list.
+    app.scroll_to("todo-row SUG-1", "todo-row REV-1");
     app.click("todo-row REV-1");
     assert!(app.contains("todo-start-review"));
     assert!(!app.contains("todo-start-session"));
@@ -62,6 +66,8 @@ fn starting_a_session_from_the_todo_drawer_opens_the_prefilled_new_session_dialo
     // A regular item opens the prefilled New session sheet for that item.
     app.click("todo-row PAY-7");
     assert!(app.contains("todo-start-session"));
+    // The footer ends the drawer's scrolling body, below the item's fields.
+    app.scroll_to("todo-due-today", "todo-start-session");
     app.click("todo-start-session");
     assert!(app.contains("new-session-create"));
     app.ui.read(|s| match s.overlay() {

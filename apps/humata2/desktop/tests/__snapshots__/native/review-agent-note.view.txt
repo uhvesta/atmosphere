@@ -94,6 +94,8 @@ Complementary "Diff"
       Button "Send to claude"
       Button "Edit"
       Button "Drop"
+      Button "Add to steps"
+      Button "Spin off To-do"
     #change-line-5
       Button "Comment on line 43"
         text "43"

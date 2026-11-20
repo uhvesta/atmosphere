@@ -5313,3 +5313,9 @@ Frames are in `workflow/milestones/mockups/massdelete/` (m1-1 to m1-4, m2-1 to m
   - Row 1 (`settings-desktop-notifications`): title `"Desktop notifications"`, subtitle `"Post macOS notifications when an agent needs your answer or fails to resume. Quiet while you are looking at that item."`
   - Row 2 (`settings-permission-alerts`): title `"Permission request alerts"`, subtitle `"Show brief in-app toasts for new Agent inbox permission requests. Choose where approvals appear in Agents."`
 - **Reverse:** add per-event UI toggles in `ui/settings/src/settings.rs` backed by the existing `NotifyConfig` flags, flip `finished_turns` or `migrate_items` to `true`, or merge `permission_request_alerts` into `NotifyConfig`.
+
+## D891: Agents on remote machines get the same browser access as a local session (owner, 2026-11-20)
+- **Ruling:** in BROWSER (0.7.0 plan), a session on a remote machine reaches the host Mac's browser with the same switches, grants and Inbox requests as a local session. No extra remote-only gate.
+- **Why:** the owner wants machines to be interchangeable; Fable's review had raised remote tab reads as an owner question.
+- **Still true:** request cards name the machine the agent runs on, like every other request.
+- **Reverse:** add a per-machine browser switch in Settings › Agents, off for remote machines.

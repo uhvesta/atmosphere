@@ -98,6 +98,8 @@ Complementary "Diff"
       Button "Edit"
       text "You · line 43"
       text "Draft"
+      Button "Add to steps"
+      Button "Spin off To-do"
       text "Keep insert_legacy until the backfill ends."
     #change-line-6
       Button "Comment on line 44"

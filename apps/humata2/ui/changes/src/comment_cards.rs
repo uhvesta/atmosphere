@@ -396,10 +396,10 @@ fn todo_hook_links(ui: &Rc<Ui>, look: Look, comment: &Comment, todo_ctx: &TodoHo
         return None;
     }
     let id = &comment.id;
+    // Joins the card's own row of actions, so it adds no line of its own.
     Some(
         row()
             .gap(px(12.))
-            .mt(px(4.))
             .text_size(px(11.))
             .children(add_step.map(|action| {
                 note_action(
@@ -407,7 +407,7 @@ fn todo_hook_links(ui: &Rc<Ui>, look: Look, comment: &Comment, todo_ctx: &TodoHo
                     format!("doc-add-step-{id}"),
                     "Add to steps".to_owned(),
                     action,
-                    look.secondary,
+                    look.accent,
                     false,
                     false,
                 )
@@ -418,7 +418,7 @@ fn todo_hook_links(ui: &Rc<Ui>, look: Look, comment: &Comment, todo_ctx: &TodoHo
                     format!("doc-spin-off-todo-{id}"),
                     "Spin off To-do".to_owned(),
                     action,
-                    look.secondary,
+                    look.accent,
                     false,
                     false,
                 )
@@ -492,6 +492,7 @@ fn agent_github_draft(
         .child(text(comment.text.clone()))
         .child(
             row()
+                .flex_wrap()
                 .gap(px(16.))
                 .mt(px(8.))
                 .child(note_action(
@@ -511,9 +512,9 @@ fn agent_github_draft(
                     look.accent,
                     false,
                     true,
-                )),
+                ))
+                .children(todo_hook_links(ui, look, comment, todo_ctx)),
         )
-        .children(todo_hook_links(ui, look, comment, todo_ctx))
 }
 
 /// The orange of a note (UXSIMPLE 3-4).
@@ -603,6 +604,7 @@ fn agent_note(
         .child(text(comment.text.clone()))
         .child(
             row()
+                .flex_wrap()
                 .gap(px(16.))
                 .mt(px(8.))
                 .child(note_action(
@@ -632,9 +634,9 @@ fn agent_note(
                     look.accent,
                     false,
                     true,
-                )),
+                ))
+                .children(todo_hook_links(ui, look, comment, todo_ctx)),
         )
-        .children(todo_hook_links(ui, look, comment, todo_ctx))
 }
 
 fn plain_card(
@@ -678,6 +680,7 @@ fn plain_card(
         .test_support()
         .child(
             row()
+                .flex_wrap()
                 .gap(px(if quiet { 8. } else { 6. }))
                 .child(text(if quiet { who.to_owned() } else { title }).font_weight(FontWeight::SEMIBOLD))
                 .children(label.map(|label| if quiet { done_chip(look, label) } else { chip(look, label) }))
@@ -715,7 +718,14 @@ fn plain_card(
                             cx.stop_propagation();
                             ui.send(action.clone(), cx);
                         })
-                })),
+                }))
+                .children(
+                    (!github_draft)
+                        .then(|| todo_hook_links(ui, look, comment, todo_ctx))
+                        .flatten()
+                        // On a narrow card they wrap to their own line, at the right.
+                        .map(|links| links.flex_none().ml_auto()),
+                ),
         )
         .child(text(comment.text.clone()))
         .children(state.done.then(|| agent_reply(comment)).flatten().map(|(who, said)| {
@@ -749,8 +759,8 @@ fn plain_card(
                         look,
                     )
                 }))
+                .children(todo_hook_links(ui, look, comment, todo_ctx).map(|links| links.ml(px(6.))))
         }))
-        .children(todo_hook_links(ui, look, comment, todo_ctx))
         .children(comment.anchor.detached.then(|| {
             let start = start_reattach.clone();
             let again = id.clone();

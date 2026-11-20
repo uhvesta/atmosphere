@@ -78,6 +78,26 @@ fn top_line(app: &mut App) -> (u32, f32) {
         .expect("window stays open")
 }
 
+/// The first line wholly in view and its top, relative to the code view.
+/// Cards above the view may reflow when its width changes; what is on
+/// screen is what must stay put.
+fn first_visible_line(app: &mut App) -> (u32, f32) {
+    app.draw();
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let view = window.find(VIEW).bounds();
+            (0..LINES)
+                .find_map(|n| {
+                    let line = window.try_find(gpui_kit::SharedString::from(format!("change-line-{n}")))?;
+                    let top = f32::from(line.bounds().origin.y - view.origin.y);
+                    (top >= 0.).then_some((n, top))
+                })
+                .expect("a line of the code view is in view")
+        })
+        .expect("window stays open")
+}
+
 /// Scrolls the code view down by `pixels`.
 fn scroll_code(app: &mut App, pixels: f32) {
     app.cx
@@ -166,8 +186,8 @@ fn show_the_terminal_keeps_the_line_scroll_drafts_and_open_box() {
     scroll_code(&mut app, 600.);
     open_box(&mut app, "ledger", 45, "Second thought on this.");
     assert!(app.contains("doc-comment-box"));
-    let scrolled = top_line(&mut app);
-    assert!(scrolled.0 > 0, "the code scrolled down");
+    let scrolled = first_visible_line(&mut app);
+    assert!(scrolled.0 > 1, "the code scrolled down");
     let drafts = app
         .ui
         .read(|state| state.comments.sendable(&SessionId::new("ledger")).len());
@@ -176,11 +196,11 @@ fn show_the_terminal_keeps_the_line_scroll_drafts_and_open_box() {
     app.click("show-terminal");
     assert!(app.contains("expand-panel"));
     assert!(app.contains(VIEW), "the same file is shown");
-    let back = top_line(&mut app);
-    assert_eq!(back.0, scrolled.0, "the scroll line is kept");
+    let back = first_visible_line(&mut app);
+    assert_eq!(back.0, scrolled.0, "the line at the top of the view is kept");
     assert!(
         (back.1 - scrolled.1).abs() < 0.5,
-        "the scroll offset is kept"
+        "the scroll offset is kept: {back:?} vs {scrolled:?}"
     );
     let after = app
         .ui

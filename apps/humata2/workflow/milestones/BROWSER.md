@@ -11,6 +11,7 @@
   - be undoable through `UninstallBrowserHost`;
   - touch only the native-messaging manifest it owns;
   - never touch `~/.claude`, `~/.codex`, `~/.copilot` or `~/.gemini`.
+- **Remote machines (owner, 2026-11-20, D891).** An agent on a remote machine gets the same browser access to the host Mac as a local session: the same switches, the same read and write grants, the same Inbox requests. The request card still names the machine the agent runs on, as it does for any other request.
 - **Tests.** Use a fake browser home in a temp dir for every install test. Nothing may write to the real browser folders during tests.
 
 ## Brief (owner, 2026-11-20, as given)

@@ -2022,10 +2022,11 @@ pub(crate) fn drawer(
             .child(body.min_w_0())
     };
     let seg = |id: &'static str, options: Vec<(String, bool, A)>| {
-        row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(options.into_iter().map(
+        // Wraps inside a narrow panel instead of clipping its last choices.
+        row().flex_wrap().min_w_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(options.into_iter().map(
             move |(name, on, action)| {
                 let inner = div()
-                    .px(px(10.))
+                    .px(px(if narrow { 7. } else { 10. }))
                     .py(px(2.))
                     .rounded(px(5.))
                     .text_size(px(12.))
@@ -2219,8 +2220,10 @@ pub(crate) fn drawer(
                 .child(if editing(EditField::Due) {
                     edit_input("fri, nov 28, or 2026-12-01").into_any_element()
                 } else if narrow {
-                    col()
-                        .gap(px(4.))
+                    // One wrapping row, so an undated item leaves room for its steps.
+                    row()
+                        .flex_wrap()
+                        .gap(px(8.))
                         .child(
                             row()
                                 .gap(px(10.))
@@ -2230,7 +2233,7 @@ pub(crate) fn drawer(
                                     "Type a due date",
                                     A::StartEdit(key.clone(), EditField::Due),
                                     row()
-                                        .w(px(150.))
+                                        .w(px(120.))
                                         .flex_shrink(1.)
                                         .min_w_0()
                                         .px(px(8.))
@@ -2259,6 +2262,7 @@ pub(crate) fn drawer(
                         .child(
                             row()
                                 .gap(px(8.))
+                                .flex_none()
                                 .child(link(send, "todo-due-today", "Today", A::SetDue(key.clone(), state.today), look))
                                 .child(link(
                                     send,
@@ -2266,14 +2270,9 @@ pub(crate) fn drawer(
                                     "Tomorrow",
                                     A::SetDue(key.clone(), state.today.add_days(1)),
                                     look,
-                                ))
-                                .child(link(
-                                    send,
-                                    "todo-due-week",
-                                    "Next week",
-                                    A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
-                                    look,
                                 )),
+                        // No exact "Next week" here: the loose chip of that
+                        // name sits just below in the narrow panel.
                         )
                         .into_any_element()
                 } else {
@@ -2301,13 +2300,8 @@ pub(crate) fn drawer(
                             A::SetDue(key.clone(), state.today.add_days(1)),
                             look,
                         ))
-                        .child(link(
-                            send,
-                            "todo-due-week",
-                            "Next week",
-                            A::SetDue(key.clone(), state.today.next_weekday(Weekday::Mon)),
-                            look,
-                        ))
+                        // No exact "Next week": the loose chip of that name
+                        // sits on the next line.
                         .children((t.due.is_some() || t.fuzzy_due.is_some()).then(|| {
                             link(
                                 send,

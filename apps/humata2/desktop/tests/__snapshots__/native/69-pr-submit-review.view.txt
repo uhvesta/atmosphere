@@ -84,6 +84,7 @@ Complementary "Diff"
         text "round() can refund a cent more than was captured."
         Button "Edit"
         Button "Drop"
+        Button "Spin off To-do"
       #change-line-3
         Button "Comment on line 141"
           text "141"
