@@ -57,11 +57,13 @@ struct Asks {
 }
 
 /// Sessions whose dialog is up, so their output reads the screen again, and
-/// those with a read already due.
+/// those with a read already due. Also tracks the last `(holder_pid, end)`
+/// inspected per session so unchanged screens are not rebuilt.
 #[derive(Default)]
 struct Watching {
     asking: HashSet<String>,
     due: HashSet<String>,
+    last_seen: HashMap<String, (u32, u64)>,
 }
 
 /// A dialog a session's screen shows, and the hold on its Needs you.
@@ -135,7 +137,9 @@ impl ScreenAsk {
         tokio::spawn(async move {
             let mut open = asks.open.lock().await;
             open.remove(&session);
-            asks.watching().asking.remove(&session);
+            let mut watching = asks.watching();
+            watching.asking.remove(&session);
+            watching.last_seen.remove(&session);
         });
     }
 }
@@ -197,8 +201,27 @@ impl Asks {
         let Some(tab) = self.agent_tab(session, holder_pid).await else {
             return;
         };
-        let Ok(screen) = self.holders.screen_at(&tab.holder_socket).await else {
-            return;
+        let last_end = if heard {
+            None
+        } else {
+            self.watching()
+                .last_seen
+                .get(session)
+                .filter(|(pid, _)| *pid == holder_pid)
+                .map(|(_, end)| *end)
+        };
+        let screen = match self
+            .holders
+            .screen_for_tab(&tab.id, &tab.holder_socket, last_end)
+            .await
+        {
+            Ok(Some((end, screen))) => {
+                self.watching()
+                    .last_seen
+                    .insert(session.to_owned(), (holder_pid, end));
+                screen
+            }
+            Ok(None) | Err(_) => return,
         };
         // D864: an offer (Claude's auto-mode tip) only stops the input
         // gate; it holds no Needs you.

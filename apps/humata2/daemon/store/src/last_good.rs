@@ -106,6 +106,28 @@ fn mtime_unix_ms(path: &Path) -> Option<i64> {
     i64::try_from(since.as_millis()).ok()
 }
 
+/// Opens a dedicated query-only connection to `database` and writes a
+/// snapshot to `root/last-good.sqlite`, so normal writes on the main
+/// connection do not block while `VACUUM INTO`, integrity checking, and
+/// syncing run. Callers must hold `maintenance_lock` to serialize with
+/// `sweep()`.
+pub(crate) fn save_from_path(database: &Path, root: &Path) -> Result<LastGood, StoreError> {
+    let connection = Connection::open(database).map_err(|source| StoreError::Open {
+        path: database.to_owned(),
+        source,
+    })?;
+    connection
+        .execute_batch(
+            "PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -2000;",
+        )
+        .map_err(|source| StoreError::Open {
+            path: database.to_owned(),
+            source,
+        })?;
+    save(&connection, root)
+}
+
 /// Writes a snapshot of `connection`'s database to `root/last-good.sqlite`:
 /// to a temp file, checked whole, fsynced, renamed over the one before,
 /// and the folder fsynced. A copy that doesn't check out is removed and the
@@ -295,6 +317,7 @@ pub(crate) fn restore(root: &Path, database: &Path, damage: String) -> Result<Re
     move_aside(root, database, &damaged)?;
     fault::point("store.restore.moved");
     place(&temp, database, root)?;
+    prune_kept(root);
     Ok(restored(&copy, damaged, damage))
 }
 
@@ -445,6 +468,7 @@ impl crate::Store {
         move_aside(root, &database, &replaced_kept_at)?;
         fault::point("store.upgrade_restore.moved");
         place(&temp, &database, root)?;
+        prune_kept(root);
         Ok(UpgradeRestored {
             schema,
             replaced_kept_at,
@@ -479,6 +503,35 @@ impl crate::Store {
 
 /// Where the damaged databases restores moved aside are kept, by when.
 const DAMAGED: &str = "damaged-";
+
+/// How many newest `damaged-*` and `upgraded-*` backup folders to retain
+/// for each prefix (at least 2).
+const KEEP_BACKUPS: usize = 2;
+
+/// Best-effort pruning of old `damaged-*` and `upgraded-*` folders in `root`,
+/// keeping at least the newest [`KEEP_BACKUPS`] of each prefix.
+pub(crate) fn prune_kept(root: &Path) {
+    for prefix in [DAMAGED, UPGRADED] {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        let mut kept: Vec<(u64, PathBuf)> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let at: u64 = name.to_str()?.strip_prefix(prefix)?.parse().ok()?;
+                Some((at, entry.path()))
+            })
+            .collect();
+        if kept.len() <= KEEP_BACKUPS {
+            continue;
+        }
+        kept.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        for (_, path) in kept.into_iter().skip(KEEP_BACKUPS) {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
 
 fn file_name(database: &Path) -> std::ffi::OsString {
     database.file_name().map_or_else(|| "state.sqlite".into(), ToOwned::to_owned)

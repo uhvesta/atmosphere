@@ -140,11 +140,12 @@ async fn a_bridge_with_no_daemon_starts_one_that_outlives_it() {
     let channel = channel_over(bridge.stdout.take().unwrap(), bridge.stdin.take().unwrap()).await;
 
     // The started daemon is a release one: a call with no credential gets
-    // only WhoAmI, which shows no one; the bridge lends it no identity.
+    // no actor on WhoAmI and is refused gated/mutating calls; the bridge
+    // lends it no identity.
     let me = who_am_i(channel.clone()).await;
     assert!(me.actor.is_none());
-    let refused = pb::daemon_service_client::DaemonServiceClient::new(channel.clone())
-        .get_server_info(pb::GetServerInfoRequest {})
+    let refused = pb::terminal_service_client::TerminalServiceClient::new(channel.clone())
+        .open_machine_shell(pb::OpenMachineShellRequest::default())
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Code::Unauthenticated);

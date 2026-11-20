@@ -986,6 +986,10 @@ impl Render for Shell {
                     )
                 },
             )
+            .children(
+                self.ui
+                    .read(|state| crate::channel::delete_modal(&ui, state, look)),
+            )
             .child(self.overlays.clone())
             .child(self.reports.clone())
             .map(|root| crate::report_view::actions(root, &self.ui))
@@ -1001,6 +1005,8 @@ fn escape_closes_something(state: &humata2_app::AppState) -> bool {
         || state.navigation_overlay
         || state.settings.font_menu
         || state.settings.desk_rows_menu
+        || state.settings.repos.adding_repo
+        || state.channel_menu
         || state.session.terminal_menu.is_some()
         || state.session.menu
         || state.hosts.start_confirm.is_some()

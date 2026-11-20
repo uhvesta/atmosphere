@@ -2,6 +2,7 @@
 //! compiles standalone without importing sibling services from `humatad`.
 
 use std::ffi::OsString;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::Refusal;
@@ -122,7 +123,7 @@ pub trait HolderTokensPort: Send + Sync {
 
 /// Subscribes to daemon events so the holder tracker notices session changes.
 pub trait HolderEventsPort: Send + Sync {
-    fn subscribe(&self) -> broadcast::Receiver<pb::Event>;
+    fn subscribe(&self) -> broadcast::Receiver<Arc<pb::Event>>;
 }
 
 /// Waits until daemon startup finishes before scanning running holders.

@@ -85,6 +85,16 @@ pub enum RollbackError {
     },
 
     #[error(
+        "couldn't remove the settled previous file {}: {source}; it only takes disk room, and the next upgrade replaces it",
+        .path.display()
+    )]
+    RemovePrevious {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "couldn't put the previous {} back in {}, so the upgrade was not undone. Check that your user can write in that folder and start humatad2 again; don't swap the files by hand",
         .previous.display(),
         .installed.display()
@@ -139,6 +149,28 @@ pub fn at_start(state: &Path, bin: &Path, release: &Release) -> Result<Start, Ro
 pub fn drop_copy(folder: &UpgradeFolder, upgrade_id: &str) -> Result<(), RollbackError> {
     Store::drop_upgrade_copy(folder.state().join("store"), upgrade_id).map_err(|source| RollbackError::DropCopy {
         upgrade_id: upgrade_id.to_owned(),
+        source,
+    })
+}
+
+/// Removes the `.previous` copies kept for rollback once an upgrade has
+/// settled and its pre-upgrade store copy has been dropped, then syncs `bin`.
+pub fn remove_previous(bin: &Path) -> Result<(), RollbackError> {
+    for name in kept_files() {
+        let previous = bin.join(kept_name(name));
+        match std::fs::remove_file(&previous) {
+            Ok(()) => {}
+            Err(source) if source.kind() == ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(RollbackError::RemovePrevious {
+                    path: previous,
+                    source,
+                });
+            }
+        }
+    }
+    humata2_durable::sync_dir(bin).map_err(|source| RollbackError::RemovePrevious {
+        path: bin.to_owned(),
         source,
     })
 }

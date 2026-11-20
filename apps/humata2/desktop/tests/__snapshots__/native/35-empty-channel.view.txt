@@ -17,7 +17,7 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 Button "New session"
-Button "More channel actions" disabled
+Button "More channel actions"
 Tab "Sessions" selected
 Tab "Desk"
 Tab "Agent inbox"

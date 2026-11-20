@@ -6,7 +6,8 @@
 //! The trash folder is opened the first time it is needed, so one that
 //! can't be used (a full disk, wrong permissions) fails the calls that need
 //! it and never stops the daemon. Items 30 days old are removed whenever
-//! the trash is used and once at start ([`Bin::sweep`]), with no timer.
+//! the trash is used, once at start ([`Bin::sweep`]), and periodically in
+//! the background ([`Bin::start_periodic_sweep`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,9 @@ const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 
 /// Between two sweeps of items past their 30 days.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
+
+/// How often the background sweeper runs [`Bin::sweep`] on a blocking thread.
+const PERIODIC_SWEEP: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Items per page when the caller names no size.
 const PAGE_DEFAULT: usize = 100;
@@ -117,6 +121,22 @@ impl Bin {
         if let Err(status) = self.get() {
             crate::log::say!("humatad2: {}", status.message());
         }
+    }
+
+    /// Periodically sweeps expired trash items on a blocking thread so an
+    /// otherwise unused trash still reclaims space after 30 days.
+    pub(crate) fn start_periodic_sweep(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let bin = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(PERIODIC_SWEEP);
+            // The startup sweep runs immediately; wait one full period first.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let sweep_bin = bin.clone();
+                let _ = tokio::task::spawn_blocking(move || sweep_bin.sweep()).await;
+            }
+        })
     }
 }
 

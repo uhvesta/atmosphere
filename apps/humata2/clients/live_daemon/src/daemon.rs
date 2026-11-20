@@ -8,9 +8,9 @@ use humata2_clients::model::{
     RuleSetting, Scope, SessionId, SessionOptions, SetupId, TransferId,
 };
 use humata2_clients::{
-    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, HolderTab, PastTurn,
-    Reply, RunningHolder, SwitchChange, UnpushedWork,
-    Workspace,
+    AgentSwitch, ArchivePlan, ChannelSessionWork, Daemon, DaemonError, DeleteChannelPlan,
+    DeleteChannelRequest, DeleteChannelResponse, Event, Events, ForkOptions, HolderTab, PastTurn,
+    Reply, RunningHolder, SwitchChange, UnpushedWork, Workspace,
 };
 use humata2_clients::mass_delete::{DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan};
 use crate::humata2_grpc::humata::v1 as pb;
@@ -785,6 +785,97 @@ impl Shared {
             .map_err(|status| self.error(&status, "The message"))?;
         Ok(())
     }
+
+    async fn plan_delete_channel(
+        &self,
+        channel: ChannelId,
+    ) -> Result<DeleteChannelPlan, DaemonError> {
+        const WHAT: &str = "Planning the channel delete";
+        let plan = self
+            .channels()
+            .plan_delete_channel(pb::PlanDeleteChannelRequest {
+                channel: Some(pb::ChannelId {
+                    value: channel.as_str().to_owned(),
+                }),
+            })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?
+            .into_inner();
+        let token = plan
+            .token
+            .map(|token| token.value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon didn't give a token for the plan. Plan the delete again"
+                    .to_owned(),
+            })?;
+        Ok(DeleteChannelPlan {
+            channel: plan
+                .channel
+                .as_ref()
+                .map(|id| map::channel_id(Some(id)))
+                .unwrap_or(channel),
+            live_sessions: plan
+                .live_sessions
+                .into_iter()
+                .map(|work| ChannelSessionWork {
+                    session: map::session_id(work.session.as_ref()),
+                    title: work.title,
+                    dirty_files: work.dirty_files,
+                    unpushed_commits: work.unpushed_commits,
+                })
+                .collect(),
+            archived_sessions: plan.archived_sessions,
+            board_items: plan.board_items,
+            pending_requests: plan.pending_requests,
+            token,
+            moves_to_desk: plan
+                .moves_to_desk
+                .into_iter()
+                .map(|id| map::session_id(Some(&id)))
+                .collect(),
+            cannot_move_count: u32::try_from(plan.cannot_move.len()).unwrap_or(u32::MAX),
+            offline_machines: plan
+                .offline_machines
+                .into_iter()
+                .map(|id| map::machine_id(Some(&id)))
+                .collect(),
+        })
+    }
+
+    async fn delete_channel(
+        &self,
+        request: DeleteChannelRequest,
+    ) -> Result<DeleteChannelResponse, DaemonError> {
+        const WHAT: &str = "Deleting the channel";
+        let reply = self
+            .channels()
+            .delete_channel(pb::DeleteChannelRequest {
+                idempotency_key: fresh_key(),
+                channel: Some(pb::ChannelId {
+                    value: request.channel.as_str().to_owned(),
+                }),
+                plan: Some(pb::PlanToken {
+                    value: request.plan_token,
+                }),
+                presence: None,
+                delete_unpushed_work: request.delete_work,
+                end_live: request.end_live,
+            })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?
+            .into_inner();
+        if let Some(operation) = reply.operation {
+            self.finish(operation, WHAT).await?;
+        }
+        Ok(DeleteChannelResponse {
+            trash_item: reply
+                .trash_item
+                .map(|item| item.value)
+                .unwrap_or_default(),
+        })
+    }
 }
 
 pub(crate) use humata2_clients_live_core::bad_repo;
@@ -1172,6 +1263,17 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.create_channel(name, repos, machines).await })
     }
 
+    fn plan_delete_channel(&self, channel: &ChannelId) -> Reply<DeleteChannelPlan> {
+        let shared = self.shared.clone();
+        let channel = channel.clone();
+        Box::pin(async move { shared.plan_delete_channel(channel).await })
+    }
+
+    fn delete_channel(&self, request: DeleteChannelRequest) -> Reply<DeleteChannelResponse> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.delete_channel(request).await })
+    }
+
     fn add_repo_to_channel(&self, channel: &ChannelId, repo: &str) -> Reply<()> {
         let shared = self.shared.clone();
         let (channel, repo) = (channel.clone(), repo.to_owned());
@@ -1198,6 +1300,12 @@ impl Daemon for LiveDaemon {
     fn repo_library(&self) -> Reply<Vec<humata2_clients::repos::LibraryRepo>> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.repo_library().await })
+    }
+
+    fn add_to_repo_library(&self, repo: &str) -> Reply<Vec<humata2_clients::repos::LibraryRepo>> {
+        let shared = self.shared.clone();
+        let repo = repo.to_owned();
+        Box::pin(async move { shared.add_to_repo_library(&repo).await })
     }
 
     fn remove_from_repo_library(&self, repo: &str) -> Reply<Vec<humata2_clients::repos::LibraryRepo>> {

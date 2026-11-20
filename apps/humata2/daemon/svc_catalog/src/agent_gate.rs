@@ -121,11 +121,18 @@ pub fn switches(agents: &Agents) -> Option<AgentSwitches> {
 /// Refuses `kind` when the person turned it off.
 pub fn enabled(agents: &Agents, kind: &str) -> Result<(), GateError> {
     match switches(agents) {
-        Some(switches) if !switches.enabled(kind) => Err(GateError::Disabled {
-            display: agents.person_name(kind),
-        }),
-        _ => Ok(()),
+        Some(switches) => enabled_in(&switches, agents, kind),
+        None => Ok(()),
     }
+}
+
+fn enabled_in(switches: &AgentSwitches, agents: &Agents, kind: &str) -> Result<(), GateError> {
+    if !switches.enabled(kind) {
+        return Err(GateError::Disabled {
+            display: agents.person_name(kind),
+        });
+    }
+    Ok(())
 }
 
 /// What a start on this machine needs before it can run the agent.
@@ -137,7 +144,7 @@ pub fn check(agents: &Agents, kind: &str) -> Result<bool, GateError> {
     let Some(switches) = switches(agents) else {
         return Ok(false);
     };
-    enabled(agents, kind)?;
+    enabled_in(&switches, agents, kind)?;
     let Ok(found) = agents.get(kind) else {
         return Ok(false);
     };

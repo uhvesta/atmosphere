@@ -15,8 +15,8 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io::{self, Read};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -242,6 +242,42 @@ impl HostVars {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileStamp {
+    Missing,
+    Present {
+        ino: u64,
+        size: u64,
+        mtime: i64,
+        mtime_nsec: i64,
+        ctime: i64,
+        ctime_nsec: i64,
+    },
+}
+
+impl FileStamp {
+    fn from_meta(meta: &std::fs::Metadata) -> Self {
+        Self::Present {
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            ctime: meta.ctime(),
+            ctime_nsec: meta.ctime_nsec(),
+        }
+    }
+}
+
+/// Cached host variables validated by `stat`; custom `Debug` never prints values.
+#[derive(Default)]
+struct CachedVars(Mutex<Option<(FileStamp, BTreeMap<String, String>)>>);
+
+impl std::fmt::Debug for CachedVars {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CachedVars(..)")
+    }
+}
+
 /// The values in one file in the machine's `secrets` folder: the folder is
 /// 0700 and the file 0600, written whole and put on disk before it replaces
 /// the old one. Writers hold a lock on a file beside it from reading to
@@ -254,6 +290,8 @@ pub(crate) struct FileStore {
     lock: PathBuf,
     /// Writers in this process take turns (the file lock is per open file).
     writing: Mutex<()>,
+    /// Last validated snapshot, checked via `stat` on every read (SEC-1).
+    cache: CachedVars,
 }
 
 impl FileStore {
@@ -266,6 +304,7 @@ impl FileStore {
             lock: folder.join(LOCK),
             folder,
             writing: Mutex::new(()),
+            cache: CachedVars::default(),
         }
     }
 
@@ -299,18 +338,76 @@ impl FileStore {
         Ok(file)
     }
 
+    fn invalidate_cache(&self) {
+        *self.cache.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     fn load(&self) -> Result<BTreeMap<String, String>, HostVarsError> {
-        match std::fs::read(&self.file) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| HostVarsError::Damaged {
-                path: self.file.clone(),
-                source,
-            }),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-            Err(source) => Err(HostVarsError::Read {
-                path: self.file.clone(),
-                source,
-            }),
+        // SEC-1: validate the cache via `stat` and fail closed on any stat/read/parse error.
+        let stamp = match std::fs::metadata(&self.file) {
+            Ok(meta) => FileStamp::from_meta(&meta),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => FileStamp::Missing,
+            Err(source) => {
+                self.invalidate_cache();
+                return Err(HostVarsError::Read {
+                    path: self.file.clone(),
+                    source,
+                });
+            }
+        };
+        {
+            let guard = self.cache.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((cached_stamp, cached_map)) = guard.as_ref()
+                && *cached_stamp == stamp
+            {
+                return Ok(cached_map.clone());
+            }
         }
+        if stamp == FileStamp::Missing {
+            *self.cache.0.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some((FileStamp::Missing, BTreeMap::new()));
+            return Ok(BTreeMap::new());
+        }
+        let mut file = match std::fs::File::open(&self.file) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.invalidate_cache();
+                return Ok(BTreeMap::new());
+            }
+            Err(source) => {
+                self.invalidate_cache();
+                return Err(HostVarsError::Read {
+                    path: self.file.clone(),
+                    source,
+                });
+            }
+        };
+        let meta = file.metadata().map_err(|source| {
+            self.invalidate_cache();
+            HostVarsError::Read {
+                path: self.file.clone(),
+                source,
+            }
+        })?;
+        let actual_stamp = FileStamp::from_meta(&meta);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|source| {
+            self.invalidate_cache();
+            HostVarsError::Read {
+                path: self.file.clone(),
+                source,
+            }
+        })?;
+        let parsed: BTreeMap<String, String> = serde_json::from_slice(&bytes).map_err(|source| {
+            self.invalidate_cache();
+            HostVarsError::Damaged {
+                path: self.file.clone(),
+                source,
+            }
+        })?;
+        *self.cache.0.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((actual_stamp, parsed.clone()));
+        Ok(parsed)
     }
 
     /// Writes the whole file beside the old one and puts it on disk before it
@@ -337,10 +434,12 @@ impl FileStore {
             crate::fault::point("host_variables.renamed");
             humata2_durable::sync_dir(&self.folder)
         };
-        write().map_err(|source| {
+        let result = write().map_err(|source| {
             let _ = humata2_durable::remove_file(&temporary);
             failed(source)
-        })
+        });
+        self.invalidate_cache();
+        result
     }
 }
 

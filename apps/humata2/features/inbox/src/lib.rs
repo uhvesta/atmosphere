@@ -157,6 +157,12 @@ pub struct InboxState {
     pub details: BTreeSet<RequestId>,
     /// The requests Ask why was sent for and whose request is not back yet.
     pub asking: BTreeSet<RequestId>,
+    /// Whether the app should automatically trigger a waiting local daemon
+    /// migration for This Mac (enabled by the live desktop app on launch).
+    pub auto_migrate_local: bool,
+    /// `(machine, staged_bundle)` pairs already auto-migrated in this run so a
+    /// failure surfaces in the Inbox instead of looping infinitely.
+    pub auto_migrated: BTreeSet<(MachineId, String)>,
 }
 
 /// How many requests wait for an answer. The sidebar's Inbox badge and Home's
@@ -550,6 +556,9 @@ pub enum InboxAction {
     /// a release is staged (`Some`), or it no longer needs the app's own
     /// item (`None`).
     OldLocalDaemon(Option<OldLocalDaemon>),
+    /// From the live desktop app on launch: automatically trigger a waiting
+    /// local daemon migration for This Mac once per `(machine, staged_bundle)`.
+    EnableAutoMigrateLocal,
     /// Show or hide the rest of a Migrate card's "What changes" list.
     ToggleChanges(RequestId),
     /// "Somewhere else…" on a copy card: open the Files page on the machine
@@ -625,6 +634,59 @@ impl Inbox {
             let result = daemon.answer(&id, Answer::Approved).await;
             InboxAction::Answered(id, result)
         })
+    }
+
+    /// Triggers a waiting local daemon migration for This Mac once per
+    /// `(machine, staged_bundle)` when auto-migration is enabled.
+    fn auto_migrate_local_if_needed(&self, state: &mut InboxState) -> Effect<InboxAction> {
+        if !state.auto_migrate_local {
+            return Effect::none();
+        }
+        // 1. The app's own item for an old local daemon (!reports_build).
+        let candidate = state
+            .own_item()
+            .and_then(|request| {
+                let card = request.migrate()?;
+                (request.answer.is_none()
+                    && card.thing == MigrateThing::Daemon
+                    && card.phase == MigratePhase::Waiting
+                    && !state.migrating.contains(&request.id)
+                    && !card.to.bundle.is_empty()
+                    && !state
+                        .auto_migrated
+                        .contains(&(card.machine.clone(), card.to.bundle.clone())))
+                .then(|| (request.id.clone(), card.machine.clone(), card.to.bundle.clone()))
+            })
+            // 2. A daemon-held Migrate item for This Mac's daemon from an older
+            // running daemon that doesn't auto-migrate itself.
+            .or_else(|| {
+                state.workspace.requests.iter().find_map(|request| {
+                    if request.kind != RequestKind::Migrate
+                        || request.answer.is_some()
+                        || state.migrating.contains(&request.id)
+                    {
+                        return None;
+                    }
+                    let card = request.migrate()?;
+                    if card.thing != MigrateThing::Daemon
+                        || card.phase != MigratePhase::Waiting
+                        || card.to.bundle.is_empty()
+                        || card.from.bundle == card.to.bundle
+                        || !state.workspace.machine(&card.machine).is_some_and(is_this_mac)
+                        || state
+                            .auto_migrated
+                            .contains(&(card.machine.clone(), card.to.bundle.clone()))
+                    {
+                        return None;
+                    }
+                    Some((request.id.clone(), card.machine.clone(), card.to.bundle.clone()))
+                })
+            });
+        let Some((id, machine, bundle)) = candidate else {
+            return Effect::none();
+        };
+        state.auto_migrated.insert((machine, bundle));
+        self.migrate(state, id)
     }
 
     fn reveal_path(&self, state: &InboxState, machine: &MachineId, path: String) -> Effect<InboxAction> {
@@ -744,6 +806,7 @@ impl Reducer for Inbox {
             InboxAction::Show(workspace) => {
                 state.workspace = workspace;
                 state.select_visible();
+                return self.auto_migrate_local_if_needed(state);
             }
             InboxAction::SetFilter(filter) => {
                 state.filter = filter;
@@ -828,6 +891,11 @@ impl Reducer for Inbox {
                     }
                 }
                 state.select_visible();
+                return self.auto_migrate_local_if_needed(state);
+            }
+            InboxAction::EnableAutoMigrateLocal => {
+                state.auto_migrate_local = true;
+                return self.auto_migrate_local_if_needed(state);
             }
             InboxAction::ToggleChanges(id) => {
                 let foldable = state
@@ -963,7 +1031,7 @@ impl Reducer for Inbox {
                 state.migrating.remove(&id);
                 match result {
                     Err(error) => {
-                        if own {
+                        if migrate {
                             state.set_phase(&id, MigratePhase::Failed(failure(&error)));
                         }
                         state.error = Some(error.to_string());

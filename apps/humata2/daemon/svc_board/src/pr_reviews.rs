@@ -206,57 +206,78 @@ impl BoardSvc {
         items.sort_by_key(|entry| entry.state() == State::Closed);
         let matched = match_items(&groups, &items);
         let mut done = ReviewSync::default();
+        let mut pending: Vec<(String, ReviewRow, bool)> = Vec::new();
 
-        for (group, at) in groups.iter().zip(&matched) {
-            match at.map(|i| items[i]) {
-                None => {
-                    self.add_review_item(&user, group, now)?;
-                    done.created += 1;
-                }
-                Some(entry) => {
-                    let reopen = entry.state() == State::Closed;
-                    let row = group.row();
-                    let new_row = entry.fields.review.as_ref() != Some(&row);
-                    let retitle = entry.record.title != group.title;
-                    if !(reopen || new_row || retitle) {
-                        continue;
+        let outcome = (|| -> Result<(), Status> {
+            for (group, at) in groups.iter().zip(&matched) {
+                match at.map(|i| items[i]) {
+                    None => {
+                        let key = self.add_review_item(&user, group, now)?;
+                        pending.push((key, group.row(), false));
+                        done.created += 1;
                     }
-                    let key = entry.record.key.clone();
-                    if reopen || retitle {
-                        let patch = pb::TodoPatch {
-                            title: retitle.then(|| group.title.clone()),
-                            state: reopen.then_some(pb::TodoState::Open as i32),
-                            ..Default::default()
-                        };
-                        self.patch_review_item(&user, &key, patch, now)?;
-                    }
-                    if new_row {
-                        self.keep_review(&user, &key, row, true)?;
-                    }
-                    if reopen {
-                        done.reopened += 1;
-                    } else {
-                        done.updated += 1;
+                    Some(entry) => {
+                        let reopen = entry.state() == State::Closed;
+                        let row = group.row();
+                        let new_row = entry.fields.review.as_ref() != Some(&row);
+                        let retitle = entry.record.title != group.title;
+                        if !(reopen || new_row || retitle) {
+                            continue;
+                        }
+                        let key = entry.record.key.clone();
+                        if reopen || retitle {
+                            let patch = pb::TodoPatch {
+                                title: retitle.then(|| group.title.clone()),
+                                state: reopen.then_some(pb::TodoState::Open as i32),
+                                ..Default::default()
+                            };
+                            self.patch_review_item(&user, &key, patch, now)?;
+                        }
+                        if new_row {
+                            pending.push((key, row, true));
+                        }
+                        if reopen {
+                            done.reopened += 1;
+                        } else {
+                            done.updated += 1;
+                        }
                     }
                 }
             }
-        }
 
-        for (i, entry) in items.iter().enumerate() {
-            if matched.contains(&Some(i)) || entry.state() == State::Closed {
-                continue;
+            for (i, entry) in items.iter().enumerate() {
+                if matched.contains(&Some(i)) || entry.state() == State::Closed {
+                    continue;
+                }
+                let patch = pb::TodoPatch {
+                    state: Some(pb::TodoState::Closed as i32),
+                    ..Default::default()
+                };
+                self.patch_review_item(&user, &entry.record.key, patch, now)?;
+                done.closed += 1;
             }
-            let patch = pb::TodoPatch {
-                state: Some(pb::TodoState::Closed as i32),
-                ..Default::default()
-            };
-            self.patch_review_item(&user, &entry.record.key, patch, now)?;
-            done.closed += 1;
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => {
+                self.flush_reviews(&user, pending)?;
+                Ok(done)
+            }
+            Err(error) => {
+                // Flush any review rows already created/updated before returning the error.
+                let _ = self.flush_reviews(&user, pending);
+                Err(error)
+            }
         }
-        Ok(done)
     }
 
-    fn add_review_item(&self, user: &Caller, group: &ReviewGroup, now: i64) -> Result<(), Status> {
+    fn add_review_item(
+        &self,
+        user: &Caller,
+        group: &ReviewGroup,
+        now: i64,
+    ) -> Result<String, Status> {
         let request = pb::CreateTodoRequest {
             title: group.title.clone(),
             description: group.description(),
@@ -268,13 +289,11 @@ impl BoardSvc {
                 "report this",
             ));
         };
-        let key = done
-            .item
+        done.item
             .and_then(|todo| todo.item)
             .and_then(|item| item.id)
             .map(|id| id.value)
-            .ok_or_else(|| internal("the new review item came back with no id", "report this"))?;
-        self.keep_review(user, &key, group.row(), false)
+            .ok_or_else(|| internal("the new review item came back with no id", "report this"))
     }
 
     fn patch_review_item(
@@ -294,29 +313,37 @@ impl BoardSvc {
         self.update_todo_in(user, &request, false, now).map(|_| ())
     }
 
-    /// Saves `row` as the item's review request; `changed` says the item
-    /// existed, so its revision moves and the feed hears of it.
-    fn keep_review(
+    /// Saves all pending review rows in a single `todo_fields` JSON write
+    /// under `self.writes`; for entries with `changed == true`, bumps their
+    /// revision and tells the feed after the lock is released.
+    fn flush_reviews(
         &self,
         user: &Caller,
-        key: &str,
-        row: ReviewRow,
-        changed: bool,
+        pending: Vec<(String, ReviewRow, bool)>,
     ) -> Result<(), Status> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut notify = Vec::new();
         {
             let _write = lock(&self.writes);
             let mut map = saved::load(&self.store)?;
-            let fields = map.entry(key.to_owned()).or_default();
-            fields.review = Some(row);
-            if changed {
-                fields.extra_revisions += 1;
+            for (key, row, changed) in pending {
+                let fields = map.entry(key.clone()).or_default();
+                fields.review = Some(row);
+                if changed {
+                    fields.extra_revisions += 1;
+                    notify.push(key);
+                }
             }
             saved::save(&self.store, &map)?;
         }
-        if changed {
-            let record = self.load(user, key, false)?;
+        if !notify.is_empty() {
             let archived = self.archived()?;
-            self.tell(user, pb::Change::Updated, &record, &archived);
+            for key in notify {
+                let record = self.load(user, &key, false)?;
+                self.tell(user, pb::Change::Updated, &record, &archived);
+            }
         }
         Ok(())
     }

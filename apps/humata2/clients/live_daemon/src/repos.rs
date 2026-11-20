@@ -164,6 +164,39 @@ impl Shared {
         Ok(library(&answer))
     }
 
+    pub(crate) async fn add_to_repo_library(
+        &self,
+        repo: &str,
+    ) -> Result<Vec<LibraryRepo>, DaemonError> {
+        let trimmed = repo.trim();
+        let repo = match trimmed.split_once('/') {
+            Some((owner, name))
+                if !owner.is_empty()
+                    && !name.is_empty()
+                    && !name.contains('/')
+                    && !owner.chars().any(char::is_whitespace)
+                    && !name.chars().any(char::is_whitespace) =>
+            {
+                pb::RepoRef {
+                    owner: owner.to_owned(),
+                    name: name.to_owned(),
+                }
+            }
+            _ => {
+                return Err(DaemonError::Refused {
+                    what: "Adding a repo to the library".to_owned(),
+                    reason: format!("{trimmed:?} is not owner/name. Write the repo as owner/name, such as acme/api"),
+                });
+            }
+        };
+        let answer = client(self)
+            .add_to_repo_library(pb::AddToRepoLibraryRequest { repo: Some(repo) })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?
+            .into_inner();
+        Ok(library(&answer))
+    }
+
     pub(crate) async fn remove_from_repo_library(
         &self,
         repo: &str,

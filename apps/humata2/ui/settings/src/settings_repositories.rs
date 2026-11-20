@@ -4,10 +4,12 @@
 
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::settings_providers::ProvidersInputs;
 use crate::theme::{self, Look};
 use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::ObservedElement;
+use gpui_kit::component::{Sizable as _, input::Input};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, used_line};
 use humata2_settings::{RepositoriesAction as R, RepositoriesState, SettingsAction};
@@ -73,7 +75,14 @@ fn switch(ui: &Rc<Ui>, look: Look, on: bool) -> impl IntoElement {
 }
 
 /// The Repositories part of Settings › General.
-pub fn section(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+pub fn section(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    inputs: &ProvidersInputs,
+    look: Look,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     let repos: &RepositoriesState = &state.settings.repos;
     let now_ms = repos.now_ms;
 
@@ -174,14 +183,80 @@ pub fn section(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     .child("Repo library")
                     .child(dim(look, "Repos you added, most recently used first. Removing one keeps its channels and clones.")),
             )
-            .child(widgets::push_quiet(
-                ui,
-                "settings-repos-forget",
-                "Forget all…",
-                send(R::ForgetAsked),
-                look,
-            )),
+            .child(
+                row()
+                    .gap(px(6.))
+                    .child(widgets::push_quiet(
+                        ui,
+                        "settings-repos-add-repo",
+                        "+ Add repo",
+                        send(R::AddRepoOpened),
+                        look,
+                    ))
+                    .child(widgets::push_quiet(
+                        ui,
+                        "settings-repos-forget",
+                        "Forget all…",
+                        send(R::ForgetAsked),
+                        look,
+                    )),
+            ),
     );
+    if repos.adding_repo {
+        let input_state = inputs.add_repo_input(&repos.add_repo_input, window, cx);
+        let escape_ui = ui.clone();
+        library = library.child(
+            col()
+                .id("settings-repos-add-form")
+                .gap(px(6.))
+                .px(px(14.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(rgb(look.line))
+                .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" && !event.keystroke.modifiers.modified() {
+                        cx.stop_propagation();
+                        escape_ui.send(send(R::AddRepoClosed), cx);
+                    }
+                })
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("settings-repos-add-input")
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&input_state).small()),
+                        )
+                        .child(widgets::push_primary(
+                            ui,
+                            "settings-repos-add-submit",
+                            "Add",
+                            send(R::AddRepoSubmitted),
+                            look,
+                        ))
+                        .child(widgets::push_quiet(
+                            ui,
+                            "settings-repos-add-cancel",
+                            "Cancel",
+                            send(R::AddRepoClosed),
+                            look,
+                        )),
+                )
+                .children(repos.add_repo_error.clone().map(|error| {
+                    div()
+                        .id("settings-repos-add-error")
+                        .role(Role::Alert)
+                        .aria_label(error.clone())
+                        .test_support()
+                        .text_size(px(11.5))
+                        .text_color(rgb(theme::RED))
+                        .child(error)
+                }))
+                .test_support(),
+        );
+    }
     if repos.confirming_forget {
         let count = repos.library_len();
         library = library.child(

@@ -494,20 +494,31 @@ fn repo_row(
                 ),
             )
         })
-        .child(chrome::icon(IconName::FolderGit2, look.secondary, 12.))
-        .child(div().min_w_0().child(pick_row.repo.clone()))
-        .child(div().flex_1())
-        .children((!note.is_empty()).then(|| {
+        .child(chrome::icon(IconName::FolderGit2, look.secondary, 12.).flex_shrink_0())
+        .child(
             div()
+                .max_w(px(260.))
+                .truncate()
+                .whitespace_nowrap()
+                .flex_shrink_0()
+                .child(pick_row.repo.clone()),
+        )
+        .child(if note.is_empty() {
+            div().flex_1()
+        } else {
+            div()
+                .flex_1()
                 .min_w_0()
                 .truncate()
+                .whitespace_nowrap()
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
                 .child(note)
-        }))
+        })
         .children(pick_row.private.then(|| {
             div()
                 .flex_shrink_0()
+                .whitespace_nowrap()
                 .text_size(px(11.))
                 .text_color(rgb(look.tertiary))
                 .child("private")

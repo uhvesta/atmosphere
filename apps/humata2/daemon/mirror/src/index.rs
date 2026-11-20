@@ -304,7 +304,9 @@ fn db(path: &Path) -> impl Fn(rusqlite::Error) -> MirrorError + '_ {
 fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get::<_, String>(0))?;
-    conn.execute_batch("PRAGMA synchronous = NORMAL;")
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL; PRAGMA cache_size = -8000; PRAGMA temp_store = MEMORY;",
+    )
 }
 
 /// The existing index, when it is usable as it is.

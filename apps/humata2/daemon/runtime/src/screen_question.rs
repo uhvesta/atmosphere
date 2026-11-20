@@ -46,12 +46,21 @@ const ASKED: &[(&str, ScreenQuestion)] = &[
     ),
 ];
 
+use std::sync::LazyLock;
+
+static NORMALIZED_ASKED: LazyLock<Vec<(String, ScreenQuestion)>> = LazyLock::new(|| {
+    ASKED
+        .iter()
+        .map(|(words, question)| (plain(words), *question))
+        .collect()
+});
+
 /// The question `screen` (the text the tab shows now) is asking, if any.
 pub fn asked_on(screen: &str) -> Option<ScreenQuestion> {
     let shown = plain(screen);
-    ASKED
+    NORMALIZED_ASKED
         .iter()
-        .find(|(words, _)| shown.contains(&plain(words)))
+        .find(|(words, _)| shown.contains(words.as_str()))
         .map(|(_, question)| *question)
 }
 

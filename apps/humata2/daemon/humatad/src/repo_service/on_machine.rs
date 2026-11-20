@@ -128,6 +128,13 @@ impl pb::repo_service_server::RepoService for OnMachine {
         Self::host_only("/humata.v1.RepoService/ListRepoOwners")
     }
 
+    async fn add_to_repo_library(
+        &self,
+        _request: Request<pb::AddToRepoLibraryRequest>,
+    ) -> Result<Response<pb::ListRepoLibraryResponse>, Status> {
+        Self::host_only("/humata.v1.RepoService/AddToRepoLibrary")
+    }
+
     async fn remove_from_repo_library(
         &self,
         _request: Request<pb::RemoveFromRepoLibraryRequest>,

@@ -269,7 +269,7 @@ async fn an_upgrade_swaps_the_staged_release_in_and_restarts_the_daemon_with_its
         .tabs;
     assert!(tabs.iter().any(|tab| tab.kind == pb::tab::Kind::Agent as i32), "{tabs:?}");
 
-    // The release is whole on disk, and the old daemon is kept.
+    // The release is whole on disk, and the old daemon is unlinked once settled.
     assert_eq!(
         std::fs::read(mac.bin.join("bundle.json")).expect("bundle.json is installed"),
         upgrade::manifest(&upgrade::admin_sha(), "b")
@@ -278,7 +278,11 @@ async fn an_upgrade_swaps_the_staged_release_in_and_restarts_the_daemon_with_its
         assert!(!mac.bin.join(format!(".{name}.next")).exists(), "{name} is no longer staged");
     }
     assert!(!mac.bin.join(".bundle.json.next").exists());
-    assert!(mac.bin.join("humatad2.previous").exists(), "the old daemon is kept for a rollback");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while mac.bin.join("humatad2.previous").exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert!(!mac.bin.join("humatad2.previous").exists(), "the old daemon is unlinked after settle");
 }
 
 #[tokio::test(flavor = "multi_thread")]

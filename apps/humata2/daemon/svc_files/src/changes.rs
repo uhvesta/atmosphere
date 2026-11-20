@@ -142,6 +142,14 @@ impl FileChanges {
         lock(&self.tracker).sight(&key_of(session, repo), root);
     }
 
+    /// Drops every remembered file list for `session`, so archived or freed
+    /// sessions do not accumulate in memory.
+    pub fn forget(&self, session: &str) {
+        let mut tracker = lock(&self.tracker);
+        tracker.seen.retain(|(id, _), _| id != session);
+        tracker.over.retain(|(id, _)| id != session);
+    }
+
     /// Tells what happened to `named`, the paths (relative to the clone) that
     /// changed. With `rescan` the clone is listed again and every difference
     /// told, for when the watcher lost events. A clone with no list yet only

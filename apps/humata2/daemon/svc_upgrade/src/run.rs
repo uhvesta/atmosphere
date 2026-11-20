@@ -458,10 +458,11 @@ impl Runner {
     /// finished, and one whose upgrade was undone is shown as failed so a
     /// click retries.
     pub async fn ready(&self, migrations: &Migrations) {
-        let (folder, release) = (self.folder.clone(), self.release.clone());
+        let (folder, release, bin) = (self.folder.clone(), self.release.clone(), self.bin.clone());
         let settled = tokio::task::spawn_blocking(move || -> Result<Option<(Record, EndKind)>, rollback::RollbackError> {
             if let Some(record) = folder.settle(&release)? {
                 rollback::drop_copy(&folder, &record.upgrade_id)?;
+                rollback::remove_previous(&bin)?;
             }
             Ok(folder.unreported_end()?)
         })

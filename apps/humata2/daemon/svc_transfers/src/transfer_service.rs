@@ -51,6 +51,10 @@ const PAGE_DEFAULT: usize = 50;
 /// The most transfers in one page.
 const PAGE_MAX: usize = 500;
 
+/// Matches `KEEP_FINISHED` in `humata2_transfers`: once `Core::keys` exceeds
+/// this size, prune keys whose transfers have been evicted from the engine.
+const KEYS_PRUNE_THRESHOLD: usize = 200;
+
 pub type WatchTransfersStream = ReceiverStream<Result<pb::Transfer, Status>>;
 
 /// What the engine doesn't keep of a transfer.
@@ -220,6 +224,11 @@ impl TransferSvc {
                 )
             })
         }))
+    }
+
+    /// Drops per-machine link-failure state when `machine` is forgotten.
+    pub fn forget_machine(&self, machine: &str) {
+        self.core.remote.forget_machine(machine);
     }
 
     /// Gives the transfers the machines' links (the host only; without them
@@ -500,6 +509,9 @@ impl Core {
             }
         }
         let snapshot = engine.start_as(request, name).map_err(|err| self.failure(&err))?;
+        if keys.len() > KEYS_PRUNE_THRESHOLD {
+            keys.retain(|_, tracked_id| engine.get(tracked_id).is_some());
+        }
         if let Some(key) = begin.key {
             keys.insert(key, id);
         }
@@ -687,7 +699,11 @@ impl Core {
             .begin_upload(request)
             .map_err(|err| self.failure(&err))?;
         if let Some(key) = key {
-            lock(&self.keys).insert(key, id.clone());
+            let mut keys = lock(&self.keys);
+            if keys.len() > KEYS_PRUNE_THRESHOLD {
+                keys.retain(|_, tracked_id| engine.get(tracked_id).is_some());
+            }
+            keys.insert(key, id.clone());
         }
         Ok(Began::Upload(upload, id))
     }

@@ -51,6 +51,7 @@ impl AppState {
             || self.pr_submit.step != humata2_pr_review::submit::Step::Closed
             || self.hosts.root_change.is_some()
             || self.mass_delete.sheet.is_some()
+            || self.deleting_channel.is_some()
     }
 }
 
@@ -105,6 +106,23 @@ impl App {
             return self.child(
                 state,
                 AppAction::Desk(humata2_desk::DeskAction::CancelDialog),
+            );
+        }
+        if state.deleting_channel.is_some() {
+            return self.handle(
+                state,
+                AppAction::Channel(crate::channel::Action::CancelDelete),
+            );
+        }
+        if state.channel_menu {
+            return self.handle(state, AppAction::Channel(crate::channel::Action::CloseMenu));
+        }
+        if state.settings.repos.adding_repo {
+            return self.child(
+                state,
+                AppAction::Settings(humata2_settings::SettingsAction::Repos(
+                    humata2_settings::RepositoriesAction::AddRepoClosed,
+                )),
             );
         }
         if state.settings.font_menu {

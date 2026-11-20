@@ -39,6 +39,8 @@ pub struct ProvidersInputs {
     paste: Entity<TextareaState>,
     paste_echo: Rc<RefCell<Option<String>>>,
     variables: RefCell<HashMap<String, Entity<InputState>>>,
+    add_repo: RefCell<Option<Entity<InputState>>>,
+    add_repo_echo: Rc<RefCell<Option<String>>>,
     subscriptions: RefCell<Vec<Subscription>>,
 }
 
@@ -70,8 +72,58 @@ impl ProvidersInputs {
             paste,
             paste_echo,
             variables: RefCell::new(HashMap::new()),
+            add_repo: RefCell::new(None),
+            add_repo_echo: Rc::new(RefCell::new(None)),
             subscriptions: RefCell::new(vec![typing]),
         }
+    }
+
+    /// The inline `owner/name` field for Settings › General › Repositories › "+ Add repo".
+    pub(crate) fn add_repo_input(
+        &self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<InputState> {
+        let field = if let Some(field) = self.add_repo.borrow().as_ref() {
+            field.clone()
+        } else {
+            let field = cx.new(|cx| InputState::new(window, cx).placeholder("owner/name"));
+            let (ui, echo) = (self.ui.clone(), self.add_repo_echo.clone());
+            self.subscriptions.borrow_mut().push(cx.subscribe(
+                &field,
+                move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| match event {
+                    InputEvent::Change => {
+                        let value = input.read(cx).value().to_string();
+                        if echo.borrow().as_deref() == Some(value.as_str()) {
+                            *echo.borrow_mut() = None;
+                            return;
+                        }
+                        ui.send(
+                            AppAction::Settings(A::Repos(
+                                humata2_settings::RepositoriesAction::AddRepoChanged(value),
+                            )),
+                            cx,
+                        );
+                    }
+                    InputEvent::PressEnter { .. } => ui.send(
+                        AppAction::Settings(A::Repos(
+                            humata2_settings::RepositoriesAction::AddRepoSubmitted,
+                        )),
+                        cx,
+                    ),
+                    InputEvent::Focus | InputEvent::Blur => {}
+                },
+            ));
+            *self.add_repo.borrow_mut() = Some(field.clone());
+            field
+        };
+        if field.read(cx).value().as_ref() != text {
+            *self.add_repo_echo.borrow_mut() = Some(text.to_owned());
+            let owned = text.to_owned();
+            field.update(cx, |input, cx| input.set_value(owned, window, cx));
+        }
+        field
     }
 
     /// The secure field for host variable `name`.

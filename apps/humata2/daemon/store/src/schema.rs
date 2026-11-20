@@ -688,9 +688,15 @@ pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
         path: path.to_owned(),
         source,
     })?;
+    let fresh = std::fs::metadata(path).is_ok_and(|meta| meta.len() == 0);
     #[cfg(feature = "faults")]
     humata2_durable::install_sqlite();
     let mut connection = Connection::open(path).map_err(opened)?;
+    if fresh {
+        connection
+            .execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")
+            .map_err(opened)?;
+    }
     // FULL: a commit returns once it's on disk, so what the host acks and
     // what a resume reads survive a power cut. fullfsync makes that true
     // on macOS too, where fsync alone leaves it in the drive's cache.
@@ -701,7 +707,8 @@ pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = FULL;
              PRAGMA fullfsync = ON;
-             PRAGMA checkpoint_fullfsync = ON;",
+             PRAGMA checkpoint_fullfsync = ON;
+             PRAGMA cache_size = -8000;",
         )
         .map_err(opened)?;
     migrate(&mut connection, path)?;

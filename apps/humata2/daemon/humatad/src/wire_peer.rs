@@ -117,27 +117,8 @@ impl PeerUpgradeWatchPort for PeerUpgradeWatchAdapter {
 pub(crate) struct PeerFeedAdapter(pub(crate) Arc<Feed>);
 
 impl PeerFeedPort for PeerFeedAdapter {
-    fn subscribe(&self, after: Option<u64>) -> (u64, broadcast::Receiver<pb::Event>) {
-        let (missed, mut src) = self.0.subscribe(after);
-        let seq = missed
-            .last()
-            .and_then(|e| e.seq.as_ref())
-            .map_or(after.unwrap_or(0), |s| s.value);
-        let (tx, rx) = broadcast::channel(256);
-        tokio::spawn(async move {
-            loop {
-                match src.recv().await {
-                    Ok(published) => {
-                        if tx.send((**published).clone()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-        (seq, rx)
+    fn subscribe(&self, after: Option<u64>) -> (u64, broadcast::Receiver<Arc<pb::Event>>) {
+        self.0.subscribe_events_after(after)
     }
 }
 

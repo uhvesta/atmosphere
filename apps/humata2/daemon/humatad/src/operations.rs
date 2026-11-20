@@ -83,6 +83,15 @@ pub(crate) type Rerun = Arc<dyn Fn(Progress) + Send + Sync>;
 /// the latest value trailing at the window's end (4 a second per step).
 const UNITS_EVERY: Duration = Duration::from_millis(250);
 
+/// Maximum entries kept in [`Table`] before finished operations are evicted.
+const MAX_OPERATIONS: usize = 10_000;
+
+/// How long finished operations are retained before TTL eviction.
+const FINISHED_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Minimum interval between periodic TTL scans when below [`MAX_OPERATIONS`].
+const PRUNE_EVERY: Duration = Duration::from_secs(60);
+
 /// When a step's units were last published, and whether a trailing publish
 /// is already scheduled for the end of the window.
 struct Gate {
@@ -105,6 +114,12 @@ struct Tracked {
     rerun: Mutex<Option<Rerun>>,
     /// The key of the retry that started the current run.
     retry_key: Mutex<Option<String>>,
+    /// The idempotency key that created this operation, if any, for atomic
+    /// removal from `Table::by_key` on eviction.
+    idempotency_key: Option<String>,
+    /// Monotonic time when this operation reached a finished state; `None`
+    /// while running (including after a retry).
+    finished_at: Mutex<Option<Instant>>,
     /// The publish window of each step's units, by step key.
     units_gate: Mutex<HashMap<String, Gate>>,
 }
@@ -122,6 +137,66 @@ struct Cancel {
 struct Table {
     by_id: BTreeMap<String, Arc<Tracked>>,
     by_key: HashMap<String, String>,
+    last_prune: Option<Instant>,
+}
+
+impl Table {
+    fn maybe_prune(&mut self, now: Instant) {
+        if self.by_id.len() >= MAX_OPERATIONS
+            || self
+                .last_prune
+                .is_none_or(|at| now.saturating_duration_since(at) >= PRUNE_EVERY)
+        {
+            self.prune_at(now, MAX_OPERATIONS, FINISHED_TTL);
+        }
+    }
+
+    /// Evicts only finished operations past `ttl` or exceeding `max_entries`,
+    /// removing their `by_key` index entries atomically under the table lock.
+    fn prune_at(&mut self, now: Instant, max_entries: usize, ttl: Duration) {
+        self.last_prune = Some(now);
+        let expired: Vec<String> = self
+            .by_id
+            .iter()
+            .filter_map(|(id, tracked)| {
+                if !finished(&tracked.operation.borrow()) {
+                    return None;
+                }
+                let ended = (*lock(&tracked.finished_at))?;
+                (now.saturating_duration_since(ended) >= ttl).then(|| id.clone())
+            })
+            .collect();
+        for id in expired {
+            self.remove_entry(&id);
+        }
+        if self.by_id.len() > max_entries {
+            let mut candidates: Vec<(Instant, String)> = self
+                .by_id
+                .iter()
+                .filter_map(|(id, tracked)| {
+                    if !finished(&tracked.operation.borrow()) {
+                        return None;
+                    }
+                    let ended = (*lock(&tracked.finished_at)).unwrap_or(now);
+                    Some((ended, id.clone()))
+                })
+                .collect();
+            candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            let excess = self.by_id.len() - max_entries;
+            for (_, id) in candidates.into_iter().take(excess) {
+                self.remove_entry(&id);
+            }
+        }
+    }
+
+    fn remove_entry(&mut self, id: &str) {
+        if let Some(tracked) = self.by_id.remove(id)
+            && let Some(key) = &tracked.idempotency_key
+            && self.by_key.get(key).is_some_and(|mapped| mapped == id)
+        {
+            self.by_key.remove(key);
+        }
+    }
 }
 
 /// Every operation since this daemon started.
@@ -210,6 +285,7 @@ impl Operations {
         let owner = Owner::of(caller)?;
         let key = key.filter(|key| !key.value.is_empty());
         let mut table = lock(&self.table);
+        table.maybe_prune(Instant::now());
         if let Some(key) = &key
             && let Some(id) = table.by_key.get(&key.value)
             && let Some(tracked) = table.by_id.get(id)
@@ -252,6 +328,8 @@ impl Operations {
             cancel: Mutex::default(),
             rerun: Mutex::new(None),
             retry_key: Mutex::new(None),
+            idempotency_key: key.as_ref().map(|k| k.value.clone()),
+            finished_at: Mutex::new(None),
             units_gate: Mutex::default(),
         });
         table.by_id.insert(id.clone(), tracked.clone());
@@ -272,11 +350,18 @@ impl Operations {
         let id = operation.id.as_ref().map(|id| id.value.clone())?;
         let owner = Owner::from_label(&origin.owner)?;
         let mut table = lock(&self.table);
+        table.maybe_prune(Instant::now());
         if let Some(known) = table.by_id.get(&id) {
             return Some(Progress {
                 tracked: known.clone(),
             });
         }
+        let is_finished = finished(&operation);
+        let key_value = operation
+            .idempotency_key
+            .as_ref()
+            .filter(|key| !key.value.is_empty())
+            .map(|key| key.value.clone());
         let (sender, _) = watch::channel(operation.clone());
         let tracked = Arc::new(Tracked {
             owner,
@@ -288,11 +373,13 @@ impl Operations {
             cancel: Mutex::default(),
             rerun: Mutex::new(None),
             retry_key: Mutex::new(None),
+            idempotency_key: key_value.clone(),
+            finished_at: Mutex::new(is_finished.then(Instant::now)),
             units_gate: Mutex::default(),
         });
         table.by_id.insert(id.clone(), tracked.clone());
-        if let Some(key) = operation.idempotency_key.as_ref().filter(|key| !key.value.is_empty()) {
-            table.by_key.insert(key.value.clone(), id);
+        if let Some(key) = key_value {
+            table.by_key.insert(key, id);
         }
         let by = operation.started_by.clone();
         tracked.tell(pb::Change::Created, operation, by);
@@ -542,6 +629,7 @@ impl Progress {
     }
 
     pub fn succeed(self, result: Option<pb::operation::Result>) {
+        *lock(&self.tracked.finished_at) = Some(Instant::now());
         self.change(|operation| {
             operation.state = pb::OperationState::Succeeded as i32;
             operation.cancellable = false;
@@ -553,6 +641,7 @@ impl Progress {
     /// Ends the operation as succeeded with the pull requests a push opened
     /// or found, one for each repository.
     pub(crate) fn succeed_with_pull_requests(self, pull_requests: Vec<pb::PullRequestRef>) {
+        *lock(&self.tracked.finished_at) = Some(Instant::now());
         self.change(|operation| {
             operation.state = pb::OperationState::Succeeded as i32;
             operation.cancellable = false;
@@ -562,6 +651,7 @@ impl Progress {
     }
 
     pub fn fail(self, error: pb::Error) {
+        *lock(&self.tracked.finished_at) = Some(Instant::now());
         self.change(|operation| {
             operation.state = pb::OperationState::Failed as i32;
             operation.cancellable = false;
@@ -573,6 +663,7 @@ impl Progress {
     /// The work stopped as asked and undid what it had done. A step it was
     /// in the middle of is shown as not run.
     pub(crate) fn end_cancelled(self) {
+        *lock(&self.tracked.finished_at) = Some(Instant::now());
         self.change(|operation| {
             operation.state = pb::OperationState::Cancelled as i32;
             operation.cancellable = false;
@@ -940,6 +1031,7 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         };
         *retry_key = key;
         *lock(&tracked.cancel) = Cancel::default();
+        *lock(&tracked.finished_at) = None;
         let progress = Progress {
             tracked: tracked.clone(),
         };
@@ -1083,5 +1175,64 @@ mod tests {
         let operation = progress.operation();
         assert_eq!(step(&operation, "clone:app").done_units, 1);
         assert_eq!(step(&operation, "clone:lib").done_units, 2);
+    }
+
+    #[test]
+    fn prune_evicts_only_finished_operations_and_removes_keys_atomically() {
+        let operations = Operations::new(Arc::new(Feed::default()));
+        let caller = Caller::User(UserVia::App);
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: "ch".to_owned(),
+            })),
+        };
+        let start = |key: &str| {
+            let Ok(Started::New(progress)) = operations.start_steps(
+                &caller,
+                pb::OperationKind::StartSession,
+                target.clone(),
+                &[],
+                false,
+                Some(pb::IdempotencyKey {
+                    value: key.to_owned(),
+                }),
+            ) else {
+                panic!("started");
+            };
+            progress
+        };
+
+        let running_op = start("k_running");
+        let finished_1 = start("k_done_1");
+        let finished_2 = start("k_done_2");
+        let finished_1_id = finished_1.operation().id.unwrap().value;
+        let running_id = running_op.operation().id.unwrap().value;
+        finished_1.succeed(None);
+        finished_2.succeed(None);
+
+        // Cap at 2 entries: running_op must stay, oldest finished_1 must go with its key.
+        {
+            let mut table = super::lock(&operations.table);
+            table.prune_at(std::time::Instant::now(), 2, Duration::from_secs(3600));
+            assert!(table.by_id.contains_key(&running_id));
+            assert!(!table.by_id.contains_key(&finished_1_id));
+            assert!(!table.by_key.contains_key("k_done_1"));
+            assert!(table.by_key.contains_key("k_running"));
+            assert!(table.by_key.contains_key("k_done_2"));
+        }
+
+        // TTL past 1h: remaining finished_2 must go, running_op still stays.
+        {
+            let mut table = super::lock(&operations.table);
+            table.prune_at(
+                std::time::Instant::now() + Duration::from_secs(3601),
+                100,
+                Duration::from_secs(3600),
+            );
+            assert!(table.by_id.contains_key(&running_id));
+            assert_eq!(table.by_id.len(), 1);
+            assert_eq!(table.by_key.len(), 1);
+            assert!(table.by_key.contains_key("k_running"));
+        }
     }
 }

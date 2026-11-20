@@ -202,7 +202,7 @@ pub trait PeerUpgradeWatchPort: Send + Sync {
 
 /// Event feed port (decoupled from `humatad::events::Feed`).
 pub trait PeerFeedPort: Send + Sync {
-    fn subscribe(&self, after: Option<u64>) -> (u64, broadcast::Receiver<pb::Event>);
+    fn subscribe(&self, after: Option<u64>) -> (u64, broadcast::Receiver<Arc<pb::Event>>);
 }
 
 /// Published event wrapper (decoupled from `humatad::events::Published`).

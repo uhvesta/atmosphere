@@ -212,6 +212,12 @@ impl Tell {
     /// Says `session` was archived or its folder freed.
     fn ended(&self, session: &str) {
         self.endings.tell(session);
+        crate::channel_service::rename_folder::wake_aliases();
+    }
+
+    /// Schedules a fresh pointer look for `session` (e.g. after restore).
+    pub(super) fn poke_pointers(&self, session: &str) {
+        self.pointers.poke(session);
     }
 
     /// The same, merging remote sessions with `remote` once it is set.

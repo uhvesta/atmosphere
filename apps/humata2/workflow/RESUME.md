@@ -58,8 +58,10 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 | 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
 | 14 | Fast mode as default + walk every flow, audit, fix (NORMALREL + FASTREL merged, D887) | **0.5.0** | full suite + launch check |
 | 15 | Combined pre-FUSEFS wave: NOTIFY (D889) + REMOTEFUNDAMENTALS (auto-migrate, provider lifecycle, sleep/wake) + REPOAUTO + TODO2 + Route-Jump & duplicate macOS traffic-lights fixes | 0.5.1 | patch + launch check |
-| 16 | Daemon memory, disk space, and CPU optimization (DAEMONPERF: profile & optimize `humatad2` & `humata2_holder` RSS, disk bounds/compaction, and idle/active CPU before FUSEFS) | 0.5.2 | patch + launch check |
+| 16 | Daemon memory, disk space, and CPU optimization + UX/auto-migrate fixes (DAEMONPERF: profile & optimize `humatad2` & `humata2_holder` RSS, disk bounds/compaction, idle/active CPU; repo search single-line UX, clone 100% progress phases, desktop auto-migrate from older local daemons) | 0.5.2 | patch + launch check |
 | 17 | Unified cross-machine filesystem + native config sync (FUSEFS: macOS 26.7+ floor; auto-translating macOS FSKit compat crate `//libs/fusefs/fskit` over shared FUSE/VFS trait; Gate `T1` spike, then Build `T2`–`T5` `//libs/fusefs/*` + `T6`–`T12` Humata integration, memory/disk/CPU efficient) | **0.6.0** | full suite + launch check |
+| 18 | Stale hook & TUI ask auto-clear for Claude Code, Codex, Copilot, and Antigravity `agy` (HOOKCLEAR: auto-clear bogus/auto-approved Inbox items via lifecycle hooks + best-effort live TUI prompt-gone & output-resumed detection) | 0.6.1 | patch |
+| 19 | Native Browser Co-Pilot (BROWSER: auto-detect system Chromium/Chrome/Edge/Brave + Firefox without embedding a browser; WebExtension + native-messaging bridge into `humatad2 mcp` for Claude Code, `agy`, Copilot, and Codex; Agent Inbox permissions — Read: Allow once / Allow 30 min / Deny; Write/control: per-action approval every time) | **0.7.0** | full suite + launch check |
 
 ## 1. Finish the open feature lanes
 

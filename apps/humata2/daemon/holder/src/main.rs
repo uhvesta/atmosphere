@@ -74,8 +74,7 @@ fn main() -> ExitCode {
     };
     if let Some(handoff) = &args.take_over {
         // Nothing on stdout and no new session: this is the same holder.
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+        let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
         {
@@ -134,8 +133,7 @@ fn main() -> ExitCode {
         scrollback_bytes: args.scrollback_bytes,
         banner: args.banner,
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {

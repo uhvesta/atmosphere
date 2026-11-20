@@ -225,8 +225,9 @@
 //! - Whether `shell_snapshots/` or `archived_sessions/` hold any of a
 //!   conversation's own files.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -234,9 +235,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
 use crate::files::{
-    complete_lines, holds_files, holds_path, io_error, is_there, json_escape, line_starts,
-    malformed, path_text, read_plain, read_text, relative_name, rewrite_text, rewrite_value, under,
-    valid_rel, write_new,
+    complete_lines, holds_files, holds_path, io_error, is_there, json_escape, malformed,
+    open_plain, path_text, read_text, relative_name, rewrite_text, rewrite_value,
+    stream_complete_lines, under, valid_rel, write_new, write_new_stream,
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead,
@@ -464,22 +465,18 @@ impl Adapter for CodexRollout {
     /// The prompts of the rollout's turns, in order (module doc, Turns).
     fn turns(&self, conversation: &Conversation) -> Result<Vec<Turn>, ConversationError> {
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement, None)?;
-        Ok(prompts_of(&lines)
-            .into_iter()
-            .map(|prompt| prompt.turn)
-            .collect())
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement, None)?;
+        Ok(prompts.into_iter().map(|prompt| prompt.turn).collect())
     }
 
     /// Where each turn starts: the first line that names its id, the line a
     /// fork before it is cut at (module doc, Fork).
     fn turn_starts(&self, conversation: &Conversation) -> Result<Vec<u64>, ConversationError> {
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement, None)?;
-        let numbers = prompts_of(&lines).into_iter().map(|prompt| prompt.start);
-        Ok(line_starts(&bytes, numbers))
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement, None)?;
+        Ok(prompts.into_iter().map(|prompt| prompt.start_offset).collect())
     }
 
     /// The rollout's lines before turn `before`'s start (or all, from now),
@@ -494,20 +491,9 @@ impl Adapter for CodexRollout {
     ) -> Result<Conversation, ConversationError> {
         check_id(new_id)?;
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement, None)?;
-        let cut = cut_for(&prompts_of(&lines), before)?;
-        let pairs = rewrite_pairs(&conversation.placement, to, false);
-        let mut text = String::new();
-        for (number, mut record) in lines {
-            if number >= cut {
-                break;
-            }
-            rewrite_value(&mut record, &pairs);
-            rename_ids(&mut record, &conversation.id, new_id);
-            text.push_str(&record.to_string());
-            text.push('\n');
-        }
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement, None)?;
+        let cut = cut_for(&prompts, before)?;
         let parent_rel = relative_name(&path, &codex_dir(&conversation.placement))?;
         let parent_end = format!("-{}.jsonl", conversation.id);
         let stem = parent_rel
@@ -517,7 +503,30 @@ impl Adapter for CodexRollout {
         if is_there(&target)? {
             return Err(ConversationError::Exists { path: target });
         }
-        write_new(&target, text.as_bytes())?;
+        let pairs = rewrite_pairs(&conversation.placement, to, false);
+        let pass2 = open_plain(&path, u64::MAX)?;
+        write_new_stream(&target, |writer| {
+            stream_complete_lines(BufReader::new(pass2), &path, |number, _, raw| {
+                if number >= cut {
+                    return Ok(());
+                }
+                let mut record: Value = serde_json::from_slice(raw).map_err(|source| {
+                    ConversationError::Malformed {
+                        path: path.clone(),
+                        line: number,
+                        source: Some(source),
+                    }
+                })?;
+                rewrite_value(&mut record, &pairs);
+                rename_ids(&mut record, &conversation.id, new_id);
+                serde_json::to_writer(&mut *writer, &record)
+                    .map_err(|source| io_error("write", &target, io::Error::other(source)))?;
+                writer
+                    .write_all(b"\n")
+                    .map_err(|source| io_error("write", &target, source))?;
+                Ok(())
+            })
+        })?;
         Ok(Conversation {
             id: new_id.to_owned(),
             format: Format::CodexRollout,
@@ -534,7 +543,7 @@ impl Adapter for CodexRollout {
     fn pack(&self, conversation: &Conversation, stage: &Path) -> Result<Packed, ConversationError> {
         let path = transcript_of(conversation)?;
         let text = read_text(&path, self.rewrite_max)?;
-        parse(text.as_bytes(), &path, &conversation.placement, None)?;
+        parse_reader(Cursor::new(text.as_bytes()), &path, &conversation.placement, None)?;
         if holds_files(stage)? {
             return Err(ConversationError::Exists {
                 path: stage.to_path_buf(),
@@ -616,7 +625,7 @@ impl Adapter for CodexRollout {
                 if let Some(head) = head {
                     rewritten = with_head(&rewritten, head);
                 }
-                parse(rewritten.as_bytes(), &target, to, None)?;
+                parse_reader(Cursor::new(rewritten.as_bytes()), &target, to, None)?;
             }
             writes.push((target, file.role, rewritten));
         }
@@ -685,8 +694,8 @@ impl Adapter for CodexRollout {
         cli_version: Option<&str>,
     ) -> Result<(), ConversationError> {
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        parse(&bytes, &path, &conversation.placement, cli_version).map(drop)
+        let file = open_plain(&path, u64::MAX)?;
+        parse_reader(BufReader::new(file), &path, &conversation.placement, cli_version).map(drop)
     }
 }
 
@@ -772,21 +781,22 @@ fn is_rollout_of(path: &Path, id: &str) -> bool {
         .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(suffix.as_str()))
 }
 
-/// The complete lines of `bytes`, each with its 1-based number, through the
-/// strict parse (module doc, The strict parse): the first line it refuses
-/// decides the error. `cli_version` names the refusal first; `None` in every
-/// method but check, which takes the version the rollout's last
-/// `session_meta` names.
-fn parse(
-    bytes: &[u8],
+/// Streams every complete line of `reader` through the strict parse (module
+/// doc, The strict parse) and returns the turns found, without retaining
+/// parsed `Value` DOMs.
+fn parse_reader<R: BufRead>(
+    reader: R,
     path: &Path,
     at: &Placement,
     cli_version: Option<&str>,
-) -> Result<Vec<(u64, Value)>, ConversationError> {
+) -> Result<Vec<Prompt>, ConversationError> {
     let folder = path_text(&at.folder);
-    let mut lines = Vec::new();
     let mut last_version: Option<String> = None;
-    for (number, raw) in (1_u64..).zip(complete_lines(bytes)) {
+    let mut first_turn_line: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut completed_turns: HashSet<String> = HashSet::new();
+    let mut seen_prompts: HashSet<String> = HashSet::new();
+    let mut raw_prompts: Vec<(String, Turn)> = Vec::new();
+    stream_complete_lines(reader, path, |number, offset, raw| {
         let value: Value =
             serde_json::from_slice(raw).map_err(|source| ConversationError::Malformed {
                 path: path.to_path_buf(),
@@ -802,9 +812,45 @@ fn parse(
         if let Some(version) = session_version(&value) {
             last_version = Some(version.to_owned());
         }
-        lines.push((number, value));
-    }
-    Ok(lines)
+        if let Some(turn_id) = turn_of(&value) {
+            if !first_turn_line.contains_key(turn_id) {
+                first_turn_line.insert(turn_id.to_owned(), (number, offset));
+            }
+            if event_is(&value, "task_complete") {
+                completed_turns.insert(turn_id.to_owned());
+            } else if event_is(&value, "item_completed")
+                && str_at(&value, "/payload/item/type") == Some("UserMessage")
+                && seen_prompts.insert(turn_id.to_owned())
+            {
+                let first_line = prompt_text(&value)
+                    .and_then(|text| text.lines().next())
+                    .unwrap_or_default()
+                    .to_owned();
+                raw_prompts.push((
+                    turn_id.to_owned(),
+                    Turn {
+                        index: u32::try_from(raw_prompts.len() + 1).unwrap_or(u32::MAX),
+                        first_line,
+                        at: str_at(&value, "/timestamp").map(str::to_owned),
+                    },
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(raw_prompts
+        .into_iter()
+        .map(|(turn_id, turn)| {
+            let (start, start_offset) = first_turn_line.get(&turn_id).copied().unwrap_or((0, 0));
+            let finished = completed_turns.contains(&turn_id);
+            Prompt {
+                turn,
+                start,
+                start_offset,
+                finished,
+            }
+        })
+        .collect())
 }
 
 /// The refusal for a record the strict parse doesn't know.
@@ -901,54 +947,13 @@ fn prompt_text(value: &Value) -> Option<&str> {
 
 /// A turn of the rollout, with what a fork needs beside its listing.
 struct Prompt {
-    /// The id its lines name it by.
-    turn_id: String,
     turn: Turn,
     /// The number of the first line that names the id: its start.
     start: u64,
+    /// The byte offset of `start`.
+    start_offset: u64,
     /// Whether a `task_complete` with the id is in the file.
     finished: bool,
-}
-
-/// The turns of the rollout, in order: the first `UserMessage` of each
-/// distinct turn id (module doc, Turns).
-fn prompts_of(lines: &[(u64, Value)]) -> Vec<Prompt> {
-    let mut prompts: Vec<Prompt> = Vec::new();
-    for (_, value) in lines {
-        if !event_is(value, "item_completed")
-            || str_at(value, "/payload/item/type") != Some("UserMessage")
-        {
-            continue;
-        }
-        let Some(turn_id) = turn_of(value) else {
-            continue;
-        };
-        if prompts.iter().any(|prompt| prompt.turn_id == turn_id) {
-            continue;
-        }
-        let first_line = prompt_text(value)
-            .and_then(|text| text.lines().next())
-            .unwrap_or_default()
-            .to_owned();
-        let start = lines
-            .iter()
-            .find(|(_, line)| turn_of(line) == Some(turn_id))
-            .map_or(0, |(number, _)| *number);
-        let finished = lines
-            .iter()
-            .any(|(_, line)| event_is(line, "task_complete") && turn_of(line) == Some(turn_id));
-        prompts.push(Prompt {
-            turn_id: turn_id.to_owned(),
-            turn: Turn {
-                index: u32::try_from(prompts.len() + 1).unwrap_or(u32::MAX),
-                first_line,
-                at: str_at(value, "/timestamp").map(str::to_owned),
-            },
-            start,
-            finished,
-        });
-    }
-    prompts
 }
 
 /// The line a fork keeps lines before (module doc, Fork): turn `before`'s

@@ -35,6 +35,8 @@ mod remote;
 pub(crate) use humata2_rpc_kit::rfc3339;
 mod source;
 
+use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
@@ -60,6 +62,10 @@ pub(crate) struct HistorySvc {
     shared: Arc<Shared>,
 }
 
+/// Key for skipping empty wakes on unchanged conversation files:
+/// `(len, mtime_sec, mtime_nsec, ino)`.
+type FileWakeKey = (u64, i64, i64, u64);
+
 /// What the service and its feed follower share.
 struct Shared {
     /// The `<state>` folder; the mirror lives under it.
@@ -83,6 +89,9 @@ struct Shared {
     agent_home: PathBuf,
     /// The conversation files of this machine's running agents (N1).
     follow: follow::Follow,
+    /// Last caught-up `(path, (len, mtime_sec, mtime_nsec, ino))` per session,
+    /// so empty wakes skip opening the mirror and scrubber.
+    last_caught_up: Mutex<HashMap<String, (PathBuf, FileWakeKey)>>,
 }
 
 /// Why a session couldn't be caught up. Logged, never shown to a caller:
@@ -121,6 +130,7 @@ impl HistorySvc {
             agents,
             agent_home,
             follow: follow::Follow::new(touch),
+            last_caught_up: Mutex::new(HashMap::new()),
         });
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(follow_sessions(Arc::downgrade(&shared), feed, touched));
@@ -142,6 +152,11 @@ impl HistorySvc {
     /// (`""`: this host) that starts with what the old one held; see
     /// [`humata2_mirror::Mirror::rebase_source`] (MV-13, D209).
     pub(crate) fn rebase_source(&self, session: &str, machine: &str, skip: Option<u64>) -> Result<(), MirrorError> {
+        self.shared
+            .last_caught_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session);
         self.shared.mirror()?.rebase_source(session, machine, skip)
     }
 
@@ -231,10 +246,18 @@ impl Shared {
     fn catch_up(&self, id: &str) -> Result<(), SyncError> {
         let Some(record) = self.store.session(id).map_err(SyncError::Store)? else {
             self.follow.unfollow(id);
+            self.last_caught_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id);
             return self.mirror().and_then(|m| m.forget(id)).map_err(SyncError::Mirror);
         };
         if self.is_remote(&record) {
             self.follow.unfollow(id);
+            self.last_caught_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id);
             // Another machine's conversation is read there (D189): name the
             // session to the mirror and hand it to that machine's task, so
             // this follower never waits on a machine.
@@ -248,6 +271,10 @@ impl Shared {
         let Some(agent) = self.store.agent(id).map_err(SyncError::Store)? else {
             // No agent has run: there is no conversation to copy yet.
             self.follow.unfollow(id);
+            self.last_caught_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id);
             return Ok(());
         };
         let mirror = self.describe(&record)?;
@@ -264,8 +291,21 @@ impl Shared {
         } else {
             self.follow.unfollow(id);
         }
-        if file.as_os_str().is_empty() || !file.exists() {
+        if file.as_os_str().is_empty() {
             return Ok(());
+        }
+        let Ok(meta) = std::fs::metadata(&file) else {
+            return Ok(());
+        };
+        let wake_key: FileWakeKey = (meta.len(), meta.mtime(), meta.mtime_nsec(), meta.ino());
+        {
+            let seen = self
+                .last_caught_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if seen.get(id).is_some_and(|(p, k)| *p == file && *k == wake_key) {
+                return Ok(());
+            }
         }
         // LD-21: the host's own variable values, read now; when they can't be
         // read nothing is copied (D189.3).
@@ -273,6 +313,10 @@ impl Shared {
         let added = mirror
             .catch_up(id, &file, &scrubber)
             .map_err(SyncError::Mirror)?;
+        self.last_caught_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned(), (file, wake_key));
         self.indexed(id, &record.channel, added);
         Ok(())
     }

@@ -36,6 +36,19 @@ pub struct View {
     pub folded: BTreeSet<SessionId>,
     pub clones: Option<(MachineId, String)>,
 }
+/// State of the "Delete channel…" confirmation modal (CH-24).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteState {
+    pub channel: ChannelId,
+    pub channel_name: String,
+    pub loading: bool,
+    pub plan: Option<humata2_clients::DeleteChannelPlan>,
+    pub delete_work: bool,
+    pub end_live: bool,
+    pub deleting: bool,
+    pub error: Option<String>,
+}
+
 /// Channel page interactions, scoped by the current route.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -47,6 +60,30 @@ pub enum Action {
     CollapseAll,
     Clones { machine: MachineId, repo: String },
     ClearClones,
+    /// Toggle the channel header `…` menu.
+    ToggleMenu,
+    /// Close the channel header `…` menu.
+    CloseMenu,
+    /// Open the "Delete channel…" confirmation modal and plan the delete.
+    StartDelete,
+    /// The daemon answered `plan_delete_channel`.
+    DeletePlanned {
+        channel: ChannelId,
+        result: Result<humata2_clients::DeleteChannelPlan, humata2_clients::DaemonError>,
+    },
+    /// Toggle "Delete uncommitted or unpushed work".
+    ToggleDeleteWork,
+    /// Toggle ending live sessions vs moving them to Desk.
+    ToggleEndLive,
+    /// Confirm and execute `delete_channel`.
+    ConfirmDelete,
+    /// The daemon answered `delete_channel`.
+    DeleteFinished {
+        channel: ChannelId,
+        result: Result<humata2_clients::DeleteChannelResponse, humata2_clients::DaemonError>,
+    },
+    /// Dismiss the "Delete channel…" modal.
+    CancelDelete,
 }
 impl View {
     pub(super) fn change(&mut self, action: Action, workspace: &Workspace, channel: &ChannelId) {
@@ -76,6 +113,15 @@ impl View {
                 self.history = History::Open;
             }
             Action::ClearClones => self.clones = None,
+            Action::ToggleMenu
+            | Action::CloseMenu
+            | Action::StartDelete
+            | Action::DeletePlanned { .. }
+            | Action::ToggleDeleteWork
+            | Action::ToggleEndLive
+            | Action::ConfirmDelete
+            | Action::DeleteFinished { .. }
+            | Action::CancelDelete => {}
         }
     }
 }

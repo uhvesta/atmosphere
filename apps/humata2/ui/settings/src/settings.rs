@@ -668,7 +668,14 @@ pub fn page(
                 .into_any_element(),
             )));
             // REPOS (ST-21): the repo library and the default scope.
-            body = body.child(crate::settings_repositories::section(ui, state, look));
+            body = body.child(crate::settings_repositories::section(
+                ui,
+                state,
+                provider_inputs,
+                look,
+                window,
+                cx,
+            ));
         }
         Section::Agents => {
             // AGENTSET (D725): the agents that are on, then the plain shell.

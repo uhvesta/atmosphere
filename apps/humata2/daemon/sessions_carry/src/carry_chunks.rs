@@ -20,6 +20,7 @@
 //!   then goes on to the manifest's checks. A chunk that has gone fails the
 //!   move with nothing deleted, and the next try sends it.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -48,7 +49,7 @@ pub const CHUNK_SIZE: u64 = 1 << 20;
 
 const CHUNK: usize = 1 << 20;
 /// What a chunk store may hold; the chunks used longest ago go first.
-const HAVE_CAP: u64 = 2 << 30;
+const HAVE_CAP: u64 = 256 << 20;
 
 /// What a recipe's path is relative to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -178,12 +179,45 @@ impl Held {
         Ok(hashes)
     }
 
+    /// Collects chunk SHA-256 hashes referenced by any active carry transfer
+    /// under `<channel>/.carry/<op>/` (`chunks.json` or `dedupe.json`), so
+    /// trimming never evicts chunks belonging to an in-flight transfer.
+    fn active_chunks(&self) -> HashSet<String> {
+        let mut pinned = HashSet::new();
+        let Some(carry_dir) = self.dir.parent() else {
+            return pinned;
+        };
+        let Ok(ops) = fs::read_dir(carry_dir) else {
+            return pinned;
+        };
+        for op in ops.flatten() {
+            let op_path = op.path();
+            if op_path == self.dir || !op_path.is_dir() {
+                continue;
+            }
+            for candidate in [
+                op_path.join(super::STAGE).join(CHUNKS_FILE),
+                op_path.join(super::STAGE).join(REUSE_FILE),
+                op_path.join(super::INCOMING).join(REUSE_FILE),
+                op_path.join(super::INCOMING).join(super::STAGE).join(REUSE_FILE),
+                op_path.join(CHUNKS_FILE),
+                op_path.join(REUSE_FILE),
+            ] {
+                collect_pinned_from_file(&candidate, &mut pinned);
+            }
+        }
+        pinned
+    }
+
     /// Removes the chunks used longest ago until the store fits `cap` bytes,
-    /// and what a write a power cut cut short left behind.
-    fn trim(&self, cap: u64) {
+    /// and what a write a power cut cut short left behind. Chunks in `extra_pinned`
+    /// or referenced by active transfers in `<channel>/.carry/*/` are never evicted.
+    fn trim(&self, cap: u64, extra_pinned: &HashSet<String>) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
+        let mut pinned = self.active_chunks();
+        pinned.extend(extra_pinned.iter().cloned());
         let mut chunks = Vec::new();
         let mut total = 0u64;
         for entry in entries.flatten() {
@@ -203,8 +237,38 @@ impl Held {
             if total <= cap {
                 break;
             }
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| pinned.contains(name))
+            {
+                continue;
+            }
             if fs::remove_file(&path).is_ok() {
                 total -= len;
+            }
+        }
+    }
+}
+
+/// Extracts chunk SHA-256 names from a `chunks.json` or `dedupe.json` file.
+fn collect_pinned_from_file(path: &Path, pinned: &mut HashSet<String>) {
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    for file in value["files"].as_array().into_iter().flatten() {
+        for chunk in file["chunks"].as_array().into_iter().flatten() {
+            if let Some(sha) = chunk.as_str() {
+                if is_hex(sha) {
+                    pinned.insert(sha.to_owned());
+                }
+            } else if let Some(sha) = chunk["sha256"].as_str() {
+                if is_hex(sha) {
+                    pinned.insert(sha.to_owned());
+                }
             }
         }
     }
@@ -242,6 +306,7 @@ impl crate::CarryOps<'_> {
     ) -> Result<(), CarryError> {
         let held = self.held(channel);
         let mut listed = Vec::new();
+        let mut pinned = HashSet::new();
         for item in items.iter().filter(|item| item.link.is_none() && item.size >= CHUNK_SIZE) {
             let (at, rel, path) = match item.area {
                 Area::Folder => ("folder", item.rel.clone(), folder.join(&item.rel)),
@@ -253,9 +318,10 @@ impl crate::CarryOps<'_> {
             if u64::try_from(hashes.len()).ok() != Some(item.size.div_ceil(CHUNK_SIZE)) {
                 continue;
             }
+            pinned.extend(hashes.iter().cloned());
             listed.push(json!({ "at": at, "rel": rel, "size": item.size, "sha256": item.sha256, "chunks": hashes }));
         }
-        held.trim(HAVE_CAP);
+        held.trim(HAVE_CAP, &pinned);
         if listed.is_empty() {
             return Ok(());
         }
@@ -334,20 +400,24 @@ impl crate::CarryOps<'_> {
         placed: Option<&Path>,
     ) {
         let held = self.held(channel);
+        let mut pinned = HashSet::new();
         for item in manifest.items.iter().filter(|item| item.link.is_none() && item.size >= CHUNK_SIZE) {
             let path = match item.area {
                 Area::Folder => folder.join(&item.rel),
                 Area::Agent => stage.join(AGENT).join(&item.rel),
                 Area::Records | Area::Tabs => continue,
             };
-            let _ = held.add_file(&path);
+            if let Ok(hashes) = held.add_file(&path) {
+                pinned.extend(hashes);
+            }
         }
         if let Some(path) = placed
             && fs::metadata(path).is_ok_and(|meta| meta.len() >= CHUNK_SIZE)
+            && let Ok(hashes) = held.add_file(path)
         {
-            let _ = held.add_file(path);
+            pinned.extend(hashes);
         }
-        held.trim(HAVE_CAP);
+        held.trim(HAVE_CAP, &pinned);
     }
 
     /// Stores the chunks of each big file under `dir` as it is, before the
@@ -360,13 +430,16 @@ impl crate::CarryOps<'_> {
         if super::collect_files(dir, "", &mut files).is_err() {
             return;
         }
+        let mut pinned = HashSet::new();
         for rel in files {
             let path = dir.join(&rel);
-            if fs::metadata(&path).is_ok_and(|meta| meta.len() >= CHUNK_SIZE) {
-                let _ = held.add_file(&path);
+            if fs::metadata(&path).is_ok_and(|meta| meta.len() >= CHUNK_SIZE)
+                && let Ok(hashes) = held.add_file(&path)
+            {
+                pinned.extend(hashes);
             }
         }
-        held.trim(HAVE_CAP);
+        held.trim(HAVE_CAP, &pinned);
     }
 }
 
@@ -426,9 +499,50 @@ mod tests {
         held.put(&name(&new), &new);
         let then = SystemTime::now() - Duration::from_secs(3600);
         fs::File::options().write(true).open(held.file(&name(&old))).unwrap().set_modified(then).unwrap();
-        held.trim(700);
+        held.trim(700, &HashSet::new());
         assert_eq!(held.read(&name(&old), 600), None);
         assert_eq!(held.read(&name(&new), 600), Some(new));
+    }
+
+    #[test]
+    fn trimming_never_evicts_chunks_pinned_by_active_transfers() {
+        let root = tempfile::tempdir().unwrap();
+        let carry = root.path().join(".carry");
+        let held = Held { dir: carry.join("have") };
+        let (old_pinned, newer_unpinned) = (vec![1u8; 600], vec![2u8; 600]);
+        let pinned_hash = name(&old_pinned);
+        let unpinned_hash = name(&newer_unpinned);
+        held.put(&pinned_hash, &old_pinned);
+        held.put(&unpinned_hash, &newer_unpinned);
+        let then = SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(held.file(&pinned_hash))
+            .unwrap()
+            .set_modified(then)
+            .unwrap();
+        // Active transfer references `old_pinned` in its stage/dedupe.json.
+        let op_stage = carry.join("op_active").join("stage");
+        fs::create_dir_all(&op_stage).unwrap();
+        fs::write(
+            op_stage.join(REUSE_FILE),
+            serde_json::to_vec(&json!({
+                "files": [{
+                    "at": "folder",
+                    "rel": "big.bin",
+                    "size": 600,
+                    "sha256": pinned_hash,
+                    "chunks": [{ "sha256": pinned_hash, "size": 600 }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        held.trim(700, &HashSet::new());
+
+        assert_eq!(held.read(&pinned_hash, 600), Some(old_pinned));
+        assert_eq!(held.read(&unpinned_hash, 600), None);
     }
 
     #[test]
@@ -439,7 +553,7 @@ mod tests {
         held.put(&name(&bytes), &bytes);
         let torn = partial(&held.file(&name(&[9u8; 10])));
         fs::write(&torn, [9u8; 4]).unwrap();
-        held.trim(u64::MAX);
+        held.trim(u64::MAX, &HashSet::new());
         assert!(!torn.exists());
         assert_eq!(held.read(&name(&bytes), 500), Some(bytes));
     }

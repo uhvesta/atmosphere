@@ -406,17 +406,25 @@ async fn revive_agent(
 
 /// Whether the holder serving `socket` is in the middle of moving onto a
 /// new build: its `.handoff` marker is there and the holder's process is
-/// alive. Asked of `ps`, which signals nothing.
+/// alive.
 fn is_moving(socket: &Path) -> bool {
     if !humata2_holder::handoff_path(socket).exists() {
         return false;
     }
-    humata2_holder::holder_pid(socket).is_some_and(|pid| {
-        std::process::Command::new("ps")
-            .args(["-o", "pid=", "-p", &pid.to_string()])
-            .output()
-            .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
-    })
+    humata2_holder::holder_pid(socket).is_some_and(pid_alive)
+}
+
+fn pid_alive(pid: u32) -> bool {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw) else {
+        return false;
+    };
+    matches!(
+        rustix::process::test_kill_process(pid),
+        Ok(()) | Err(rustix::io::Errno::PERM)
+    )
 }
 
 #[cfg(test)]

@@ -307,6 +307,11 @@ impl Terminals {
         self.core.clone()
     }
 
+    /// The daemon's open holder links, for `screen_ask` to reuse live screens.
+    pub(crate) fn holders(&self) -> Arc<Holders> {
+        self.core.holders.clone()
+    }
+
     /// Starts the screen of every tab the store lists, in the background,
     /// so a program's queries are answered whether or not anyone opens
     /// the tab (D271). A tab whose holder isn't up yet, as one being
@@ -900,19 +905,14 @@ impl Core {
     }
 
     /// A tab as the API shows it, with the offsets its holder link last
-    /// heard.
+    /// heard (without eagerly opening a live link/VT when only describing).
     async fn describe(&self, tab: &TabRecord) -> pb::Tab {
-        let link = tokio::time::timeout(
-            PROBE_TIMEOUT,
-            self.holders.link(&tab.id, &tab.holder_socket),
-        )
-        .await;
-        let (earliest_offset, end_offset) = match link {
-            Ok(Ok(link)) => {
+        let (earliest_offset, end_offset) = match self.holders.existing_link(&tab.id, &tab.holder_socket) {
+            Some(link) => {
                 let offsets = link.offsets();
                 (offsets.earliest, offsets.end)
             }
-            _ => (0, 0),
+            None => (0, 0),
         };
         let program = {
             let (store, id) = (self.config.store.clone(), tab.id.clone());
@@ -1033,8 +1033,17 @@ impl Core {
             self.revoke(&tab.id).await;
             return Err(status::store(error, &config.machine, "save the new tab"));
         }
-        // The screen runs from now on, watched or not. Describing the tab
-        // below links it; a failure is tried again by whatever uses it.
+        // The screen runs from now on, watched or not; link it in the
+        // background so a newly opened tab's terminal queries are answered
+        // without blocking metadata description.
+        {
+            let holders = self.holders.clone();
+            let tab_id = tab.id.clone();
+            let socket = tab.holder_socket.clone();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(PROBE_TIMEOUT, holders.link(&tab_id, &socket)).await;
+            });
+        }
         let described = self.describe(&tab).await;
         if let Some(session) = &tab.session {
             self.config.tell.session(session, pb::Change::Updated, None).await;
@@ -1120,6 +1129,14 @@ impl Core {
                 return Err(humata2_svc_terminal::agent_tabs::to_status(&error));
             }
         };
+        {
+            let holders = self.holders.clone();
+            let tab_id = tab.id.clone();
+            let socket = tab.holder_socket.clone();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(PROBE_TIMEOUT, holders.link(&tab_id, &socket)).await;
+            });
+        }
         let described = self.describe(&tab).await;
         self.config
             .tell
@@ -1627,6 +1644,7 @@ impl Core {
         self.writers.forget(&tab.id);
         self.holders.forget(&tab.id);
         self.revoke(&tab.id).await;
+        crate::channel_service::rename_folder::wake_aliases();
         if let Some(session) = &tab.session {
             self.config.tell.session(session, pb::Change::Updated, None).await;
         }

@@ -33,7 +33,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_machines::StackConfig;
 use humata2_repo_library::{
     Entry, GitHubQuery, Hit, Library, LibraryError, NameError, Place, RepoName, Scope, ScopeError,
-    github_query, merge,
+    Use, github_query, merge,
 };
 use humata2_store::{StoreError, write_atomic};
 use pb::invalid_field::Problem;
@@ -1117,6 +1117,40 @@ impl pb::repo_service_server::RepoService for RepoSvc {
         self.shared.may_read(&caller)?;
         let shared = self.shared.clone();
         let (entries, revision) = blocking(move || shared.list()).await??;
+        Ok(Response::new(listed(&entries, revision)))
+    }
+
+    /// RL-4: adds one repo (`owner/name`) to the library. User-only.
+    async fn add_to_repo_library(
+        &self,
+        request: Request<pb::AddToRepoLibraryRequest>,
+    ) -> Result<Response<pb::ListRepoLibraryResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller, "adding a repo to the library")?;
+        let repo = repo_of(request.into_inner().repo.as_ref())?;
+        let shared = self.shared.clone();
+        let (entries, revision) = blocking(move || -> Result<_, RepoServiceError> {
+            let at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|age| i64::try_from(age.as_millis()).ok())
+                .unwrap_or_default();
+            let remote = format!("git@github.com:{}/{}.git", repo.owner(), repo.name());
+            let usage = Use {
+                repo,
+                remote,
+                default_branch: String::new(),
+                at,
+                place: Place::Desk,
+                canonical: false,
+            };
+            shared
+                .library()?
+                .record(&usage)
+                .map_err(|source| RepoServiceError::Library { source })?;
+            shared.list()
+        })
+        .await??;
         Ok(Response::new(listed(&entries, revision)))
     }
 

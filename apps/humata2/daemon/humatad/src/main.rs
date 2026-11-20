@@ -122,7 +122,14 @@ fn main() -> ExitCode {
     if matches!(cli.command, Command::Serve(_)) && tool_path::asked() {
         tool_path::widen_from_login_shell();
     }
-    let result = tokio::runtime::Builder::new_multi_thread()
+    let mut builder = if matches!(cli.command, Command::Serve(_)) {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(4);
+        builder
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+    };
+    let result = builder
         .enable_all()
         .build()
         .map_err(|source| DaemonError::Runtime { source })

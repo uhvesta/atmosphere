@@ -11,7 +11,7 @@
 //! trimmed rather than as the new program's bytes.
 
 use std::fs::{self, OpenOptions};
-use std::io::ErrorKind;
+use std::io::{BufReader, ErrorKind, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -66,33 +66,48 @@ pub struct SavedOutput {
 /// Reads what a holder saved at `path`, or `None` if it saved nothing
 /// there or was shut down.
 pub fn read_saved(path: &Path) -> Result<Option<SavedOutput>, HolderError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(parse(&bytes, 1).summary())),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(HolderError::Saved {
-            path: path.to_owned(),
-            source,
-        }),
-    }
+    let failed = |source| HolderError::Saved {
+        path: path.to_owned(),
+        source,
+    };
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(failed(error)),
+    };
+    let parsed = parse_reader(BufReader::new(file), 1).map_err(failed)?;
+    Ok(Some(parsed.summary()))
 }
 
 /// The last `max_bytes` of output a holder saved at `path`, oldest first,
 /// or `None` if it saved nothing there or was shut down. Output a holder
 /// that took over printed after a gap follows with nothing between.
 pub fn read_saved_tail(path: &Path, max_bytes: usize) -> Result<Option<Vec<u8>>, HolderError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(tail(&bytes, max_bytes))),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(HolderError::Saved {
-            path: path.to_owned(),
-            source,
-        }),
-    }
+    let failed = |source| HolderError::Saved {
+        path: path.to_owned(),
+        source,
+    };
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(failed(error)),
+    };
+    let parsed = parse_reader(BufReader::new(file), max_bytes).map_err(failed)?;
+    Ok(Some(
+        parsed
+            .kept
+            .since(0)
+            .into_iter()
+            .flat_map(|(_, data)| data)
+            .collect(),
+    ))
 }
 
 /// The last `max_bytes` of the output in the saved log `bytes`.
+#[cfg(test)]
 fn tail(bytes: &[u8], max_bytes: usize) -> Vec<u8> {
-    parse(bytes, max_bytes)
+    parse_reader(bytes, max_bytes)
+        .expect("reading from a slice cannot fail")
         .kept
         .since(0)
         .into_iter()
@@ -116,45 +131,103 @@ impl Parsed {
     }
 }
 
-fn parse(bytes: &[u8], limit: usize) -> Parsed {
+enum ReadStatus {
+    Full,
+    Eof,
+    Partial,
+}
+
+fn read_exact_or_eof(reader: &mut impl Read, mut buf: &mut [u8]) -> std::io::Result<ReadStatus> {
+    let total = buf.len();
+    while !buf.is_empty() {
+        match reader.read(buf) {
+            Ok(0) => {
+                return Ok(if buf.len() == total {
+                    ReadStatus::Eof
+                } else {
+                    ReadStatus::Partial
+                });
+            }
+            Ok(n) => buf = &mut buf[n..],
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(ReadStatus::Full)
+}
+
+fn parse_reader(mut reader: impl Read, limit: usize) -> std::io::Result<Parsed> {
     let mut parsed = Parsed {
         kept: Scrollback::new(limit),
         reserved: 0,
         tail_damaged: false,
     };
-    let Some(mut rest) = bytes.strip_prefix(MAGIC.as_slice()) else {
-        parsed.tail_damaged = !bytes.is_empty();
-        return parsed;
-    };
-    while let Some((kind, offset, data, after)) = record(rest) {
+    let mut magic = [0u8; 8];
+    match read_exact_or_eof(&mut reader, &mut magic)? {
+        ReadStatus::Eof => return Ok(parsed),
+        ReadStatus::Partial => {
+            parsed.tail_damaged = true;
+            return Ok(parsed);
+        }
+        ReadStatus::Full => {
+            if &magic != MAGIC {
+                parsed.tail_damaged = true;
+                return Ok(parsed);
+            }
+        }
+    }
+    let mut head = [0u8; HEAD];
+    let mut check = [0u8; CHECK];
+    let mut data = Vec::new();
+    loop {
+        match read_exact_or_eof(&mut reader, &mut head)? {
+            ReadStatus::Eof => break,
+            ReadStatus::Partial => {
+                parsed.tail_damaged = true;
+                break;
+            }
+            ReadStatus::Full => {}
+        }
+        let kind = head[0];
+        let offset = u64::from_le_bytes(head[1..9].try_into().expect("8-byte offset"));
+        let Ok(len) = usize::try_from(u32::from_le_bytes(
+            head[9..13].try_into().expect("4-byte len"),
+        )) else {
+            parsed.tail_damaged = true;
+            break;
+        };
+        data.clear();
+        let read = reader.by_ref().take(len as u64).read_to_end(&mut data)?;
+        if read != len {
+            parsed.tail_damaged = true;
+            break;
+        }
+        match read_exact_or_eof(&mut reader, &mut check)? {
+            ReadStatus::Full => {}
+            ReadStatus::Eof | ReadStatus::Partial => {
+                parsed.tail_damaged = true;
+                break;
+            }
+        }
+        let expected = checksum_step(checksum(&head), &data);
+        if u64::from_le_bytes(check) != expected {
+            parsed.tail_damaged = true;
+            break;
+        }
         match kind {
             // Offsets only ever grow; one that doesn't is damage.
             OUTPUT if offset >= parsed.kept.end() => {
                 parsed.kept.skip_to(offset);
-                parsed.kept.push(data);
+                parsed.kept.push(&data);
             }
             RESERVE => parsed.reserved = parsed.reserved.max(offset),
-            _ => break,
+            _ => {
+                parsed.tail_damaged = true;
+                break;
+            }
         }
-        rest = after;
     }
-    parsed.tail_damaged = !rest.is_empty();
-    parsed
-}
-
-/// The record at the start of `bytes` if it's whole and its checksum
-/// holds: its kind, offset, data and what follows it.
-fn record(bytes: &[u8]) -> Option<(u8, u64, &[u8], &[u8])> {
-    let head = bytes.get(..HEAD)?;
-    let kind = head[0];
-    let offset = u64::from_le_bytes(head[1..9].try_into().ok()?);
-    let len = usize::try_from(u32::from_le_bytes(head[9..13].try_into().ok()?)).ok()?;
-    let body = bytes.get(..HEAD + len)?;
-    let check = bytes.get(HEAD + len..HEAD + len + CHECK)?;
-    if u64::from_le_bytes(check.try_into().ok()?) != checksum(body) {
-        return None;
-    }
-    Some((kind, offset, &body[HEAD..], &bytes[HEAD + len + CHECK..]))
+    Ok(parsed)
 }
 
 fn put_record(out: &mut Vec<u8>, kind: u8, offset: u64, data: &[u8]) {
@@ -171,7 +244,11 @@ fn put_record(out: &mut Vec<u8>, kind: u8, offset: u64, data: &[u8]) {
 /// FNV-1a: enough to tell a record cut short or never written from a
 /// whole one.
 pub(crate) fn checksum(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+    checksum_step(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+fn checksum_step(seed: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }
@@ -215,12 +292,18 @@ impl SaveLog {
             path: path.to_owned(),
             source,
         };
-        let (bytes, new) = match fs::read(path) {
-            Ok(bytes) => (bytes, false),
-            Err(error) if error.kind() == ErrorKind::NotFound => (Vec::new(), true),
+        let (parsed, new) = match fs::File::open(path) {
+            Ok(file) => (parse_reader(BufReader::new(file), limit).map_err(failed)?, false),
+            Err(error) if error.kind() == ErrorKind::NotFound => (
+                Parsed {
+                    kept: Scrollback::new(limit),
+                    reserved: 0,
+                    tail_damaged: false,
+                },
+                true,
+            ),
             Err(error) => return Err(failed(error)),
         };
-        let parsed = parse(&bytes, limit);
         let mut kept = parsed.kept;
         kept.skip_to(parsed.reserved);
         // Written again whole, so a damaged tail doesn't stay to hide what
@@ -298,9 +381,10 @@ impl SaveLog {
 
     fn save(&mut self, offset: u64, data: &[u8], kept: &Scrollback) -> std::io::Result<()> {
         let end = offset + data.len() as u64;
-        // Twice what's kept: rewriting it then costs no more than the
-        // output that came since.
-        let grown = self.len > 2 * kept.limit() as u64 + RESERVE_AHEAD;
+        // Compact once the log grows past what's kept plus headroom, clamped so
+        // small scrollbacks don't thrash rewrites.
+        let headroom = ((kept.limit() / 2) as u64).max(2 << 20);
+        let grown = self.len > kept.limit() as u64 + headroom;
         if grown {
             (self.file, self.len) = rewrite(&self.path, kept, true)?;
             self.reserved = kept.end();

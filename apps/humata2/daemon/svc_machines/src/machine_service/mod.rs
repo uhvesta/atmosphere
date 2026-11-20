@@ -2495,7 +2495,7 @@ mod coordination_tests {
     struct NoopFeed;
     impl MachineFeedPort for NoopFeed {
         fn publish(&self, _: pb::Change, _: pb::event::Payload, _: Option<pb::Actor>) {}
-        fn subscribe(&self) -> broadcast::Receiver<pb::Event> {
+        fn subscribe(&self) -> broadcast::Receiver<Arc<pb::Event>> {
             let (_tx, rx) = broadcast::channel(1);
             rx
         }

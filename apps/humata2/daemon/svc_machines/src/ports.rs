@@ -114,7 +114,7 @@ pub fn gate(
 /// Event-feed port implemented by `humatad::events::Feed`.
 pub trait MachineFeedPort: Send + Sync {
     fn publish(&self, change: pb::Change, payload: pb::event::Payload, by: Option<pb::Actor>);
-    fn subscribe(&self) -> broadcast::Receiver<pb::Event>;
+    fn subscribe(&self) -> broadcast::Receiver<Arc<pb::Event>>;
 }
 
 // ---------------------------------------------------------------------------

@@ -613,3 +613,92 @@ fn an_own_item_never_migrated_is_withdrawn_when_the_old_daemon_is_gone() {
     store.send(A::SetHistory(History::All), |_| {});
     assert!(!shown_ids(store.state()).contains(&id), "a withdrawn item isn't an answer");
 }
+
+// Auto-migrating older running local daemons on desktop launch.
+
+#[test]
+fn auto_migrate_local_triggers_old_local_daemon_once_and_does_not_loop_on_failure() {
+    let (mut store, fakes, _clock) = store_with_clock(Vec::new());
+    fakes.local_daemon.fail_next(DaemonError::Refused {
+        what: "Migrating the daemon on This Mac".to_owned(),
+        reason: "launchctl failed".to_owned(),
+    });
+    store.send(A::EnableAutoMigrateLocal, |_| {});
+    store.send(A::OldLocalDaemon(Some(old_local_daemon())), |_| {});
+
+    let id = shown_migrates(store.state(), MigrateThing::Daemon, "this-mac")[0].id.clone();
+    assert_eq!(store.state().migrate_status(&id), Some(MigrateStatus::Migrating));
+    answered(&mut store, &id);
+
+    assert_eq!(fakes.local_daemon.migrations(), vec![TO.1.to_owned()]);
+    assert_failed_with_migrate_again(store.state(), &id);
+
+    // Subsequent refreshes or re-sending OldLocalDaemon must NOT loop.
+    refresh(&mut store, &fakes);
+    store.send(A::OldLocalDaemon(Some(old_local_daemon())), |_| {});
+    store.settle();
+    store.skip_received();
+    assert_eq!(fakes.local_daemon.migrations().len(), 1);
+    assert_failed_with_migrate_again(store.state(), &id);
+
+    // Manual Migrate again still works.
+    store.send(A::Migrate(id.clone()), |_| {});
+    answered(&mut store, &id);
+    assert_eq!(fakes.local_daemon.migrations().len(), 2);
+}
+
+#[test]
+fn auto_migrate_local_triggers_daemon_held_this_mac_migrate_once_and_ignores_remote_machines() {
+    let local = migrate("m-local", MigrateThing::Daemon, "this-mac", MigratePhase::Waiting);
+    let (mut store, fakes) = store(vec![gpu_daemon(), local]);
+
+    // Not enabled yet: neither item auto-migrated.
+    assert!(fakes.daemon.answers().is_empty());
+
+    store.send(A::EnableAutoMigrateLocal, |_| {});
+    let local_id = RequestId::new("m-local");
+    let gpu_id = RequestId::new("m-gpu");
+    assert_eq!(store.state().migrate_status(&local_id), Some(MigrateStatus::Migrating));
+    assert_eq!(store.state().migrate_status(&gpu_id), Some(MigrateStatus::Waiting));
+
+    answered(&mut store, &local_id);
+    assert_eq!(fakes.daemon.answers(), vec![(local_id.clone(), Answer::Approved)]);
+
+    // If the daemon reports failure, auto-migrate must NOT re-trigger on refresh.
+    let failure = MigrateFailure {
+        message: "restart failed".to_owned(),
+        fix: "Click Migrate again".to_owned(),
+    };
+    fakes.daemon.put_request(migrate(
+        "m-local",
+        MigrateThing::Daemon,
+        "this-mac",
+        MigratePhase::Failed(failure),
+    ));
+    refresh(&mut store, &fakes);
+    store.settle();
+    store.skip_received();
+    assert_eq!(fakes.daemon.answers().len(), 1);
+    assert_failed_with_migrate_again(store.state(), &local_id);
+}
+
+#[test]
+fn auto_migrate_local_skips_already_failed_or_in_flight_local_migrate() {
+    let failed = migrate(
+        "m-failed",
+        MigrateThing::Daemon,
+        "this-mac",
+        MigratePhase::Failed(MigrateFailure {
+            message: "already failed".to_owned(),
+            fix: "retry".to_owned(),
+        }),
+    );
+    let in_flight = migrate("m-flight", MigrateThing::Daemon, "this-mac", MigratePhase::Migrating);
+    let (mut store, fakes) = store(vec![failed, in_flight]);
+
+    store.send(A::EnableAutoMigrateLocal, |_| {});
+    store.settle();
+    store.skip_received();
+
+    assert!(fakes.daemon.answers().is_empty());
+}

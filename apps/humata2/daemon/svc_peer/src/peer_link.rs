@@ -51,6 +51,9 @@ use humata2_svc_stop_restart::ports::DaemonLinkPort;
 /// The link's log, in the state folder's `logs`.
 const LOG_FILE: &str = "peer-link.log";
 
+/// Rotate `peer-link.log` to `peer-link.log.1` once it reaches this size.
+const LOG_MAX_BYTES: u64 = 10 << 20;
+
 /// An HTTP/2 PING after the link has been this quiet (TR-9): the only
 /// timer an idle link runs, and how a dead link is noticed (GRPC.md §2).
 const KEEPALIVE: Duration = Duration::from_secs(30);
@@ -224,9 +227,19 @@ impl DaemonLinkPort for LinkToDaemon {
     }
 }
 
-/// The link's log, appended to and 0600.
+/// The link's log, appended to and 0600. Rotates to `<path>.1` when the
+/// existing file reaches [`LOG_MAX_BYTES`], before `dup2_stderr`.
 fn open_log(path: &Path) -> Result<File, DaemonError> {
+    open_log_with_limit(path, LOG_MAX_BYTES)
+}
+
+fn open_log_with_limit(path: &Path, max_bytes: u64) -> Result<File, DaemonError> {
     let failed = |source| DaemonError(format!("peer link log {}: {source}", path.display()));
+    if std::fs::metadata(path).is_ok_and(|meta| meta.len() >= max_bytes) {
+        let mut rotated = path.as_os_str().to_owned();
+        rotated.push(".1");
+        let _ = std::fs::rename(path, Path::new(&rotated));
+    }
     let log = OpenOptions::new()
         .append(true)
         .create(true)
@@ -421,5 +434,18 @@ mod tests {
         );
         let served = tokio::time::timeout(Duration::from_secs(1), peer.served).await;
         assert!(matches!(served, Ok(Ok(Ok(())))), "the link ended");
+    }
+
+    #[test]
+    fn open_log_rotates_when_over_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peer-link.log");
+        let rotated = dir.path().join("peer-link.log.1");
+        std::fs::write(&path, vec![b'x'; 64]).unwrap();
+
+        let _log = super::open_log_with_limit(&path, 32).unwrap();
+
+        assert_eq!(std::fs::read(&rotated).unwrap().len(), 64);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
     }
 }

@@ -168,6 +168,14 @@ impl Checkout {
                 None => self.empty_tree(),
             };
         }
+        // Clean-tree fast path: when HEAD exists and the working tree / index
+        // has no changes relevant to `compare`, skip creating a scratch index.
+        // Unborn HEAD (`self.head()? == None`) falls through to the normal path.
+        if let Some(head) = self.head()?
+            && self.is_clean_for(compare)?
+        {
+            return self.tree_of(&head);
+        }
         let seed = if compare.upto == Upto::Commits {
             Seed::Head
         } else {
@@ -206,6 +214,30 @@ impl Checkout {
             }
         }
         scratch.write_tree()
+    }
+
+    /// Whether the repo has no changes that `compare` would include beyond `HEAD`.
+    fn is_clean_for(&self, compare: &Compare) -> Result<bool, DiffError> {
+        let untracked_flag = match compare.untracked {
+            Untracked::None => "--untracked-files=no",
+            Untracked::All | Untracked::Paths(_) => "--untracked-files=normal",
+        };
+        let output = self
+            .git
+            .output(["status", "--porcelain=v1", "-z", untracked_flag], None)?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        if output.stdout.is_empty() {
+            return Ok(true);
+        }
+        if compare.upto == Upto::Staged && compare.untracked == Untracked::None {
+            // Only staged changes (X != ' ') affect Upto::Staged with Untracked::None.
+            // Unstaged-only entries have X == ' ' and a single NUL-terminated path.
+            let mut entries = output.stdout.split(|&b| b == 0).filter(|s| !s.is_empty());
+            return Ok(entries.all(|entry| entry.len() >= 3 && entry[0] == b' ' && entry[2] == b' '));
+        }
+        Ok(false)
     }
 
     /// The new side for a compare with a head or worktree paths: the head's

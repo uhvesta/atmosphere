@@ -178,9 +178,9 @@ async fn on_the_socket_a_wrong_proof_is_refused_and_the_connection_stays_ordinar
         .await
         .unwrap_err();
     assert_ne!(refused.code(), Code::Ok);
-    // Still no credential, still refused as before.
+    // Still no credential: gated/mutating calls are still refused as before.
     let unauthenticated = sessions(&channel)
-        .list_sessions(pb::ListSessionsRequest::default())
+        .delete_session(pb::DeleteSessionRequest::default())
         .await
         .unwrap_err();
     assert_eq!(unauthenticated.code(), Code::Unauthenticated);
@@ -213,10 +213,11 @@ async fn on_the_socket_a_proven_connection_takes_only_allowlisted_calls() {
         .unwrap_err();
     assert_eq!(off_list.code(), Code::PermissionDenied);
 
-    // The proof belongs to that connection: another one is still ordinary.
+    // The proof belongs to that connection: another one is still ordinary
+    // and cannot make gated/mutating calls without credentials.
     let other = common::connect(&daemon.socket).await;
     let unauthenticated = sessions(&other)
-        .list_sessions(pb::ListSessionsRequest::default())
+        .delete_session(pb::DeleteSessionRequest::default())
         .await
         .unwrap_err();
     assert_eq!(unauthenticated.code(), Code::Unauthenticated);

@@ -1528,6 +1528,7 @@ impl SessionSvc {
             }
         }
         drop(guard);
+        self.tell.poke_pointers(&id);
         self.tell
             .session(&id, pb::Change::Updated, Some(by.clone()))
             .await;

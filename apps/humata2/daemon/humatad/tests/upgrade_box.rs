@@ -152,7 +152,15 @@ async fn a_release_staged_over_ssh_becomes_the_machines_release_once_migrated() 
     assert_eq!(upgrade::build_of(rig.the(BOX).daemon()).await.bundle, id);
     assert_eq!(upgrade::bundle_id(&std::fs::read(bin.join("bundle.json")).unwrap()), id);
     assert_eq!(staged_names(&bin), Vec::<String>::new());
-    assert!(bin.join("humatad2.previous").exists(), "the old daemon is kept for a rollback");
+    wait_until_gone(&bin.join("humatad2.previous")).await;
+    assert!(!bin.join("humatad2.previous").exists(), "the old daemon is unlinked after settle");
+}
+
+async fn wait_until_gone(path: &std::path::Path) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while path.exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
 }
 
 /// Puts the host at the release its own `--tools` bundle names, with a
@@ -223,7 +231,8 @@ async fn approving_migrate_stages_the_release_over_ssh_and_the_machine_comes_bac
     assert_eq!(upgrade::build_of(rig.the(BOX).daemon()).await.bundle, bundle);
     assert_eq!(upgrade::bundle_id(&std::fs::read(bin.join("bundle.json")).unwrap()), bundle);
     assert_eq!(staged_names(&bin), Vec::<String>::new());
-    assert!(bin.join("humatad2.previous").exists(), "the old daemon is kept for a rollback");
+    wait_until_gone(&bin.join("humatad2.previous")).await;
+    assert!(!bin.join("humatad2.previous").exists(), "the old daemon is unlinked after settle");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -42,7 +42,8 @@ mod workspace;
 
 pub use clipboard::Clipboard;
 pub use daemon::{
-    AgentSwitch, ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FileChange,
+    AgentSwitch, ArchivePlan, ChannelSessionWork, Daemon, DaemonError, DeleteChannelPlan,
+    DeleteChannelRequest, DeleteChannelResponse, EVENT_QUEUE, Event, Events, FileChange,
     ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError, fair_share,
     RunningHolder, SwitchChange, TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork,
 };

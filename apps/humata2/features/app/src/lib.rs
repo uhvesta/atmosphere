@@ -133,6 +133,10 @@ pub struct AppState {
     pub navigation_overlay: bool,
     /// Each channel's page tab, filters and folding, saved independently.
     pub channel_pages: std::collections::BTreeMap<ChannelId, channel::View>,
+    /// Whether the current channel header's `…` menu is open.
+    pub channel_menu: bool,
+    /// Confirmation modal state when deleting a channel (CH-24).
+    pub deleting_channel: Option<channel::DeleteState>,
     /// Toasts, oldest first.
     pub toasts: Vec<Toast>,
     /// The bug report form and recording.
@@ -274,6 +278,8 @@ impl AppState {
             panel_collapsed: std::collections::BTreeMap::new(),
             navigation_overlay: false,
             channel_pages: saved.channels.clone(),
+            channel_menu: false,
+            deleting_channel: None,
             toasts: Vec::new(),
             report: ReportState::default(),
             restore_error,
@@ -1309,6 +1315,160 @@ impl App {
                 let moved = self.child(state, AppAction::Todo(action));
                 let fill = self.fill_do_next(state);
                 moved.and(fill)
+            }
+            AppAction::Channel(channel::Action::ToggleMenu) => {
+                state.channel_menu = !state.channel_menu;
+                Effect::none()
+            }
+            AppAction::Channel(channel::Action::CloseMenu) => {
+                state.channel_menu = false;
+                Effect::none()
+            }
+            AppAction::Channel(channel::Action::StartDelete) => {
+                state.channel_menu = false;
+                let Route::Channel(id) = state.route.clone() else {
+                    return Effect::none();
+                };
+                let channel_name = state
+                    .workspace
+                    .channel(&id)
+                    .map_or_else(|| id.as_str().to_owned(), |c| c.name.clone());
+                state.deleting_channel = Some(channel::DeleteState {
+                    channel: id.clone(),
+                    channel_name,
+                    loading: true,
+                    plan: None,
+                    delete_work: false,
+                    end_live: true,
+                    deleting: false,
+                    error: None,
+                });
+                let daemon = self.clients.daemon.clone();
+                Effect::future(async move {
+                    let result = daemon.plan_delete_channel(&id).await;
+                    AppAction::Channel(channel::Action::DeletePlanned {
+                        channel: id,
+                        result,
+                    })
+                })
+            }
+            AppAction::Channel(channel::Action::DeletePlanned { channel, result }) => {
+                if let Some(deleting) = state.deleting_channel.as_mut()
+                    && deleting.channel == channel
+                {
+                    deleting.loading = false;
+                    match result {
+                        Ok(plan) => {
+                            deleting.plan = Some(plan);
+                            deleting.error = None;
+                        }
+                        Err(error) => {
+                            deleting.error = Some(error.to_string());
+                        }
+                    }
+                }
+                Effect::none()
+            }
+            AppAction::Channel(channel::Action::ToggleDeleteWork) => {
+                if let Some(deleting) = state.deleting_channel.as_mut()
+                    && !deleting.deleting
+                {
+                    deleting.delete_work = !deleting.delete_work;
+                    deleting.error = None;
+                }
+                Effect::none()
+            }
+            AppAction::Channel(channel::Action::ToggleEndLive) => {
+                if let Some(deleting) = state.deleting_channel.as_mut()
+                    && !deleting.deleting
+                {
+                    deleting.end_live = !deleting.end_live;
+                    deleting.error = None;
+                }
+                Effect::none()
+            }
+            AppAction::Channel(channel::Action::ConfirmDelete) => {
+                let Some(deleting) = state.deleting_channel.as_mut() else {
+                    return Effect::none();
+                };
+                if deleting.loading || deleting.deleting {
+                    return Effect::none();
+                }
+                let Some(plan) = deleting.plan.clone() else {
+                    return Effect::none();
+                };
+                if plan.has_unpushed_work() && !deleting.delete_work {
+                    deleting.error = Some(
+                        "Tick “Delete uncommitted or unpushed work” to continue.".to_owned(),
+                    );
+                    return Effect::none();
+                }
+                deleting.deleting = true;
+                deleting.error = None;
+                let channel = deleting.channel.clone();
+                let request = humata2_clients::DeleteChannelRequest {
+                    channel: channel.clone(),
+                    plan_token: plan.token,
+                    delete_work: deleting.delete_work,
+                    end_live: (!plan.live_sessions.is_empty()).then_some(deleting.end_live),
+                };
+                let daemon = self.clients.daemon.clone();
+                Effect::future(async move {
+                    let result = daemon.delete_channel(request).await;
+                    AppAction::Channel(channel::Action::DeleteFinished { channel, result })
+                })
+            }
+            AppAction::Channel(channel::Action::DeleteFinished { channel, result }) => {
+                match result {
+                    Ok(_) => {
+                        let name = state
+                            .deleting_channel
+                            .as_ref()
+                            .filter(|d| d.channel == channel)
+                            .map(|d| d.channel_name.clone())
+                            .or_else(|| state.workspace.channel(&channel).map(|c| c.name.clone()))
+                            .unwrap_or_else(|| channel.as_str().to_owned());
+                        state.deleting_channel = None;
+                        state.channel_menu = false;
+                        state.channel_pages.remove(&channel);
+                        let workspace = Arc::make_mut(&mut state.workspace);
+                        workspace.channels.retain(|c| c.id != channel);
+                        workspace.sessions.retain(|s| s.channel != channel);
+                        workspace.requests.retain(|r| r.channel != channel);
+                        let shown = self.show(state);
+                        let notice = state.toast(
+                            format!("Deleted #{name}. Moved to Trash for 30 days."),
+                            &clock,
+                        );
+                        let gone = Route::Channel(channel);
+                        let leave = if state.route == gone {
+                            self.leave(state, &gone, Route::Home)
+                        } else {
+                            state.trail.retain(|route| route != &gone);
+                            Effect::none()
+                        };
+                        Effect::merge([shown, notice, leave])
+                    }
+                    Err(error) => {
+                        if let Some(deleting) = state.deleting_channel.as_mut()
+                            && deleting.channel == channel
+                        {
+                            deleting.deleting = false;
+                            deleting.error = Some(error.to_string());
+                        }
+                        Effect::none()
+                    }
+                }
+            }
+            AppAction::Channel(channel::Action::CancelDelete) => {
+                if state
+                    .deleting_channel
+                    .as_ref()
+                    .is_some_and(|d| !d.deleting)
+                {
+                    state.deleting_channel = None;
+                }
+                Effect::none()
             }
             AppAction::Channel(action) => {
                 let Route::Channel(id) = state.route.clone() else {

@@ -189,12 +189,32 @@ impl AgentGatePort for AgentGateAdapter {
     }
 }
 
-pub(crate) struct ScreenHoldersAdapter;
+pub(crate) struct ScreenHoldersAdapter(pub(crate) Arc<crate::holders::Holders>);
 
 #[tonic::async_trait]
 impl ScreenHoldersPort for ScreenHoldersAdapter {
     async fn screen_at(&self, socket: &Path) -> Result<String, Status> {
         crate::holders::screen_at(socket)
+            .await
+            .map_err(|error| status::internal(error.to_string(), ""))
+    }
+
+    async fn screen_for_tab(
+        &self,
+        tab: &str,
+        socket: &Path,
+        last_end: Option<u64>,
+    ) -> Result<Option<(u64, String)>, Status> {
+        if let Some(link) = self.0.existing_link(tab, socket) {
+            let end = link.offsets().end;
+            if last_end == Some(end) {
+                return Ok(None);
+            }
+            if let Some(text) = link.screen_text().await {
+                return Ok(Some((end, text)));
+            }
+        }
+        crate::holders::screen_at_if_changed(socket, last_end)
             .await
             .map_err(|error| status::internal(error.to_string(), ""))
     }
@@ -229,9 +249,9 @@ pub(crate) fn wrap_migrator(
 
 /// Starts `humata2_svc_inbox::screen_ask` wired to `humatad2`'s holders,
 /// `Asking`, and `start_ready`.
-pub(crate) fn start_screen_ask(store: Arc<Store>) {
+pub(crate) fn start_screen_ask(store: Arc<Store>, holders: Arc<crate::holders::Holders>) {
     humata2_svc_inbox::screen_ask::start(
-        Arc::new(ScreenHoldersAdapter),
+        Arc::new(ScreenHoldersAdapter(holders)),
         Arc::new(AskingAdapter),
         store,
         Arc::new(crate::start_ready::is_heard),

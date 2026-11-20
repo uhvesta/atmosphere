@@ -147,6 +147,12 @@ impl Holders {
         Ok(link)
     }
 
+    /// The open link of `tab` if one already serves the holder on `socket`,
+    /// without opening a new connection or building a screen.
+    pub(crate) fn existing_link(&self, tab: &str, socket: &Path) -> Option<Arc<Link>> {
+        self.open_link(tab, socket)
+    }
+
     /// The cached link of `tab` when it still serves the holder answering
     /// on `socket`. One that hung up, or that is on another socket or an
     /// earlier holder process, is dropped, so the caller connects anew
@@ -481,7 +487,8 @@ impl Link {
             mut events,
             control,
         } = attachment;
-        let kept = read_kept(&welcome, &mut events).await?;
+        let mut kept = read_kept(&welcome, &mut events).await?;
+        let kept_after = std::mem::take(&mut kept.after);
         let start = Offsets {
             earliest: welcome.earliest,
             end: welcome.end,
@@ -521,7 +528,11 @@ impl Link {
             });
         };
         let record = starting_record(saved, generation, welcome.end);
-        let (screen, owed) = screen_of(&welcome, &kept, limit, &record);
+        let (screen, owed) = tokio::task::spawn_blocking(move || {
+            screen_of(&welcome, &kept, limit, &record)
+        })
+        .await
+        .unwrap_or_else(|_| (None, Vec::new()));
         let (program_tx, program_rx) = mpsc::unbounded_channel();
         tokio::spawn(save_program(saving.store.clone(), saving.tab.clone(), program_rx));
         let saver = Saver::spawn(saving, generation);
@@ -542,11 +553,12 @@ impl Link {
             offsets: offsets_tx,
             limit,
             screen: screen.clone(),
+            feed_queue: Arc::new(Mutex::new(FeedQueue::default())),
             replies: replies_tx,
             heard: heard_tx,
             program: program_tx,
         };
-        let reader = tokio::spawn(reader.run(events, kept.after));
+        let reader = tokio::spawn(reader.run(events, kept_after));
         let (typing, requests) = mpsc::channel(16);
         tokio::spawn(write(control, requests, replies, heard, screen.clone(), saver));
         Ok(Self {
@@ -618,6 +630,20 @@ impl Link {
         .map_err(ScreenFailed::Stopped)?
     }
 
+    /// The text this link's live screen shows now, read off the runtime's
+    /// threads without attaching a new connection or rebuilding a VT.
+    pub(crate) async fn screen_text(&self) -> Option<String> {
+        let screen = self.screen.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock(&screen);
+            let screen = guard.as_ref()?;
+            screen.authority.screen_text().ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// Resizes the screen and tells every attach of the tab. A cell size
     /// of 0 keeps the one the screen has. Resize the holder after this, so
     /// the output that follows the new size is parsed at it.
@@ -666,29 +692,50 @@ pub(crate) enum ScreenUnread {
 /// from the output it kept. A screen of its own, not a link's, and only
 /// read: the queries in the output get no answer from it.
 pub(crate) async fn screen_at(socket: &Path) -> Result<String, ScreenUnread> {
+    let Some((_, text)) = screen_at_if_changed(socket, None).await? else {
+        unreachable!("last_end is None, so screen_at_if_changed always reads")
+    };
+    Ok(text)
+}
+
+/// Like [`screen_at`], but skips reading scrollback and rebuilding the VT
+/// when the holder's `welcome.end` matches `last_end`, returning `Ok(None)`.
+pub(crate) async fn screen_at_if_changed(
+    socket: &Path,
+    last_end: Option<u64>,
+) -> Result<Option<(u64, String)>, ScreenUnread> {
     let Attachment {
         welcome, mut events, ..
     } = humata2_holder::attach(socket, 0).await.map_err(ScreenUnread::Attach)?;
+    if last_end == Some(welcome.end) {
+        return Ok(None);
+    }
     let kept = read_kept(&welcome, &mut events).await.map_err(ScreenUnread::Attach)?;
     let (cols, rows) = match (welcome.cols, welcome.rows) {
         (0, _) | (_, 0) => DEFAULT_SIZE,
         size => size,
     };
-    let config = Config {
-        cols,
-        rows,
-        scrollback_lines: SCROLLBACK_LINES,
-        scrollback_bytes: kept.bytes.len().max(1),
-        checkpoint_limit: CHECKPOINT_LIMIT,
-    };
-    // Every query counts as answered, so none is owed.
-    let record = ReplyRecord {
-        answered_through: welcome.end,
-        ..ReplyRecord::default()
-    };
-    let (authority, _) =
-        Authority::resume(&config, kept.from, &kept.bytes, &record).map_err(ScreenUnread::Engine)?;
-    authority.screen_text().map_err(ScreenUnread::Engine)
+    let end = welcome.end;
+    let text = tokio::task::spawn_blocking(move || -> Result<String, AuthorityError> {
+        let config = Config {
+            cols,
+            rows,
+            scrollback_lines: SCROLLBACK_LINES,
+            scrollback_bytes: kept.bytes.len().max(1),
+            checkpoint_limit: CHECKPOINT_LIMIT,
+        };
+        // Every query counts as answered, so none is owed.
+        let record = ReplyRecord {
+            answered_through: end,
+            ..ReplyRecord::default()
+        };
+        let (authority, _) = Authority::resume(&config, kept.from, &kept.bytes, &record)?;
+        authority.screen_text()
+    })
+    .await
+    .map_err(|_| ScreenUnread::TimedOut)?
+    .map_err(ScreenUnread::Engine)?;
+    Ok(Some((end, text)))
 }
 
 /// Reads the output the holder keeps, which it sends first.
@@ -770,11 +817,21 @@ fn screen_of(
     }
 }
 
+/// Strictly FIFO queue of output chunks waiting to be fed into a link's
+/// `Authority` on a single sequential blocking consumer. Never runs two
+/// feeds concurrently (out-of-order chunks would cause `AuthorityError::Gap`).
+#[derive(Default)]
+struct FeedQueue {
+    pending: VecDeque<(u64, Vec<u8>)>,
+    running: bool,
+}
+
 /// What the link's reader task needs while it reads.
 struct Reader {
     offsets: watch::Sender<Offsets>,
     limit: u64,
     screen: Arc<Mutex<Option<Screen>>>,
+    feed_queue: Arc<Mutex<FeedQueue>>,
     replies: mpsc::UnboundedSender<Reply>,
     heard: mpsc::UnboundedSender<Event>,
     /// The title and folder steps, for the store (D480).
@@ -801,7 +858,7 @@ impl Reader {
         match event {
             Event::Output { offset, data } => {
                 let end = offset + data.len() as u64;
-                self.feed(offset, &data);
+                self.enqueue_feed(offset, data);
                 self.offsets
                     .send_if_modified(|now| advance(now, end, self.limit));
             }
@@ -824,33 +881,72 @@ impl Reader {
         }
     }
 
-    /// Parses output on the screen and queues the answers it raises.
-    fn feed(&self, offset: u64, data: &[u8]) {
-        let (steps, record) = {
-            let mut guard = lock(&self.screen);
-            let Some(screen) = guard.as_mut() else {
-                return;
-            };
-            match screen.authority.feed(offset, data) {
-                Ok(steps) => (steps, screen.authority.record()),
-                Err(error) => {
-                    // The screen would be wrong from here on: better none
-                    // than a wrong one. The next link rebuilds it.
-                    crate::log::say!("humatad2: dropping a tab's screen: {error}");
-                    *guard = None;
-                    return;
-                }
+    /// Enqueues output for strictly FIFO feeding off the Tokio worker threads.
+    fn enqueue_feed(&self, offset: u64, data: Vec<u8>) {
+        let start = {
+            let mut queue = lock(&self.feed_queue);
+            queue.pending.push_back((offset, data));
+            if queue.running {
+                false
+            } else {
+                queue.running = true;
+                true
             }
         };
-        // The writer saves the record before it sends an answer. The title
-        // and folder steps go to the store when it wants them.
-        for step in &steps {
-            if matches!(step, Step::Title(_) | Step::Pwd(_)) {
-                let _ = self.program.send(step.clone());
+        if start {
+            let queue = self.feed_queue.clone();
+            let screen = self.screen.clone();
+            let program = self.program.clone();
+            let replies = self.replies.clone();
+            tokio::task::spawn_blocking(move || loop {
+                let next = {
+                    let mut q = lock(&queue);
+                    match q.pending.pop_front() {
+                        Some(item) => item,
+                        None => {
+                            q.running = false;
+                            return;
+                        }
+                    }
+                };
+                feed_screen(&screen, next.0, &next.1, &program, &replies);
+            });
+        }
+    }
+}
+
+/// Parses output on the screen and queues the answers it raises.
+fn feed_screen(
+    screen_mutex: &Mutex<Option<Screen>>,
+    offset: u64,
+    data: &[u8],
+    program: &mpsc::UnboundedSender<Step>,
+    replies: &mpsc::UnboundedSender<Reply>,
+) {
+    let (steps, record) = {
+        let mut guard = lock(screen_mutex);
+        let Some(screen) = guard.as_mut() else {
+            return;
+        };
+        match screen.authority.feed(offset, data) {
+            Ok(steps) => (steps, screen.authority.record()),
+            Err(error) => {
+                // The screen would be wrong from here on: better none
+                // than a wrong one. The next link rebuilds it.
+                crate::log::say!("humatad2: dropping a tab's screen: {error}");
+                *guard = None;
+                return;
             }
         }
-        queue_replies(&self.replies, &record, steps);
+    };
+    // The writer saves the record before it sends an answer. The title
+    // and folder steps go to the store when it wants them.
+    for step in &steps {
+        if matches!(step, Step::Title(_) | Step::Pwd(_)) {
+            let _ = program.send(step.clone());
+        }
     }
+    queue_replies(replies, &record, steps);
 }
 
 /// Moves the end on to `end`, and the earliest kept byte with it once more

@@ -52,32 +52,43 @@ fn assert_unauthenticated(refused: &Status) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_release_daemon_refuses_a_call_with_no_credential() {
+async fn the_release_daemon_allows_local_read_only_and_refuses_mutations_with_no_credential() {
     let daemon = Daemon::start_build(Build::Release, folder()).await;
 
-    let list = daemon
-        .terminals()
-        .await
-        .list_tabs(pb::ListTabsRequest::default())
-        .await
-        .unwrap_err();
+    // SEC-9 read-only split: a local same-UID caller outside every session
+    // may call strictly read-only inspection RPCs without `humata login`.
+    let info = pb::daemon_service_client::DaemonServiceClient::new(daemon.channel().await)
+        .get_server_info(pb::GetServerInfoRequest {})
+        .await;
+    let channels = pb::channel_service_client::ChannelServiceClient::new(daemon.channel().await)
+        .list_channels(pb::ListChannelsRequest::default())
+        .await;
+    let sessions = pb::session_service_client::SessionServiceClient::new(daemon.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await;
+    assert!(info.is_ok(), "{info:?}");
+    assert!(channels.is_ok(), "{channels:?}");
+    assert!(sessions.is_ok(), "{sessions:?}");
+
+    // Mutations, session/terminal starts, and privileged/auth RPCs remain
+    // gated on `humata login` (`PresenceRequired { accepted: [CliLogin] }`).
     let shell = daemon
         .terminals()
         .await
         .open_machine_shell(pb::OpenMachineShellRequest::default())
         .await
         .unwrap_err();
-    let info = pb::daemon_service_client::DaemonServiceClient::new(daemon.channel().await)
-        .get_server_info(pb::GetServerInfoRequest {})
-        .await
-        .unwrap_err();
-    // Refused before the call learns the service isn't built.
-    let not_built = pb::channel_service_client::ChannelServiceClient::new(daemon.channel().await)
-        .list_channels(pb::ListChannelsRequest::default())
+    let create_channel =
+        pb::channel_service_client::ChannelServiceClient::new(daemon.channel().await)
+            .create_channel(pb::CreateChannelRequest::default())
+            .await
+            .unwrap_err();
+    let logins = pb::cli_auth_service_client::CliAuthServiceClient::new(daemon.channel().await)
+        .list_cli_sessions(pb::ListCliSessionsRequest::default())
         .await
         .unwrap_err();
 
-    for refused in [&list, &shell, &info, &not_built] {
+    for refused in [&shell, &create_channel, &logins] {
         assert_unauthenticated(refused);
     }
 }

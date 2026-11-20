@@ -169,8 +169,20 @@ fn live_agents(store: &Store, channel: &str) -> Result<Vec<Live>, StoreError> {
     Ok(found)
 }
 
-/// How often the links to renamed folders are looked at for holders that ended.
-const ALIAS_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Fallback sweep interval for links to renamed folders; `Ended` and
+/// `CloseTab` events wake the watcher immediately via [`wake_aliases`].
+const ALIAS_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn alias_wake() -> &'static tokio::sync::Notify {
+    static WAKE: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    WAKE.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Wakes the rename-alias cleanup task immediately (e.g. when a session ends
+/// or a tab closes).
+pub(crate) fn wake_aliases() {
+    alias_wake().notify_one();
+}
 
 /// Where the conversations that follow a rename are staged, in the channels
 /// folder.
@@ -741,10 +753,12 @@ impl ChannelSvc {
         static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         use std::sync::atomic::Ordering;
         if WATCHING.swap(true, Ordering::AcqRel) {
+            wake_aliases();
             return;
         }
         let root = self.starter.layout.root();
         tokio::spawn(async move {
+            let mut wait = std::time::Duration::from_millis(250);
             loop {
                 let at = root.clone();
                 let kept = blocking(move || rename_alias::sweep(&at)).await.unwrap_or(0);
@@ -757,7 +771,16 @@ impl ChannelSvc {
                         return;
                     }
                 }
-                tokio::time::sleep(ALIAS_POLL).await;
+                match tokio::time::timeout(wait, alias_wake().notified()).await {
+                    Ok(()) => {
+                        // A wake can arrive right before the exiting holder's PID
+                        // disappears; retry quickly once before backing off to ALIAS_POLL.
+                        wait = std::time::Duration::from_millis(250);
+                    }
+                    Err(_) => {
+                        wait = (wait * 4).min(ALIAS_POLL);
+                    }
+                }
             }
         });
     }

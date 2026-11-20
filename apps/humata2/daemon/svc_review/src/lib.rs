@@ -67,6 +67,84 @@ const COMMENTS_PAGE_MAX: usize = 500;
 /// a retry comes soon after its call, so older ones are forgotten.
 const ANSWERS_MAX: usize = 256;
 
+/// Soft cap on cached per-session review states; entries in active use are
+/// never evicted even above this cap.
+const SESSION_CACHE_CAP: usize = 64;
+
+/// Bounded LRU cache of per-session review states.
+///
+/// Entries are NEVER evicted while any of the following holds:
+/// - `Arc::strong_count > 1` (in-flight RPC or `UserWriteGuard`)
+/// - active `WatchReviewChanges` or `WatchComments` watchers
+/// - `chat.reported == true` (review open in the app)
+/// - pending `user_writes`
+#[derive(Default)]
+struct SessionCache {
+    entries: HashMap<String, (u64, Arc<SessionReview>)>,
+    tick: u64,
+}
+
+impl SessionCache {
+    fn get(&self, session: &str) -> Option<&Arc<SessionReview>> {
+        self.entries.get(session).map(|(_, review)| review)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &Arc<SessionReview>)> {
+        self.entries.iter().map(|(k, (_, v))| (k, v))
+    }
+
+    fn touch(&mut self, session: &str) -> Option<Arc<SessionReview>> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        let entry = self.entries.get_mut(session)?;
+        entry.0 = tick;
+        Some(entry.1.clone())
+    }
+
+    fn insert(&mut self, session: String, review: Arc<SessionReview>) {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        self.entries.insert(session, (tick, review));
+        self.evict_if_over_cap();
+    }
+
+    fn evict_if_over_cap(&mut self) {
+        while self.entries.len() > SESSION_CACHE_CAP {
+            let victim = self
+                .entries
+                .iter()
+                .filter(|(_, (_, review))| is_evictable(review))
+                .min_by_key(|(_, (last_used, _))| *last_used)
+                .map(|(key, _)| key.clone());
+            let Some(key) = victim else {
+                break;
+            };
+            self.entries.remove(&key);
+        }
+    }
+}
+
+fn is_evictable(review: &Arc<SessionReview>) -> bool {
+    if Arc::strong_count(review) > 1 {
+        return false;
+    }
+    if review.changed.receiver_count() > 0 || review.comment_feed.0.receiver_count() > 0 {
+        return false;
+    }
+    let reported = match review.chat.try_lock() {
+        Ok(chat) => chat.reported,
+        Err(std::sync::TryLockError::Poisoned(err)) => err.into_inner().reported,
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    if reported {
+        return false;
+    }
+    if review.user_writes.has_pending() {
+        return false;
+    }
+    true
+}
+
 /// The services' shared state: per session, what its review showed.
 #[derive(Clone)]
 pub struct Review {
@@ -79,7 +157,7 @@ struct Inner {
     machine: String,
     /// Where offered views are told (D87).
     feed: Arc<dyn ReviewFeed>,
-    sessions: Mutex<HashMap<String, Arc<SessionReview>>>,
+    sessions: Mutex<SessionCache>,
     /// Held while a view is read, changed and saved, so two calls on one
     /// view, or two with one idempotency key, don't both act.
     views: tokio::sync::Mutex<()>,
@@ -287,8 +365,8 @@ impl Review {
     /// The session's review: in memory, else as the store saved it.
     fn review(&self, session: &str) -> Result<Arc<SessionReview>, Status> {
         let mut sessions = lock(&self.inner.sessions);
-        if let Some(review) = sessions.get(session) {
-            return Ok(review.clone());
+        if let Some(review) = sessions.touch(session) {
+            return Ok(review);
         }
         let saved = self
             .inner

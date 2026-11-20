@@ -45,17 +45,18 @@ pub fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError> {
 }
 
 /// Where a clone is, 0 to 1000, from one line of git's progress on stderr:
-/// receiving objects fills 0..=900, resolving deltas 900..=1000, and a local
-/// clone's checkout ("Updating files") 0..=1000. Any other line is None.
+/// receiving objects fills 0..=750, resolving deltas 750..=900, and checkout
+/// ("Updating files") 900..=990; only final completion reports 1000. Any other
+/// line is None.
 pub(crate) fn clone_permille(line: &str) -> Option<u64> {
     let line = line.trim();
     let (phase, rest) = line.split_once(':')?;
     let percent = rest.trim_start().split_once('%')?.0.trim();
     let percent: u64 = percent.parse().ok().filter(|p| *p <= 100)?;
     match phase {
-        "Receiving objects" => Some(percent * 9),
-        "Resolving deltas" => Some(900 + percent),
-        "Updating files" => Some(percent * 10),
+        "Receiving objects" => Some(percent * 750 / 100),
+        "Resolving deltas" => Some(750 + percent * 150 / 100),
+        "Updating files" => Some(900 + percent * 90 / 100),
         _ => None,
     }
 }
@@ -452,14 +453,15 @@ mod tests {
 
     #[test]
     fn parses_git_progress_lines() {
-        let blob = "Cloning into 'x'...\rReceiving objects:   0% (0/10)\rReceiving objects:  42% (4/10), 1 MiB | 2 MiB/s\rReceiving objects: 100% (10/10), done.\nResolving deltas:   0% (0/5)\rResolving deltas: 100% (5/5), done.\n";
+        let blob = "Cloning into 'x'...\rReceiving objects:   0% (0/10)\rReceiving objects:  42% (4/10), 1 MiB | 2 MiB/s\rReceiving objects: 100% (10/10), done.\nResolving deltas:   0% (0/5)\rResolving deltas: 100% (5/5), done.\nUpdating files:   0% (0/10)\rUpdating files:  50% (5/10)\rUpdating files: 100% (10/10), done.\n";
         let seen: Vec<u64> = blob
             .split(['\r', '\n'])
             .filter_map(clone_permille)
             .collect();
-        assert_eq!(seen, [0, 378, 900, 900, 1000]);
+        assert_eq!(seen, [0, 315, 750, 750, 900, 900, 945, 990]);
         assert!(seen.windows(2).all(|w| w[0] <= w[1]));
-        assert_eq!(clone_permille("Updating files:  50% (5/10)"), Some(500));
+        assert_eq!(clone_permille("Updating files:  50% (5/10)"), Some(945));
+        assert_eq!(clone_permille("Updating files: 100% (10/10), done."), Some(990));
     }
 
     #[test]

@@ -221,15 +221,15 @@
 //! non-text file in a conversation folder.
 
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::files::{
-    complete_lines, holds_files, holds_path, io_error, is_there, json_escape, line_starts,
-    list_into, malformed, path_text, read_plain, read_text, relative_name, rewrite_text, under,
-    valid_rel, write_new,
+    complete_lines, holds_files, holds_path, io_error, is_there, json_escape, list_into,
+    malformed, open_plain, path_text, read_plain, read_text, relative_name, rewrite_text,
+    stream_complete_lines, under, valid_rel, write_new, write_new_stream,
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead, Packed,
@@ -693,9 +693,9 @@ impl Adapter for CopilotSessionState {
     /// The prompts of the transcript's turns, in order (module doc, Turns).
     fn turns(&self, conversation: &Conversation) -> Result<Vec<Turn>, ConversationError> {
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement)?;
-        Ok(prompts_of(&lines).into_iter().map(|prompt| prompt.turn).collect())
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement)?;
+        Ok(prompts.into_iter().map(|prompt| prompt.turn).collect())
     }
 
     /// Where each turn starts: its prompt's line, or the resume or shutdown
@@ -703,10 +703,9 @@ impl Adapter for CopilotSessionState {
     /// doc, Fork).
     fn turn_starts(&self, conversation: &Conversation) -> Result<Vec<u64>, ConversationError> {
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement)?;
-        let numbers = prompts_of(&lines).into_iter().map(|prompt| prompt.start);
-        Ok(line_starts(&bytes, numbers))
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement)?;
+        Ok(prompts.into_iter().map(|prompt| prompt.start_offset).collect())
     }
 
     /// The transcript's lines before the cut, renamed for `new_id` and
@@ -720,28 +719,34 @@ impl Adapter for CopilotSessionState {
     ) -> Result<Conversation, ConversationError> {
         check_id(new_id)?;
         let path = transcript_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let lines = parse(&bytes, &path, &conversation.placement)?;
-        let cut = cut_for(&prompts_of(&lines), before)?;
-        let mut kept = Vec::with_capacity(bytes.len());
-        for (number, line) in (1_u64..).zip(complete_lines(&bytes)) {
-            if number >= cut {
-                break;
-            }
-            kept.extend_from_slice(line);
-            kept.push(b'\n');
-        }
-        let kept = String::from_utf8(kept).map_err(|_| ConversationError::NotText { path: path.clone() })?;
-        let mut pairs = rewrite_pairs(&conversation.placement, to);
-        push_pair(&mut pairs, conversation.id.clone(), new_id.to_owned());
-        let text = rewrite_text(&kept, &pairs);
+        let file = open_plain(&path, u64::MAX)?;
+        let prompts = parse_reader(BufReader::new(file), &path, &conversation.placement)?;
+        let cut = cut_for(&prompts, before)?;
         let folder = copilot_dir(to).join(STATE).join(new_id);
         if is_there(&folder)? {
             return Err(ConversationError::Exists { path: folder });
         }
         let target = folder.join(EVENTS);
-        parse(text.as_bytes(), &target, to)?;
-        write_new(&target, text.as_bytes())?;
+        let mut pairs = rewrite_pairs(&conversation.placement, to);
+        push_pair(&mut pairs, conversation.id.clone(), new_id.to_owned());
+        let pass2 = open_plain(&path, u64::MAX)?;
+        let mut validator = Validator::new(to);
+        write_new_stream(&target, |writer| {
+            stream_complete_lines(BufReader::new(pass2), &path, |number, _, raw| {
+                if number >= cut {
+                    return Ok(());
+                }
+                let line = std::str::from_utf8(raw)
+                    .map_err(|_| ConversationError::NotText { path: path.clone() })?;
+                let rewritten = rewrite_text(line, &pairs);
+                validator.validate_line(number, rewritten.as_bytes(), &target)?;
+                writer
+                    .write_all(rewritten.as_bytes())
+                    .and_then(|()| writer.write_all(b"\n"))
+                    .map_err(|source| io_error("write", &target, source))?;
+                Ok(())
+            })
+        })?;
         Ok(Conversation {
             id: new_id.to_owned(),
             format: Format::CopilotSessionState,
@@ -770,7 +775,7 @@ impl Adapter for CopilotSessionState {
             let text = read_text(&file.path, REWRITE_MAX)?;
             let rel = relative_name(&file.path, &base)?;
             let body = if file.path == transcript {
-                parse(text.as_bytes(), &file.path, &conversation.placement)?;
+                parse_reader(Cursor::new(text.as_bytes()), &file.path, &conversation.placement)?;
                 let mut body = Vec::with_capacity(text.len());
                 for line in complete_lines(text.as_bytes()) {
                     body.extend_from_slice(line);
@@ -871,7 +876,7 @@ impl Adapter for CopilotSessionState {
                 if let Some(head) = head {
                     rewritten = events_on_head(&rewritten, head);
                 }
-                parse(rewritten.as_bytes(), &target, to)?;
+                parse_reader(Cursor::new(rewritten.as_bytes()), &target, to)?;
             } else if is_workspace(&file.rel, &packed.id) {
                 if let Some(head) = head {
                     rewritten = workspace_on_head(&rewritten, head);
@@ -903,8 +908,8 @@ impl Adapter for CopilotSessionState {
         if let Some(text) = older {
             return Err(unsupported(Some(text.lines().next().unwrap_or(text).trim())));
         }
-        let bytes = read_plain(&path, u64::MAX)?;
-        parse(&bytes, &path, &conversation.placement)?;
+        let file = open_plain(&path, u64::MAX)?;
+        parse_reader(BufReader::new(file), &path, &conversation.placement)?;
         let workspace = copilot_dir(&conversation.placement)
             .join(STATE)
             .join(&conversation.id)
@@ -998,11 +1003,28 @@ fn sqlite_bytes(path: &Path, at: &Placement, id: &str) -> Result<Option<Vec<u8>>
     }
 }
 
-/// The strict parse of every complete line (module doc, The strict parse).
-fn parse(bytes: &[u8], path: &Path, at: &Placement) -> Result<Vec<(u64, Value)>, ConversationError> {
-    let folder = path_text(&at.folder);
-    let mut lines: Vec<(u64, Value)> = Vec::new();
-    for (number, raw) in (1_u64..).zip(complete_lines(bytes)) {
+/// Streaming strict-parse validator for Copilot `events.jsonl` lines.
+struct Validator {
+    folder: String,
+    seen_first: bool,
+    first_version: Option<String>,
+}
+
+impl Validator {
+    fn new(at: &Placement) -> Self {
+        Self {
+            folder: path_text(&at.folder),
+            seen_first: false,
+            first_version: None,
+        }
+    }
+
+    fn validate_line(
+        &mut self,
+        number: u64,
+        raw: &[u8],
+        path: &Path,
+    ) -> Result<Value, ConversationError> {
         let value: Value = serde_json::from_slice(raw).map_err(|source| ConversationError::Malformed {
             path: path.to_path_buf(),
             line: number,
@@ -1012,18 +1034,83 @@ fn parse(bytes: &[u8], path: &Path, at: &Placement) -> Result<Vec<(u64, Value)>,
             return Err(malformed(path, number));
         };
         let starts = kind == "session.start";
-        if starts != lines.is_empty() {
+        if starts == self.seen_first {
             return Err(unsupported(None));
         }
-        if !is_known(&value, kind, &folder) {
-            return Err(unsupported(lines.first().and_then(|(_, first)| copilot_version(first))));
+        if !is_known(&value, kind, &self.folder) {
+            return Err(unsupported(self.first_version.as_deref()));
         }
         if starts {
             known_start(&value)?;
+            self.first_version = copilot_version(&value).map(str::to_owned);
         }
-        lines.push((number, value));
+        self.seen_first = true;
+        Ok(value)
     }
-    Ok(lines)
+}
+
+/// Streams every complete line of `reader` through the strict parse (module
+/// doc, The strict parse) and returns the turns found, without retaining
+/// parsed `Value` DOMs.
+fn parse_reader<R: BufRead>(
+    reader: R,
+    path: &Path,
+    at: &Placement,
+) -> Result<Vec<Prompt>, ConversationError> {
+    let mut validator = Validator::new(at);
+    let mut prompts: Vec<Prompt> = Vec::new();
+    let mut run_start: Option<(u64, u64)> = None;
+    let mut answered = true;
+    stream_complete_lines(reader, path, |number, offset, raw| {
+        let value = validator.validate_line(number, raw, path)?;
+        let kind = kind_of(&value);
+        if is_typed(&value) {
+            let (start, start_offset) = run_start.take().unwrap_or((number, offset));
+            let first_line = value
+                .pointer("/data/content")
+                .and_then(Value::as_str)
+                .and_then(|text| text.lines().next())
+                .unwrap_or_default()
+                .to_owned();
+            prompts.push(Prompt {
+                turn: Turn {
+                    index: u32::try_from(prompts.len() + 1).unwrap_or(u32::MAX),
+                    first_line,
+                    at: value.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+                },
+                start,
+                start_offset,
+                finished: false,
+            });
+            answered = true;
+            return Ok(());
+        }
+        if matches!(kind, Some("session.resume" | "session.shutdown")) {
+            if run_start.is_none() {
+                run_start = Some((number, offset));
+            }
+        } else {
+            run_start = None;
+        }
+        if let Some(current) = prompts.last_mut()
+            && value.pointer("/data/parentToolCallId").is_none()
+        {
+            match kind {
+                Some("assistant.message") => {
+                    answered = value
+                        .pointer("/data/toolRequests")
+                        .and_then(Value::as_array)
+                        .is_none_or(Vec::is_empty);
+                }
+                Some("assistant.turn_end") if answered => {
+                    current.finished = true;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })?;
+    Ok(prompts)
 }
 
 /// Whether the strict parse knows a record: its type, and that no field it
@@ -1144,6 +1231,8 @@ struct Prompt {
     turn: Turn,
     /// The number of its first line.
     start: u64,
+    /// The byte offset of its first line.
+    start_offset: u64,
     /// Whether an `assistant.turn_end` follows it before the next turn.
     finished: bool,
 }
@@ -1156,71 +1245,6 @@ fn kind_of(value: &Value) -> Option<&str> {
 /// subagent sent (a subagent's names the agent in `source`).
 fn is_typed(value: &Value) -> bool {
     kind_of(value) == Some("user.message") && value.pointer("/data/source").and_then(Value::as_str).is_none()
-}
-
-/// Whether the main agent's last `assistant.turn_end` in `span` follows a
-/// reply that asked for no tool. A turn that called a tool has an end after
-/// the tool ran and a second reply after that; a subagent's records (they
-/// have a `parentToolCallId`) are not the main agent's.
-fn ends_in_answer(span: &[(u64, Value)]) -> bool {
-    let mut answered = true;
-    span.iter().any(|(_, value)| {
-        if value.pointer("/data/parentToolCallId").is_some() {
-            return false;
-        }
-        match kind_of(value) {
-            Some("assistant.message") => {
-                answered = value
-                    .pointer("/data/toolRequests")
-                    .and_then(Value::as_array)
-                    .is_none_or(Vec::is_empty);
-                false
-            }
-            Some("assistant.turn_end") => answered,
-            _ => false,
-        }
-    })
-}
-
-/// The turns of the transcript, in order: one per `user.message`.
-fn prompts_of(lines: &[(u64, Value)]) -> Vec<Prompt> {
-    let prompts: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, value))| is_typed(value))
-        .map(|(position, _)| position)
-        .collect();
-    let mut found = Vec::with_capacity(prompts.len());
-    for (n, &position) in prompts.iter().enumerate() {
-        let mut first = position;
-        while first > 0
-            && matches!(
-                kind_of(&lines[first - 1].1),
-                Some("session.resume" | "session.shutdown")
-            )
-        {
-            first -= 1;
-        }
-        let end = prompts.get(n + 1).copied().unwrap_or(lines.len());
-        let finished = ends_in_answer(&lines[position..end]);
-        let value = &lines[position].1;
-        let first_line = value
-            .pointer("/data/content")
-            .and_then(Value::as_str)
-            .and_then(|text| text.lines().next())
-            .unwrap_or_default()
-            .to_owned();
-        found.push(Prompt {
-            turn: Turn {
-                index: u32::try_from(n + 1).unwrap_or(u32::MAX),
-                first_line,
-                at: value.get("timestamp").and_then(Value::as_str).map(str::to_owned),
-            },
-            start: lines[first].0,
-            finished,
-        });
-    }
-    found
 }
 
 /// The line a fork keeps lines before (module doc, Fork): turn `before`'s

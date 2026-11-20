@@ -188,6 +188,34 @@ pub(super) fn repo_library(daemon: &FakeDaemon) -> Reply<Vec<LibraryRepo>> {
     )
 }
 
+pub(super) fn add_to_repo_library(daemon: &FakeDaemon, repo: &str) -> Reply<Vec<LibraryRepo>> {
+    let raw = repo.trim().to_owned();
+    daemon.reply(
+        Some(Operation::AddToRepoLibrary),
+        format!("add to repo library {raw:?}"),
+        move |inner| {
+            let valid = match raw.split_once('/') {
+                Some((owner, name)) => {
+                    !owner.is_empty()
+                        && !name.is_empty()
+                        && !name.contains('/')
+                        && !owner.chars().any(char::is_whitespace)
+                        && !name.chars().any(char::is_whitespace)
+                }
+                None => false,
+            };
+            if !valid {
+                return Err(DaemonError::Refused {
+                    what: "Adding a repo to the library".to_owned(),
+                    reason: format!("{raw:?} is not owner/name. Write the repo as owner/name, such as acme/api"),
+                });
+            }
+            record(inner, &raw, RepoPlace::Desk);
+            Ok(inner.repos.library.clone())
+        },
+    )
+}
+
 pub(super) fn remove_from_repo_library(daemon: &FakeDaemon, repo: &str) -> Reply<Vec<LibraryRepo>> {
     let repo = repo.to_owned();
     daemon.reply(

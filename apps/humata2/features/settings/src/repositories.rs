@@ -26,6 +26,12 @@ pub struct RepositoriesState {
     /// The time the host gave when the library was last read, in
     /// milliseconds since the epoch; "used ... ago" is worked out from it.
     pub now_ms: i64,
+    /// Inline "+ Add repo" form is open.
+    pub adding_repo: bool,
+    /// Current text in the inline "+ Add repo" input (`owner/name`).
+    pub add_repo_input: String,
+    /// Inline validation or server error for "+ Add repo".
+    pub add_repo_error: Option<String>,
 }
 
 impl RepositoriesState {
@@ -95,6 +101,16 @@ pub enum RepositoriesAction {
     ScopeSaved(Result<RepoScope, DaemonError>),
     /// The host listed the user's GitHub orgs, or could not.
     OwnersListed(Result<Vec<String>, DaemonError>),
+    /// **+ Add repo**: open the inline `owner/name` input.
+    AddRepoOpened,
+    /// The inline "+ Add repo" input changed.
+    AddRepoChanged(String),
+    /// Submit the inline "+ Add repo" input.
+    AddRepoSubmitted,
+    /// Cancel/close the inline "+ Add repo" input.
+    AddRepoClosed,
+    /// The host added the repo to the library, or refused.
+    Added(Result<Vec<LibraryRepo>, DaemonError>),
 }
 
 /// The scope with owners and the switch applied: no owners with the switch
@@ -118,6 +134,9 @@ pub(crate) fn reduce(
         A::Open => {
             state.error = None;
             state.confirming_forget = false;
+            state.adding_repo = false;
+            state.add_repo_input.clear();
+            state.add_repo_error = None;
             let library = clients.daemon.clone();
             let scope = clients.daemon.clone();
             let owners = clients.daemon.clone();
@@ -207,6 +226,65 @@ pub(crate) fn reduce(
             let include_me = !state.include_me();
             let scope = scope_of(state.owners().to_vec(), include_me);
             save(clients, state, scope)
+        }
+        A::AddRepoOpened => {
+            state.adding_repo = true;
+            state.add_repo_input.clear();
+            state.add_repo_error = None;
+            Effect::none()
+        }
+        A::AddRepoChanged(text) => {
+            state.add_repo_input = text;
+            state.add_repo_error = None;
+            Effect::none()
+        }
+        A::AddRepoClosed => {
+            state.adding_repo = false;
+            state.add_repo_input.clear();
+            state.add_repo_error = None;
+            Effect::none()
+        }
+        A::AddRepoSubmitted => {
+            if state.busy {
+                return Effect::none();
+            }
+            let trimmed = state.add_repo_input.trim();
+            let valid = match trimmed.split_once('/') {
+                Some((owner, name)) => {
+                    !owner.is_empty()
+                        && !name.is_empty()
+                        && !name.contains('/')
+                        && !owner.chars().any(char::is_whitespace)
+                        && !name.chars().any(char::is_whitespace)
+                }
+                None => false,
+            };
+            if !valid {
+                state.add_repo_error = Some(
+                    "Enter a repository as owner/name (for example, acme/api).".to_owned(),
+                );
+                return Effect::none();
+            }
+            state.busy = true;
+            state.add_repo_error = None;
+            state.error = None;
+            let repo = trimmed.to_owned();
+            let daemon = clients.daemon.clone();
+            Effect::future(async move { A::Added(daemon.add_to_repo_library(&repo).await) })
+        }
+        A::Added(Ok(library)) => {
+            state.busy = false;
+            state.adding_repo = false;
+            state.add_repo_input.clear();
+            state.add_repo_error = None;
+            state.now_ms = clients.daemon.now_ms();
+            state.library = Some(library);
+            Effect::none()
+        }
+        A::Added(Err(error)) => {
+            state.busy = false;
+            state.add_repo_error = Some(error.to_string());
+            Effect::none()
         }
     }
 }

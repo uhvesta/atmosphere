@@ -20,7 +20,7 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -73,9 +73,9 @@ struct File {
 #[derive(Debug)]
 pub struct Bundle {
     files: BTreeMap<(PlatformKey, InstalledFile), File>,
-    /// Payloads already read and checked, per platform, so a second
-    /// machine of the same platform reads nothing.
-    loaded: Mutex<HashMap<PlatformKey, Vec<Payload>>>,
+    /// Payloads currently in use, keyed by platform and file, so concurrent
+    /// callers share the same `Arc<[u8]>` while idle memory drops to zero.
+    loaded: Mutex<HashMap<(PlatformKey, InstalledFile), Weak<[u8]>>>,
     /// The host's `stack.toml` machines get beside the tools (D411).
     stack_config: Option<PathBuf>,
     /// Platforms the app brought tools for that this daemon may not use
@@ -242,14 +242,14 @@ impl Bundle {
             };
             let sha256 = match &entry.sha256 {
                 Some(sha256) => sha256.clone(),
-                // A host bundle made from the files beside the daemon: the
-                // manifest says what is there.
-                None => self
-                    .payloads(platform)?
-                    .into_iter()
-                    .find(|payload| payload.file() == *file)
-                    .map(|payload| payload.sha256().to_owned())
-                    .ok_or(BuildsError::FileMissing { platform, file: *file })?,
+                // A host bundle made from the files beside the daemon: stream-hash
+                // each file in 64 KiB chunks instead of loading the whole binary.
+                None => hash_stream(&entry.path).map_err(|source| BuildsError::FileUnreadable {
+                    platform,
+                    file: *file,
+                    path: entry.path.clone(),
+                    source: Arc::new(source),
+                })?,
             };
             entries.push((platform, *file, sha256));
         }
@@ -278,9 +278,10 @@ impl Bundle {
     }
 
     fn load(&self, platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        let key = platform.bundle_name();
         if !InstalledFile::ALL
             .iter()
-            .any(|file| self.files.contains_key(&(platform.bundle_name(), *file)))
+            .any(|file| self.files.contains_key(&(key, *file)))
         {
             if self.stale.contains(&platform) {
                 return Err(BuildsError::HostNeedsMigrate { platform });
@@ -294,27 +295,47 @@ impl Bundle {
         for file in InstalledFile::ALL {
             let entry = self
                 .files
-                .get(&(platform.bundle_name(), file))
+                .get(&(key, file))
                 .ok_or(BuildsError::FileMissing { platform, file })?;
-            let bytes = std::fs::read(&entry.path).map_err(|source| BuildsError::FileUnreadable {
-                platform,
-                file,
-                path: entry.path.clone(),
-                source: Arc::new(source),
-            })?;
-            if let Some(expected) = &entry.sha256 {
-                let found = install::hex(&Sha256::digest(&bytes));
-                if &found != expected {
-                    return Err(BuildsError::Damaged {
+            let cached = self
+                .loaded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&(key, file))
+                .and_then(Weak::upgrade);
+            let bytes = match cached {
+                Some(bytes) => bytes,
+                None => {
+                    // Read outside the lock: the files are large.
+                    let raw = std::fs::read(&entry.path).map_err(|source| BuildsError::FileUnreadable {
                         platform,
                         file,
                         path: entry.path.clone(),
-                        expected: expected.clone(),
-                        found,
-                    });
+                        source: Arc::new(source),
+                    })?;
+                    if let Some(expected) = &entry.sha256 {
+                        let found = install::hex(&Sha256::digest(&raw));
+                        if &found != expected {
+                            return Err(BuildsError::Damaged {
+                                platform,
+                                file,
+                                path: entry.path.clone(),
+                                expected: expected.clone(),
+                                found,
+                            });
+                        }
+                    }
+                    let bytes: Arc<[u8]> = Arc::from(raw);
+                    let mut cache = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(existing) = cache.get(&(key, file)).and_then(Weak::upgrade) {
+                        existing
+                    } else {
+                        cache.insert((key, file), Arc::downgrade(&bytes));
+                        bytes
+                    }
                 }
-            }
-            payloads.push(Payload::new(file, Arc::from(bytes)));
+            };
+            payloads.push(Payload::new(file, bytes));
         }
         Ok(payloads)
     }
@@ -322,17 +343,7 @@ impl Bundle {
 
 impl Builds for Bundle {
     fn payloads(&self, platform: Platform) -> Result<Vec<Payload>, BuildsError> {
-        let key = platform.bundle_name();
-        if let Some(payloads) = self.loaded.lock().unwrap_or_else(PoisonError::into_inner).get(key) {
-            return Ok(payloads.clone());
-        }
-        // Read outside the lock: the files are large.
-        let payloads = self.load(platform)?;
-        self.loaded
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key, payloads.clone());
-        Ok(payloads)
+        self.load(platform)
     }
 
     fn bundle_json(&self, _platform: Platform) -> Result<Option<Arc<[u8]>>, BuildsError> {
@@ -688,17 +699,9 @@ fn remove_leftovers(bin: &Path) -> Result<(), StageError> {
     Ok(())
 }
 
-/// The SHA-256 of the file at `path`; none when there is none.
-fn hash_file(path: &Path) -> Result<Option<String>, StageError> {
-    let read = |source| StageError::Read {
-        path: path.to_owned(),
-        source,
-    };
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(read(source)),
-    };
+/// The SHA-256 of the file at `path`, streamed in [`CHUNK_BYTES`] chunks.
+fn hash_stream(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut chunk = vec![0; CHUNK_BYTES];
     loop {
@@ -706,10 +709,22 @@ fn hash_file(path: &Path) -> Result<Option<String>, StageError> {
             Ok(0) => break,
             Ok(count) => hasher.update(&chunk[..count]),
             Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
-            Err(source) => return Err(read(source)),
+            Err(source) => return Err(source),
         }
     }
-    Ok(Some(install::hex(&hasher.finalize())))
+    Ok(install::hex(&hasher.finalize()))
+}
+
+/// The SHA-256 of the file at `path`; none when there is none.
+fn hash_file(path: &Path) -> Result<Option<String>, StageError> {
+    match hash_stream(path) {
+        Ok(digest) => Ok(Some(digest)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(StageError::Read {
+            path: path.to_owned(),
+            source,
+        }),
+    }
 }
 
 #[cfg(test)]

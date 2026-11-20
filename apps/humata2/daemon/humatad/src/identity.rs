@@ -2,9 +2,16 @@
 //! shell gets a session token of its own in `HUMATA_SESSION_TOKEN`; a call
 //! that carries one is that session's agent. A call that carries a CLI
 //! login (`cli_login`) from the terminal session it bound is the user. A
-//! call with no credential is refused, except WhoAmI and logging in, which
-//! answer it as unauthenticated; a test daemon built with the `admin`
-//! feature and run with `--admin` takes it for the user instead. A call
+//! call with no credential is refused on all mutations and privileged RPCs
+//! (SEC-9), except:
+//! - methods in `OPEN_TO_ANYONE` (`WhoAmI`, `BeginCliSession`, relay proof,
+//!   `StopSessions`), which answer it as unauthenticated;
+//! - strictly read-only inspection RPCs in `LOCAL_READ_ONLY` from a local
+//!   same-UID process outside every Humata session, which run as
+//!   `UserVia::LocalReadOnly` (a process inside any session tree is never
+//!   treated as a local read-only user);
+//! - a test daemon built with the `admin` feature and run with `--admin`,
+//!   which takes it for the user instead. A call
 //! with a script token (`humata token create`, SEC-14) is that script: not
 //! the user, with no session of its own; it wins over a CLI login and
 //! loses to a session token, and is not bound to a process tree. A session
@@ -195,6 +202,12 @@ struct AddedAgentMayCall;
 #[derive(Clone, Copy, Debug)]
 struct OpenToAnyone;
 
+/// Marks a request for a strictly read-only inspection method that a local
+/// same-UID CLI caller outside every Humata session may call without
+/// `humata login` (SEC-9 read-only split). Set by `mark_open` only.
+#[derive(Clone, Copy, Debug)]
+struct LocalReadOnlyAllowed;
+
 /// Marks a call to [`STOP_SESSIONS_PATH`] that carried no credential at
 /// all and came from a process outside every Humata session: a person
 /// typing `humata stop` on the machine (D263). Set by `authenticate` only.
@@ -218,6 +231,96 @@ const OPEN_TO_ANYONE: [(&str, &str); 5] = [
     (pb::daemon_service_server::SERVICE_NAME, "StopSessions"),
 ];
 
+/// Strictly read-only inspection RPCs that a local same-UID CLI user outside
+/// every Humata session may call without `humata login` (SEC-9 split).
+///
+/// Everything not listed here — all mutations, session/terminal starts and
+/// stops, inbox approvals/denials, access-rule changes, CLI login/token
+/// management, host variables, file access, upgrades, and anything
+/// destructive or privileged — remains gated on `humata login`.
+const LOCAL_READ_ONLY: &[(&str, &str)] = &[
+    // Daemon status
+    (pb::daemon_service_server::SERVICE_NAME, "GetServerInfo"),
+    // Channels & activity
+    (pb::channel_service_server::SERVICE_NAME, "GetChannel"),
+    (pb::channel_service_server::SERVICE_NAME, "ListChannels"),
+    (pb::channel_service_server::SERVICE_NAME, "GetGrid"),
+    (pb::activity_service_server::SERVICE_NAME, "ListActivity"),
+    // Sessions & history
+    (pb::session_service_server::SERVICE_NAME, "GetSession"),
+    (pb::session_service_server::SERVICE_NAME, "ListSessions"),
+    (pb::session_service_server::SERVICE_NAME, "ListTurns"),
+    (pb::session_service_server::SERVICE_NAME, "ReadConversation"),
+    (pb::history_service_server::SERVICE_NAME, "SearchSessions"),
+    (pb::history_service_server::SERVICE_NAME, "ReadTurns"),
+    // Terminals (inspection only; no open/attach/type/paste)
+    (pb::terminal_service_server::SERVICE_NAME, "ListTabs"),
+    (pb::terminal_service_server::SERVICE_NAME, "ListQueued"),
+    // Machines, providers & port forwards (no host variables or provider configs)
+    (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
+    (pb::machine_service_server::SERVICE_NAME, "GetMachine"),
+    (pb::machine_service_server::SERVICE_NAME, "GetStorage"),
+    (pb::machine_service_server::SERVICE_NAME, "ListRunningHolders"),
+    (pb::machine_service_server::SERVICE_NAME, "ListMachineScripts"),
+    (pb::machine_service_server::SERVICE_NAME, "ListMachineScriptRuns"),
+    (pb::provider_service_server::SERVICE_NAME, "ListProviders"),
+    (pb::bridge_service_server::SERVICE_NAME, "ListPortForwards"),
+    // Boards & todos
+    (pb::board_service_server::SERVICE_NAME, "ListItems"),
+    (pb::board_service_server::SERVICE_NAME, "GetItem"),
+    (pb::board_service_server::SERVICE_NAME, "GetItemHistory"),
+    (pb::todo_service_server::SERVICE_NAME, "ListTodo"),
+    (pb::todo_service_server::SERVICE_NAME, "ListTodoRuns"),
+    (pb::todo_service_server::SERVICE_NAME, "GetTodoHistory"),
+    (pb::todo_service_server::SERVICE_NAME, "GetTodoMigration"),
+    // Inbox (read-only inspection only; approvals/denials stay gated)
+    (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
+    (pb::inbox_service_server::SERVICE_NAME, "GetRequest"),
+    // Repos
+    (pb::repo_service_server::SERVICE_NAME, "ListRepoLibrary"),
+    (pb::repo_service_server::SERVICE_NAME, "GetRepoScope"),
+    (pb::repo_service_server::SERVICE_NAME, "ListRepoOwners"),
+    // Settings, agents, marks & view state
+    (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
+    (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
+    (pb::agent_service_server::SERVICE_NAME, "ListAgents"),
+    (pb::mark_service_server::SERVICE_NAME, "ListPinned"),
+    (pb::view_state_service_server::SERVICE_NAME, "GetViewState"),
+    // Operations
+    (pb::operation_service_server::SERVICE_NAME, "GetOperation"),
+    (pb::operation_service_server::SERVICE_NAME, "FindOperation"),
+    (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
+    (pb::operation_service_server::SERVICE_NAME, "WatchOperation"),
+    // Access rules & audit (read-only inspection only)
+    (pb::access_service_server::SERVICE_NAME, "ListCapabilities"),
+    (pb::access_service_server::SERVICE_NAME, "GetChannelRules"),
+    (pb::access_service_server::SERVICE_NAME, "GetDefaultRules"),
+    (pb::access_service_server::SERVICE_NAME, "ListGrants"),
+    (pb::access_service_server::SERVICE_NAME, "Explain"),
+    (pb::audit_service_server::SERVICE_NAME, "ListAudit"),
+    // Transfers, trash, desk & review inspection
+    (pb::transfer_service_server::SERVICE_NAME, "ListTransfers"),
+    (pb::trash_service_server::SERVICE_NAME, "ListTrash"),
+    (pb::desk_service_server::SERVICE_NAME, "ListDeskSessions"),
+    (pb::desk_service_server::SERVICE_NAME, "ListDocVersions"),
+    (pb::diff_service_server::SERVICE_NAME, "GetDiff"),
+    (pb::diff_service_server::SERVICE_NAME, "GetFileDiff"),
+    (pb::diff_service_server::SERVICE_NAME, "ListReviewedSnapshots"),
+    (pb::diff_service_server::SERVICE_NAME, "GetLooks"),
+    (pb::diff_service_server::SERVICE_NAME, "ListBases"),
+    (pb::diff_service_server::SERVICE_NAME, "FindDefaultBranch"),
+    (pb::comment_service_server::SERVICE_NAME, "ListComments"),
+    (pb::view_service_server::SERVICE_NAME, "ListViews"),
+];
+
+fn route_of(path: &str) -> Option<(&str, &str)> {
+    path.strip_prefix('/')?.split_once('/')
+}
+
+fn is_local_read_only_route(route: (&str, &str)) -> bool {
+    LOCAL_READ_ONLY.contains(&route)
+}
+
 /// Marks `request` when its method is open to anyone. Runs before
 /// `Authenticate`, which can't see the path. Extensions are the server's
 /// own: a client can't set this marker.
@@ -240,24 +343,23 @@ pub(crate) fn mark_open(request: http::Request<Body>) -> http::Request<Body> {
         request.extensions_mut().insert(conn);
         request.extensions_mut().insert(facts);
     }
-    let open = request
-        .uri()
-        .path()
-        .strip_prefix('/')
-        .and_then(|path| path.split_once('/'))
-        .is_some_and(|route| OPEN_TO_ANYONE.iter().any(|listed| *listed == route));
-    if open {
-        request.extensions_mut().insert(OpenToAnyone);
-    }
-    let who_am_i = (pb::daemon_service_server::SERVICE_NAME, "WhoAmI");
-    if request
-        .uri()
-        .path()
-        .strip_prefix('/')
-        .and_then(|path| path.split_once('/'))
-        .is_some_and(|route| route == who_am_i)
-    {
-        request.extensions_mut().insert(AddedAgentMayCall);
+    let route = route_of(request.uri().path()).map(|(service, method)| {
+        (
+            OPEN_TO_ANYONE.contains(&(service, method)),
+            is_local_read_only_route((service, method)),
+            (service, method) == (pb::daemon_service_server::SERVICE_NAME, "WhoAmI"),
+        )
+    });
+    if let Some((open, local_read_only, is_who_am_i)) = route {
+        if open {
+            request.extensions_mut().insert(OpenToAnyone);
+        }
+        if local_read_only {
+            request.extensions_mut().insert(LocalReadOnlyAllowed);
+        }
+        if is_who_am_i {
+            request.extensions_mut().insert(AddedAgentMayCall);
+        }
     }
     request
 }
@@ -275,8 +377,12 @@ pub(crate) fn mark_peer(mut request: http::Request<Body>) -> http::Request<Body>
 pub(crate) fn user_via(via: &UserVia) -> pb::user_actor::Via {
     match via {
         UserVia::App | UserVia::Host => pb::user_actor::Via::App,
-        UserVia::CliLogin { on_host: true, .. } => pb::user_actor::Via::CliOnHost,
-        UserVia::CliLogin { on_host: false, .. } => pb::user_actor::Via::CliOnMachine,
+        UserVia::CliLogin { on_host: true, .. } | UserVia::LocalReadOnly { on_host: true } => {
+            pb::user_actor::Via::CliOnHost
+        }
+        UserVia::CliLogin { on_host: false, .. } | UserVia::LocalReadOnly { on_host: false } => {
+            pb::user_actor::Via::CliOnMachine
+        }
     }
 }
 
@@ -376,6 +482,12 @@ fn peer_is_app<T>(request: &Request<T>) -> bool {
         .extensions()
         .get::<humata2_app_peer::PeerInfo>()
         .is_some_and(|info| info.app)
+}
+
+/// Whether the other end of the call's socket belongs to the same Unix UID
+/// as this daemon, read from `SO_PEERCRED`/`LOCAL_PEERCRED` on accept.
+fn peer_same_uid<T>(request: &Request<T>) -> bool {
+    peer_facts(request).uid == Some(rustix::process::geteuid().as_raw())
 }
 
 fn unchecked() -> Status {
@@ -781,11 +893,22 @@ impl Authenticate {
         Err(token_outside_its_session(session))
     }
 
+    #[cfg(test)]
     fn authenticate(
+        &self,
+        request: Request<()>,
+        pid: Option<i32>,
+        app: bool,
+    ) -> Result<Request<()>, Status> {
+        self.authenticate_with_uid(request, pid, app, true)
+    }
+
+    fn authenticate_with_uid(
         &self,
         mut request: Request<()>,
         pid: Option<i32>,
         app: bool,
+        same_uid: bool,
     ) -> Result<Request<()>, Status> {
         // D144: a connection that proved itself as the link's is the host's
         // for the methods the relay allows, with no credential on the call;
@@ -810,6 +933,7 @@ impl Authenticate {
             }
         }
         let open = request.extensions().get::<OpenToAnyone>().is_some();
+        let local_read_only = request.extensions().get::<LocalReadOnlyAllowed>().is_some();
         let session = request.metadata().get(TOKEN_HEADER);
         let login = request.metadata().get(LOGIN_HEADER);
         let script = request.metadata().get(SCRIPT_HEADER);
@@ -888,7 +1012,18 @@ impl Authenticate {
                 }
             }
             (None, None, None) => {
-                let caller = self.without_credential(pid, app);
+                let caller = self.without_credential(pid, app).or_else(|| {
+                    // SEC-9 read-only split: a local same-UID CLI process
+                    // outside every Humata session may call strictly
+                    // read-only inspection RPCs without `humata login`.
+                    // `in_a_session` fails closed on unknown pid or store
+                    // errors, so an agent in a session tree never gets this.
+                    (local_read_only && same_uid && !self.in_a_session(pid)).then_some(
+                        Caller::User(UserVia::LocalReadOnly {
+                            on_host: self.role != pb::DaemonRole::Machine,
+                        }),
+                    )
+                });
                 outside = caller.is_none() && stop_sessions && !self.in_a_session(pid);
                 caller
             }
@@ -920,7 +1055,8 @@ impl Interceptor for Authenticate {
     fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
         let pid = peer_pid(&request);
         let app = peer_is_app(&request);
-        self.authenticate(request, pid, app)
+        let same_uid = peer_same_uid(&request);
+        self.authenticate_with_uid(request, pid, app, same_uid)
     }
 }
 
@@ -1324,6 +1460,93 @@ mod tests {
             let caller = resolve_fork(agent_caller_of(&session, "ma_here"), &rig.store)
                 .unwrap();
             assert_eq!(caller.session_kind(), SessionKind::Ordinary, "{}", session.id);
+        }
+    }
+
+    #[test]
+    fn local_same_uid_cli_allows_read_only_and_refuses_mutations_and_session_tree() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
+
+        let read_only_req = || {
+            let mut req = Request::new(());
+            req.extensions_mut().insert(LocalReadOnlyAllowed);
+            req
+        };
+
+        // Outside every session, same UID: read-only succeeds as LocalReadOnly.
+        let allowed = rig
+            .authenticate
+            .authenticate_with_uid(read_only_req(), Some(41), false, true)
+            .unwrap();
+        assert!(matches!(
+            caller(&allowed).unwrap(),
+            Caller::User(UserVia::LocalReadOnly { on_host: true })
+        ));
+
+        // Same caller on a non-read-only (mutating/privileged) RPC is refused
+        // with CliLogin PresenceRequired.
+        let refused = rig
+            .authenticate
+            .authenticate_with_uid(Request::new(()), Some(41), false, true)
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+        let err = status::error_of(&refused).unwrap();
+        assert!(matches!(
+            err.kind,
+            Some(pb::error::Kind::PresenceRequired(ref p))
+                if p.accepted == [pb::presence_required::Method::CliLogin as i32]
+        ));
+
+        // Process inside a session tab's tree (even with no token), unknown
+        // pid, and different UID are NEVER granted LocalReadOnly.
+        for (pid, same_uid) in [(Some(32), true), (None, true), (Some(41), false)] {
+            let err = rig
+                .authenticate
+                .authenticate_with_uid(read_only_req(), pid, false, same_uid)
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::Unauthenticated,
+                "pid={pid:?}, same_uid={same_uid}"
+            );
+        }
+
+        // Spot-check the route allowlist boundary.
+        for allowed_route in [
+            (pb::daemon_service_server::SERVICE_NAME, "GetServerInfo"),
+            (pb::channel_service_server::SERVICE_NAME, "ListChannels"),
+            (pb::session_service_server::SERVICE_NAME, "ListSessions"),
+            (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
+            (pb::board_service_server::SERVICE_NAME, "ListItems"),
+            (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
+            (pb::repo_service_server::SERVICE_NAME, "ListRepoLibrary"),
+            (pb::repo_service_server::SERVICE_NAME, "GetRepoScope"),
+            (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
+            (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
+            (pb::provider_service_server::SERVICE_NAME, "ListProviders"),
+        ] {
+            assert!(
+                is_local_read_only_route(allowed_route),
+                "expected read-only: {allowed_route:?}"
+            );
+        }
+        for gated_route in [
+            (pb::channel_service_server::SERVICE_NAME, "CreateChannel"),
+            (pb::session_service_server::SERVICE_NAME, "StartSession"),
+            (pb::session_service_server::SERVICE_NAME, "DeleteSession"),
+            (pb::inbox_service_server::SERVICE_NAME, "AnswerRequest"),
+            (pb::access_service_server::SERVICE_NAME, "SetChannelRule"),
+            (pb::cli_auth_service_server::SERVICE_NAME, "CreateScriptToken"),
+            (pb::cli_auth_service_server::SERVICE_NAME, "ListCliSessions"),
+            (pb::machine_service_server::SERVICE_NAME, "ListHostVariables"),
+            (pb::file_service_server::SERVICE_NAME, "WriteFile"),
+            (pb::daemon_service_server::SERVICE_NAME, "Upgrade"),
+        ] {
+            assert!(
+                !is_local_read_only_route(gated_route),
+                "expected gated: {gated_route:?}"
+            );
         }
     }
 }

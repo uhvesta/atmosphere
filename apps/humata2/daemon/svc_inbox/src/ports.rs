@@ -128,6 +128,19 @@ pub trait AgentGatePort: Send + Sync {
 pub trait ScreenHoldersPort: Send + Sync {
     /// The text the holder at `socket` shows on its screen now.
     async fn screen_at(&self, socket: &Path) -> Result<String, Status>;
+
+    /// The text and output end offset of `tab`'s screen at `socket`, reusing a
+    /// live link's screen when available and returning `Ok(None)` when the
+    /// holder's output end offset is unchanged from `last_end`.
+    async fn screen_for_tab(
+        &self,
+        _tab: &str,
+        socket: &Path,
+        _last_end: Option<u64>,
+    ) -> Result<Option<(u64, String)>, Status> {
+        let text = self.screen_at(socket).await?;
+        Ok(Some((0, text)))
+    }
 }
 
 /// Converts a [`SystemTime`] to a [`humata2_grpc::Timestamp`].

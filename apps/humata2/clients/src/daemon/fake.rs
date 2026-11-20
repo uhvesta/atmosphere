@@ -6,8 +6,9 @@ use tca::{BoxFuture, Clock};
 use tokio::sync::{mpsc, watch};
 
 use crate::daemon::{
-    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, Operation, PastTurn, Reply,
-    SwitchChange, TerminalNotice, Terminals,
+    AgentSwitch, ArchivePlan, Daemon, DaemonError, DeleteChannelPlan, DeleteChannelRequest,
+    DeleteChannelResponse, Event, Events, ForkOptions, Operation, PastTurn, Reply, SwitchChange,
+    TerminalNotice, Terminals,
 };
 use crate::fixture;
 use crate::mass_delete::{DeleteScope, DeleteSessionsOutcome, DeleteSessionsPlan};
@@ -838,6 +839,14 @@ impl Daemon for FakeDaemon {
         channels::create_channel(self, name, repos, machines)
     }
 
+    fn plan_delete_channel(&self, channel: &ChannelId) -> Reply<DeleteChannelPlan> {
+        channels::plan_delete_channel(self, channel)
+    }
+
+    fn delete_channel(&self, request: DeleteChannelRequest) -> Reply<DeleteChannelResponse> {
+        channels::delete_channel(self, request)
+    }
+
     fn github_repos(&self, query: &str) -> Reply<Vec<String>> {
         channels::github_repos(self, query)
     }
@@ -857,6 +866,10 @@ impl Daemon for FakeDaemon {
 
     fn repo_library(&self) -> Reply<Vec<crate::repos::LibraryRepo>> {
         repos::repo_library(self)
+    }
+
+    fn add_to_repo_library(&self, repo: &str) -> Reply<Vec<crate::repos::LibraryRepo>> {
+        repos::add_to_repo_library(self, repo)
     }
 
     fn remove_from_repo_library(&self, repo: &str) -> Reply<Vec<crate::repos::LibraryRepo>> {

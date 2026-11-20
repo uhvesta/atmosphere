@@ -42,7 +42,7 @@ pub use take_over::{check_take_over, handoff_path, handoff_versions, take_over};
 
 /// Live output a slow client can fall this many chunks behind before it
 /// is caught up from the scrollback instead.
-const LIVE_CHUNKS: usize = 256;
+const LIVE_CHUNKS: usize = 32;
 /// How long the program gets to end after a hang-up before it's killed.
 const HANG_UP_GRACE: Duration = Duration::from_secs(2);
 /// How many keyed inputs the holder remembers having typed.

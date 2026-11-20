@@ -87,17 +87,8 @@ impl MachineFeedPort for FeedAdapter {
         self.0.publish(change, payload, by);
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<pb::Event> {
-        let (_, mut rx) = self.0.subscribe(None);
-        let (tx, out) = broadcast::channel(64);
-        tokio::spawn(async move {
-            while let Ok(published) = rx.recv().await {
-                if tx.send((**published).clone()).is_err() {
-                    break;
-                }
-            }
-        });
-        out
+    fn subscribe(&self) -> broadcast::Receiver<Arc<pb::Event>> {
+        self.0.subscribe_events()
     }
 }
 

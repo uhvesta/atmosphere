@@ -189,6 +189,18 @@ impl Shared {
         let failed = self.failed_on.lock().unwrap_or_else(PoisonError::into_inner);
         generation > failed.get(machine).copied().unwrap_or(0)
     }
+
+    /// Removes per-machine link-failure state when `machine` is forgotten.
+    fn forget_machine(&self, machine: &str) {
+        self.failed_on
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(machine);
+        self.generations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(machine);
+    }
 }
 
 /// The end of a transfer that is on another machine.
@@ -243,6 +255,11 @@ impl RemoteEnd {
     /// but keeps failing never counts twice, so there is no loop.
     pub fn relinked_since_failure(&self, machine: &str) -> bool {
         self.shared.newer_link(machine)
+    }
+
+    /// Clears `failed_on` and generation tracking for a forgotten machine.
+    pub fn forget_machine(&self, machine: &str) {
+        self.shared.forget_machine(machine);
     }
 
     /// The machine, link and location `path` names. A link that is down is
@@ -1378,6 +1395,15 @@ mod tests {
         // A failure with no link at all (generation 0) is resumed by any link.
         assert!(shared.newer_link("box-1"));
         assert!(!shared.newer_link("box-2"));
+        // Forgetting a machine clears its failed_on entry.
+        shared.forget_machine("box-1");
+        assert!(
+            !shared
+                .failed_on
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key("box-1")
+        );
     }
 
     #[tokio::test]

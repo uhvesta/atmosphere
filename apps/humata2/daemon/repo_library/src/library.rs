@@ -173,7 +173,8 @@ impl Library {
              PRAGMA synchronous = FULL;
              PRAGMA fullfsync = ON;
              PRAGMA checkpoint_fullfsync = ON;
-             PRAGMA busy_timeout = 5000;",
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -2000;",
         )
         .map_err(fail)?;
         conn.execute_batch(SCHEMA).map_err(fail)?;

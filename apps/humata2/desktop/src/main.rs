@@ -358,7 +358,7 @@ fn run() -> Result<(), StartError> {
         match &args.backend {
             live::Backend::Fakes => {
                 let (clients, _daemon) = humata2_clients::demo_clients(Arc::new(SystemClock::new()), storage);
-                open_main(cx, &handle, clients, recorder, None);
+                open_main(cx, &handle, clients, recorder, None, false);
             }
             live::Backend::Live { socket } => {
                 // Installing the tools and waiting for the daemon can take
@@ -395,7 +395,7 @@ fn run() -> Result<(), StartError> {
                         if let Some((installed, _)) = installed {
                             tell_about_install(installed);
                         }
-                        open_main(cx, &handle, clients, recorder, old);
+                        open_main(cx, &handle, clients, recorder, old, true);
                     },
                 );
             }
@@ -414,6 +414,7 @@ fn open_main(
     mut clients: Clients,
     recorder: Recorder,
     old: Option<OldLocalDaemon>,
+    auto_migrate_local: bool,
 ) {
     let (notifier, notifier_bridge) = live::notifier::LiveNotifier::new();
     clients.notifier = Arc::new(notifier);
@@ -446,6 +447,9 @@ fn open_main(
         eprintln!("{error}");
     }
     cx.on_window_closed(|cx, _| cx.quit()).detach();
+    if auto_migrate_local {
+        ui.send(AppAction::Inbox(InboxAction::EnableAutoMigrateLocal), cx);
+    }
     if old.is_some() {
         ui.send(AppAction::Inbox(InboxAction::OldLocalDaemon(old)), cx);
     }

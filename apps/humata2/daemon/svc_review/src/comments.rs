@@ -1507,6 +1507,17 @@ fn read_lines(folder: &Path, repo: &str, path: &str) -> Option<Vec<String>> {
 #[derive(Default)]
 pub(super) struct Writes(std::sync::Mutex<WritesState>);
 
+impl Writes {
+    /// Whether any user write is currently in flight (or the lock is contended).
+    pub(super) fn has_pending(&self) -> bool {
+        match self.0.try_lock() {
+            Ok(state) => state.pending > 0,
+            Err(std::sync::TryLockError::Poisoned(err)) => err.into_inner().pending > 0,
+            Err(std::sync::TryLockError::WouldBlock) => true,
+        }
+    }
+}
+
 #[derive(Default)]
 struct WritesState {
     /// Writes between taking their hold and finishing.

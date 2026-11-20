@@ -234,8 +234,14 @@ pub enum Operation {
     SearchRepos,
     /// [`Daemon::repo_library`].
     RepoLibrary,
+    /// [`Daemon::add_to_repo_library`].
+    AddToRepoLibrary,
     /// [`Daemon::remove_from_repo_library`].
     RemoveFromRepoLibrary,
+    /// [`Daemon::plan_delete_channel`].
+    PlanDeleteChannel,
+    /// [`Daemon::delete_channel`].
+    DeleteChannel,
     /// [`Daemon::forget_repo_library`].
     ForgetRepoLibrary,
     /// [`Daemon::repo_scope`].
@@ -379,7 +385,7 @@ pub struct UnpushedWork {
 }
 
 /// What archiving a session does, known before it happens.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchivePlan {
     /// How many forks stay running and move up the tree.
     pub forks_keep_running: u32,
@@ -391,6 +397,78 @@ pub struct ArchivePlan {
     /// PR-17: a pull request review's drafts never submitted. Archiving
     /// keeps them with the archived review (D513).
     pub unsubmitted_drafts: u32,
+}
+
+/// One session listed in a channel delete plan, with its unpushed work counts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelSessionWork {
+    /// The session.
+    pub session: SessionId,
+    /// Its title.
+    pub title: String,
+    /// Uncommitted files across its clones.
+    pub dirty_files: u32,
+    /// Unpushed commits across its clones.
+    pub unpushed_commits: u32,
+}
+
+/// What deleting a channel would do, read before it is deleted (CH-24).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteChannelPlan {
+    /// The channel being deleted.
+    pub channel: ChannelId,
+    /// Live sessions in the channel, with their unpushed work counts.
+    pub live_sessions: Vec<ChannelSessionWork>,
+    /// Number of archived sessions in the channel.
+    pub archived_sessions: u32,
+    /// Number of board items in the channel.
+    pub board_items: u32,
+    /// Number of pending requests in the channel.
+    pub pending_requests: u32,
+    /// Plan token required to execute the delete.
+    pub token: String,
+    /// Live sessions that will move to the Desk by default (D801 H).
+    pub moves_to_desk: Vec<SessionId>,
+    /// Number of live sessions that cannot move to the Desk.
+    pub cannot_move_count: u32,
+    /// Offline machines that will receive the delete when they return.
+    pub offline_machines: Vec<MachineId>,
+}
+
+impl DeleteChannelPlan {
+    /// Whether any live session in the channel has uncommitted or unpushed work.
+    #[must_use]
+    pub fn has_unpushed_work(&self) -> bool {
+        self.live_sessions
+            .iter()
+            .any(|s| s.dirty_files > 0 || s.unpushed_commits > 0)
+    }
+
+    /// Total sessions (live + archived) that belong to this channel.
+    #[must_use]
+    pub fn total_sessions(&self) -> usize {
+        self.live_sessions.len() + self.archived_sessions as usize
+    }
+}
+
+/// Request to execute a planned channel delete (CH-24).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteChannelRequest {
+    /// The channel to delete.
+    pub channel: ChannelId,
+    /// The token from [`Daemon::plan_delete_channel`].
+    pub plan_token: String,
+    /// Whether the user confirmed deleting uncommitted or unpushed work.
+    pub delete_work: bool,
+    /// Whether to end live sessions (`Some(true)`) or move them to the Desk (`None`/`Some(false)`).
+    pub end_live: Option<bool>,
+}
+
+/// Result of deleting a channel (CH-24).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteChannelResponse {
+    /// The Mac's trash item id; restoring it within 30 days brings the channel back.
+    pub trash_item: String,
 }
 
 /// What the app asks of the daemons.
@@ -662,6 +740,16 @@ pub trait Daemon: Send + Sync + 'static {
         repos: Vec<String>,
         machines: Vec<MachineId>,
     ) -> Reply<ChannelId>;
+    /// What deleting `channel` would do, read before it is deleted (CH-24).
+    fn plan_delete_channel(&self, channel: &ChannelId) -> Reply<DeleteChannelPlan> {
+        let what = format!("Planning the delete of {channel}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Deletes a channel using a plan token from [`Daemon::plan_delete_channel`] (CH-24).
+    fn delete_channel(&self, request: DeleteChannelRequest) -> Reply<DeleteChannelResponse> {
+        let what = format!("Deleting {}", request.channel);
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// The GitHub repositories `gh` on the host sees, as `owner/name`, that
     /// match `query` (all of them for an empty one), the most recently
     /// pushed first (CH-3).
@@ -677,6 +765,11 @@ pub trait Daemon: Send + Sync + 'static {
     // REPOS (RL-4): the repo library, most recently used first.
     fn repo_library(&self) -> Reply<Vec<crate::repos::LibraryRepo>> {
         let what = "Listing the repo library".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    // REPOS (RL-4): adds one repo (`owner/name`) to the library; the library now.
+    fn add_to_repo_library(&self, repo: &str) -> Reply<Vec<crate::repos::LibraryRepo>> {
+        let what = format!("Adding {repo} to the repo library");
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
     // REPOS (RL-4): drops one repo (`owner/name`) from the library; the library left.

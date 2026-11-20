@@ -158,7 +158,6 @@ impl App {
         let frontmost = Self::frontmost_context(state);
         let now_secs = self.clients.clock.now().as_secs();
         let live = state.load == Load::Ready;
-        let workspace = Arc::make_mut(&mut state.workspace);
         let mut snapshot = None;
         let mut left = false;
         let mut permission_alert = None;
@@ -179,7 +178,8 @@ impl App {
                 if session.archived && !left {
                     state.trail.retain(|route| route != &gone);
                 }
-                let (prev_status, prev_resume_failed) = workspace
+                let (prev_status, prev_resume_failed) = state
+                    .workspace
                     .session(&session.id)
                     .map_or((None, None), |prev| (Some(prev.status), prev.resume_failed));
                 if session.archived {
@@ -189,7 +189,7 @@ impl App {
                     ));
                 } else if live {
                     let (session_title, channel_id, channel_name) =
-                        session_channel_meta(workspace, &session);
+                        session_channel_meta(&state.workspace, &session);
                     if prev_resume_failed.is_none()
                         && let Some(failure) = session.resume_failed
                         && let Some(notice) = humata2_notify::evaluate(
@@ -209,7 +209,7 @@ impl App {
                         notices.push(notice);
                     }
                     if prev_status != Some(Status::NeedsYou) && session.status == Status::NeedsYou {
-                        let has_pending_inbox_request = workspace.waiting().any(|request| {
+                        let has_pending_inbox_request = state.workspace.waiting().any(|request| {
                             request.session == session.id
                                 && request.kind != RequestKind::Migrate
                                 && !request.operation.starts_with("board.")
@@ -254,7 +254,7 @@ impl App {
                     if session.status == Status::Working
                         && session.resume_failed.is_none()
                         && prev_status != Some(Status::Working)
-                        && !workspace.waiting().any(|request| {
+                        && !state.workspace.waiting().any(|request| {
                             request.session == session.id
                                 && request.kind != RequestKind::Migrate
                                 && !request.operation.starts_with("board.")
@@ -267,12 +267,14 @@ impl App {
                     }
                 }
                 snapshot = Some(session.id.clone());
+                let workspace = Arc::make_mut(&mut state.workspace);
                 upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
                 // A tab opened from New agent tab keeps its agent (D858).
                 state.session.keep_agent_tabs(workspace);
             }
             Event::Request(request) => {
-                let is_new = !workspace
+                let is_new = !state
+                    .workspace
                     .requests
                     .iter()
                     .any(|saved| saved.id == request.id);
@@ -292,10 +294,10 @@ impl App {
                     && is_new
                     && request.kind != RequestKind::Migrate
                     && !request.operation.starts_with("board.")
-                    && let Some(notice) = humata2_inbox::notification(workspace, &request)
+                    && let Some(notice) = humata2_inbox::notification(&state.workspace, &request)
                 {
                     let (session_title, channel_id, channel_name) =
-                        session_meta(workspace, &request.session);
+                        session_meta(&state.workspace, &request.session);
                     if let Some(desktop_notice) = humata2_notify::evaluate(
                         &state.settings.preferences.notify,
                         &frontmost,
@@ -317,26 +319,41 @@ impl App {
                         notices.push(desktop_notice);
                     }
                 }
+                let workspace = Arc::make_mut(&mut state.workspace);
                 upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
             }
             Event::RequestGone(id) => {
-                workspace.requests.retain(|request| request.id != id);
+                Arc::make_mut(&mut state.workspace)
+                    .requests
+                    .retain(|request| request.id != id);
                 withdraw_ids.extend(humata2_notify::clear_request(&mut state.notify_burst, &id));
             }
             Event::Rules { channel, rules } => {
-                workspace.rules.insert(channel, rules);
+                Arc::make_mut(&mut state.workspace)
+                    .rules
+                    .insert(channel, rules);
             }
             Event::Machine(machine) => {
-                upsert(&mut workspace.machines, machine, |a, b| a.id == b.id);
+                upsert(
+                    &mut Arc::make_mut(&mut state.workspace).machines,
+                    machine,
+                    |a, b| a.id == b.id,
+                );
             }
             Event::Transfer(transfer) => {
-                upsert(&mut workspace.transfers, transfer, |a, b| a.id == b.id);
+                upsert(
+                    &mut Arc::make_mut(&mut state.workspace).transfers,
+                    transfer,
+                    |a, b| a.id == b.id,
+                );
             }
             Event::Item { item, details } => {
+                let workspace = Arc::make_mut(&mut state.workspace);
                 workspace.item_details.insert(item.id.clone(), details);
                 upsert(&mut workspace.items, item, |a, b| a.id == b.id);
             }
             Event::ItemGone(id) => {
+                let workspace = Arc::make_mut(&mut state.workspace);
                 workspace.items.retain(|item| item.id != id);
                 workspace.item_details.remove(&id);
             }
@@ -345,7 +362,7 @@ impl App {
             // catches up; the next keystroke searches the new entries.
             Event::HistoryIndexed(_) => return Effect::none(),
             // DESKWATCH: the Desk follows what the daemon tells, with no reload.
-            Event::Desk(change) => workspace.desk.apply(change),
+            Event::Desk(change) => Arc::make_mut(&mut state.workspace).desk.apply(change),
             // MACHINESCRIPTS (D686): the open machine page reads its runs again, and so does
             // Settings > Machines while it is the page shown. Nothing else reads.
             Event::MachineScriptRun(machine) => {

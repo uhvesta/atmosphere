@@ -108,23 +108,8 @@ impl HolderTokensPort for HolderTokensAdapter {
 pub(crate) struct HolderEventsAdapter(pub(crate) Arc<Feed>);
 
 impl HolderEventsPort for HolderEventsAdapter {
-    fn subscribe(&self) -> broadcast::Receiver<pb::Event> {
-        let (_, mut src) = self.0.subscribe(None);
-        let (tx, rx) = broadcast::channel(256);
-        tokio::spawn(async move {
-            loop {
-                match src.recv().await {
-                    Ok(published) => {
-                        if tx.send((**published).clone()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-        rx
+    fn subscribe(&self) -> broadcast::Receiver<Arc<pb::Event>> {
+        self.0.subscribe_events()
     }
 }
 

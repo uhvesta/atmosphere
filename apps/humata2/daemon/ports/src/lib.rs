@@ -196,6 +196,11 @@ pub enum UserVia {
         on_host: bool,
         method: PresenceMethod,
     },
+    /// A local same-UID CLI process outside every Humata session calling a
+    /// strictly read-only inspection RPC without `humata login` (SEC-9 split).
+    LocalReadOnly {
+        on_host: bool,
+    },
     /// The host, through the peer link's relay (D139, D144).
     Host,
 }
@@ -325,8 +330,12 @@ fn snake(name: &str) -> String {
 pub fn user_via(via: &UserVia) -> pb::user_actor::Via {
     match via {
         UserVia::App | UserVia::Host => pb::user_actor::Via::App,
-        UserVia::CliLogin { on_host: true, .. } => pb::user_actor::Via::CliOnHost,
-        UserVia::CliLogin { on_host: false, .. } => pb::user_actor::Via::CliOnMachine,
+        UserVia::CliLogin { on_host: true, .. } | UserVia::LocalReadOnly { on_host: true } => {
+            pb::user_actor::Via::CliOnHost
+        }
+        UserVia::CliLogin { on_host: false, .. } | UserVia::LocalReadOnly { on_host: false } => {
+            pb::user_actor::Via::CliOnMachine
+        }
     }
 }
 

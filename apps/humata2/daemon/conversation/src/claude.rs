@@ -200,14 +200,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::files::{
-    check_id, complete_lines, holds_files, holds_path, io_error, is_there, json_escape, list_into, malformed, path_text,
-    read_plain, read_text, relative_name, rewrite_text, rewrite_value, under, valid_rel, write_new,
+    check_id, complete_lines, holds_files, holds_path, io_error, is_there, json_escape, list_into,
+    malformed, open_plain, path_text, read_plain, read_text, relative_name, rewrite_text,
+    rewrite_value, stream_complete_lines, under, valid_rel, write_new, write_new_stream,
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead, Packed, PackedFile, Placement,
@@ -400,8 +401,8 @@ impl Adapter for ClaudeJsonl {
     fn turns(&self, conversation: &Conversation) -> Result<Vec<Turn>, ConversationError> {
         ensure_claude(conversation.format)?;
         let path = transcript_path_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let transcript = parse_transcript(&bytes, &path, &conversation.placement, None)?;
+        let file = open_plain(&path, u64::MAX)?;
+        let transcript = parse_transcript_reader(BufReader::new(file), &path, &conversation.placement, None)?;
         let on_path = current_path(&transcript, None)?;
         Ok((1_u32..)
             .zip(prompts_on(&transcript, &on_path))
@@ -423,37 +424,50 @@ impl Adapter for ClaudeJsonl {
         ensure_claude(conversation.format)?;
         check_id(new_id)?;
         let path = transcript_path_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let transcript = parse_transcript(&bytes, &path, &conversation.placement, None)?;
+        let file = open_plain(&path, u64::MAX)?;
+        let transcript = parse_transcript_reader(BufReader::new(file), &path, &conversation.placement, None)?;
         let on_path = current_path(&transcript, None)?;
         let prompts = prompts_on(&transcript, &on_path);
         let cut = cut_for(&prompts, before)?;
         if !prompts.iter().any(|prompt| prompt.line < cut) {
             return Err(ConversationError::NothingBefore);
         }
+        let target = project_dir(to).join(format!("{new_id}.jsonl"));
+        if is_there(&target)? {
+            return Err(ConversationError::Exists { path: target });
+        }
         let pairs = if conversation.placement.folder == to.folder {
             Vec::new()
         } else {
             rewrite_pairs(&conversation.placement, to, false)
         };
-        let mut text = String::new();
-        for (line, keep) in transcript.lines.iter().zip(kept_lines(&transcript, &on_path, cut)) {
-            if !keep {
-                continue;
-            }
-            let mut record = line.value.clone();
-            rewrite_value(&mut record, &pairs);
-            if let Some(session) = record.get_mut("sessionId") {
-                *session = Value::from(new_id);
-            }
-            text.push_str(&record.to_string());
-            text.push('\n');
-        }
-        let target = project_dir(to).join(format!("{new_id}.jsonl"));
-        if is_there(&target)? {
-            return Err(ConversationError::Exists { path: target });
-        }
-        write_new(&target, text.as_bytes())?;
+        let keep = kept_lines(&transcript, &on_path, cut);
+        let pass2 = open_plain(&path, u64::MAX)?;
+        write_new_stream(&target, |writer| {
+            stream_complete_lines(BufReader::new(pass2), &path, |number, _, raw| {
+                let idx = usize::try_from(number - 1).unwrap_or(usize::MAX);
+                if !keep.get(idx).copied().unwrap_or(false) {
+                    return Ok(());
+                }
+                let mut record: Value = serde_json::from_slice(raw).map_err(|source| {
+                    ConversationError::Malformed {
+                        path: path.clone(),
+                        line: number,
+                        source: Some(source),
+                    }
+                })?;
+                rewrite_value(&mut record, &pairs);
+                if let Some(session) = record.get_mut("sessionId") {
+                    *session = Value::from(new_id);
+                }
+                serde_json::to_writer(&mut *writer, &record)
+                    .map_err(|source| io_error("write", &target, io::Error::other(source)))?;
+                writer
+                    .write_all(b"\n")
+                    .map_err(|source| io_error("write", &target, source))?;
+                Ok(())
+            })
+        })?;
         Ok(Conversation {
             id: new_id.to_owned(),
             format: Format::ClaudeJsonl,
@@ -482,12 +496,18 @@ impl Adapter for ClaudeJsonl {
             }
             let text = read_text(&file.path, self.rewrite_max)?;
             let body = if file.role == FileRole::Transcript {
-                let transcript = parse_transcript(text.as_bytes(), &file.path, &conversation.placement, None)?;
+                let transcript = parse_transcript_reader(
+                    Cursor::new(text.as_bytes()),
+                    &file.path,
+                    &conversation.placement,
+                    None,
+                )?;
                 let on_path = current_path(&transcript, None)?;
+                let keep = kept_lines(&transcript, &on_path, usize::MAX);
                 let mut body = Vec::new();
-                for (line, keep) in transcript.lines.iter().zip(kept_lines(&transcript, &on_path, usize::MAX)) {
+                for (raw, keep) in complete_lines(text.as_bytes()).into_iter().zip(keep) {
                     if keep {
-                        body.extend_from_slice(line.raw);
+                        body.extend_from_slice(raw);
                         body.push(b'\n');
                     }
                 }
@@ -568,7 +588,7 @@ impl Adapter for ClaudeJsonl {
                     rewritten = with_branch(&rewritten, branch);
                 }
                 if file.role == FileRole::Transcript {
-                    parse_transcript(rewritten.as_bytes(), &target, to, None)?;
+                    parse_transcript_reader(Cursor::new(rewritten.as_bytes()), &target, to, None)?;
                 }
                 rewritten.into_bytes()
             };
@@ -595,21 +615,31 @@ impl Adapter for ClaudeJsonl {
     fn check(&self, conversation: &Conversation, cli_version: Option<&str>) -> Result<(), ConversationError> {
         ensure_claude(conversation.format)?;
         let path = transcript_path_of(conversation)?;
-        let bytes = read_plain(&path, u64::MAX)?;
-        let transcript = parse_transcript(&bytes, &path, &conversation.placement, cli_version)?;
+        let file = open_plain(&path, u64::MAX)?;
+        let transcript = parse_transcript_reader(BufReader::new(file), &path, &conversation.placement, cli_version)?;
         current_path(&transcript, cli_version).map(drop)
     }
 }
 
-/// One complete line of a transcript: its bytes as they are, and its record.
-struct Line<'a> {
-    raw: &'a [u8],
-    value: Value,
+/// Lightweight per-line metadata extracted while streaming a transcript,
+/// avoiding retaining full `serde_json::Value` DOMs in memory.
+struct LineMeta {
+    kind: String,
+    uuid: Option<String>,
+    parent_uuid: Option<String>,
+    is_sidechain: bool,
+    version: Option<String>,
+    /// Target uuid for `file-history-snapshot` (`messageId`), `summary` / `last-prompt` (`leafUuid`).
+    points_to: Option<String>,
+    /// `(first_line, timestamp)` when this line starts a turn.
+    prompt: Option<(String, Option<String>)>,
+    /// Whether an `assistant` record finishes a reply.
+    finished_reply: bool,
 }
 
 /// A transcript that passed the strict parse, every complete line of it.
-struct Transcript<'a> {
-    lines: Vec<Line<'a>>,
+struct TranscriptIndex {
+    lines: Vec<LineMeta>,
     /// Each record's `uuid`, to its index in `lines`.
     by_uuid: HashMap<String, usize>,
 }
@@ -625,18 +655,18 @@ struct Prompt {
 }
 
 /// The strict parse (the module's steps 1 to 4) of every complete line of
-/// `bytes`, in file order. The first line it refuses decides the error.
-fn parse_transcript<'a>(
-    bytes: &'a [u8],
+/// `reader`, streamed in file order. The first line it refuses decides the error.
+fn parse_transcript_reader<R: BufRead>(
+    reader: R,
     path: &Path,
     at: &Placement,
     cli_version: Option<&str>,
-) -> Result<Transcript<'a>, ConversationError> {
+) -> Result<TranscriptIndex, ConversationError> {
     let folder = project_name(&at.folder);
-    let mut lines: Vec<Line<'a>> = Vec::new();
+    let mut lines: Vec<LineMeta> = Vec::new();
     let mut by_uuid = HashMap::new();
     let mut last_version: Option<String> = None;
-    for (number, raw) in (1_u64..).zip(complete_lines(bytes)) {
+    stream_complete_lines(reader, path, |number, _, raw| {
         let value: Value = serde_json::from_slice(raw).map_err(|source| ConversationError::Malformed {
             path: path.to_path_buf(),
             line: number,
@@ -653,7 +683,7 @@ fn parse_transcript<'a>(
         if !KINDS.contains(&kind) {
             return Err(unsupported(own, last, cli_version));
         }
-        match record.get("uuid") {
+        let uuid = match record.get("uuid") {
             Some(uuid) => {
                 let Some(uuid) = uuid.as_str() else {
                     return Err(unsupported(own, last, cli_version));
@@ -661,12 +691,13 @@ fn parse_transcript<'a>(
                 if by_uuid.insert(uuid.to_owned(), lines.len()).is_some() {
                     return Err(unsupported(own, last, cli_version));
                 }
+                Some(uuid.to_owned())
             }
             None if PATH_KINDS.contains(&kind) => {
                 return Err(unsupported(own, last, cli_version));
             }
-            None => {}
-        }
+            None => None,
+        };
         for key in ["parentUuid", "logicalParentUuid"] {
             if record
                 .get(key)
@@ -684,9 +715,31 @@ fn parse_transcript<'a>(
         if let Some(version) = own {
             last_version = Some(version.to_owned());
         }
-        lines.push(Line { raw, value });
-    }
-    Ok(Transcript { lines, by_uuid })
+        let points_to = match kind {
+            "file-history-snapshot" => record.get("messageId").and_then(Value::as_str).map(str::to_owned),
+            "summary" | "last-prompt" => record.get("leafUuid").and_then(Value::as_str).map(str::to_owned),
+            _ => None,
+        };
+        let prompt = prompt_of(&value).map(|text| {
+            (
+                text.lines().next().unwrap_or_default().to_owned(),
+                record.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+            )
+        });
+        let finished = kind == "assistant" && finished_reply(&value);
+        lines.push(LineMeta {
+            kind: kind.to_owned(),
+            uuid,
+            parent_uuid: parent_uuid(&value).map(str::to_owned),
+            is_sidechain: is_sidechain(&value),
+            version: own.map(str::to_owned),
+            points_to,
+            prompt,
+            finished_reply: finished,
+        });
+        Ok(())
+    })?;
+    Ok(TranscriptIndex { lines, by_uuid })
 }
 
 /// The refusal for a record the strict parse doesn't know. The version is
@@ -699,13 +752,13 @@ fn unsupported(own: Option<&str>, last: Option<&str>, cli_version: Option<&str>)
 }
 
 /// The refusal for a chain that loops, naming the version as of its record.
-fn unsupported_at(transcript: &Transcript, index: usize, cli_version: Option<&str>) -> ConversationError {
+fn unsupported_at(transcript: &TranscriptIndex, index: usize, cli_version: Option<&str>) -> ConversationError {
     let version = transcript
         .lines
         .iter()
         .take(index.saturating_add(1))
         .rev()
-        .find_map(|line| version_of(&line.value))
+        .find_map(|line| line.version.as_deref())
         .or(cli_version);
     ConversationError::Unsupported {
         format: Format::ClaudeJsonl,
@@ -715,12 +768,12 @@ fn unsupported_at(transcript: &Transcript, index: usize, cli_version: Option<&st
 
 /// The current path (CV-2): the chain from the leaf back through the
 /// parents, as a mask over `transcript.lines`.
-fn current_path(transcript: &Transcript, cli_version: Option<&str>) -> Result<Vec<bool>, ConversationError> {
+fn current_path(transcript: &TranscriptIndex, cli_version: Option<&str>) -> Result<Vec<bool>, ConversationError> {
     let mut on_path = vec![false; transcript.lines.len()];
     let leaf = transcript
         .lines
         .iter()
-        .rposition(|line| uuid_of(&line.value).is_some() && !is_sidechain(&line.value));
+        .rposition(|line| line.uuid.is_some() && !line.is_sidechain);
     let mut next = leaf;
     while let Some(index) = next {
         let Some(seen) = on_path.get_mut(index) else {
@@ -733,7 +786,7 @@ fn current_path(transcript: &Transcript, cli_version: Option<&str>) -> Result<Ve
         next = transcript
             .lines
             .get(index)
-            .and_then(|line| parent_uuid(&line.value))
+            .and_then(|line| line.parent_uuid.as_deref())
             .and_then(|uuid| transcript.by_uuid.get(uuid).copied());
     }
     Ok(on_path)
@@ -742,22 +795,22 @@ fn current_path(transcript: &Transcript, cli_version: Option<&str>) -> Result<Ve
 /// The turns on the current path, in order, each with whether its reply is
 /// finished (the last assistant record after it holds no tool call and
 /// doesn't stop for one).
-fn prompts_on(transcript: &Transcript, on_path: &[bool]) -> Vec<Prompt> {
+fn prompts_on(transcript: &TranscriptIndex, on_path: &[bool]) -> Vec<Prompt> {
     let mut prompts: Vec<Prompt> = Vec::new();
     for (index, (line, on)) in transcript.lines.iter().zip(on_path).enumerate() {
         if !*on {
             continue;
         }
-        if let Some(text) = prompt_of(&line.value) {
+        if let Some((first_line, at)) = &line.prompt {
             prompts.push(Prompt {
                 line: index,
-                first_line: text.lines().next().unwrap_or_default().to_owned(),
-                at: line.value.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+                first_line: first_line.clone(),
+                at: at.clone(),
                 finished: false,
             });
-        } else if kind_of(&line.value) == Some("assistant") {
+        } else if line.kind == "assistant" {
             if let Some(prompt) = prompts.last_mut() {
-                prompt.finished = finished_reply(&line.value);
+                prompt.finished = line.finished_reply;
             }
         }
     }
@@ -794,20 +847,20 @@ fn cut_for(prompts: &[Prompt], before: Option<u32>) -> Result<usize, Conversatio
 /// the current path's records before `cut` that aren't side conversations,
 /// each snapshot, summary and last prompt that points at one of them, and
 /// the session records before `cut` (CV-2).
-fn kept_lines(transcript: &Transcript, on_path: &[bool], cut: usize) -> Vec<bool> {
+fn kept_lines(transcript: &TranscriptIndex, on_path: &[bool], cut: usize) -> Vec<bool> {
     let base: Vec<bool> = transcript
         .lines
         .iter()
         .zip(on_path)
         .enumerate()
-        .map(|(index, (line, on))| *on && index < cut && !is_sidechain(&line.value))
+        .map(|(index, (line, on))| *on && index < cut && !line.is_sidechain)
         .collect();
     let kept_uuids: HashSet<&str> = transcript
         .lines
         .iter()
         .zip(&base)
         .filter(|(_, keep)| **keep)
-        .filter_map(|(line, _)| uuid_of(&line.value))
+        .filter_map(|(line, _)| line.uuid.as_deref())
         .collect();
     let last_kept = base.iter().rposition(|keep| *keep);
     transcript
@@ -816,7 +869,8 @@ fn kept_lines(transcript: &Transcript, on_path: &[bool], cut: usize) -> Vec<bool
         .zip(base)
         .enumerate()
         .map(|(index, (line, keep))| {
-            keep || points_at(&line.value, &kept_uuids) || session_record_kept(&line.value, index, cut, last_kept)
+            keep || line.points_to.as_deref().is_some_and(|uuid| kept_uuids.contains(uuid))
+                || session_record_kept(&line.kind, index, cut, last_kept)
         })
         .collect()
 }
@@ -824,29 +878,13 @@ fn kept_lines(transcript: &Transcript, on_path: &[bool], cut: usize) -> Vec<bool
 /// Whether a session record (no `uuid`, no parent) is kept: it comes before
 /// `cut`, and a fork (`cut` short of the end) leaves out the queue entries
 /// after the last kept path record, which queue the prompt it cuts before.
-fn session_record_kept(value: &Value, index: usize, cut: usize, last_kept: Option<usize>) -> bool {
-    let Some(kind) = kind_of(value) else {
-        return false;
-    };
+fn session_record_kept(kind: &str, index: usize, cut: usize, last_kept: Option<usize>) -> bool {
     if !SESSION_KINDS.contains(&kind) || index >= cut {
         return false;
     }
     let queues_the_cut_prompt =
         kind == "queue-operation" && cut != usize::MAX && last_kept.is_none_or(|last| index > last);
     !queues_the_cut_prompt
-}
-
-/// Whether a snapshot, summary or last prompt belongs to one of the kept
-/// records.
-fn points_at(value: &Value, uuids: &HashSet<&str>) -> bool {
-    let target = match kind_of(value) {
-        Some("file-history-snapshot") => value.get("messageId"),
-        Some("summary" | "last-prompt") => value.get("leafUuid"),
-        _ => None,
-    };
-    target
-        .and_then(Value::as_str)
-        .is_some_and(|uuid| uuids.contains(uuid))
 }
 
 /// Whether an assistant record ends its reply: no tool call, and not
@@ -900,10 +938,6 @@ fn kind_of(value: &Value) -> Option<&str> {
     value.get("type").and_then(Value::as_str)
 }
 
-fn uuid_of(value: &Value) -> Option<&str> {
-    value.get("uuid").and_then(Value::as_str)
-}
-
 /// The record a record continues from: its `parentUuid`, else (where that is
 /// null or absent) its `logicalParentUuid`.
 fn parent_uuid(value: &Value) -> Option<&str> {
@@ -911,10 +945,6 @@ fn parent_uuid(value: &Value) -> Option<&str> {
         .get("parentUuid")
         .and_then(Value::as_str)
         .or_else(|| value.get("logicalParentUuid").and_then(Value::as_str))
-}
-
-fn version_of(value: &Value) -> Option<&str> {
-    value.get("version").and_then(Value::as_str)
 }
 
 fn is_sidechain(value: &Value) -> bool {

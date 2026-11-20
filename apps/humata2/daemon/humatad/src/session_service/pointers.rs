@@ -81,17 +81,44 @@ impl Cache {
         self.wake.notify_one();
     }
 
-    /// Notes what a clone's watcher said, and wakes a look unless it was a read.
-    fn touch(&self, session: &str, event: notify::Result<notify::Event>) {
+    /// Drops cached pointers, pending events, and watchers for an ended session.
+    pub(super) fn forget(&self, session: &str) {
+        lock(&self.shown).remove(session);
+        lock(&self.pending).remove(session);
+        lock(&self.watching).remove(session);
+    }
+
+    /// Notes what a clone's watcher said, and wakes a look unless it was a read
+    /// or only touched noisy subdirs inside the clone.
+    fn touch(
+        &self,
+        session: &str,
+        root: &Path,
+        canon: Option<&Path>,
+        event: notify::Result<notify::Event>,
+    ) {
         {
             let mut pending = lock(&self.pending);
-            let dirty = pending.entry(session.to_owned()).or_default();
             match event {
                 // Reading a clone is not a change to it; git reads it to look.
                 Ok(event) if matches!(event.kind, EventKind::Access(_)) => return,
                 Ok(event) if !event.need_rescan() => {
+                    let keep_paths: Vec<PathBuf> = if event.paths.is_empty() {
+                        Vec::new()
+                    } else {
+                        let kept: Vec<PathBuf> = event
+                            .paths
+                            .into_iter()
+                            .filter(|path| !is_noisy_path(root, canon, path))
+                            .collect();
+                        if kept.is_empty() {
+                            return;
+                        }
+                        kept
+                    };
+                    let dirty = pending.entry(session.to_owned()).or_default();
                     if !dirty.rescan {
-                        dirty.paths.extend(event.paths);
+                        dirty.paths.extend(keep_paths);
                         if dirty.paths.len() > TOUCHED_MAX {
                             dirty.paths.clear();
                             dirty.rescan = true;
@@ -99,6 +126,7 @@ impl Cache {
                     }
                 }
                 Ok(_) | Err(_) => {
+                    let dirty = pending.entry(session.to_owned()).or_default();
                     dirty.paths.clear();
                     dirty.rescan = true;
                 }
@@ -120,8 +148,10 @@ impl Cache {
             .filter_map(|repo| {
                 let cache = Arc::clone(self);
                 let id = session.to_owned();
+                let root = repo.path.clone();
+                let canon = repo.path.canonicalize().ok();
                 let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                    cache.touch(&id, event);
+                    cache.touch(&id, &root, canon.as_deref(), event);
                 })
                 .ok()?;
                 watcher.watch(&repo.path, RecursiveMode::Recursive).ok()?;
@@ -163,10 +193,59 @@ fn same(before: &[pb::Pointer], now: &[pb::Pointer]) -> bool {
         })
 }
 
+/// Whether `path` lies inside a noisy subdir of the clone (`target`,
+/// `node_modules`, or non-state `.git/` internals like `.git/objects`).
+/// Strips the watched clone root first so path components above the clone
+/// never match; if stripping fails, returns `false` (fail-open).
+fn is_noisy_path(root: &Path, canon: Option<&Path>, path: &Path) -> bool {
+    let Some(rel) = path
+        .strip_prefix(root)
+        .ok()
+        .or_else(|| canon.and_then(|canon| path.strip_prefix(canon).ok()))
+    else {
+        return false;
+    };
+    let mut components = rel.components().filter_map(|c| match c {
+        std::path::Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if first == ".git" {
+        let Some(second) = components.next() else {
+            return false;
+        };
+        let keep = matches!(
+            second,
+            "HEAD"
+                | "index"
+                | "refs"
+                | "packed-refs"
+                | "MERGE_HEAD"
+                | "REBASE_HEAD"
+                | "CHERRY_PICK_HEAD"
+                | "ORIG_HEAD"
+                | "FETCH_HEAD"
+        ) || second.starts_with("rebase-");
+        return !keep;
+    }
+    if matches!(first, "target" | "node_modules") {
+        return true;
+    }
+    components.any(|part| matches!(part, "target" | "node_modules"))
+}
+
 /// Starts the loop that looks at this machine's live sessions: once for
 /// all of them, then only when a session's status changes or one of its
 /// clones does. It waits on nothing else.
 pub(super) fn spawn(tell: Tell) {
+    let pointers = Arc::clone(&tell.pointers);
+    let file_changes = Arc::clone(&tell.file_changes);
+    tell.on_ended(move |session| {
+        pointers.forget(session);
+        file_changes.forget(session);
+    });
     tokio::spawn(async move {
         look_at(&tell, None).await;
         loop {
@@ -327,6 +406,10 @@ struct Looked {
 }
 
 fn git(clone: &Path, args: &[&str]) -> Option<String> {
+    git_bytes(clone, args).map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+}
+
+fn git_bytes(clone: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let out = Command::new("git")
         .arg("--no-optional-locks")
         .arg("-C")
@@ -335,9 +418,77 @@ fn git(clone: &Path, args: &[&str]) -> Option<String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    out.status.success().then_some(out.stdout)
+}
+
+#[derive(Default)]
+struct StatusV2 {
+    branch: String,
+    head: String,
+    upstream: Option<String>,
+    ahead_behind: Option<(u32, u32)>,
+    dirty: usize,
+    dirty_paths: Vec<String>,
+}
+
+/// Parses `git status --porcelain=v2 --branch -z --untracked-files=all`.
+/// Handles NUL-delimited `2 ` rename/copy entries which emit TWO NUL-terminated
+/// paths (destination followed by original source).
+fn parse_status_v2_z(bytes: &[u8]) -> StatusV2 {
+    let mut parsed = StatusV2::default();
+    let mut entries = bytes.split(|&b| b == 0);
+    while let Some(raw) = entries.next() {
+        if raw.is_empty() {
+            continue;
+        }
+        let line = String::from_utf8_lossy(raw);
+        if let Some(rest) = line.strip_prefix("# ") {
+            if let Some(oid) = rest.strip_prefix("branch.oid ") {
+                if oid != "(initial)" {
+                    parsed.head = oid.to_owned();
+                }
+            } else if let Some(head) = rest.strip_prefix("branch.head ") {
+                if head != "(detached)" {
+                    parsed.branch = head.to_owned();
+                }
+            } else if let Some(up) = rest.strip_prefix("branch.upstream ") {
+                if !up.is_empty() {
+                    parsed.upstream = Some(up.to_owned());
+                }
+            } else if let Some(ab) = rest.strip_prefix("branch.ab ") {
+                let mut parts = ab.split_whitespace();
+                if let (Some(ahead), Some(behind)) = (parts.next(), parts.next())
+                    && let (Ok(ahead), Ok(behind)) = (
+                        ahead.trim_start_matches('+').parse::<u32>(),
+                        behind.trim_start_matches('-').parse::<u32>(),
+                    )
+                {
+                    parsed.ahead_behind = Some((ahead, behind));
+                }
+            }
+            continue;
+        }
+        let path = if line.starts_with("1 ") {
+            line.splitn(9, ' ').nth(8)
+        } else if line.starts_with("2 ") {
+            // Rename/copy: destination is in this record, source is the next NUL-delimited record.
+            let _orig = entries.next();
+            line.splitn(10, ' ').nth(9)
+        } else if line.starts_with("u ") {
+            line.splitn(11, ' ').nth(10)
+        } else if let Some(untracked) = line.strip_prefix("? ") {
+            Some(untracked)
+        } else {
+            None
+        };
+        if let Some(path) = path {
+            parsed.dirty += 1;
+            if parsed.dirty_paths.len() < NAMED {
+                parsed.dirty_paths.push(path.to_owned());
+            }
+        }
+    }
+    parsed
 }
 
 /// What a clone says of itself: the look both of two passes in a row gave, so
@@ -359,46 +510,46 @@ fn read_once(path: &Path) -> Option<Looked> {
     if !path.join(".git").exists() {
         return None;
     }
-    let branch = git(path, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
-    let head = git(path, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let tracked = git(
+    let status = git_bytes(
         path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
     )
-    .filter(|name| !name.is_empty());
+    .map(|bytes| parse_status_v2_z(&bytes))
+    .unwrap_or_default();
+    let StatusV2 {
+        branch,
+        head,
+        upstream: tracked,
+        ahead_behind,
+        dirty,
+        dirty_paths,
+    } = status;
+    // Keep the `origin/{branch}` fallback when no upstream is configured.
     let upstream = tracked.or_else(|| {
         let name = format!("origin/{branch}");
         (!branch.is_empty()
             && git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{name}")]).is_some())
         .then_some(name)
     });
-    let (pushed, unpushed) = match &upstream {
-        Some(upstream) => (
+    let (pushed, unpushed) = match (&upstream, ahead_behind) {
+        (Some(_), Some((ahead, _))) => (!head.is_empty() && ahead == 0, ahead),
+        (Some(upstream), None) => (
             !head.is_empty() && git(path, &["merge-base", "--is-ancestor", "HEAD", upstream]).is_some(),
             count(path, &format!("{upstream}..HEAD")),
         ),
-        None => (false, count(path, &format!("{}..HEAD", default_base(path)))),
+        (None, _) => (false, count(path, &format!("{}..HEAD", default_base(path)))),
     };
-    let status = git(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default();
-    let changed: Vec<&str> = status.lines().filter(|line| !line.trim().is_empty()).collect();
-    let dirty = changed.len();
-    let dirty_paths = changed
-        .iter()
-        .take(NAMED)
-        .map(|line| {
-            // The command's output is trimmed, so the first line may have lost its
-            // leading space: take what follows the status letters.
-            let named = line.trim_start().split_once(' ').map_or(*line, |(_, path)| path).trim();
-            named.rsplit_once(" -> ").map_or(named, |(_, to)| to).to_owned()
-        })
-        .collect();
-    let range = match &upstream {
-        Some(upstream) => format!("{upstream}..HEAD"),
-        None => format!("{}..HEAD", default_base(path)),
+    let subjects = if unpushed == 0 {
+        Vec::new()
+    } else {
+        let range = match &upstream {
+            Some(upstream) => format!("{upstream}..HEAD"),
+            None => format!("{}..HEAD", default_base(path)),
+        };
+        git(path, &["log", "--format=%s", "-n", &NAMED.to_string(), &range])
+            .map(|log| log.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
     };
-    let subjects = git(path, &["log", "--format=%s", "-n", &NAMED.to_string(), &range])
-        .map(|log| log.lines().map(str::to_owned).collect())
-        .unwrap_or_default();
     Some(Looked {
         branch,
         head,
@@ -516,5 +667,54 @@ mod tests {
         };
         assert!(same(&[one.clone()], &[two]));
         assert!(!same(&[one], &[]));
+    }
+
+    #[test]
+    fn noisy_path_strips_clone_root_and_keeps_git_state_files() {
+        let root = Path::new("/tmp/target/node_modules/repo");
+        // Above-root `target`/`node_modules` must NOT match.
+        assert!(!is_noisy_path(root, None, &root.join("src/lib.rs")));
+        // Inside-clone noisy subdirs ARE filtered.
+        assert!(is_noisy_path(root, None, &root.join("target/debug/app")));
+        assert!(is_noisy_path(root, None, &root.join("web/node_modules/pkg/index.js")));
+        assert!(is_noisy_path(root, None, &root.join(".git/objects/ab/1234")));
+        // Essential git state files must NOT be ignored.
+        for keep in [
+            ".git/HEAD",
+            ".git/index",
+            ".git/refs/heads/main",
+            ".git/packed-refs",
+            ".git/MERGE_HEAD",
+            ".git/REBASE_HEAD",
+            ".git/CHERRY_PICK_HEAD",
+            ".git/ORIG_HEAD",
+            ".git/rebase-merge/head-name",
+            ".git/rebase-apply/next",
+            ".git/FETCH_HEAD",
+        ] {
+            assert!(!is_noisy_path(root, None, &root.join(keep)), "should keep {keep}");
+        }
+    }
+
+    #[test]
+    fn status_v2_z_parses_branch_ab_and_two_nul_rename_entries() {
+        let raw = concat!(
+            "# branch.oid 0123456789abcdef0123456789abcdef01234567\0",
+            "# branch.head main\0",
+            "# branch.upstream origin/main\0",
+            "# branch.ab +2 -1\0",
+            "2 R. N... 100644 100644 100644 aaa bbb R100 new name.rs\0old name.rs\0",
+            "1 .M N... 100644 100644 100644 aaa aaa src/lib.rs\0",
+            "? untracked.txt\0",
+        );
+        let parsed = parse_status_v2_z(raw.as_bytes());
+        assert_eq!(parsed.branch, "main");
+        assert_eq!(parsed.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(parsed.ahead_behind, Some((2, 1)));
+        assert_eq!(parsed.dirty, 3);
+        assert_eq!(
+            parsed.dirty_paths,
+            vec!["new name.rs", "src/lib.rs", "untracked.txt"]
+        );
     }
 }

@@ -16,6 +16,7 @@ service RepoService {
   rpc SearchRepos(SearchReposRequest) returns (SearchReposResponse);
   // RL-4: the library, most recently used first.
   rpc ListRepoLibrary(ListRepoLibraryRequest) returns (ListRepoLibraryResponse);
+  rpc AddToRepoLibrary(AddToRepoLibraryRequest) returns (ListRepoLibraryResponse);
   rpc RemoveFromRepoLibrary(RemoveFromRepoLibraryRequest) returns (ListRepoLibraryResponse);
   rpc ForgetRepoLibrary(ForgetRepoLibraryRequest) returns (ForgetRepoLibraryResponse);
   // RL-7, ST-21: config/repos.toml on the host.
@@ -107,6 +108,8 @@ message ListRepoLibraryResponse {
   repeated LibraryRepo repos = 1;
   Revision revision = 2;
 }
+
+message AddToRepoLibraryRequest { RepoRef repo = 1; }
 
 message RemoveFromRepoLibraryRequest { RepoRef repo = 1; }
 

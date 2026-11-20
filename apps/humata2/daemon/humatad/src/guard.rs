@@ -219,6 +219,14 @@ impl Guard {
 
     /// Judges `call` against the policy, holding the policy lock only here.
     fn judge(&self, caller: &Caller, call: &Call) -> Result<Judged, Status> {
+        // SEC-9 read-only split defense-in-depth: an unauthenticated local CLI
+        // caller may only perform strictly read-only calls; any mutation or
+        // privileged capability requires `humata login`.
+        if matches!(caller, Caller::User(UserVia::LocalReadOnly { .. }))
+            && !is_read_only_call(call)
+        {
+            return Err(status::unauthenticated());
+        }
         // D264: while the machine's sessions are stopped, no agent or
         // script is answered.
         if let Some(machine) = crate::stop::gate::stopped_machine()
@@ -407,11 +415,34 @@ fn next_revision(last: u64) -> u64 {
     now.max(last.saturating_add(1))
 }
 
+/// Whether `call` is strictly read-only and therefore safe for a
+/// [`UserVia::LocalReadOnly`] caller (SEC-9 split defense-in-depth).
+fn is_read_only_call(call: &Call) -> bool {
+    matches!(
+        call,
+        Call::ReadFiles(_)
+            | Call::ReadSession(_)
+            | Call::Board {
+                act: humata2_access::BoardAct::Read,
+                ..
+            }
+            | Call::Use {
+                capability: Capability::ChannelRead | Capability::GlobalRead,
+                ..
+            }
+    )
+}
+
 /// Who `caller` is to the policy.
 pub(crate) fn principal(caller: &Caller) -> Principal {
     match caller {
         Caller::User(UserVia::App | UserVia::Host) => Principal::App,
         Caller::User(UserVia::CliLogin { method, .. }) => Principal::Cli(*method),
+        // `Guard::judge` already verified `is_read_only_call(call)` before
+        // reaching the policy for `LocalReadOnly`.
+        Caller::User(UserVia::LocalReadOnly { .. }) => {
+            Principal::Cli(humata2_access::PresenceMethod::CliLogin)
+        }
         Caller::Agent(agent) => Principal::Agent(Agent {
             session: agent.session.clone(),
             kind: agent.session_kind(),
@@ -861,5 +892,50 @@ mod tests {
 
         guard.policy_changed();
         assert!(guard.policy_revision() > added);
+    }
+
+    #[test]
+    fn local_read_only_user_allows_reads_and_refuses_mutations_with_cli_login_presence_required() {
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Host);
+        let ro_user = Caller::User(UserVia::LocalReadOnly { on_host: true });
+
+        assert!(matches!(
+            guard.check(&ro_user, &on_channel_board(BoardAct::Read)),
+            Ok(Checked::Allowed)
+        ));
+        assert!(matches!(
+            guard.check(
+                &ro_user,
+                &Call::Use {
+                    capability: Capability::GlobalRead,
+                    target: humata2_access::Target::Global,
+                }
+            ),
+            Ok(Checked::Allowed)
+        ));
+
+        for mutation in [
+            on_channel_board(BoardAct::Add),
+            Call::Use {
+                capability: Capability::ChannelCreate,
+                target: humata2_access::Target::Global,
+            },
+            Call::Use {
+                capability: Capability::InboxAnswer,
+                target: humata2_access::Target::Global,
+            },
+        ] {
+            let refused = guard
+                .check(&ro_user, &mutation)
+                .err()
+                .expect("mutation must be refused for LocalReadOnly");
+            assert_eq!(refused.code(), Code::Unauthenticated);
+            let error = status::error_of(&refused).expect("typed error");
+            assert!(matches!(
+                error.kind,
+                Some(pb::error::Kind::PresenceRequired(ref p))
+                    if p.accepted == [pb::presence_required::Method::CliLogin as i32]
+            ));
+        }
     }
 }

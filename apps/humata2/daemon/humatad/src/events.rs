@@ -39,7 +39,7 @@ pub struct Scope {
 
 /// An event and where it belongs; machines belong nowhere.
 pub(crate) struct Published {
-    event: pb::Event,
+    event: Arc<pb::Event>,
     scope: Option<Scope>,
 }
 
@@ -55,6 +55,9 @@ impl std::ops::Deref for Published {
 pub struct Feed {
     kept: Mutex<Kept>,
     live: broadcast::Sender<Arc<Published>>,
+    /// Shared `Arc<pb::Event>` broadcast for internal subscribers that do not
+    /// need `Scope`, avoiding per-adapter bridge tasks and deep `pb::Event` clones.
+    live_events: broadcast::Sender<Arc<pb::Event>>,
     /// Turned to `true` once the daemon stops, which ends every subscription.
     stopping: watch::Sender<bool>,
 }
@@ -71,6 +74,7 @@ impl Default for Feed {
                 events: VecDeque::new(),
             }),
             live: broadcast::channel(KEPT).0,
+            live_events: broadcast::channel(KEPT).0,
             stopping: watch::channel(false).0,
         }
     }
@@ -118,15 +122,16 @@ impl Feed {
         by: Option<pb::Actor>,
     ) {
         let mut kept = lock(&self.kept);
+        let pb_event = Arc::new(pb::Event {
+            seq: Some(pb::EventSeq { value: kept.next }),
+            at: Some(now()),
+            by,
+            change: change as i32,
+            journal: None,
+            payload: Some(payload),
+        });
         let event = Arc::new(Published {
-            event: pb::Event {
-                seq: Some(pb::EventSeq { value: kept.next }),
-                at: Some(now()),
-                by,
-                change: change as i32,
-                journal: None,
-                payload: Some(payload),
-            },
+            event: Arc::clone(&pb_event),
             scope,
         });
         kept.next += 1;
@@ -137,6 +142,7 @@ impl Feed {
         // Sent under the lock, so a subscriber's backlog and live events
         // meet without a gap. No subscriber is not an error.
         let _ = self.live.send(event);
+        let _ = self.live_events.send(pb_event);
     }
 
     /// Tells every subscriber to reload now. For a source of changes, such
@@ -148,7 +154,41 @@ impl Feed {
         let earliest = kept.events.front().map_or(kept.next, |event| seq(event));
         // Sent under the lock, as publish sends, so it lands at the same
         // place in every subscriber's stream. No subscriber is not an error.
-        let _ = self.live.send(resync(earliest));
+        let synced = resync(earliest);
+        let pb_event = Arc::clone(&synced.event);
+        let _ = self.live.send(synced);
+        let _ = self.live_events.send(pb_event);
+    }
+
+    /// Subscribes to live events as shared `Arc<pb::Event>`s, with no extra
+    /// bridge task or deep cloning.
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Arc<pb::Event>> {
+        self.live_events.subscribe()
+    }
+
+    /// Subscribes to live events as shared `Arc<pb::Event>`s and returns the
+    /// latest kept sequence number after `after` (or `after.unwrap_or(0)` if
+    /// none).
+    pub(crate) fn subscribe_events_after(
+        &self,
+        after: Option<u64>,
+    ) -> (u64, broadcast::Receiver<Arc<pb::Event>>) {
+        let kept = lock(&self.kept);
+        let live = self.live_events.subscribe();
+        let Some(after) = after else {
+            return (0, live);
+        };
+        let earliest = kept.events.front().map_or(kept.next, |event| seq(event));
+        if after + 1 < earliest || after >= kept.next {
+            return (after, live);
+        }
+        let last = kept
+            .events
+            .iter()
+            .filter(|event| seq(event) > after)
+            .next_back()
+            .map_or(after, |event| seq(event));
+        (last, live)
     }
 
     /// What a subscriber resuming after `after` gets first, and the live
@@ -189,7 +229,7 @@ fn seq(published: &Published) -> u64 {
 
 fn resync(earliest: u64) -> Arc<Published> {
     Arc::new(Published {
-        event: pb::Event {
+        event: Arc::new(pb::Event {
             seq: None,
             at: Some(now()),
             by: None,
@@ -198,7 +238,7 @@ fn resync(earliest: u64) -> Arc<Published> {
             payload: Some(pb::event::Payload::Resync(pb::Resync {
                 earliest: Some(pb::EventSeq { value: earliest }),
             })),
-        },
+        }),
         scope: None,
     })
 }
@@ -451,7 +491,7 @@ impl pb::event_service_server::EventService for EventSvc {
             let mut last = 0;
             for event in backlog {
                 last = last.max(seq(&event));
-                if filter.passes(&event) && sender.send(Ok(event.event.clone())).await.is_err() {
+                if filter.passes(&event) && sender.send(Ok((*event.event).clone())).await.is_err() {
                     return;
                 }
             }
@@ -472,7 +512,7 @@ impl pb::event_service_server::EventService for EventSvc {
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
                 last = last.max(seq(&event));
-                if filter.passes(&event) && sender.send(Ok(event.event.clone())).await.is_err() {
+                if filter.passes(&event) && sender.send(Ok((*event.event).clone())).await.is_err() {
                     return;
                 }
             }

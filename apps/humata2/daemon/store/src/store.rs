@@ -43,6 +43,10 @@ pub(crate) struct Inner {
     pub(crate) database: PathBuf,
     pub(crate) blobs: PathBuf,
     connection: Mutex<Connection>,
+    /// Serializes `save_last_good` and `sweep` so a backup never races with
+    /// blob sweeping while `save_last_good` runs without holding `connection`.
+    /// Lock order: always `maintenance_lock` before `connection`.
+    maintenance_lock: Mutex<()>,
     /// Told after each committed write, outside the database lock.
     committed: Mutex<Vec<Committed>>,
 }
@@ -64,6 +68,7 @@ impl Store {
         let database = root.join(DATABASE);
         last_good::finish_restore(&root, &database)?;
         last_good::finish_upgrade_restore(&root, &database)?;
+        last_good::prune_kept(&root);
         sweep_partials(&root)?;
         Self::sweep_paste_partials(&root.join(FILES))?;
         let connection = schema::open(&database)?;
@@ -72,6 +77,7 @@ impl Store {
             database,
             blobs,
             connection: Mutex::new(connection),
+            maintenance_lock: Mutex::new(()),
             committed: Mutex::new(Vec::new()),
         });
         let store = Self {
@@ -129,12 +135,15 @@ impl Store {
     }
 
     /// Saves a last good copy of the database beside it, replacing the one
-    /// before once the new one checks out (PER-31). Holds the database
-    /// while it copies, so run it off the async runtime, when writes are
-    /// few.
+    /// before once the new one checks out (PER-31). Uses a dedicated read
+    /// connection under `maintenance_lock` so normal reads and writes proceed
+    /// without blocking while staying serialized against [`Store::sweep`].
     pub fn save_last_good(&self) -> Result<LastGood, StoreError> {
+        let _maintenance = self.inner.maintenance();
+        let saved = last_good::save_from_path(&self.inner.database, &self.inner.root)?;
         let connection = self.inner.lock();
-        last_good::save(&connection, &self.inner.root)
+        let _ = connection.execute_batch("PRAGMA incremental_vacuum(200);");
+        Ok(saved)
     }
 
     /// Calls `then` after every write this store commits, on the thread
@@ -423,6 +432,12 @@ impl Inner {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn maintenance(&self) -> MutexGuard<'_, ()> {
+        self.maintenance_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn failed(&self, doing: &'static str) -> impl Fn(rusqlite::Error) -> StoreError + '_ {
         move |source| StoreError::Database {
             path: self.database.clone(),
@@ -504,9 +519,11 @@ impl Inner {
         work(&self.lock())
     }
 
-    /// Holds the database while it lists the blobs rows name, so no write
-    /// can place a file the listing misses.
+    /// Holds the database while it lists the blobs rows name and sweeps
+    /// unreferenced blob files, so no write can place a file the listing
+    /// misses. Serialized with [`Store::save_last_good`] via `maintenance_lock`.
     pub(crate) fn sweep(&self) -> Result<usize, StoreError> {
+        let _maintenance = self.maintenance();
         let connection = self.lock();
         let mut referenced = connection
             .prepare(
@@ -524,7 +541,9 @@ impl Inner {
             .map_err(self.failed("list the files records name"))?;
         // The last good copy's too, so a restored row finds its file.
         referenced.extend(last_good::copy_files(&self.root));
-        blob::sweep(&self.blobs, &referenced)
+        let removed = blob::sweep(&self.blobs, &referenced)?;
+        let _ = connection.execute_batch("PRAGMA incremental_vacuum(200);");
+        Ok(removed)
     }
 }
 

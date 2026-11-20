@@ -791,7 +791,7 @@ pub async fn run(
         home: starter.home.clone(),
     });
     // D845: a dialog an agent asks on its screen holds its session at needs-you.
-    crate::wire_inbox::start_screen_ask(store.clone());
+    crate::wire_inbox::start_screen_ask(store.clone(), terminals.holders());
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),
@@ -849,6 +849,7 @@ pub async fn run(
             transfers.recover();
         }
     });
+    bin.start_periodic_sweep();
     let operations = Arc::new(Operations::new(feed.clone()));
     let review_plugin = plugins.review.map(|plugin| {
         plugin.build(crate::plugins::ReviewContext {

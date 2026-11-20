@@ -39,28 +39,6 @@ pub(crate) fn malformed(path: &Path, line: u64) -> ConversationError {
     }
 }
 
-/// Where each of the complete lines `numbers` (from 1) of `bytes` starts, in
-/// bytes; the end of the complete lines for a number past the last one.
-pub(crate) fn line_starts(bytes: &[u8], numbers: impl IntoIterator<Item = u64>) -> Vec<u64> {
-    let mut starts = vec![0_u64];
-    for line in complete_lines(bytes) {
-        let last = starts.last().copied().unwrap_or(0);
-        let length = u64::try_from(line.len()).unwrap_or(u64::MAX);
-        starts.push(last.saturating_add(length).saturating_add(1));
-    }
-    let end = starts.last().copied().unwrap_or(0);
-    numbers
-        .into_iter()
-        .map(|number| {
-            usize::try_from(number)
-                .ok()
-                .and_then(|number| number.checked_sub(1))
-                .and_then(|index| starts.get(index).copied())
-                .unwrap_or(end)
-        })
-        .collect()
-}
-
 /// The complete lines of `bytes` without their `\n`. A last line without
 /// one is still being written and is left out.
 pub(crate) fn complete_lines(bytes: &[u8]) -> Vec<&[u8]> {
@@ -86,6 +64,51 @@ pub(crate) fn read_plain(path: &Path, max: u64) -> Result<Vec<u8>, ConversationE
         });
     }
     fs::read(path).map_err(|source| io_error("read a conversation file", path, source))
+}
+
+/// Opens a plain file (not a link) up to `max` bytes for streaming reads.
+pub(crate) fn open_plain(path: &Path, max: u64) -> Result<fs::File, ConversationError> {
+    let meta = fs::symlink_metadata(path).map_err(|source| io_error("read a conversation file", path, source))?;
+    if !meta.file_type().is_file() {
+        return Err(ConversationError::NotAFile {
+            path: path.to_path_buf(),
+        });
+    }
+    if meta.len() > max {
+        return Err(ConversationError::TooBig {
+            path: path.to_path_buf(),
+            size: meta.len(),
+            max,
+        });
+    }
+    fs::File::open(path).map_err(|source| io_error("read a conversation file", path, source))
+}
+
+/// Streams every complete `\n`-terminated line from `reader`, invoking
+/// `visit(line_number_1_based, byte_offset, raw_line_without_nl)`. A trailing
+/// incomplete line without `\n` is ignored.
+pub(crate) fn stream_complete_lines<R: io::BufRead>(
+    mut reader: R,
+    path: &Path,
+    mut visit: impl FnMut(u64, u64, &[u8]) -> Result<(), ConversationError>,
+) -> Result<(), ConversationError> {
+    let mut buf = Vec::new();
+    let mut number = 0_u64;
+    let mut offset = 0_u64;
+    loop {
+        buf.clear();
+        let read = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|source| io_error("read a conversation file", path, source))?;
+        if read == 0 || buf.last() != Some(&b'\n') {
+            break;
+        }
+        number += 1;
+        let raw = &buf[..buf.len() - 1];
+        visit(number, offset, raw)?;
+        offset = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
+    Ok(())
 }
 
 /// A file a carry copies or places: a plain file within the cap, and text.
@@ -142,11 +165,24 @@ pub(crate) fn list_into(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), Conv
 /// Writes a new file through a `.partial` beside it, renamed into place.
 /// Refuses a file that is already there.
 pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ConversationError> {
+    write_new_stream(path, |writer| {
+        writer
+            .write_all(bytes)
+            .map_err(|source| io_error("write", path, source))
+    })
+}
+
+/// Streams a new file through a `.partial` beside it, renamed into place on
+/// success and removed on error. Refuses a `.partial` that is already there.
+pub(crate) fn write_new_stream(
+    path: &Path,
+    write: impl FnOnce(&mut io::BufWriter<fs::File>) -> Result<(), ConversationError>,
+) -> Result<(), ConversationError> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder).map_err(|source| io_error("create the folder", folder, source))?;
     }
     let partial = partial_name(path);
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&partial)
@@ -156,9 +192,17 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ConversationErr
             },
             _ => io_error("write", &partial, source),
         })?;
-    file.write_all(bytes)
-        .map_err(|source| io_error("write", &partial, source))?;
-    drop(file);
+    let mut writer = io::BufWriter::new(file);
+    let result = write(&mut writer).and_then(|()| {
+        writer
+            .flush()
+            .map_err(|source| io_error("write", &partial, source))
+    });
+    drop(writer);
+    if let Err(error) = result {
+        let _ = fs::remove_file(&partial);
+        return Err(error);
+    }
     fs::rename(&partial, path).map_err(|source| io_error("move into place", path, source))
 }
 
