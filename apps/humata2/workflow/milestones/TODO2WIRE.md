@@ -19,4 +19,32 @@
 New TODO2 features beyond the five gaps; Settings page redesign.
 
 ## Lane
-(empty: the manager fills this in)
+
+- **State (2026-11-20):** PAUSED by main for the 0.9.0 release, during planning. No code edited, no workers started; this section is the only change. Release target is now 0.10.0.
+- **Design notes (draft, from reading the code):**
+  - Leaf logic goes in new `daemon/svc_board` modules on `BoardSvc`. It is unit-tested with explicit `now_ms` and fake ports, with no sleeps.
+  - `session_events.rs` (T5, T6, T7 archive):
+    - `observe_session(&pb::Session, now)` keeps each session's last status in memory and finds linked items (`record.sessions`, `fields.owner.session`, `Session.board_item`).
+    - When a session goes from Working to Idle, NeedsInput, ProbablyIdle, Exited, Stopped or ResumeFailed, it records one run per linked item with `record_todo_run`: tool = agent, model, outcome, a session link, and cost unknown.
+    - Exited, Stopped or ResumeFailed on an agent-owned In progress item sets `stuck_agent`; Working or Starting clears it.
+    - Archived calls `evaluate_last_session_archived` (dedupe prompts by id).
+    - `tick(now)` sets idle `session_signals` and calls `evaluate_session_idle` with `idle_nudge_days`. An owned agent session that has been idle too long with no open ask is marked stuck.
+  - `automation.rs` (T7):
+    - `TodoAutomationSource` port, default Ask. Auto closes the item on PR merge.
+    - Closing an item offers to archive its clean sessions (Ask), or archives them with an Undo prompt (Auto). Sessions kept open get a reason.
+    - `SessionControl` port: `is_clean`, `archive`, `restore`, `send_note`. `resolve_lifecycle_prompt_in` then acts on "Send to session", "Send comments to session", "Undo" and "Archive".
+  - `pr_watcher.rs` + `pr_watch_gh.rs` (T8):
+    - `PrStatusPort` uses `gh`, following `pr_reviews_gh.rs` and `HUMATA2_GH`. A rate limit returns a `RateLimited { wait }` error.
+    - `refresh_watched_prs(now)` updates the rows and prompts only on a changed signal. Auto-wake follows `auto_wake_on_ci_fail` and `auto_wake_on_review_comments`.
+    - The driver runs at most every 5 min, only while there are watched PRs, waits out rate limits, and is also triggered when a watched PR is added.
+  - T6 cost: unknown cost must stay unknown. Plan: `optional uint64 cost_micros` in `boards.proto` `TodoRun` (needs a main seam), `Option` in `store/todo_runs.rs` (store -1 = unknown in the existing column, no migration), and a ledger that drops `$` when no run's cost is known. Needs claims on `todo/src/model.rs`, `clients/src/todo.rs`, `clients/src/todo/fake.rs`, `clients/live_daemon/src/todo.rs`.
+  - T2: add `EditField::StepContext(usize)` in `features/todo`; committing it sends `SetStepMarkdown`. The drawer affordance in `ui/workspace/src/todo.rs` is waiting on a Fable ruling (frames 12/22 must not change; consider a hover-only "Add context" plus clicking the existing context to edit).
+  - humatad wiring, after the above:
+    - `wire_board.rs` adapters subscribe to session events, seed from ListSessions and run the tick and watcher tasks.
+    - Seams: `Feed::subscribe_events` → `pub` in `events.rs`, and extra `BoardContext` fields in `plugins.rs`, filled in `serve.rs` (main/BROWSER).
+    - `settings_service` todo_automation persistence comes after the FUSEFSWIRE hand-over.
+    - One scoped daemon test on `humatad2_test_away_board`.
+  - A Settings toggle UI has no frame yet; Fable needs to draw it first.
+- **Files changed:** this file only.
+- **Workers:** none yet.
+- **Ready to commit:** no.

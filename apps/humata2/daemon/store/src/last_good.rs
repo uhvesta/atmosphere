@@ -112,9 +112,11 @@ fn mtime_unix_ms(path: &Path) -> Option<i64> {
 /// syncing run. Callers must hold `maintenance_lock` to serialize with
 /// `sweep()`.
 pub(crate) fn save_from_path(database: &Path, root: &Path) -> Result<LastGood, StoreError> {
-    // Read-only at open, not `PRAGMA query_only`: that also refuses the
-    // `VACUUM INTO` the copy is made with.
-    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|source| StoreError::Open {
+    // A plain open, not read-only: a read-only connection to the live WAL
+    // database stalls the rollback relaunch (upgrade_cut_test), and
+    // `PRAGMA query_only` refuses the `VACUUM INTO` the copy is made with.
+    // This connection only reads `database`; it writes the copy.
+    let connection = Connection::open(database).map_err(|source| StoreError::Open {
         path: database.to_owned(),
         source,
     })?;
