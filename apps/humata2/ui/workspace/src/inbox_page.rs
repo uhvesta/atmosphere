@@ -178,12 +178,25 @@ fn empty(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 })
                 .child(link(ui, "inbox-empty-todo", "Open To-do", AppAction::Navigate(humata2_app::Route::Todo))),
         )
+        .when(state.inbox.filter != humata2_inbox::Filter::All, |page| {
+            page.child(
+                div().mt(px(8.)).child(humata2_ui_core::widgets::push_quiet(
+                    ui,
+                    "inbox-show-all-channels",
+                    "Show all channels",
+                    AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::All)),
+                    look,
+                )),
+            )
+        })
 }
 
 pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
     let shown = state.inbox.shown();
     let cli_logins = crate::cli_login::inbox_cards(ui, state, look);
-    if shown.is_empty() && cli_logins.is_none() {
+    let filtered = state.inbox.filter != humata2_inbox::Filter::All;
+    let is_empty = shown.is_empty() && cli_logins.is_none();
+    if is_empty && !filtered {
         return empty(ui, state, look).into_any_element();
     }
     let total = state.inbox.chips().iter().map(|(_, count)| count).sum::<usize>();
@@ -193,6 +206,7 @@ pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
         .id("inbox-chips")
         .gap(px(6.))
         .items_center()
+        .flex_wrap()
         .pt(px(12.))
         .pb(px(4.))
         .flex_shrink_0()
@@ -209,6 +223,7 @@ pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
         .child(div().flex_1().min_w_0())
         .child(
             div()
+                .min_w_0()
                 .text_size(px(12.))
                 .text_color(rgb(look.secondary))
                 .child("Agents that are stopped until you answer. Changes to your to-dos wait in To-do instead."),
@@ -219,7 +234,13 @@ pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
         .px(px(28.))
         .text_size(px(12.5))
         .child(bar)
-        .child(
+        .child(if is_empty {
+            col()
+                .flex_1()
+                .min_h_0()
+                .child(empty(ui, state, look))
+                .into_any_element()
+        } else {
             col()
                 .id("global-inbox-detail")
                 .test_support()
@@ -245,7 +266,8 @@ pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
                                 .then(|| screen_question(ui, state, request, look)),
                         )
                         .into_any_element()
-                })),
-        )
+                }))
+                .into_any_element()
+        })
         .into_any_element()
 }

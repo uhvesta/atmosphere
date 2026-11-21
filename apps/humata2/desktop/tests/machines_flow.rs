@@ -726,8 +726,7 @@ fn an_offline_machine_keeps_its_last_detail_and_reconnects() {
     assert_eq!(app.ui.read(|s| s.machine_page.detail.clone()), Some(detail));
     assert!(app.ui.read(|s| s.machine_page.load_error.is_some()));
 
-    // Offline, "Reconnect now" is the link-down row's item alone (HO-5), in the "…" menu.
-    app.click(Role::Button, "More");
+    // Offline, "Reconnect now" is the link-down row's button (HO-5).
     app.click(Role::Button, "Reconnect now");
     assert!(app.ui.read(|s| s.workspace.machine(&id("gpu-box")).is_some_and(|m| m.online)));
 }

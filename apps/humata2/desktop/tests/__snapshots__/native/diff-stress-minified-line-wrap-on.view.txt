@@ -38,19 +38,19 @@ Complementary "Diff"
   #panel-header
     Button "Against main"
       text "main"
-    text "Diff"
-    text "against"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
+    text "Diff"
+    text "against"
   Button "Files" expanded
+    #diff-file-count
+      text "1 of 1"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
-    #diff-file-count
-      text "1 of 1"
-    text "app.min.js"
     text "web"
     text "·"
+    text "app.min.js"
     text "dist/"
   #changes-files
     #repo-row-0
@@ -66,11 +66,11 @@ Complementary "Diff"
       text "+1"
       text "−0"
       CheckBox "Not looked at"
-  text "app.min.js"
-  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "web"
   text "·"
   text "dist/"
+  text "app.min.js"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "web/dist/app.min.js"
     #change-hunk-0
@@ -79,63 +79,61 @@ Complementary "Diff"
         text "1"
       text "+"
       #change-code-1-0
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-1
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-2
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-3
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-4
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-5
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-6
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-7
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-8
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-9
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-10
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-11
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-12
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-13
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-14
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-15
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-16
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-17
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-18
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-19
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-20
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-21
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-22
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-23
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-24
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-25
-        text ";x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
       #change-code-1-26
-        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x"
+        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x="
       #change-code-1-27
-        text "=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
-      #change-code-1-28
-        text "x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1"
+        text "1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;x=1;"
   #diff-looks-bar
     Button "Looks good"
     Label "0 of 1 file looked at"
@@ -148,8 +146,7 @@ Complementary "Diff"
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 2"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
   Button "Files"
   Button "To-do"

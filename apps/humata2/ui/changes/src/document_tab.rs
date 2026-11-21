@@ -16,6 +16,7 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::{Anchor, Comment, CommentId, Side};
@@ -472,15 +473,15 @@ pub struct Documents {
     base_filter: Entity<InputState>,
     base_filter_for: Option<String>,
     _base_filtering: Subscription,
-    /// The Diff panel's "Filter files" field (RV-6), and the session whose
-    /// text it holds.
+    /// The Diff panel's "Filter files" field (RV-6), and the session + text
+    /// last synced from the store.
     file_filter: Entity<InputState>,
-    file_filter_for: Option<SessionId>,
+    file_filter_for: Option<(SessionId, String)>,
     _file_filtering: Subscription,
     /// The Diff panel's overall ("as a whole") comment/request input, and the
-    /// session whose draft it holds.
+    /// session + text last synced from the store.
     overall_input: Entity<TextareaState>,
-    overall_input_for: Option<SessionId>,
+    overall_input_for: Option<(SessionId, String)>,
     _overall_typing: Subscription,
     /// The Diff's file list: while it has this focus its arrows and Enter move
     /// the cursor, open a file or fold a repository (DS-84).
@@ -1123,12 +1124,18 @@ impl Documents {
             })
         });
         if let Some((session, text)) = open {
-            // Also after a clear by Esc, which only the store knows of.
-            let shown = self.file_filter.read(cx).value().to_string();
-            if self.file_filter_for.as_ref() != Some(&session) || shown != text {
-                self.file_filter
-                    .update(cx, |input, cx| input.set_value(text, window, cx));
-                self.file_filter_for = Some(session);
+            // Only push into the input when the session or store value itself
+            // changed, so background redraws never wipe in-flight keystrokes.
+            let changed = self
+                .file_filter_for
+                .as_ref()
+                .is_none_or(|(prev_session, prev_text)| *prev_session != session || *prev_text != text);
+            if changed {
+                if self.file_filter.read(cx).value().as_ref() != text.as_str() {
+                    self.file_filter
+                        .update(cx, |input, cx| input.set_value(text.clone(), window, cx));
+                }
+                self.file_filter_for = Some((session, text));
             }
         }
 
@@ -1140,11 +1147,16 @@ impl Documents {
             })
         });
         if let Some((session, text)) = open_overall {
-            let shown = self.overall_input.read(cx).value().to_string();
-            if self.overall_input_for.as_ref() != Some(&session) || shown != text {
-                self.overall_input
-                    .update(cx, |input, cx| input.set_value(text, window, cx));
-                self.overall_input_for = Some(session);
+            let changed = self
+                .overall_input_for
+                .as_ref()
+                .is_none_or(|(prev_session, prev_text)| *prev_session != session || *prev_text != text);
+            if changed {
+                if self.overall_input.read(cx).value().as_ref() != text.as_str() {
+                    self.overall_input
+                        .update(cx, |input, cx| input.set_value(text.clone(), window, cx));
+                }
+                self.overall_input_for = Some((session, text));
             }
         }
 
@@ -1586,24 +1598,30 @@ impl Documents {
         *page.child_lines.borrow_mut() = child_lines;
 
         div()
-            .id("doc-source")
-            .role(Role::Document)
-            .aria_label(format!("{path} source"))
-            .track_scroll(&page.scroll)
-            .flex()
-            .flex_col()
+            .relative()
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .py(px(10.))
-            .overflow_y_scroll()
-            .when(!wrap, |pane| pane.overflow_x_scroll())
-            .bg(rgb(look.term))
-            .font_family("Menlo")
-            .text_size(px(11.5))
-            .text_color(rgb(look.term_text))
-            .children(children)
-            .test_support()
+            .child(
+                div()
+                    .id("doc-source")
+                    .role(Role::Document)
+                    .aria_label(format!("{path} source"))
+                    .track_scroll(&page.scroll)
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .py(px(10.))
+                    .overflow_y_scroll()
+                    .when(!wrap, |pane| pane.overflow_x_scroll())
+                    .bg(rgb(look.term))
+                    .font_family("Menlo")
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.term_text))
+                    .children(children)
+                    .test_support(),
+            )
+            .vertical_scrollbar(&page.scroll)
             .into_any_element()
     }
 }

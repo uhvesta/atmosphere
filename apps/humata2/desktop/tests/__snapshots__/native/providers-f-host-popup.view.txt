@@ -46,13 +46,13 @@ Dialog "Add machine" focused
   Button "Add"
 ListItem "This Mac"
 ListItem "devbox-1" selected
-  Button "Free space…" disabled
+  Button "Free space…" description="Open Files to manage storage on this machine"
 text "gh 2.83"
 text "claude 2.4"
 text "codex 0.98"
 ListItem "gpu-box"
   Button "Reconnect"
-Button "Free space…" disabled
+Button "Free space…" description="Open Files to manage storage on this machine"
 Button "Open a shell"
 ListItem "cloud-vm-3"
   Button "Start"

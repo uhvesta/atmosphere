@@ -122,19 +122,43 @@ pub(crate) fn show_while<T, E, F>(
 
 fn window_options(cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, size(px(STARTING_WINDOW.0), px(STARTING_WINDOW.1)), cx);
+    starting_window_options(bounds)
+}
+
+fn starting_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        is_resizable: false,
+        titlebar: Some(TitlebarOptions {
+            title: None,
+            appears_transparent: true,
+            traffic_light_position: None,
+        }),
         ..WindowOptions::default()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, status};
+    use gpui_kit::{Bounds, point, px, size};
+
+    use super::{Phase, starting_window_options, status};
 
     #[test]
     fn each_phase_says_something_different() {
         assert_ne!(status(Phase::Installing), status(Phase::Waiting));
         assert!(!status(Phase::Waiting).is_empty());
+    }
+
+    #[test]
+    fn splash_window_is_locked_with_transparent_titlebar() {
+        let options = starting_window_options(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(360.), px(220.)),
+        });
+        assert!(!options.is_resizable);
+        let titlebar = options.titlebar.expect("transparent titlebar on splash window");
+        assert!(titlebar.appears_transparent);
+        assert!(titlebar.title.is_none());
     }
 }

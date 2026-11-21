@@ -2,12 +2,14 @@
 //! couldn't start, with Quit. It is drawn with the app's look, in the light
 //! or dark the person chose last time.
 
+use std::rc::Rc;
+
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{prelude::*, *};
 use tca::Storage;
 
 use crate::theme::{Look, RED};
-use crate::widgets;
+use crate::widgets::{self, row};
 
 /// The starting window's size.
 pub const STARTING_WINDOW: (f32, f32) = (440., 220.);
@@ -18,6 +20,7 @@ pub struct Starting {
     theme: humata2_settings::Theme,
     status: SharedString,
     failure: Option<SharedString>,
+    on_retry: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     _appearance: Subscription,
 }
 
@@ -36,6 +39,7 @@ fn apply(theme: humata2_settings::Theme, window: &mut Window, cx: &mut App) {
         humata2_settings::Theme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
         humata2_settings::Theme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
     }
+    humata2_ui_core::sync_theme(cx);
 }
 
 impl Starting {
@@ -51,14 +55,22 @@ impl Starting {
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
             if this.theme == humata2_settings::Theme::System {
                 Theme::sync_system_appearance(Some(window), cx);
+                humata2_ui_core::sync_theme(cx);
             }
         });
         Self {
             theme,
             status: status.into(),
             failure: None,
+            on_retry: None,
             _appearance: appearance,
         }
+    }
+
+    /// Registers a callback invoked when the user clicks **Retry** after a
+    /// startup failure.
+    pub fn set_on_retry(&mut self, retry: impl Fn(&mut Window, &mut App) + 'static) {
+        self.on_retry = Some(Rc::new(retry));
     }
 
     /// Shows `status` under "Starting Humata…".
@@ -67,10 +79,26 @@ impl Starting {
         cx.notify();
     }
 
-    /// Shows why start-up failed, with Quit, in place of the status.
+    /// Shows why start-up failed, with Retry, Dismiss, and Quit, in place of the status.
     pub fn fail(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.failure = Some(text.into());
         cx.notify();
+    }
+
+    /// Clears the failure banner and returns to the starting status view.
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
+        self.failure = None;
+        cx.notify();
+    }
+
+    /// Clears the failure banner and invokes the registered retry handler, if any.
+    pub fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.failure = None;
+        let handler = self.on_retry.clone();
+        cx.notify();
+        if let Some(handler) = handler {
+            handler(window, cx);
+        }
     }
 }
 
@@ -87,6 +115,7 @@ impl Render for Starting {
             .px(px(24.))
             .bg(rgb(look.content))
             .text_color(rgb(look.text))
+            .font_family(".SystemUIFont")
             .child(
                 div()
                     .text_size(px(20.))
@@ -111,14 +140,30 @@ impl Render for Starting {
                         .id("starting-failed")
                         .role(Role::Alert)
                         .aria_label(text.clone())
-                        .text_size(px(12.5))
+                        .text_size(px(12.))
                         .text_color(rgb(RED))
                         .child(text.clone()),
                 )
                 .child(
-                    widgets::push_primary_shape("starting-quit", "Quit", look)
+                    row()
+                        .gap(px(8.))
                         .mt(px(8.))
-                        .on_click(|_, _, cx| cx.quit()),
+                        .child(
+                            widgets::push_primary_shape("starting-retry", "Retry", look)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.retry(window, cx);
+                                })),
+                        )
+                        .child(
+                            widgets::push_quiet_shape("starting-dismiss", "Dismiss", look)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dismiss(cx);
+                                })),
+                        )
+                        .child(
+                            widgets::push_quiet_shape("starting-quit", "Quit", look)
+                                .on_click(|_, _, cx| cx.quit()),
+                        ),
                 ),
         }
     }

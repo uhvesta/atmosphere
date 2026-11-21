@@ -40,10 +40,11 @@ pub fn send(
     Button::new(id)
         .label(label)
         .small()
+        .cursor_pointer()
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }
 
-/// A push button as the frames draw it: 24 pt high, radius 6, with a 12 pt
+/// A push button as the frames draw it: 26 pt high, radius 7, with a 12 pt
 /// medium label. The kit draws a `.label()` at its own smaller size, so the
 /// label is a child and the button carries it as its accessibility label.
 #[must_use]
@@ -52,25 +53,37 @@ pub fn push(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button 
     Button::new(id)
         .accessibility_label(label.clone())
         .small()
-        .h(px(24.))
+        .h(px(26.))
         .px(px(11.))
-        .rounded(px(6.))
+        .rounded(px(7.))
         .font_weight(FontWeight::MEDIUM)
         .flex_shrink_0()
+        .cursor_pointer()
         .child(div().text_size(px(12.)).child(label))
 }
 
-/// The frames' grey push button with a hairline. It has no click handler yet.
+/// The frames' secondary push button with a crisp border. It has no click
+/// handler yet.
 #[must_use]
 pub fn push_quiet_shape(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     look: theme::Look,
 ) -> Button {
-    push(id, label)
-        .bg(rgb(look.fill))
-        .border_color(rgb(look.line))
-        .text_color(rgb(look.text))
+    if look.is_dark() {
+        push(id, label)
+            .bg(rgb(look.fill))
+            .border_1()
+            .border_color(look.control_border)
+            .text_color(rgb(look.text))
+    } else {
+        push(id, label)
+            .bg(rgb(look.card))
+            .border_1()
+            .border_color(look.control_border)
+            .text_color(rgb(look.text))
+            .shadow_xs()
+    }
 }
 
 /// The frames' filled push button. It has no click handler yet.

@@ -161,11 +161,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
         .items_center()
         .gap(px(4.))
         .pt(px(60.))
-        .bg(rgb(if cx.theme().is_dark() {
-            0x2a2a2d
-        } else {
-            0xe9e7ea
-        }))
+        .bg(Hsla::from(rgb(look.panel)).opacity(0.85))
         .border_l_1()
         .border_color(rgb(look.line))
         .children(
@@ -179,15 +175,26 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
             ]
             .map(|(panel, glyph)| {
                 let ui = ui.clone();
+                let active_bg = if cx.theme().is_dark() {
+                    rgba(0xffffff1a)
+                } else {
+                    rgba(0x00000012)
+                };
+                let rail_label = if panel == Panel::Inbox {
+                    "Inbox"
+                } else {
+                    title(panel)
+                };
                 Button::new(SharedString::from(format!("panel-tab {}", panel.name())))
                     .accessibility_label(title(panel))
                     .ghost()
                     .selected(on == Some(panel))
                     .w(px(52.))
-                    .h(px(if panel == Panel::Inbox { 63. } else { 47. }))
+                    .h(px(48.))
                     .p_0()
                     .rounded(px(7.))
-                    .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))
+                    .cursor_pointer()
+                    .when(on == Some(panel), |tab| tab.bg(active_bg))
                     .child(
                         col()
                             .relative()
@@ -223,13 +230,13 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                                         .absolute()
                                         .top(px(2.))
                                         .right(px(6.))
-                                        .h(px(16.))
-                                        .px(px(6.))
+                                        .h(px(14.))
+                                        .px(px(5.))
                                         .rounded_full()
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .text_size(px(10.5))
+                                        .text_size(px(10.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .bg(rgb(if panel == Panel::Inbox {
                                             look.accent
@@ -248,14 +255,14 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                             .child(
                                 // One centred line per word, so a two-word
                                 // title wraps in the cell instead of clipping.
-                                col().items_center().children(title(panel).split(' ').map(|word| {
+                                col().items_center().children(rail_label.split(' ').map(|word| {
                                     text(word.to_owned())
                                         .text_center()
                                         .whitespace_nowrap()
                                         .text_size(px(10.))
                                         .line_height(phi())
                                         .text_color(rgb(if on == Some(panel) {
-                                            look.text
+                                            look.accent
                                         } else {
                                             look.secondary
                                         }))

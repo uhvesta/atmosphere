@@ -44,4 +44,4 @@ ListItem "gpu-box"
 ListItem "cloud-vm-3"
   Button "Start"
 Button "Start sessions"
-Button "Free space…" disabled
+Button "Free space…" description="Open Files to manage storage on this machine"

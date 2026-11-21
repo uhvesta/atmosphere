@@ -94,6 +94,9 @@ const PLACEHOLDER: &str = "What changed? (optional)";
 /// being shown.
 pub struct HistoryUi {
     message: Entity<InputState>,
+    /// The file path and text last synced from the store into `message`, so
+    /// background redraws never wipe in-flight keystrokes or reset the caret.
+    message_last_synced: Option<(String, String)>,
     /// The file whose Save version box the field is, set by each sync.
     path: Rc<RefCell<Option<String>>>,
     menu: Rc<Cell<bool>>,
@@ -144,6 +147,7 @@ impl HistoryUi {
         );
         Self {
             message,
+            message_last_synced: None,
             path,
             menu: Rc::new(Cell::new(false)),
             focused: Cell::new(false),
@@ -159,12 +163,24 @@ impl HistoryUi {
         self.focused
             .set(self.message.read(cx).focus_handle(cx).is_focused(window));
         *self.path.borrow_mut() = wanted.message.as_ref().map(|(path, _)| path.clone());
-        if let Some((_, message)) = &wanted.message
-            && self.message.read(cx).value().to_string() != *message
-        {
-            let message = message.clone();
-            self.message
-                .update(cx, |input, cx| input.set_value(message, window, cx));
+        match &wanted.message {
+            Some((path, message)) => {
+                let changed = self
+                    .message_last_synced
+                    .as_ref()
+                    .is_none_or(|(prev_path, prev_msg)| prev_path != path || prev_msg != message);
+                if changed {
+                    if self.message.read(cx).value().as_ref() != message.as_str() {
+                        let message = message.clone();
+                        self.message
+                            .update(cx, |input, cx| input.set_value(message, window, cx));
+                    }
+                    self.message_last_synced = Some((path.clone(), message.clone()));
+                }
+            }
+            None => {
+                self.message_last_synced = None;
+            }
         }
         for want in &wanted.viewed {
             match self.viewed.get_mut(&want.key) {
@@ -270,6 +286,7 @@ impl HistoryUi {
                 .left(px(-10_000.))
                 .w(px(20_000.))
                 .h(px(20_000.))
+                .occlude()
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     close.set(false);
@@ -473,13 +490,24 @@ fn version_bar(
         .text_size(px(11.5))
         .child(
             row()
-                .h(px(30.))
+                .min_h(px(30.))
                 .px(px(12.))
-                .gap(px(8.))
+                .py(px(4.))
+                .gap_x(px(8.))
+                .gap_y(px(4.))
+                .flex_wrap()
                 .text_color(rgb(look.text))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(named))
                 .child(
                     div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(named),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
                         .px(px(6.))
                         .py(px(1.))
                         .rounded(px(4.))

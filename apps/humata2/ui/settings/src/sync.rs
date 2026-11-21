@@ -218,7 +218,10 @@ fn machines_block(ui: &Rc<Ui>, state: &AppState, snapshot: &SyncSnapshot, machin
                 .mt(px(2.))
                 .when(!live, |x| x.opacity(DIMMED))
                 .child(header)
-                .children(machines.iter().map(|machine| machine_row(ui, state, snapshot, machine, live, look))),
+                .children(machines.iter().enumerate().map(|(idx, machine)| {
+                    let flip_up = machines.len() >= 4 && idx + 1 == machines.len();
+                    machine_row(ui, state, snapshot, machine, live, flip_up, look)
+                })),
         )
 }
 
@@ -227,7 +230,7 @@ fn departures(snapshot: &SyncSnapshot, machine: &Machine) -> MachineSyncSettings
     snapshot.sync.machines.get(machine.id.as_str()).copied().unwrap_or_default()
 }
 
-fn machine_row(ui: &Rc<Ui>, state: &AppState, snapshot: &SyncSnapshot, machine: &Machine, live: bool, look: Look) -> Div {
+fn machine_row(ui: &Rc<Ui>, state: &AppState, snapshot: &SyncSnapshot, machine: &Machine, live: bool, flip_up: bool, look: Look) -> Div {
     let current = departures(snapshot, machine);
     // This machine's Sync cell Off: its other cells keep their values, dimmed.
     let off = current.enabled == Some(false);
@@ -246,7 +249,7 @@ fn machine_row(ui: &Rc<Ui>, state: &AppState, snapshot: &SyncSnapshot, machine: 
         .border_color(rgb(look.line))
         .child(div().flex_1().child(machine.name.clone()))
         .children(picks.into_iter().map(|(column, value)| {
-            let cell = pick_cell(ui, state, machine, column, value, live, look);
+            let cell = pick_cell(ui, state, machine, column, value, live, flip_up, look);
             cell.when(off && column != SyncColumn::Sync, |x| x.opacity(DIMMED))
         }))
 }
@@ -256,7 +259,8 @@ const CHOICES: [(&str, Option<bool>); 3] = [("Default", None), ("On", Some(true)
 
 /// One Default / On / Off cell: a button, and under it the menu while open.
 /// Default draws in the secondary colour and writes the field as unset.
-fn pick_cell(ui: &Rc<Ui>, state: &AppState, machine: &Machine, column: SyncColumn, value: Option<bool>, live: bool, look: Look) -> Div {
+#[allow(clippy::too_many_arguments)]
+fn pick_cell(ui: &Rc<Ui>, state: &AppState, machine: &Machine, column: SyncColumn, value: Option<bool>, live: bool, flip_up: bool, look: Look) -> Div {
     let (text, color) = match value {
         None => ("Default", look.secondary),
         Some(true) => ("On", look.text),
@@ -290,24 +294,64 @@ fn pick_cell(ui: &Rc<Ui>, state: &AppState, machine: &Machine, column: SyncColum
                     .on_click(move |_, _, cx| send(&ui, SyncAction::OpenMachineMenu(id.clone(), column), cx))
             })
     };
+    let align_right = column == SyncColumn::Settings;
     div()
         .relative()
         .w(px(COLUMN))
         .flex()
         .flex_shrink_0()
         .child(control)
-        .when(open, |cell| cell.child(deferred(pick_menu(ui, machine, column, value, look))))
+        .when(open, |cell| {
+            let scrim_ui = ui.clone();
+            cell.child(deferred(
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-sync-machine-{}-{}-scrim",
+                        machine.id,
+                        column_slug(column)
+                    )))
+                    .absolute()
+                    .top(px(-10_000.))
+                    .left(px(-10_000.))
+                    .w(px(20_000.))
+                    .h(px(20_000.))
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        send(&scrim_ui, SyncAction::CloseMachineMenu, cx);
+                    }),
+            ))
+            .child(deferred(pick_menu(
+                ui,
+                machine,
+                column,
+                value,
+                look,
+                flip_up,
+                align_right,
+            )))
+        })
 }
 
-fn pick_menu(ui: &Rc<Ui>, machine: &Machine, column: SyncColumn, current: Option<bool>, look: Look) -> impl IntoElement {
+fn pick_menu(
+    ui: &Rc<Ui>,
+    machine: &Machine,
+    column: SyncColumn,
+    current: Option<bool>,
+    look: Look,
+    flip_up: bool,
+    align_right: bool,
+) -> impl IntoElement {
     col()
         .id(SharedString::from(format!("settings-sync-machine-{}-{}-menu", machine.id, column_slug(column))))
         .role(Role::ListBox)
         .aria_label(format!("{} {}", machine.name, column_name(column)))
         .test_support()
         .absolute()
-        .top(px(28.))
-        .left(px(0.))
+        .when(flip_up, |m| m.bottom(px(28.)))
+        .when(!flip_up, |m| m.top(px(28.)))
+        .when(align_right, |m| m.right(px(0.)))
+        .when(!align_right, |m| m.left(px(0.)))
         .w(px(96.))
         .p(px(4.))
         .gap(px(1.))
@@ -335,7 +379,10 @@ fn pick_menu(ui: &Rc<Ui>, machine: &Machine, column: SyncColumn, current: Option
                 .hover(move |x| x.bg(rgb(look.fill)))
                 .child(div().w(px(12.)).flex_shrink_0().children(picked.then(|| chrome::icon(IconName::Check, look.accent, 12.))))
                 .child(name)
-                .on_click(move |_, _, cx| send(&ui, SyncAction::PickMachine(id.clone(), column, value), cx))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    send(&ui, SyncAction::PickMachine(id.clone(), column, value), cx);
+                })
                 .test_support()
         }))
 }

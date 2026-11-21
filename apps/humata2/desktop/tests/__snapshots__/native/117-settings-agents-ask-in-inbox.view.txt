@@ -45,7 +45,6 @@ Splitter "Resize the sidebar"
   Button "Off"
   Button "On" selected
   Button "On" selected
-  Button "Off"
 Tab "General"
 Tab "Agents" selected
 Tab "Sync"

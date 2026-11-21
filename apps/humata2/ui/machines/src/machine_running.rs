@@ -68,9 +68,16 @@ struct RowMenu {
 impl RenderOnce for RowMenu {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let open = window.use_keyed_state(self.id.clone(), cx, |_, _| false);
+        let flip_up = window.use_keyed_state(
+            SharedString::from(format!("{}-flip", self.id)),
+            cx,
+            |_, _| false,
+        );
         let shown = *open.read(cx);
         let look = self.look;
         let toggle = open.clone();
+        let set_flip = flip_up.clone();
+        let est_h = self.actions.len() as f32 * 28. + 20.;
         let mut host = div().relative().flex_shrink_0().child(
             div()
                 .id(SharedString::from(format!("{}-button", self.id)))
@@ -84,8 +91,12 @@ impl RenderOnce for RowMenu {
                 .justify_center()
                 .cursor_pointer()
                 .child(chrome::icon(IconName::Ellipsis, look.secondary, 15.))
-                .on_click(move |_, _, cx| {
+                .on_click(move |event, window, cx| {
                     cx.stop_propagation();
+                    let viewport_h = f32::from(window.viewport_size().height);
+                    let click_y = f32::from(event.position().y);
+                    let upward = viewport_h > 0. && click_y + est_h + 12. > viewport_h;
+                    set_flip.update(cx, |flip, _| *flip = upward);
                     toggle.update(cx, |open, cx| {
                         *open = !*open;
                         cx.notify();
@@ -95,9 +106,12 @@ impl RenderOnce for RowMenu {
         );
         if shown {
             let close = open.clone();
+            let upward = *flip_up.read(cx);
             let mut card = crate::action_menu::card("running-menu-card", 160., look)
-                .top(px(20.))
-                .right(px(0.));
+                .right(px(0.))
+                .occlude()
+                .when(upward, |c| c.bottom(px(20.)))
+                .when(!upward, |c| c.top(px(20.)));
             for (index, action) in self.actions.iter().copied().enumerate() {
                 if index > 0 && separated(action) {
                     card = card.child(div().h(px(1.)).mx(px(4.)).my(px(2.)).bg(rgb(look.line)));
@@ -142,6 +156,7 @@ impl RenderOnce for RowMenu {
                         .left(px(-10_000.))
                         .w(px(20_000.))
                         .h(px(20_000.))
+                        .occlude()
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             close.update(cx, |open, cx| {

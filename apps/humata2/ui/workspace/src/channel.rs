@@ -257,6 +257,7 @@ pub fn delete_modal(ui: &Rc<Ui>, state: &AppState, look: Look) -> Option<AnyElem
         .items_center()
         .justify_center()
         .bg(rgba(0x00000055))
+        .occlude()
         .on_click(move |_, _, cx| {
             scrim_ui.send(AppAction::Channel(Action::CancelDelete), cx);
         })
@@ -268,6 +269,8 @@ pub fn delete_modal(ui: &Rc<Ui>, state: &AppState, look: Look) -> Option<AnyElem
                 .test_support()
                 .w(px(440.))
                 .max_w(px(440.))
+                .max_h(relative(0.85))
+                .occlude()
                 .p(px(18.))
                 .gap(px(12.))
                 .rounded(px(10.))
@@ -325,7 +328,8 @@ pub fn delete_modal(ui: &Rc<Ui>, state: &AppState, look: Look) -> Option<AnyElem
                                     confirm_ui.send(AppAction::Channel(Action::ConfirmDelete), cx);
                                 }),
                         ),
-                ),
+                )
+                .overflow_y_scroll(),
         )
         .into_any_element();
     Some(modal)
@@ -444,12 +448,21 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
         .border_b_1()
         .border_color(rgb(look.line))
         .child(
-            row()
-                .h(px(52.))
-                .px(px(20.))
-                .gap(px(10.))
-                .child(
+            chrome::titlebar_drag(
+                row()
+                    .h(px(52.))
+                    .px(px(20.))
+                    .gap(px(10.))
+                    .when(state.layout.sidebar.collapsed, |bar| {
+                        bar.child(chrome::lights())
+                    }),
+            )
+            .child(
                     div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .text_size(px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("# {}", channel.name)),
@@ -470,12 +483,14 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
                         }),
                 )
                 // Frames 18 and 35 draw Pin and a "…" menu here.
-                .when(has_sessions, |bar| bar.child(pin_icon(ui, &channel.id, pinned, look)))
-                .child(more_menu(ui, state, look))
+                .when(has_sessions, |bar| {
+                    bar.child(pin_icon(ui, &channel.id, pinned, look).flex_shrink_0())
+                })
+                .child(more_menu(ui, state, look).flex_shrink_0())
                 .child(
-                    push_primary_shape("channel-new-session", "New session", look).on_click(
-                        move |_, _, cx| new_session.send(AppAction::StartNewSession, cx),
-                    ),
+                    push_primary_shape("channel-new-session", "New session", look)
+                        .flex_shrink_0()
+                        .on_click(move |_, _, cx| new_session.send(AppAction::StartNewSession, cx)),
                 ),
         )
         .child(
@@ -543,6 +558,17 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
         )
 }
 
+/// Nesting depth of a channel session tree row from its 3-character connector prefix.
+fn tree_depth(prefix: &str) -> usize {
+    prefix.chars().count() / 3
+}
+
+/// Visual indentation (in points) for a forked channel session row, capped so
+/// deep trees never collapse titles.
+fn tree_indent(depth: usize) -> f32 {
+    depth.min(6).saturating_sub(1) as f32 * 16.
+}
+
 fn sessions(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -564,7 +590,6 @@ fn sessions(
     col()
         .id("channel-sessions")
         .size_full()
-        .overflow_y_scroll()
         .p(px(20.))
         .gap(px(10.))
         .text_size(px(12.5))
@@ -733,14 +758,18 @@ fn sessions(
                                             .test_support(),
                                     )
                                 }))
-                                .child(
-                                    div()
-                                        .font_family("Menlo")
-                                        .text_size(px(11.5))
-                                        .text_color(rgb(look.tertiary))
-                                        .whitespace_nowrap()
-                                        .child(r.prefix.clone()),
-                                )
+                                .when(tree_depth(&r.prefix) > 0, |x| {
+                                    x.child(
+                                        div()
+                                            .pl(px(tree_indent(tree_depth(&r.prefix))))
+                                            .flex_shrink_0()
+                                            .child(chrome::icon(
+                                                IconName::GitFork,
+                                                look.tertiary,
+                                                12.,
+                                            )),
+                                    )
+                                })
                                 .child(chrome::status(s.status))
                                 .child(
                                     div()
@@ -864,6 +893,7 @@ fn sessions(
                     "Click a row to open the session. ✉ opens it with its Inbox, forks included.",
                 ),
         )
+        .overflow_y_scroll()
         .test_support()
         .into_any_element()
 }
@@ -872,7 +902,6 @@ fn activity(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> Any
     col()
         .id("channel-activity")
         .size_full()
-        .overflow_y_scroll()
         .p(px(20.))
         .text_size(px(12.5))
         .child(
@@ -986,6 +1015,7 @@ fn activity(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> Any
                         }),
                 ),
         )
+        .overflow_y_scroll()
         .test_support()
         .into_any_element()
 }
@@ -1005,7 +1035,6 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
     col()
         .id("channel-repos")
         .size_full()
-        .overflow_y_scroll()
         .p(px(20.))
         .gap(px(12.))
         .text_size(px(12.5))
@@ -1146,6 +1175,7 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                     look,
                 )),
         )
+        .overflow_y_scroll()
         .test_support()
         .into_any_element()
 }
@@ -1197,7 +1227,6 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
     div()
         .id("channel-empty")
         .size_full()
-        .overflow_y_scroll()
         .flex()
         .items_start()
         .justify_center()
@@ -1286,6 +1315,7 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                         )
                 })),
         )
+        .overflow_y_scroll()
         .test_support()
         .into_any_element()
 }
@@ -1348,5 +1378,18 @@ mod tests {
         // Ensure Action::Tab(Tab::Settings) is constructible for the tab bar.
         let _action = Action::Tab(Tab::Settings);
         let _ = (Workspace::default(), ChannelId::new("eng"));
+    }
+
+    #[core::prelude::v1::test]
+    fn tree_depth_and_indent_handle_connectors_and_clamp() {
+        assert_eq!(super::tree_depth(""), 0);
+        assert_eq!(super::tree_depth("└─ "), 1);
+        assert_eq!(super::tree_depth("├─ "), 1);
+        assert_eq!(super::tree_depth("│  └─ "), 2);
+        assert_eq!(super::tree_depth("   │  ├─ "), 3);
+        assert_eq!(super::tree_indent(1), 0.);
+        assert_eq!(super::tree_indent(2), 16.);
+        assert_eq!(super::tree_indent(6), 80.);
+        assert_eq!(super::tree_indent(12), 80.);
     }
 }

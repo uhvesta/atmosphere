@@ -38,8 +38,7 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Toolbar "Session panels"
   Button "Agent inbox"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
   Button "Files"
   Button "To-do"
@@ -62,14 +61,14 @@ Tab "claude" selected
   Button "Close claude"
 Tab "zsh"
   Button "Close zsh"
-Button "New terminal"
 Tab "rfc-brin.md" selected
   Button "Close rfc-brin.md"
-Button "New terminal"
 RadioGroup "Show the file as"
   RadioButton "Preview" selected
   RadioButton "Source"
   RadioButton "Side by side"
+Button "New terminal"
+Button "New terminal"
 Log "Terminal output" description="Claude started · BRIN rollout RFC\nPlease work on: BRIN rollout RFC\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refreshed, so the second re\nquest reuses the expired token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭───────────────────────────────────────────────────────────────╮\n│ > │\n╰───────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   text "Claude started · BRIN rollout RFC\nPlease work on: BRIN rollout RFC\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refreshed, so the second re\nquest reuses the expired token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭───────────────────────────────────────────────────────────────╮\n│ > │\n╰───────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   #terminal-replica
@@ -79,10 +78,10 @@ Region "Versions"
   Button "Older version" disabled
   Button "Newer version" disabled
   Button "History ▾" disabled
+  Button "Save version"
   #doc-version-message
     #input
       TextInput "What changed? (optional)" value="" placeholder="What changed? (optional)"
-  Button "Save version"
   Region "No versions yet"
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"

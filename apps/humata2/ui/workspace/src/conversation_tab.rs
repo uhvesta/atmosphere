@@ -7,6 +7,7 @@ use std::rc::Rc;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::history::{Turn as Entry, TurnRole};
@@ -172,12 +173,11 @@ fn tab(
             }
         }
     }
-    col()
+    let list = col()
         .id("conversation-tab")
         .role(Role::Document)
         .aria_label("Conversation")
-        .flex_1()
-        .min_h_0()
+        .size_full()
         .overflow_y_scroll()
         .track_scroll(&scroll.handle)
         .bg(rgb(look.content))
@@ -185,7 +185,13 @@ fn tab(
         .p(px(18.))
         .gap(px(12.))
         .children(children)
-        .test_support()
+        .test_support();
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .child(list)
+        .vertical_scrollbar(&scroll.handle)
         .into_any_element()
 }
 

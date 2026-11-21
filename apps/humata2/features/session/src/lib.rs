@@ -1783,6 +1783,7 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::CloseTab { group, index } => {
+                state.terminal_menu = None;
                 let split = state.view().is_some_and(|v| v.groups.len() == 2);
                 let closed_tab = state
                     .view()
@@ -1872,6 +1873,7 @@ impl Reducer for Sessions {
                 state.terminal_menu = None;
             }
             SessionAction::CloseGroup(group) => {
+                state.terminal_menu = None;
                 if let Some(view) = state.view_mut() {
                     view.close_group(group);
                 }

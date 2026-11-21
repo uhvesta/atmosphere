@@ -15,14 +15,14 @@ Complementary "Diff"
     Button
       text "Refresh"
   #diff-file-bar
+    #diff-file-count
+      text "1 of 2"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
-    #diff-file-count
-      text "1 of 2"
-    text "refund.rs"
     text "api"
     text "·"
+    text "refund.rs"
     text "src/"
   #review-diff
     #review-repo-acme/api
@@ -56,10 +56,10 @@ Complementary "Diff"
       #doc-comment-se_pr_1/c-1
         text "claude"
         text "line 140"
-        text "Draft"
-        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
         Button "Edit"
         Button "Drop"
+        text "Draft"
+        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
         Button "Spin off To-do"
       #change-line-3
         Button "Comment on line 141"

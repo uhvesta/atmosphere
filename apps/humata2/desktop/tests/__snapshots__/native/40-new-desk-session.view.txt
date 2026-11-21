@@ -28,10 +28,10 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings"
 Splitter "Resize the sidebar"
-Heading "Desk"
-Button "Sort: last used"
 Button "Clean up…"
 Button "New desk session"
+Heading "Desk"
+Button "Sort: last used"
 Dialog "New desk session" focused
   #input focused
     TextInput "Title" value="Plan Q4 board" placeholder="What is it for?" focused

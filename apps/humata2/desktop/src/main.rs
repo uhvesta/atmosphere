@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use gpui_kit::component::input;
 use gpui_kit::{
-    App, Bounds, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, WindowBounds, WindowOptions,
-    px, size,
+    App, Bounds, KeyBinding, Menu, MenuItem, OsAction, PromptLevel, SystemMenuType,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
 };
 use humata2_app::AppAction;
 use humata2_clients::Clients;
@@ -44,6 +44,10 @@ use tca::{FileStorage, SystemClock};
 gpui_kit::actions!(
     humata_desktop,
     [
+        /// About Humata.
+        About,
+        /// ⌘W: close the active window.
+        CloseWindow,
         /// ⌘Q: quit.
         Quit,
         /// ⌘H: hide the app.
@@ -235,8 +239,25 @@ fn tell_about_install(installed: Installed) {
 }
 
 fn menus(cx: &mut App) {
+    cx.on_action(|_: &About, cx| {
+        if let Some(window) = cx.active_window() {
+            let exe = std::env::current_exe().unwrap_or_default();
+            let detail = version_line(&exe);
+            let _ = window.update(cx, |_, window, cx| {
+                let _ = window.prompt(PromptLevel::Info, "About Humata", Some(&detail), &["OK"], cx);
+            });
+        }
+    });
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+        }
+    });
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-q", Quit, None),
+    ]);
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -264,6 +285,8 @@ fn menus(cx: &mut App) {
     ]);
     cx.set_menus([
         Menu::new("Humata").items([
+            MenuItem::action("About Humata", About),
+            MenuItem::separator(),
             MenuItem::action("Settings…", keys::OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -277,6 +300,8 @@ fn menus(cx: &mut App) {
         Menu::new("File").items([
             MenuItem::action("New Session", keys::NewSession),
             MenuItem::action("New Channel", keys::NewChannel),
+            MenuItem::separator(),
+            MenuItem::action("Close Window", CloseWindow),
         ]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
@@ -467,10 +492,13 @@ fn main_window_options(bounds: Bounds<gpui_kit::Pixels>) -> WindowOptions {
         titlebar: Some(gpui_kit::TitlebarOptions {
             title: None,
             appears_transparent: true,
-            // Align native macOS traffic lights with the 52 pt header's left slot
-            // (20 pt left padding, vertically centered 12 pt buttons).
-            traffic_light_position: Some(gpui_kit::point(px(20.), px(20.))),
+            // Align native macOS traffic lights with the 52 pt header's left slot.
+            traffic_light_position: Some(gpui_kit::point(px(20.), px(18.))),
         }),
+        window_background: WindowBackgroundAppearance::Blurred,
+        use_display_p3: true,
+        app_owns_titlebar_drag: true,
+        window_min_size: Some(size(px(640.), px(480.))),
         ..WindowOptions::default()
     }
 }
@@ -512,12 +540,16 @@ mod window_tests {
     fn the_main_window_can_be_resized_zoomed_and_made_full_screen() {
         let options = main_window_options(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(800.)) });
         assert!(options.is_resizable && options.is_minimizable);
+        assert_eq!(options.window_background, gpui_kit::WindowBackgroundAppearance::Blurred);
+        assert!(options.use_display_p3);
+        assert!(options.app_owns_titlebar_drag);
+        assert_eq!(options.window_min_size, Some(size(px(640.), px(480.))));
         let titlebar = options.titlebar.expect("titlebar options, so macOS gets the Resizable style");
         // Today's look: the content runs under a transparent titlebar, no title shown,
         // with native traffic lights aligned into the 52 pt sidebar header slot.
         assert!(titlebar.appears_transparent);
         assert!(titlebar.title.is_none());
-        assert_eq!(titlebar.traffic_light_position, Some(point(px(20.), px(20.))));
+        assert_eq!(titlebar.traffic_light_position, Some(point(px(20.), px(18.))));
     }
 }
 

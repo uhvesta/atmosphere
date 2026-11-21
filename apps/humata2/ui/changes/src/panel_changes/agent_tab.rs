@@ -167,11 +167,17 @@ pub(super) fn drag_move(event: &MouseMoveEvent, panel_width: f32, panel_height: 
     })
 }
 
-/// Ends any active dock drag gesture.
-pub(super) fn drag_end() {
+/// Ends any active dock drag gesture; returns true if a drag was active.
+pub(super) fn drag_end() -> bool {
+    AGENT_DOCK.with(|cell| cell.borrow_mut().drag.take().is_some())
+}
+
+/// Active drag orientation if the Agent dock divider is currently being dragged.
+pub(super) fn dragging() -> Option<DockPosition> {
     AGENT_DOCK.with(|cell| {
-        cell.borrow_mut().drag = None;
-    });
+        let dock = cell.borrow();
+        dock.drag.map(|_| dock.position)
+    })
 }
 
 /// Label for the consolidated Agent toggle in the full-screen review title bar.
@@ -228,6 +234,7 @@ pub(super) fn button(_ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEle
 pub(super) fn resize_handle(look: Look, panel_width: f32, panel_height: f32) -> impl IntoElement {
     let pos = position();
     let is_right = pos == DockPosition::Right;
+    let is_dragging = dragging().is_some();
     div()
         .id("agent-dock-divider")
         .role(Role::Splitter)
@@ -248,7 +255,7 @@ pub(super) fn resize_handle(look: Look, panel_width: f32, panel_height: f32) -> 
                         .h(px(36.))
                         .rounded_full()
                         .bg(rgb(look.secondary))
-                        .opacity(0.)
+                        .opacity(if is_dragging { 1. } else { 0. })
                         .group_hover("agent-dock-divider", |g| g.opacity(1.)),
                 )
         })
@@ -262,7 +269,7 @@ pub(super) fn resize_handle(look: Look, panel_width: f32, panel_height: f32) -> 
                         .w(px(36.))
                         .rounded_full()
                         .bg(rgb(look.secondary))
-                        .opacity(0.)
+                        .opacity(if is_dragging { 1. } else { 0. })
                         .group_hover("agent-dock-divider", |g| g.opacity(1.)),
                 )
         })
@@ -399,7 +406,15 @@ pub(super) fn dock(
                         .child("+"),
                 )
                 .when(add_open, |wrap| {
-                    wrap.child(deferred(add_menu(ui, state, &tab_agents, look)))
+                    wrap.child(deferred(add_menu_scrim())).child(deferred(add_menu(
+                        ui,
+                        state,
+                        &tab_agents,
+                        look,
+                        is_right,
+                        panel_width,
+                        panel_height,
+                    )))
                 }),
         )
         .child(div().flex_1())
@@ -514,18 +529,47 @@ pub(super) fn dock(
         .child(body)
 }
 
+fn add_menu_scrim() -> impl IntoElement {
+    div()
+        .id("agent-dock-add-scrim")
+        .absolute()
+        .top(px(-4000.))
+        .left(px(-4000.))
+        .w(px(8000.))
+        .h(px(8000.))
+        .occlude()
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            AGENT_DOCK.with(|cell| {
+                cell.borrow_mut().add_menu_open = false;
+            });
+            cx.refresh_windows();
+        })
+}
+
 /// `+` popover inside the Agent dock tab strip enforcing the flat cap
 /// (`enabled kinds + 2`, max 2 per kind including plain `Terminal` / `zsh`).
-fn add_menu(ui: &Rc<Ui>, state: &AppState, existing: &[Agent], look: Look) -> impl IntoElement {
+fn add_menu(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    existing: &[Agent],
+    look: Look,
+    is_right: bool,
+    panel_width: f32,
+    panel_height: f32,
+) -> impl IntoElement {
     let missing = state.missing_agents();
     let mut offered = state.settings.offered_agents();
     offered.sort_by_key(|agent| missing.contains(agent));
     let enabled_kinds = offered.iter().filter(|a| !missing.contains(a)).count() + 1;
     let cap = flat_total_cap(enabled_kinds);
+    let menu_w = (panel_width - 16.).clamp(180., 280.);
+    let menu_max_h = (panel_height * 0.5).clamp(160., 360.);
 
-    humata2_ui_core::action_menu::card("agent-dock-add-menu", 280., look)
-        .top(px(26.))
-        .left(px(0.))
+    humata2_ui_core::action_menu::card("agent-dock-add-menu", menu_w, look)
+        .when(is_right, |m| m.top(px(26.)).right(px(0.)))
+        .when(!is_right, |m| m.bottom(px(26.)).left(px(0.)))
+        .max_h(px(menu_max_h))
         .p(px(6.))
         .occlude()
         .child(
@@ -555,6 +599,7 @@ fn add_menu(ui: &Rc<Ui>, state: &AppState, existing: &[Agent], look: Look) -> im
                 add_entry(ui, agent, None, look).into_any_element()
             }
         }))
+        .overflow_y_scroll()
         .test_support()
 }
 

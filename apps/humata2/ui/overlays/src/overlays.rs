@@ -6,7 +6,9 @@
 //! or pressing Escape closes it.
 
 use std::rc::Rc;
+use std::time::Duration;
 
+use humata2_ui_core::action_menu::{ENTRANCE_MS, ease_out_quint};
 use humata2_ui_core::theme::Look;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::{prelude::*, *};
@@ -146,7 +148,7 @@ impl Overlays {
             cx.new(|cx| InputState::new(window, cx).placeholder("uhvesta/ledger-schema-2"));
         let first_message = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Optional. Typed into the agent once it starts.")
+                .placeholder("Optional. Sent to the agent on start.")
                 .rows(3)
         });
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("web"));
@@ -251,7 +253,7 @@ impl Overlays {
             title,
             fork_branch,
             first_message,
-            first_message_placeholder: "Optional. Typed into the agent once it starts.".into(),
+            first_message_placeholder: "Optional. Sent to the agent on start.".into(),
             name,
             repos,
             owner,
@@ -337,6 +339,18 @@ impl Overlays {
 }
 
 fn sync(input: &Entity<InputState>, value: &str, window: &mut Window, cx: &mut App) {
+    let last = window.use_keyed_state(
+        ("overlay-sync", input.entity_id()),
+        cx,
+        |_, _| String::new(),
+    );
+    if last.read(cx).as_str() == value {
+        return;
+    }
+    last.update(cx, |synced, _| {
+        synced.clear();
+        synced.push_str(value);
+    });
     if input.read(cx).value().as_ref() != value {
         let value = value.to_owned();
         input.update(cx, |input, cx| input.set_value(value, window, cx));
@@ -432,14 +446,15 @@ fn sheet(id: &'static str, label: &'static str, look: Look) -> Stateful<Div> {
         .aria_label(label)
         .w(px(theme::SHEET))
         .max_h(relative(0.8))
+        .overflow_y_scroll()
         .gap_3()
-        .p_4()
-        .rounded(px(10.))
+        .p(px(22.))
+        .rounded(px(12.))
         .bg(rgb(look.card))
         .text_color(rgb(look.text))
-        .border_1()
-        .border_color(rgb(look.line))
-        .shadow_lg()
+        .border(px(0.5))
+        .border_color(look.hairline())
+        .shadow(theme::shadow_sheet(look))
 }
 
 impl Render for Overlays {
@@ -591,22 +606,54 @@ impl Render for Overlays {
                     }
                     _ => AppAction::Escape,
                 };
+                let shown_key = shown.map_or(0usize, |k| k as usize);
+                let animate = crate::chrome::native_traffic_lights();
+                let scrim = div()
+                    .id("scrim")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(if look.content == 0xffffff {
+                        rgba(0x0000_0030)
+                    } else {
+                        rgba(0x0000_0080)
+                    })
+                    .occlude()
+                    .on_click(move |_, _, cx| ui.send(outside.clone(), cx));
+                let scrim = if animate {
+                    scrim
+                        .with_animation(
+                            ("overlay-scrim-in", shown_key),
+                            Animation::new(Duration::from_millis(ENTRANCE_MS))
+                                .with_easing(ease_out_quint),
+                            |el, delta| el.opacity(delta),
+                        )
+                        .into_any_element()
+                } else {
+                    scrim.into_any_element()
+                };
+                // Clicks inside the sheet stay there.
+                let holder = div()
+                    .id("sheet-holder")
+                    .max_w(relative(0.94))
+                    .occlude()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(content);
+                let holder = if animate {
+                    holder
+                        .with_animation(
+                            ("overlay-sheet-in", shown_key),
+                            Animation::new(Duration::from_millis(ENTRANCE_MS + 10))
+                                .with_easing(ease_out_quint),
+                            |el, delta| el.opacity(delta).mt(px(-6. * (1. - delta))),
+                        )
+                        .into_any_element()
+                } else {
+                    holder.into_any_element()
+                };
                 layer
-                    .child(
-                        div()
-                            .id("scrim")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .bg(if look.content == 0xffffff {
-                                rgba(0x0000_0030)
-                            } else {
-                                rgba(0x0000_0080)
-                            })
-                            .occlude()
-                            .on_click(move |_, _, cx| ui.send(outside.clone(), cx)),
-                    )
+                    .child(scrim)
                     .child(
                         div()
                             .absolute()
@@ -626,15 +673,7 @@ impl Render for Overlays {
                                 Some(Kind::NewChannel) => 50.,
                                 _ => 96.,
                             }))
-                            .child(
-                                // Clicks inside the sheet stay there.
-                                div()
-                                    .id("sheet-holder")
-                                    .max_w(relative(0.94))
-                                    .occlude()
-                                    .on_click(|_, _, cx| cx.stop_propagation())
-                                    .child(content),
-                            ),
+                            .child(holder),
                     )
             }
             None => layer,

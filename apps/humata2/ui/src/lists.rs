@@ -28,22 +28,28 @@ pub(crate) fn toolbar(
     hidden: bool,
     look: Look,
 ) -> Div {
-    row()
-        .h(px(52.))
-        .px(px(20.))
-        .gap(px(10.))
-        .flex_shrink_0()
-        .border_b_1()
-        .border_color(rgb(look.line))
+    chrome::titlebar_drag(
+        row()
+            .h(px(52.))
+            .px(px(20.))
+            .gap(px(10.))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(look.line)),
+    )
         .when(hidden, |bar| bar.child(chrome::lights()))
         .when(!state.trail.is_empty(), |bar| {
-            bar.child(widgets::ghost_in(look, ui, "back", "‹ Back", AppAction::Back))
+            bar.child(widgets::ghost_in(look, ui, "back", "‹ Back", AppAction::Back).flex_shrink_0())
         })
         .child(
             div()
                 .id("screen-title")
                 .role(Role::Heading)
                 .aria_label(title.clone())
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .text_size(px(15.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(title)
@@ -233,14 +239,20 @@ fn home_row(
                 .child(
                     div()
                         .flex()
+                        .min_w_0()
                         .gap(px(8.))
                         .child(
                             div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(session.title.clone()),
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .text_size(px(11.5))
                                 .text_color(rgb(look.secondary))
                                 .child(description),
@@ -270,6 +282,7 @@ fn home_row(
         )
         .child(
             div()
+                .flex_shrink_0()
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
                 .child(session.active.clone()),
@@ -286,7 +299,7 @@ fn home_row(
                 widgets::push_quiet_shape(button_id, label, look)
             };
             let asked = asked.clone();
-            button.on_click(move |_, _, cx| {
+            button.flex_shrink_0().on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 if let Some(url) = &url {
                     cx.open_url(url);

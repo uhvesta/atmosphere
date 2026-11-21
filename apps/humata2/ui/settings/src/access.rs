@@ -382,14 +382,17 @@ fn rule_row(
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
-        .child(
+        .child(humata2_ui_core::full_text::full_text(
             div()
+                .id(("access-rule-label", index))
                 .flex_1()
                 .min_w_0()
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .child(rule.label.clone()),
-        )
+            rule.label.clone(),
+        ))
         .child(control)
 }
 
@@ -424,16 +427,19 @@ fn grant_row(
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
-        .child(
+        .child(humata2_ui_core::full_text::full_text(
             div()
+                .id(("access-grant-text", rule * 1000 + n))
                 .flex_1()
                 .min_w_0()
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .text_size(px(11.5))
                 .text_color(rgb(look.tertiary))
-                .child(text),
-        )
+                .child(text.clone()),
+            text,
+        ))
         .child(
             div()
                 .id(("access-remove", rule * 1000 + n))

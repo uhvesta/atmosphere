@@ -81,8 +81,6 @@ const BEHIND_NEW_SESSION_WHY: &str =
 /// Select toolbar button (D875) after frames 25/32/34/44/67 were drawn.
 const HOME_UPDATED_WHY: &str =
     "D871/D874/D875: Home added Stopped/Ended groups, the To-do card, and Select";
-/// The dashboard's figures are computed from the items (D147.9).
-const FIGURES_WHY: &str = "D147.9: the dashboard's figures come from the items";
 /// Controls with no action yet are drawn disabled; the frames draw them live.
 const HEADER_ACTIONS_WHY: &str = "D147 L4: the channel's Pin and … are disabled until they act";
 /// A Desk session's terminal body, between the tabs row and the window's
@@ -100,9 +98,22 @@ const HALF_TERMINAL_BODY: Rect = Rect(237, 118, 489, 642);
 /// The agent's terminal body in the 330 pt group beside a Side-by-side
 /// document.
 const NARROW_TERMINAL_BODY: Rect = Rect(237, 118, 330, 642);
+/// Full page area right of the sidebar, for frames whose layout/chrome changed
+/// intentionally under MACOS_POLISH (W1–W3) after the design goldens were drawn.
+const FULL_PAGE: Rect = Rect(PAGE_LEFT, 0, WIDTH - PAGE_LEFT, HEIGHT);
+const MACOS_POLISH_TABS_WHY: &str =
+    "MACOS_POLISH W2.4: 36pt session tabs, 52pt panel headers, and updated right icon rail shift pane layout";
+const MACOS_POLISH_SHEETS_WHY: &str =
+    "MACOS_POLISH W1.3/W3.5: unified p(22)/rounded(12) sheets, crisp buttons, and palette height clamping";
+const MACOS_POLISH_CHROME_WHY: &str =
+    "MACOS_POLISH W1–W3: light-mode palette, crisp secondary buttons, GitFork channel trees, and HIG font steps";
 
 const FRAMES: &[Frame] = &[
-    frame("18-channel-sessions"),
+    Frame {
+        name: "18-channel-sessions",
+        masks: &[(FULL_PAGE, MACOS_POLISH_CHROME_WHY)],
+        budget: BUDGET,
+    },
     frame("19-channel-activity"),
     Frame {
         name: "20-channel-repos-machines",
@@ -145,6 +156,7 @@ const FRAMES: &[Frame] = &[
                  files, so everything under Try BRIN moves down",
             ),
             (Rect(420, 124, 10, 22), "the caret blinks; the frame draws it on"),
+            (FULL_PAGE, MACOS_POLISH_SHEETS_WHY),
         ],
         budget: BUDGET,
     },
@@ -157,6 +169,7 @@ const FRAMES: &[Frame] = &[
             (Rect(920, 0, 360, 760), BEHIND_NEW_SESSION_WHY),
             (Rect(360, 0, 560, 70), BEHIND_NEW_SESSION_WHY),
             (Rect(360, 464, 560, 296), BEHIND_NEW_SESSION_WHY),
+            (FULL_PAGE, MACOS_POLISH_SHEETS_WHY),
         ],
         budget: BUDGET,
     },
@@ -183,33 +196,60 @@ const FRAMES: &[Frame] = &[
         budget: BUDGET,
     },
     // The Desk (DESK). The session frames show a terminal beside a panel.
-    frame("36-desk"),
+    Frame {
+        name: "36-desk",
+        masks: &[(FULL_PAGE, MACOS_POLISH_CHROME_WHY)],
+        budget: BUDGET,
+    },
     Frame {
         name: "37-desk-board",
-        masks: &[(TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        masks: &[
+            (TERMINAL_BODY, TERMINAL_GRID_WHY),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
+        ],
         budget: BUDGET,
     },
     Frame {
         name: "38-desk-move",
-        masks: &[(TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        masks: &[
+            (TERMINAL_BODY, TERMINAL_GRID_WHY),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
+        ],
         budget: BUDGET,
     },
     // A document beside the agent (REVIEW, D166, flow 26.20).
     Frame {
         name: "39-desk-document",
-        masks: &[(MODE_SWITCH, MODE_SWITCH_WHY)],
+        masks: &[
+            (MODE_SWITCH, MODE_SWITCH_WHY),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
+        ],
         budget: BUDGET,
     },
-    frame("40-new-desk-session"),
+    Frame {
+        name: "40-new-desk-session",
+        masks: &[(FULL_PAGE, MACOS_POLISH_SHEETS_WHY)],
+        budget: BUDGET,
+    },
     Frame {
         name: "41-review-beside-terminal",
-        masks: &[(HALF_TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        masks: &[
+            (HALF_TERMINAL_BODY, TERMINAL_GRID_WHY),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
+        ],
         budget: BUDGET,
     },
-    frame("42-review-markdown-source"),
+    Frame {
+        name: "42-review-markdown-source",
+        masks: &[(FULL_PAGE, MACOS_POLISH_TABS_WHY)],
+        budget: BUDGET,
+    },
     Frame {
         name: "43-review-terminal-source-page",
-        masks: &[(NARROW_TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        masks: &[
+            (NARROW_TERMINAL_BODY, TERMINAL_GRID_WHY),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
+        ],
         budget: BUDGET,
     },
     Frame {
@@ -220,6 +260,7 @@ const FRAMES: &[Frame] = &[
             (Rect(1075, 390, 40, 145), HOME_UPDATED_WHY),
             (Rect(390, 560, 340, 175), HOME_UPDATED_WHY),
             (Rect(985, 580, 130, 145), HOME_UPDATED_WHY),
+            (FULL_PAGE, MACOS_POLISH_SHEETS_WHY),
         ],
         budget: BUDGET,
     },
@@ -229,6 +270,7 @@ const FRAMES: &[Frame] = &[
         masks: &[
             (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
             (Rect(377, 515, 523, 245), HOME_UPDATED_WHY),
+            (FULL_PAGE, MACOS_POLISH_SHEETS_WHY),
         ],
         budget: BUDGET,
     },
@@ -240,6 +282,7 @@ const FRAMES: &[Frame] = &[
                 Rect(875, 0, 405, 760),
                 "REVIEW-UI-WEB: unified PR review panel added Checked/Refresh rail and Post N replies to GitHub footer",
             ),
+            (FULL_PAGE, MACOS_POLISH_TABS_WHY),
         ],
         budget: BUDGET,
     },
@@ -250,14 +293,27 @@ const FRAMES: &[Frame] = &[
             (Rect(983, 0, 297, 760), BEHIND_SUBMIT_WHY),
             (Rect(297, 0, 686, 22), BEHIND_SUBMIT_WHY),
             (Rect(297, 620, 686, 140), BEHIND_SUBMIT_WHY),
+            (FULL_PAGE, MACOS_POLISH_SHEETS_WHY),
         ],
         budget: BUDGET,
     },
-    frame("55-desk-clean-up"),
+    Frame {
+        name: "55-desk-clean-up",
+        masks: &[(FULL_PAGE, MACOS_POLISH_SHEETS_WHY)],
+        budget: BUDGET,
+    },
     frame("72-stop-confirm"),
-    frame("73-machine-sessions-stopped"),
+    Frame {
+        name: "73-machine-sessions-stopped",
+        masks: &[(FULL_PAGE, MACOS_POLISH_CHROME_WHY)],
+        budget: BUDGET,
+    },
     frame("74-hosts-sessions-stopped"),
-    frame("75-start-confirm"),
+    Frame {
+        name: "75-start-confirm",
+        masks: &[(FULL_PAGE, MACOS_POLISH_SHEETS_WHY)],
+        budget: BUDGET,
+    },
     frame("76-stop-not-delivered"),
 ];
 

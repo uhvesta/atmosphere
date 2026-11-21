@@ -31,8 +31,8 @@ impl Overlays {
             });
         }
         let placeholder = sheet_state.item.as_ref().map_or_else(
-            || "Optional. Typed into the agent once it starts.".into(),
-            |id| format!("Optional. Typed into the agent once it starts, e.g. “Work on {id}”."),
+            || "Optional. Sent to the agent on start.".into(),
+            |id| format!("Optional. Sent on start, e.g. “Work on {id}”."),
         );
         if self.first_message_placeholder != placeholder {
             self.first_message_placeholder = placeholder.clone();
@@ -62,11 +62,13 @@ impl Overlays {
                 .flex_shrink_0()
                 .flex()
                 .justify_end()
+                .pt(px(4.))
                 .text_color(rgb(look.secondary))
                 .child(text.to_owned())
         };
         let form_row = |text: &str, value: AnyElement| {
             row()
+                .items_start()
                 .gap(px(12.))
                 .child(label(text))
                 .child(div().flex_1().min_w_0().child(value))
@@ -115,17 +117,17 @@ impl Overlays {
             .id("new-session")
             .role(Role::Dialog)
             .aria_label("New session")
-            .w(px(560.))
+            .w(px(596.))
             .max_w_full()
             .max_h(relative(0.85))
             .overflow_y_scroll()
             .gap(px(12.))
-            .p(px(20.))
+            .p(px(22.))
             .rounded(px(12.))
             .bg(rgb(look.card))
-            .border_1()
-            .border_color(rgb(look.line))
-            .shadow_lg()
+            .border(px(0.5))
+            .border_color(look.hairline())
+            .shadow(humata2_ui_core::theme::shadow_sheet(look))
             .text_size(px(12.5))
             .text_color(rgb(look.text))
             .test_support()
@@ -202,7 +204,11 @@ impl Overlays {
                     .text_size(px(11.5))
                     .rounded(px(5.))
                     .when(sheet_state.agent == agent, |x| {
-                        x.bg(rgb(look.card)).shadow_sm()
+                        x.bg(rgb(look.card))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .border_1()
+                            .border_color(look.control_border)
+                            .shadow_xs()
                     })
                     .cursor_pointer()
                     .child(name)
@@ -221,9 +227,8 @@ impl Overlays {
                     .child("An agent's own TUI, with its own defaults, or a plain shell"),
             );
         content = content.child(form_row("Runs", runs.into_any_element()));
-        // Frame 31 tops "11 GB free" with the picker; it isn't centred.
+        // Center the free-space note vertically with the machine picker button.
         let machine_picker = row()
-            .items_start()
             .gap(px(8.))
             .child(
                 popup(

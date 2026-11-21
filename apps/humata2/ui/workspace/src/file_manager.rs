@@ -143,7 +143,7 @@ fn line(
     active: bool,
     stale: bool,
     look: Look,
-    on_down: Option<Box<dyn Fn(&MouseDownEvent, &mut App)>>,
+    on_click: Option<Box<dyn Fn(&ClickEvent, &mut App)>>,
     on_menu: Option<Box<dyn Fn(&MouseDownEvent, &mut App)>>,
 ) -> ObservedElement<Stateful<Div>> {
     let (text, secondary) = if stale {
@@ -154,7 +154,7 @@ fn line(
         (look.text, look.secondary)
     };
     let mut line = row()
-        .id(SharedString::from(id))
+        .id(SharedString::from(id.clone()))
         .role(Role::ListItem)
         .aria_label(label)
         .aria_selected(on)
@@ -166,15 +166,18 @@ fn line(
         .text_size(px(12.5))
         .when(on && !stale, |x| x.bg(rgb(if active { look.selection } else { look.fill })))
         .child(humata2_ui_core::chrome::icon(glyph, secondary, 12.))
-        .child(
+        .child(humata2_ui_core::full_text::full_text(
             div()
+                .id(SharedString::from(format!("{id}-name")))
                 .flex_1()
                 .min_w_0()
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .text_color(rgb(text))
-                .child(name),
-        )
+                .child(name.clone()),
+            name,
+        ))
         .child(
             div()
                 .w(px(SIZE_W))
@@ -195,10 +198,10 @@ fn line(
                 .text_color(rgb(secondary))
                 .child(when),
         );
-    if let Some(on_down) = on_down {
+    if let Some(on_click) = on_click {
         line = line
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| on_down(event, cx));
+            .on_click(move |event, _, cx| on_click(event, cx));
     }
     // PL-10: a right click opens the row's menu.
     if let Some(on_menu) = on_menu {
@@ -286,17 +289,19 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
         .border_b_1()
         .border_color(rgb(look.line))
         .child(popup)
-        .child(
+        .child(humata2_ui_core::full_text::full_text(
             div()
                 .id(SharedString::from(format!("files-path {tag}")))
                 .flex_1()
                 .min_w_0()
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .text_size(px(12.5))
                 .text_color(rgb(look.secondary))
-                .child(path),
-        );
+                .child(path.clone()),
+            path,
+        ));
 
     let mut rows = col().flex_1().min_h_0();
     if plan.sweep {
@@ -353,10 +358,10 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
             stale,
             look,
             (!stale).then(|| {
-                Box::new(move |_: &MouseDownEvent, cx: &mut App| {
+                Box::new(move |_: &ClickEvent, cx: &mut App| {
                     ui2.send(AppAction::Files(A::Activate(side)), cx);
                     ui2.send(AppAction::Files(A::Up(side)), cx);
-                }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
+                }) as Box<dyn Fn(&ClickEvent, &mut App)>
             }),
             None,
         ));
@@ -388,20 +393,20 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
             stale,
             look,
             (!stale).then(|| {
-                Box::new(move |event: &MouseDownEvent, cx: &mut App| {
+                Box::new(move |event: &ClickEvent, cx: &mut App| {
                     ui2.send(AppAction::Files(A::Activate(side)), cx);
                     ui2.send(
                         AppAction::Files(A::Select(
                             side,
                             name.clone(),
-                            event.modifiers.secondary(cx) || event.modifiers.shift,
+                            event.modifiers().secondary(cx) || event.modifiers().shift,
                         )),
                         cx,
                     );
-                    if is_folder && event.click_count == 2 {
+                    if is_folder && event.click_count() == 2 {
                         ui2.send(AppAction::Files(A::OpenFolder(side, name.clone())), cx);
                     }
-                }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
+                }) as Box<dyn Fn(&ClickEvent, &mut App)>
             }),
             Some({
                 let ui = ui.clone();
@@ -715,7 +720,10 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 let initial = initial.clone();
-                input.update(cx, |input, cx| input.set_value(initial, window, cx));
+                input.update(cx, |input, cx| {
+                    input.set_value(initial, window, cx);
+                    input.focus(window, cx);
+                });
                 ui.send(AppAction::Files(action.clone()), cx);
             })
     };
@@ -729,6 +737,7 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
 
     let trash = from.machine.clone().map(|machine| {
         let ui = ui.clone();
+        let online = state.is_online(&machine);
         let label = format!("Trash on {}", state.machine_name(&machine));
         row()
             .gap(px(6.))
@@ -739,6 +748,7 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
                     .h(px(24.))
                     .label(label)
                     .text_color(rgb(look.secondary))
+                    .disabled(!online)
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         ui.send(AppAction::Files(A::OpenTrash(machine.clone())), cx);
@@ -791,15 +801,100 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
             )
             .disabled(!picked),
         )
-        .child(button(ui, "files-delete", "Delete", AppAction::Files(A::Delete), look).disabled(!picked))
+        .child(DeleteButton {
+            ui: ui.clone(),
+            picked,
+            key: (
+                state.active,
+                from.folder.clone(),
+                from.selected.clone(),
+                state.error.clone(),
+            ),
+            look,
+        })
         .child(div().flex_1())
         .children(trash)
         .children(send_menu(ui, state, can_transfer, look))
 }
 
+type DeleteKey = (Side, Option<humata2_clients::Folder>, Vec<String>, Option<String>);
+
+#[derive(Default)]
+struct DeleteGuard {
+    pending: Option<DeleteKey>,
+}
+
+/// The Delete action button with an in-flight busy guard so double-clicking
+/// does not fire duplicate concurrent delete RPCs.
+#[derive(IntoElement)]
+struct DeleteButton {
+    ui: Rc<Ui>,
+    picked: bool,
+    key: DeleteKey,
+    look: Look,
+}
+
+impl RenderOnce for DeleteButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let guard = window.use_keyed_state("files-delete-guard", cx, |_, _| DeleteGuard::default());
+        let busy = guard.update(cx, |guard, _| {
+            if guard.pending.as_ref() != Some(&self.key) {
+                guard.pending = None;
+            }
+            guard.pending.is_some()
+        });
+        let ui = self.ui;
+        let key = self.key;
+        Button::new("files-delete")
+            .small()
+            .h(px(24.))
+            .px(px(11.))
+            .label("Delete")
+            .bg(rgb(self.look.fill))
+            .text_color(rgb(self.look.text))
+            .disabled(!self.picked || busy)
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let already_busy = guard.update(cx, |guard, _| {
+                    if guard.pending.as_ref() == Some(&key) {
+                        true
+                    } else {
+                        guard.pending = Some(key.clone());
+                        false
+                    }
+                });
+                if !already_busy {
+                    ui.send(AppAction::Files(A::Delete), cx);
+                }
+            })
+    }
+}
+
+/// Focuses the name input once when the name prompt mounts, even if opened
+/// outside the action bar buttons.
+#[derive(IntoElement)]
+struct FocusNameOnOpen {
+    input: Entity<InputState>,
+}
+
+impl RenderOnce for FocusNameOnOpen {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let input = self.input;
+        window.use_keyed_state("files-name-prompt-focus", cx, move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+        div()
+    }
+}
+
 /// The name prompt: a small centred sheet over the page, shown while
 /// `state.naming` is open. `name` is the shell-owned input.
-fn name_prompt(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: Look) -> Option<Div> {
+fn name_prompt(
+    ui: &Rc<Ui>,
+    state: &FilesState,
+    name: &Entity<InputState>,
+    look: Look,
+) -> Option<Stateful<Div>> {
     let naming = state.naming.as_ref()?;
     let (title, confirm) = match naming.kind {
         NamingKind::NewFolder => ("New folder".to_owned(), "Create"),
@@ -822,6 +917,9 @@ fn name_prompt(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look:
                 on_enter(cx);
             }
         })
+        .child(FocusNameOnOpen {
+            input: name.clone(),
+        })
         .child(
             div()
                 .text_size(px(15.))
@@ -842,6 +940,9 @@ fn name_prompt(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look:
         );
     }
     Some(scrim(
+        ui,
+        "files-name-scrim",
+        AppAction::Files(A::CancelName),
         prompt.child(
             row()
                 .justify_end()
@@ -887,25 +988,66 @@ fn sheet(id: &'static str, label: &'static str, look: Look) -> ObservedElement<S
         .border_1()
         .border_color(rgb(look.line))
         .shadow_lg()
+        .occlude()
+        .on_click(|_, _, cx| cx.stop_propagation())
 }
 
-fn scrim(sheet: impl IntoElement) -> Div {
+fn scrim(
+    ui: &Rc<Ui>,
+    id: &'static str,
+    dismiss: AppAction,
+    sheet: impl IntoElement,
+) -> Stateful<Div> {
+    let ui = ui.clone();
     div()
+        .id(id)
         .absolute()
         .inset_0()
         .flex()
         .items_center()
         .justify_center()
         .bg(rgba(0x0000_0066))
+        .occlude()
+        .on_click(move |_, _, cx| {
+            ui.send(dismiss.clone(), cx);
+        })
         .child(sheet)
 }
 
-fn trash_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Div> {
+fn trash_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Stateful<Div>> {
     let trash = state.trash.as_ref()?;
     let machine = state.machine_name(&trash.machine);
     let mut list = col().gap(px(2.));
     match &trash.listing {
-        None => list = list.child(dim(look, "Reading the trash…")),
+        None => {
+            if let Some(error) = &state.error {
+                list = list.child(
+                    col()
+                        .id("files-trash-error")
+                        .role(Role::Alert)
+                        .aria_label(error.clone())
+                        .test_support()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(RED))
+                                .child(error.clone()),
+                        )
+                        .child(
+                            row().child(button(
+                                ui,
+                                "files-trash-retry",
+                                "Try again",
+                                AppAction::Files(A::OpenTrash(trash.machine.clone())),
+                                look,
+                            )),
+                        ),
+                );
+            } else {
+                list = list.child(dim(look, "Reading the trash…"));
+            }
+        }
         Some(listing) if listing.items.is_empty() => {
             list = list.child(dim(look, "The trash is empty."));
         }
@@ -1008,6 +1150,9 @@ fn trash_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Div> {
             ))
     };
     Some(scrim(
+        ui,
+        "files-trash-scrim",
+        AppAction::Files(A::CloseTrash),
         sheet("files-trash", "Trash", look)
             .child(
                 div()
@@ -1026,7 +1171,7 @@ fn trash_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Div> {
     ))
 }
 
-fn low_disk_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Div> {
+fn low_disk_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Stateful<Div>> {
     let low = state.low_disk.as_ref()?;
     let machine = state.machine_name(&low.machine);
     let mut rows = col().gap(px(2.));
@@ -1040,6 +1185,9 @@ fn low_disk_sheet(ui: &Rc<Ui>, state: &FilesState, look: Look) -> Option<Div> {
         rows = rows.child(low_row(ui, index, row_, look));
     }
     Some(scrim(
+        ui,
+        "files-low-disk-scrim",
+        AppAction::Files(A::DismissLowDisk),
         sheet("files-low-disk", "Not enough room", look)
             .child(
                 div()

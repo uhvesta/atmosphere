@@ -22,6 +22,22 @@ use crate::{
     widgets::{self, col, row},
 };
 
+fn hover_fill(look: Look) -> Rgba {
+    if look.content != 0xffffff {
+        rgba(0xffffff0f)
+    } else {
+        rgba(0x0000000a)
+    }
+}
+
+fn active_fill(look: Look) -> Rgba {
+    if look.content != 0xffffff {
+        rgba(0xffffff1a)
+    } else {
+        rgba(0x00000014)
+    }
+}
+
 fn send(ui: &Rc<Ui>, id: String, label: &str, action: SessionAction, look: Look) -> Stateful<Div> {
     let ui = ui.clone();
     div()
@@ -45,17 +61,28 @@ struct TabDrag {
 }
 
 impl Render for TabDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let look = Look::of(cx);
         div()
             .px(px(10.))
             .py(px(5.))
             .rounded(px(6.))
-            .bg(rgb(0x323235))
+            .bg(rgb(look.card))
+            .border_1()
+            .border_color(rgb(look.line))
+            .shadow_md()
             .text_size(px(12.))
-            .text_color(rgb(0xffffff))
+            .text_color(rgb(look.text))
             .child(self.label.clone())
     }
 }
+
+/// Height of the session tab bar in points.
+const TAB_BAR_HEIGHT: f32 = 36.;
+
+/// Maximum width of a tab's text label in points so long filenames never push
+/// the `+` button out of view.
+const TAB_LABEL_MAX_WIDTH: f32 = 180.;
 
 fn tab_row(
     ui: &Rc<Ui>,
@@ -71,7 +98,7 @@ fn tab_row(
     let focused = !split || state.session.view().is_some_and(|v| v.focused_group == group);
     row()
         .id(SharedString::from(format!("session-tabs-{group}")))
-        .h(px(32.))
+        .h(px(TAB_BAR_HEIGHT))
         .flex_shrink_0()
         .overflow_x_scroll()
         .bg(rgb(look.panel))
@@ -141,26 +168,47 @@ fn tab_row(
                 index,
                 label: name.clone(),
             };
+            let hover_bg = hover_fill(look);
+            let active_bg = active_fill(look);
+            let is_selected = index == tabs.selected;
+            let label_id = format!("{id}-label");
             row()
                 .id(SharedString::from(id))
+                .relative()
                 .role(Role::Tab)
                 .aria_label(name.clone())
-                .aria_selected(index == tabs.selected)
+                .aria_selected(is_selected)
                 .h_full()
                 .flex_shrink_0()
                 .px(px(12.))
                 .gap(px(6.))
+                .cursor_pointer()
                 .border_r_1()
                 .border_color(rgb(look.line))
-                .when(index == tabs.selected, |t| t.bg(rgb(look.term)))
+                .when(is_selected, |t| {
+                    t.bg(rgb(look.term)).font_weight(FontWeight::MEDIUM)
+                })
+                .when(!is_selected, |t| {
+                    t.hover(move |s| s.bg(hover_bg))
+                        .active(move |s| s.bg(active_bg))
+                })
                 .text_size(px(12.))
-                .text_color(rgb(if index == tabs.selected && focused {
+                .text_color(rgb(if is_selected && focused {
                     look.text
                 } else {
                     look.secondary
                 }))
                 .child(glyph)
-                .child(name)
+                .child(crate::full_text::full_text(
+                    div()
+                        .id(SharedString::from(label_id))
+                        .max_w(px(TAB_LABEL_MAX_WIDTH))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(name.clone()),
+                    name,
+                ))
                 .child({
                     // D784: a terminal's close asks Keep running, Stop or
                     // End for good; any other tab just closes.
@@ -170,8 +218,27 @@ fn tab_row(
                         SessionAction::CloseTab { group, index }
                     };
                     send(ui, format!("close-tab-{group}-{index}"), &close_label, close, look)
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .rounded(px(5.))
+                        .hover(move |s| s.bg(hover_bg))
+                        .active(move |s| s.bg(active_bg))
                         .child(chrome::icon(IconName::X, look.tertiary, 12.))
                         .test_support()
+                })
+                .when(is_selected, |t| {
+                    t.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(2.))
+                            .bg(rgb(if focused { look.accent } else { look.tertiary })),
+                    )
                 })
                 .on_click(move |_, _, cx| {
                     ui2.send(
@@ -182,7 +249,9 @@ fn tab_row(
                 .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                 .test_support()
         }))
-        .child(
+        .child({
+            let hover_bg = hover_fill(look);
+            let active_bg = active_fill(look);
             send(
                 ui,
                 format!("add-tab-{group}"),
@@ -194,13 +263,18 @@ fn tab_row(
                 }),
                 look,
             )
-            .px(px(10.))
-            .h_full()
+            .size(px(26.))
+            .mx(px(4.))
             .flex()
             .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .rounded(px(6.))
+            .hover(move |s| s.bg(hover_bg))
+            .active(move |s| s.bg(active_bg))
             .child(chrome::icon(IconName::Plus, look.secondary, 12.))
-            .test_support(),
-        )
+            .test_support()
+        })
         .child(div().flex_1())
         .children(humata2_ui_changes::document_tab::mode_switch(ui, state, look, group, tabs))
         .when(!split, |bar| {
@@ -472,8 +546,10 @@ fn menu(
         .collect();
     let header_caption = format!("{} of {} tabs", summary.total_open, summary.total_cap);
     humata2_ui_core::action_menu::card("new-terminal-menu", 280., look)
-        .top(px(32.))
-        .left(px(8.))
+        .top(px(TAB_BAR_HEIGHT))
+        .when(group == 0, |m| m.left(px(8.)))
+        .when(group > 0, |m| m.right(px(8.)))
+        .occlude()
         .child(
             div()
                 .id("new-terminal-menu-cap")
@@ -586,10 +662,13 @@ fn menu(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn file_body(
     ui: &Rc<Ui>,
     state: &AppState,
     session: &Session,
+    group: usize,
+    index: usize,
     repo: &str,
     path: &str,
     documents: &humata2_ui_changes::document_tab::Documents,
@@ -640,10 +719,41 @@ fn file_body(
         )
         .child(match content {
             Some(Ok(_)) => unreachable!(),
-            Some(Err(error)) => div()
+            Some(Err(error)) => col()
+                .id("session-file-error")
+                .role(Role::Alert)
+                .aria_label(error.to_string())
                 .p(px(14.))
-                .child(error.to_string())
-                .test_text(error.to_string())
+                .gap(px(10.))
+                .child(
+                    div()
+                        .text_color(rgb(RED_STATUS))
+                        .child(error.to_string())
+                        .test_text(error.to_string()),
+                )
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(widgets::push_quiet(
+                            ui,
+                            "session-file-retry",
+                            "Retry",
+                            AppAction::Session(SessionAction::OpenFileAt {
+                                repo: repo.to_owned(),
+                                path: path.to_owned(),
+                                line: None,
+                            }),
+                            look,
+                        ))
+                        .child(widgets::push_quiet(
+                            ui,
+                            "session-file-dismiss",
+                            "Dismiss",
+                            AppAction::Session(SessionAction::CloseTab { group, index }),
+                            look,
+                        )),
+                )
+                .test_support()
                 .into_any_element(),
             None => div()
                 .id("file-loading")
@@ -794,7 +904,7 @@ pub fn body(
                                         .role(Role::Region)
                                         .aria_label("Drop the tab beside the terminal")
                                         .absolute()
-                                        .top(px(32.))
+                                        .top(px(TAB_BAR_HEIGHT))
                                         .right(px(0.))
                                         .bottom(px(0.))
                                         .w(px(96.))
@@ -818,7 +928,17 @@ pub fn body(
                                     .body(ui, state, session, repo, path, look)
                                     .filter(|_| is_markdown(path))
                                     .unwrap_or_else(|| {
-                                        file_body(ui, state, session, repo, path, documents, look)
+                                        file_body(
+                                            ui,
+                                            state,
+                                            session,
+                                            group,
+                                            tabs.selected,
+                                            repo,
+                                            path,
+                                            documents,
+                                            look,
+                                        )
                                     }),
                                 Some(Tab::View(id)) => {
                                     crate::view_tab::body(ui, state, session, id, look)
@@ -942,12 +1062,15 @@ pub fn body(
                                 None => div().into_any_element(),
                             })
                             .when(state.session.terminal_menu == Some(group), |g| {
-                                g.child(humata2_ui_core::action_menu::scrim(
-                                    ui,
-                                    "close-terminal-menu-scrim",
-                                    AppAction::Session(SessionAction::TerminalMenu(None)),
+                                g.child(deferred(
+                                    humata2_ui_core::action_menu::scrim(
+                                        ui,
+                                        "close-terminal-menu-scrim",
+                                        AppAction::Session(SessionAction::TerminalMenu(None)),
+                                    )
+                                    .occlude(),
                                 ))
-                                .child(menu(ui, state, session, group, look).test_support())
+                                .child(deferred(menu(ui, state, session, group, look).test_support()))
                             })
                     }),
             ),

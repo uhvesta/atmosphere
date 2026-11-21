@@ -63,8 +63,10 @@ pub struct PageContext {
 pub struct MachinePageInputs {
     name: Entity<InputState>,
     name_echo: Rc<RefCell<Option<String>>>,
+    name_synced: RefCell<String>,
     value: Entity<InputState>,
     value_echo: Rc<RefCell<Option<String>>>,
+    value_synced: RefCell<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -111,8 +113,10 @@ impl MachinePageInputs {
         Self {
             name,
             name_echo,
+            name_synced: RefCell::new(String::new()),
             value,
             value_echo,
+            value_synced: RefCell::new(String::new()),
             _subscriptions: subscriptions,
         }
     }
@@ -120,10 +124,15 @@ impl MachinePageInputs {
     fn set(
         input: &Entity<InputState>,
         echo: &Rc<RefCell<Option<String>>>,
+        last_synced: &RefCell<String>,
         text: &str,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if last_synced.borrow().as_str() == text {
+            return;
+        }
+        *last_synced.borrow_mut() = text.to_owned();
         if input.read(cx).value().as_ref() != text {
             *echo.borrow_mut() = Some(text.to_owned());
             let text = text.to_owned();
@@ -308,8 +317,8 @@ pub fn machine_page(
         .variable
         .as_ref()
         .map_or(("", ""), |edit| (edit.name.as_str(), edit.value.as_str()));
-    MachinePageInputs::set(&inputs.name, &inputs.name_echo, variable_name, window, cx);
-    MachinePageInputs::set(&inputs.value, &inputs.value_echo, variable_value, window, cx);
+    MachinePageInputs::set(&inputs.name, &inputs.name_echo, &inputs.name_synced, variable_name, window, cx);
+    MachinePageInputs::set(&inputs.value, &inputs.value_echo, &inputs.value_synced, variable_value, window, cx);
 
     let mut page = col()
         .id("machine-page")
@@ -325,8 +334,9 @@ pub fn machine_page(
         Tab::Overview => overview(ui, wrap, state, context, inputs, look)
             .test_support()
             .into_any_element(),
-        // The Storage tab's body is drawn by another milestone (frame 60).
-        Tab::Storage => div().id("machine-storage").flex_1().into_any_element(),
+        Tab::Storage => storage(ui, wrap, state, context, look)
+            .test_support()
+            .into_any_element(),
     };
     page = page.child(body);
     // MASSDELETE (D875): the bottom bar while select mode is on this page.
@@ -469,59 +479,55 @@ fn header(
                             look.secondary,
                         ))
                         .when(state.menu_open, |menu| {
-                            menu.child(crate::action_menu::scrim(
+                            let show_stop = state.detail.is_some()
+                                && state.stop().is_none()
+                                && state.changing.is_none();
+                            menu.child(deferred(crate::action_menu::scrim(
                                 ui,
                                 "machine-menu-scrim",
                                 wrap(MachinePageAction::CloseMenu),
-                            ))
-                            .child(
+                            )))
+                            .child(deferred(crate::action_menu::entrance(
+                                "machine-menu-entrance",
                                 crate::action_menu::card("machine-menu-card", 180., look)
                                     .top(px(26.))
                                     .right(px(0.))
-                                    .child(
-                                        widgets::ghost_in(
-                                            look,
-                                            ui,
-                                            "machine-sync-skills",
-                                            "Sync skills",
-                                            wrap(MachinePageAction::PickMenu(
-                                                humata2_hosts::page::MenuPick::SyncSkills,
-                                            )),
-                                        )
-                                        .w_full(),
-                                    )
+                                    .child(crate::action_menu::item(
+                                        ui,
+                                        "machine-sync-skills",
+                                        "Sync skills",
+                                        wrap(MachinePageAction::PickMenu(MenuPick::SyncSkills)),
+                                        look,
+                                    ))
                                     // While the link-down row shows, Reconnect now lives here (HO-5).
-                                    // Offered while the sessions run (D260).
-                                    .children(
-                                        (state.detail.is_some() && state.stop().is_none()).then(|| {
-                                            widgets::ghost_in(
+                                    .children((context.online || state.detail.is_none()).then(
+                                        || {
+                                            crate::action_menu::item(
+                                                ui,
+                                                "machine-reconnect-menu",
+                                                "Reconnect now",
+                                                wrap(MachinePageAction::PickMenu(
+                                                    MenuPick::ReconnectNow,
+                                                )),
                                                 look,
+                                            )
+                                        },
+                                    ))
+                                    // Offered while the sessions run (D260).
+                                    .when(show_stop, |card| {
+                                        card.child(crate::action_menu::separator(look)).child(
+                                            crate::action_menu::item_destructive(
                                                 ui,
                                                 "machine-stop-sessions",
                                                 "Stop all sessions\u{2026}",
                                                 wrap(MachinePageAction::PickMenu(
                                                     MenuPick::StopSessions,
                                                 )),
-                                            )
-                                            .w_full()
-                                            .disabled(state.changing.is_some())
-                                        }),
-                                    )
-                                    .children((context.online || state.detail.is_none()).then(
-                                        || {
-                                            widgets::ghost_in(
                                                 look,
-                                                ui,
-                                                "machine-reconnect-menu",
-                                                "Reconnect now",
-                                                wrap(MachinePageAction::PickMenu(
-                                                    humata2_hosts::page::MenuPick::ReconnectNow,
-                                                )),
-                                            )
-                                            .w_full()
-                                        },
-                                    )),
-                            )
+                                            ),
+                                        )
+                                    }),
+                            )))
                         }),
                 ),
         )
@@ -569,6 +575,168 @@ fn tabs(ui: &Rc<Ui>, wrap: Wrap, state: &MachinePageState, look: Look) -> Statef
                     .test_support()
             },
         ))
+}
+
+fn storage(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    state: &MachinePageState,
+    context: &PageContext,
+    look: Look,
+) -> Stateful<Div> {
+    let mut page = col()
+        .id("machine-storage")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .gap(px(16.))
+        .p(px(20.))
+        .text_size(px(12.5));
+    if sweep_without_detail(state.loading, state.detail.is_some()) {
+        return page.child(loading_sweep(look));
+    }
+    let Some(detail) = &state.detail else {
+        return page.child(
+            card(look)
+                .p(px(14.))
+                .gap(px(10.))
+                .child(dim(
+                    look,
+                    "Storage details will appear once the machine connects.",
+                ))
+                .child(row().child(widgets::push_quiet(
+                    ui,
+                    "machine-storage-open-files",
+                    "Open Files",
+                    AppAction::Navigate(humata2_app::Route::Files),
+                    look,
+                ))),
+        );
+    };
+    let health = &detail.health;
+    let used = health.disk_total.saturating_sub(health.disk_free);
+    let used_percent = if health.disk_total == 0 {
+        0
+    } else {
+        used * 100 / health.disk_total
+    };
+    let low = used_percent > LOW_DISK_PERCENT;
+    page = page.child(
+        col()
+            .gap(px(6.))
+            .child(label(look, "Disk"))
+            .child(
+                card(look)
+                    .p(px(14.))
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .id("machine-storage-disk")
+                            .role(Role::Status)
+                            .aria_label(format!("Disk {used_percent}% used"))
+                            .h(px(6.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(rgb(look.fill))
+                            .child(
+                                div()
+                                    .w(relative(used_percent.min(100) as f32 / 100.))
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(rgb(if low { RED } else { look.accent })),
+                            )
+                            .test_support(),
+                    )
+                    .child(
+                        row()
+                            .gap(px(12.))
+                            .items_center()
+                            .child(
+                                col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(format!(
+                                        "{} GB free of {} GB ({used_percent}% used)",
+                                        whole_gigabytes(health.disk_free),
+                                        whole_gigabytes(health.disk_total)
+                                    ))
+                                    .children(low.then(|| {
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(rgb(ORANGE))
+                                            .child("New clones stop at 5 GB.")
+                                    })),
+                            )
+                            .child(widgets::push_quiet(
+                                ui,
+                                "machine-storage-open-files",
+                                "Open Files",
+                                AppAction::Navigate(humata2_app::Route::Files),
+                                look,
+                            )),
+                    ),
+            ),
+    );
+    if !detail.folders.is_empty() {
+        let channel_name = |id: &humata2_clients::model::ChannelId| {
+            context
+                .channels
+                .iter()
+                .find(|channel| &channel.id == id)
+                .map_or_else(
+                    || {
+                        if id.as_str() == humata2_clients::desk::FOLDER {
+                            "Desk".to_owned()
+                        } else {
+                            id.to_string()
+                        }
+                    },
+                    |channel| format!("# {}", channel.name),
+                )
+        };
+        let mut folders = card(look).overflow_hidden();
+        for (index, folder) in detail.folders.iter().enumerate() {
+            let sessions_text = match folder.sessions {
+                0 => "no sessions".to_owned(),
+                1 => "1 session".to_owned(),
+                n => format!("{n} sessions"),
+            };
+            let channel = channel_name(&folder.channel);
+            folders = folders.child(
+                row()
+                    .id(("machine-storage-folder", index))
+                    .role(Role::ListItem)
+                    .aria_label(channel.clone())
+                    .gap(px(10.))
+                    .px(px(12.))
+                    .h(px(36.))
+                    .border_b_1()
+                    .border_color(rgb(look.line))
+                    .child(chrome::icon(IconName::FolderOpen, look.secondary, 12.))
+                    .child(div().w(px(220.)).whitespace_nowrap().child(channel))
+                    .child(div().flex_1().whitespace_nowrap().child(dim(
+                        look,
+                        format!("{sessions_text} · {}", gigabytes(folder.bytes)),
+                    )))
+                    .child(link(
+                        ui,
+                        ("machine-storage-folder-open", index),
+                        "Open in Files",
+                        wrap(MachinePageAction::OpenFolder(folder.channel.clone())),
+                        look,
+                    ))
+                    .test_support(),
+            );
+        }
+        page = page.child(
+            col()
+                .gap(px(6.))
+                .child(label(look, "Humata folders by channel"))
+                .child(folders),
+        );
+    }
+    page
 }
 
 fn overview(
@@ -992,7 +1160,7 @@ fn script_tail(look: Look, tail: &[String], color: u32) -> Div {
         .font_family(MONO)
         .text_size(px(11.))
         .text_color(rgb(color))
-        .children(tail.iter().map(|line| div().whitespace_nowrap().overflow_hidden().child(line.clone())))
+        .children(tail.iter().map(|line| div().min_w_0().child(line.clone())))
         .when(tail.is_empty(), |x| x.child(dim(look, "No output.")))
 }
 

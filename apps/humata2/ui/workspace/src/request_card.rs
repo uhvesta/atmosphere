@@ -222,10 +222,12 @@ pub fn requester(state: &AppState, request: &Request, tool: bool) -> String {
     line
 }
 
-/// What the reply box keeps between frames: the text input, and the
-/// subscription that turns typing and Enter into Inbox actions.
+/// What the reply box keeps between frames: the text input, the last draft
+/// synced from the store, and the subscription that turns typing and Enter into
+/// Inbox actions.
 struct ReplyInput {
     input: Entity<InputState>,
+    last_synced: String,
     _subscription: Subscription,
 }
 
@@ -264,13 +266,22 @@ impl RenderOnce for ReplyBox {
                     InputEvent::Focus | InputEvent::Blur => {}
                 },
             );
-            ReplyInput { input, _subscription }
+            ReplyInput {
+                input,
+                last_synced: String::new(),
+                _subscription,
+            }
         });
         let input = held.read(cx).input.clone();
-        // The store owns the draft: show it when it differs from the field.
-        if input.read(cx).value().as_ref() != self.draft.as_str() {
+        // The store owns the draft: show it only when the store's draft changed
+        // since we last synced, so background redraws do not wipe in-flight
+        // keystrokes or reset the caret.
+        if held.read(cx).last_synced != self.draft {
             let draft = self.draft.clone();
-            input.update(cx, |input, cx| input.set_value(draft, window, cx));
+            if input.read(cx).value().as_ref() != draft.as_str() {
+                input.update(cx, |input, cx| input.set_value(draft.clone(), window, cx));
+            }
+            held.update(cx, |held, _| held.last_synced = draft);
         }
         div().id(key).w_full().relative().child(
             Input::new(&input)

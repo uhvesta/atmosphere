@@ -1,5 +1,6 @@
 //! The toast stack at the bottom of the screen.
 
+use humata2_ui_core::action_menu::{ENTRANCE_MS, ease_out_quint};
 use humata2_ui_core::bridge::Ui;
 use humata2_ui_core::widgets::{col, row};
 use crate::{chrome, theme::Look};
@@ -9,6 +10,7 @@ use humata2_app::{AppAction, Toast, ToastAction};
 use humata2_clients::model::{SessionId, Status};
 use humata2_session::CloseThen;
 use std::rc::Rc;
+use std::time::Duration;
 
 /// What a toast draws before its text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +63,7 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
         .items_center()
         .gap(px(8.))
         .children(toasts.into_iter().map(|toast| {
-            row()
+            let el = row()
                 .id(("toast", toast.id as usize))
                 .role(Role::Status)
                 .aria_label(toast.text.clone())
@@ -117,30 +119,39 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                             .child(label),
                     )
                 })
-                .when(toast.action.is_none(), |x| {
+                .child({
                     let dismiss = AppAction::DismissToast(toast.id);
                     let ui = ui.clone();
-                    x.child(
-                        row()
-                            .id(("toast-dismiss", toast.id as usize))
-                            .role(Role::Button)
-                            .aria_label("Dismiss")
-                            .test_support()
-                            .size(px(20.))
-                            .rounded(px(5.))
-                            .justify_center()
-                            .flex_shrink_0()
-                            .cursor_pointer()
-                            .text_color(rgb(0xd8d8dc))
-                            .hover(|x| x.bg(rgba(0xffff_ff1a)))
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                ui.send(dismiss.clone(), cx);
-                            })
-                            .child(chrome::icon(IconName::X, 0xd8d8dc, 12.)),
-                    )
+                    row()
+                        .id(("toast-dismiss", toast.id as usize))
+                        .role(Role::Button)
+                        .aria_label("Dismiss")
+                        .test_support()
+                        .size(px(20.))
+                        .rounded(px(5.))
+                        .justify_center()
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .text_color(rgb(0xd8d8dc))
+                        .hover(|x| x.bg(rgba(0xffff_ff1a)))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            ui.send(dismiss.clone(), cx);
+                        })
+                        .child(chrome::icon(IconName::X, 0xd8d8dc, 12.))
                 })
-                .test_support()
+                .test_support();
+            if crate::chrome::native_traffic_lights() {
+                el.with_animation(
+                    ("toast-in", toast.id as usize),
+                    Animation::new(Duration::from_millis(ENTRANCE_MS + 10))
+                        .with_easing(ease_out_quint),
+                    |el, delta| el.opacity(delta).mb(px(-8. * (1. - delta))),
+                )
+                .into_any_element()
+            } else {
+                el.into_any_element()
+            }
         }))
 }
 

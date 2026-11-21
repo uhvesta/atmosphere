@@ -6,7 +6,7 @@ use crate::{
     widgets::{col, row},
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{Sizable as _, button::Button, input::Input};
+use gpui_kit::component::{Sizable as _, button::Button, input::Input, scroll::ScrollableElement as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::daemon::{
@@ -52,8 +52,9 @@ fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
             .items_center()
             .child(content)
     };
-    let mut rows = card(look);
+    let mut list = col().gap(px(12.));
     for switch in switches {
+        let mut rows = card(look);
         let id = &switch.kind;
         // A custom kind (D782) shows the name its definition gives.
         let name = switch
@@ -118,8 +119,9 @@ fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 look,
             )));
         }
+        list = list.child(rows);
     }
-    block = block.child(rows);
+    block = block.child(list);
     if let Some(error) = &state.settings.error {
         block = block.child(
             div()
@@ -487,7 +489,13 @@ fn segmented(
                 .py(px(2.))
                 .rounded(px(5.))
                 .text_size(px(11.5))
-                .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
+                .when(on, |x| {
+                    x.bg(rgb(look.card))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .border(px(0.5))
+                        .border_color(look.hairline())
+                        .shadow_xs()
+                })
                 .child(name)
                 .cursor_pointer()
                 .on_click(move |_, _, cx| {
@@ -726,12 +734,16 @@ pub fn page(
                     .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::Section(section)), cx))
             }),
         );
+    let scroll = window
+        .use_keyed_state("settings-content-scroll", cx, |_, _| ScrollHandle::new())
+        .read(cx)
+        .clone();
     let mut body = col()
         .id("settings-content")
-        .flex_1()
+        .size_full()
         .min_w_0()
-        .h_full()
         .overflow_y_scroll()
+        .track_scroll(&scroll)
         .p(px(20.))
         .gap(px(14.));
     match state.settings.section {
@@ -760,7 +772,13 @@ pub fn page(
                             .py(px(2.))
                             .rounded(px(5.))
                             .text_size(px(11.5))
-                            .when(prefs.theme == theme, |x| x.bg(rgb(look.card)).shadow_sm())
+                            .when(prefs.theme == theme, |x| {
+                                x.bg(rgb(look.card))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .border(px(0.5))
+                                    .border_color(look.hairline())
+                                    .shadow_xs()
+                            })
                             .child(name)
                             .cursor_pointer()
                             .on_click(move |_, _, cx| {
@@ -788,7 +806,13 @@ pub fn page(
                                 .py(px(2.))
                                 .rounded(px(5.))
                                 .text_size(px(11.5))
-                                .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
+                                .when(on, |x| {
+                    x.bg(rgb(look.card))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .border(px(0.5))
+                        .border_color(look.hairline())
+                        .shadow_xs()
+                })
                                 .child(name)
                                 .cursor_pointer()
                                 .on_click(move |_, _, cx| {
@@ -1447,16 +1471,32 @@ pub fn page(
         .text_size(px(12.5))
         .text_color(rgb(look.text))
         .child(nav)
-        .child(body.test_support())
+        .child({
+            let pane = div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(body.test_support());
+            if chrome::native_traffic_lights() {
+                pane.vertical_scrollbar(&scroll).into_any_element()
+            } else {
+                pane.into_any_element()
+            }
+        })
 }
 
-pub fn toolbar(look: Look) -> Div {
-    row()
-        .h(px(52.))
-        .flex_shrink_0()
-        .px(px(20.))
-        .border_b_1()
-        .border_color(rgb(look.line))
+pub fn toolbar(collapsed: bool, look: Look) -> Div {
+    chrome::titlebar_drag(
+        row()
+            .h(px(52.))
+            .flex_shrink_0()
+            .px(px(20.))
+            .gap(px(10.))
+            .border_b_1()
+            .border_color(rgb(look.line)),
+    )
+        .when(collapsed, |bar| bar.child(chrome::lights()))
         .child(
             div()
                 .text_size(px(15.))

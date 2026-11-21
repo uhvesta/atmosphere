@@ -198,16 +198,36 @@ pub fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: 
                 .iter()
                 .map(|line| secondary(look, line.clone())),
         )
-        .child(
-            Button::new("session-channel-rules")
+        .child({
+            let has_channel = state.workspace.channel(&session.channel).is_some();
+            let click_ui = ui.clone();
+            let channel_id = session.channel.clone();
+            let btn = Button::new("session-channel-rules")
                 .accessibility_label("Channel rules")
                 .child(text("Channel rules").w_full().text_left())
                 .ghost()
                 .w_full()
                 .small()
-                .text_color(rgb(look.accent))
-                .disabled(true),
-        );
+                .text_color(rgb(if has_channel {
+                    look.accent
+                } else {
+                    look.tertiary
+                }))
+                .disabled(!has_channel);
+            if has_channel {
+                btn.cursor_pointer().on_click(move |_, _, cx| {
+                    click_ui.send(AppAction::Navigate(Route::Channel(channel_id.clone())), cx);
+                    click_ui.send(
+                        AppAction::Channel(humata2_app::channel::Action::Tab(
+                            humata2_app::channel::Tab::Access,
+                        )),
+                        cx,
+                    );
+                })
+            } else {
+                btn.tooltip("No channel rules for Desk sessions")
+            }
+        });
     let review = session
         .pull_request_review
         .then(|| review_switches(ui, state, look));

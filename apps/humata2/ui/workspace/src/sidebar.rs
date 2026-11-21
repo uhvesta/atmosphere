@@ -10,6 +10,7 @@ use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, AppState, PaneAction, Route};
@@ -23,6 +24,72 @@ use humata2_ui_core::bridge::{Part, Ui};
 use humata2_ui_core::keys;
 use humata2_ui_core::theme;
 use humata2_ui_core::widgets::{self, row};
+
+/// Subtle hover fill for interactive sidebar rows and controls.
+fn hover_fill(look: Look) -> Rgba {
+    if look.content != 0xffffff {
+        rgba(0xffffff0f)
+    } else {
+        rgba(0x0000000a)
+    }
+}
+
+/// Distinct active/press fill for interactive sidebar rows and controls.
+fn active_fill(look: Look) -> Rgba {
+    if look.content != 0xffffff {
+        rgba(0xffffff1a)
+    } else {
+        rgba(0x00000014)
+    }
+}
+
+/// Semi-transparent sidebar tint so macOS `NSVisualEffectView` blur shows
+/// through cleanly.
+fn sidebar_tint(look: Look) -> Rgba {
+    rgba((look.sidebar << 8) | 0xe0)
+}
+
+/// Maximum visual nesting depth before fork indentation is clamped so deep
+/// trees never collapse labels to 0 px.
+const MAX_VISUAL_DEPTH: u16 = 6;
+
+/// Left padding (in points) for a session row at `depth`.
+fn session_indent(depth: u16) -> f32 {
+    if depth == 0 {
+        8.
+    } else {
+        let clamped = depth.min(MAX_VISUAL_DEPTH);
+        let fork = depth > 1;
+        18. + f32::from(clamped - 1) * 16. - if fork { 19. } else { 0. }
+    }
+}
+
+/// Extra left margin (in points) for a fork icon in mass-delete select mode.
+fn select_fork_indent(depth: u16) -> f32 {
+    f32::from(depth.min(MAX_VISUAL_DEPTH).saturating_sub(2)) * 14.
+}
+
+/// Clamps a context menu's `(left, top)` position to stay inside the viewport,
+/// flipping upward when the menu would extend past the bottom edge.
+fn clamp_menu_position(
+    x: f32,
+    y: f32,
+    menu_w: f32,
+    menu_h: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> (f32, f32) {
+    const MARGIN: f32 = 8.0;
+    let max_left = (viewport_w - menu_w - MARGIN).max(MARGIN);
+    let left = x.clamp(MARGIN, max_left);
+    let max_top = (viewport_h - menu_h - MARGIN).max(MARGIN);
+    let top = if y + menu_h + MARGIN > viewport_h {
+        (y - menu_h).clamp(MARGIN, max_top)
+    } else {
+        y.clamp(MARGIN, max_top)
+    };
+    (left, top)
+}
 
 /// Right-click context menu on a sidebar session row.
 #[derive(Clone)]
@@ -118,6 +185,7 @@ fn draw_row(
     index: usize,
     cursor: bool,
     current: bool,
+    window_active: bool,
     select: Option<&Snapshot>,
     visible: &Rc<Vec<SessionId>>,
     row_menu: &Entity<Option<RowMenu>>,
@@ -140,8 +208,9 @@ fn draw_row(
         .zip(session_id.as_ref())
         .is_some_and(|(snap, id)| snap.ticked(id));
     let show_current = current && !ticked;
-    let selected = if show_current { 0xffffff } else { look.text };
-    let faint = if show_current { 0xffffff } else { look.tertiary };
+    let active_current = show_current && window_active;
+    let selected = if active_current { 0xffffff } else { look.text };
+    let faint = if active_current { 0xffffff } else { look.tertiary };
     let mut body = row().gap(px(7.)).flex_1().min_w_0();
     let mut dimmed = false;
     let mut channel_select: Option<(bool, Vec<MassDeleteAction>)> = None;
@@ -185,10 +254,21 @@ fn draw_row(
             } else {
                 let fold_ui = ui.clone();
                 let key = key.clone();
+                let hover_bg = hover_fill(look);
+                let active_bg = active_fill(look);
                 div()
                     .id(("sidebar-fold", index))
-                    .size(px(12.))
+                    .size(px(22.))
+                    .ml(px(-4.))
+                    .mr(px(-3.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .flex_shrink_0()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg))
+                    .active(move |s| s.bg(active_bg))
                     .role(Role::Button)
                     .aria_label(if open { "Fold" } else { "Unfold" })
                     .child(chrome::icon(
@@ -207,15 +287,18 @@ fn draw_row(
                     .test_support()
                     .into_any_element()
             };
-            body = body.child(lead).child(
+            body = body.child(lead).child(crate::full_text::full_text(
                 div()
+                    .id(("sidebar-channel-name", index))
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .text_ellipsis()
                     .font_weight(weight)
                     .child(name.clone()),
-            );
+                name.clone(),
+            ));
             if entry.expanded != Some(true) && *sessions > 0 {
                 let channel = match &entry.key {
                     Some(RowKey::Channel(id)) => Some(id),
@@ -241,7 +324,11 @@ fn draw_row(
                         .ml(px(-2.))
                         .text_size(px(11.))
                         .font_weight(weight)
-                        .text_color(rgb(if show_current { 0xffffff } else { look.secondary }))
+                        .text_color(rgb(if active_current {
+                            0xffffff
+                        } else {
+                            look.secondary
+                        }))
                         .child(sessions.to_string()),
                 );
             }
@@ -262,7 +349,7 @@ fn draw_row(
                 barred_session = tick == Tick::Barred;
                 body = body.child(select_mode::tick_box(look, 13., tick));
                 if fork {
-                    let extra = f32::from(entry.depth.saturating_sub(2)) * 14.;
+                    let extra = select_fork_indent(entry.depth);
                     body = body.child(
                         div()
                             .ml(px(extra))
@@ -272,11 +359,7 @@ fn draw_row(
                     );
                 }
             } else {
-                indent = if entry.depth == 0 {
-                    8.
-                } else {
-                    18. + f32::from(entry.depth - 1) * 16. - if fork { 19. } else { 0. }
-                };
+                indent = session_indent(entry.depth);
                 if fork {
                     // The design sits the fork glyph 2 pt nearer the status dot than the
                     // row's gap, with the dot and title where they are.
@@ -311,26 +394,29 @@ fn draw_row(
                 } else {
                     chrome::status(*status)
                 })
-                .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    // Unread rows read semibold, and so does the selected row while
-                    // it has requests waiting (golden 15 bolds it, golden 16 doesn't).
-                    .when(*unread > 0 || (show_current && count > 0), |x| {
-                        x.font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .child(title.clone()),
-            );
+                .child(crate::full_text::full_text(
+                    div()
+                        .id(("sidebar-session-title", index))
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        // Unread rows read semibold, and so does the selected row while
+                        // it has requests waiting (golden 15 bolds it, golden 16 doesn't).
+                        .when(*unread > 0 || (show_current && count > 0), |x| {
+                            x.font_weight(FontWeight::SEMIBOLD)
+                        })
+                        .child(title.clone()),
+                    title.clone(),
+                ));
             if count > 0 {
                 body = body.child(
                     row()
                         .gap(px(2.))
                         .child(chrome::icon(
                             IconName::Inbox,
-                            if show_current { 0xffffff } else { 0xff453a },
+                            if active_current { 0xffffff } else { 0xff453a },
                             12.,
                         ))
                         .child(div().text_size(px(11.)).child(count.to_string())),
@@ -345,6 +431,10 @@ fn draw_row(
     let visible = visible.clone();
     let menu = row_menu.clone();
     let right_click_id = session_id.clone();
+    let hover_bg = hover_fill(look);
+    let active_bg = active_fill(look);
+    let clickable = !selecting
+        || (!barred_session && channel_select.as_ref().is_none_or(|(can, _)| *can));
     let mut item = div()
         .id(row_id(entry, index))
         .role(Role::TreeItem)
@@ -360,11 +450,19 @@ fn draw_row(
         .items_center()
         .text_color(rgb(selected))
         .when(ticked, |x| x.bg(select_mode::tint(look)))
-        .when(show_current, |x| x.bg(rgb(look.selection)))
+        .when(show_current, |x| {
+            x.bg(rgb(if window_active {
+                look.selection
+            } else {
+                look.fill
+            }))
+        })
         .when(cursor && !show_current && !ticked, |x| x.bg(rgb(look.fill)))
         .when(dimmed, |x| x.opacity(0.5))
-        .when(selecting && !barred_session && channel_select.as_ref().is_none_or(|(can, _)| *can), |x| {
-            x.cursor_pointer()
+        .when(clickable, |x| x.cursor_pointer())
+        .when(clickable && !show_current && !ticked, |x| {
+            x.hover(move |s| s.bg(hover_bg))
+                .active(move |s| s.bg(active_bg))
         })
         .child(body)
         .on_click(move |event, window, cx| {
@@ -430,6 +528,7 @@ fn draw_row(
     item.test_support().into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn nav(
     ui: &Rc<Ui>,
     id: &'static str,
@@ -437,10 +536,14 @@ fn nav(
     glyph: IconName,
     route: Route,
     on: bool,
+    window_active: bool,
     count: Option<usize>,
     look: Look,
 ) -> impl IntoElement {
     let ui = ui.clone();
+    let hover_bg = hover_fill(look);
+    let active_bg = active_fill(look);
+    let active_on = on && window_active;
     div()
         .id(id)
         .role(Role::Link)
@@ -453,17 +556,29 @@ fn nav(
         .mx(px(10.))
         .px(px(8.))
         .rounded(px(6.))
-        .when(on, |x| x.bg(rgb(look.selection)).text_color(rgb(0xffffff)))
+        .cursor_pointer()
+        .when(on, |x| {
+            x.bg(rgb(if window_active {
+                look.selection
+            } else {
+                look.fill
+            }))
+            .text_color(rgb(if window_active { 0xffffff } else { look.text }))
+        })
+        .when(!on, |x| {
+            x.hover(move |s| s.bg(hover_bg))
+                .active(move |s| s.bg(active_bg))
+        })
         .child(chrome::icon(
             glyph,
-            if on { 0xffffff } else { look.accent },
+            if active_on { 0xffffff } else { look.accent },
             15.,
         ))
         .child(div().flex_1().child(title))
         .children(count.map(|n| {
             div()
                 .text_size(px(11.))
-                .when(!on, |x| x.text_color(rgb(look.secondary)))
+                .when(!active_on, |x| x.text_color(rgb(look.secondary)))
                 .child(n.to_string())
         }))
         .on_click(move |_, _, cx| ui.send(AppAction::Switch(route.clone()), cx))
@@ -483,16 +598,21 @@ fn channels_fill(lines: usize) -> bool {
 /// gives up height only after every other row has shrunk to its least, as the
 /// design's channel block does (its weight is nil next to theirs). A long list
 /// fills the rest of the column and scrolls, so Settings stays in view.
-fn channels_box(lines: usize, list: impl IntoElement) -> Div {
-    let frame = widgets::col().min_h_0();
-    if channels_fill(lines) {
+fn channels_box(
+    lines: usize,
+    list: impl IntoElement,
+    scroll: &UniformListScrollHandle,
+) -> impl IntoElement {
+    let frame = widgets::col().relative().min_h_0();
+    let frame = if channels_fill(lines) {
         frame.flex_1().child(list)
     } else {
         frame
             .h(px(lines as f32 * theme::ROW))
             .flex_shrink(SHRINK_LAST)
             .child(list)
-    }
+    };
+    frame.vertical_scrollbar(scroll)
 }
 
 /// A shrink factor so small the other rows absorb the overflow first.
@@ -501,16 +621,21 @@ const SHRINK_LAST: f32 = 0.0001;
 /// The Channels section's + (frame 16 draws it at 12 pt).
 fn new_channel(ui: &Rc<Ui>, look: Look) -> impl IntoElement {
     let ui = ui.clone();
+    let hover_bg = hover_fill(look);
+    let active_bg = active_fill(look);
     div()
         .id("sidebar-new-channel")
         .role(Role::Button)
         .aria_label("New channel")
-        .size(px(12.))
+        .size(px(22.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
+        .rounded(px(5.))
         .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg))
+        .active(move |s| s.bg(active_bg))
         .child(chrome::icon(IconName::Plus, look.secondary, 12.))
         .on_click(move |_, _, cx| ui.send(AppAction::StartNewChannel, cx))
         .test_support()
@@ -552,6 +677,8 @@ fn start(
     look: Look,
 ) -> impl IntoElement {
     let ui = ui.clone();
+    let hover_bg = hover_fill(look);
+    let active_bg = active_fill(look);
     row()
         .id(id)
         .role(Role::Button)
@@ -562,6 +689,8 @@ fn start(
         .gap(px(7.))
         .rounded(px(6.))
         .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg))
+        .active(move |s| s.bg(active_bg))
         .text_color(rgb(look.accent))
         .child(chrome::icon(IconName::Plus, look.accent, 12.))
         .child(div().flex_1().child(text))
@@ -572,6 +701,7 @@ fn start(
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
+        let window_active = window.is_window_active();
         let (rows, folded, cursor, current, collapsed, width) = self.ui.read(|state| {
             let columns = state.layout.columns(
                 f32::from(window.viewport_size().width),
@@ -661,6 +791,7 @@ impl Render for Sidebar {
                                     *index,
                                     at_cursor,
                                     is_current,
+                                    window_active,
                                     select.as_ref(),
                                     &visible,
                                     &row_menu,
@@ -732,7 +863,14 @@ impl Render for Sidebar {
             RowKey::Desk | RowKey::DeskMore => None,
         });
         let pinned = ui.read(|s| {
-            crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
+            crate::sidebar_pinned::section(
+                &s.pinned,
+                &s.workspace,
+                shown.as_ref(),
+                window_active,
+                look,
+                &send_pinned,
+            )
         });
         let pinned_gap = if pinned.is_some() { 5.5 } else { 4. };
         let open_menu = (!selecting)
@@ -760,7 +898,7 @@ impl Render for Sidebar {
             .w(px(width))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(look.sidebar))
+            .bg(sidebar_tint(look))
             .text_color(rgb(look.text))
             // The divider is drawn over the column's last point instead of taking
             // it, so right-aligned items sit where the design puts them.
@@ -793,6 +931,8 @@ impl Render for Sidebar {
                         let tip: SharedString =
                             format!("Hide sidebar  {}", keys::label("⌘B", mac)).into();
                         let ui = ui.clone();
+                        let hover_bg = hover_fill(look);
+                        let active_bg = active_fill(look);
                         let action = if ui.read(|s| s.navigation_overlay) {
                             AppAction::CloseNavigationOverlay
                         } else {
@@ -806,12 +946,15 @@ impl Render for Sidebar {
                                 gpui_kit::component::tooltip::Tooltip::new(tip.clone())
                                     .build(window, cx)
                             })
-                            .size(px(15.))
+                            .size(px(24.))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
+                            .rounded(px(5.))
                             .cursor_pointer()
+                            .hover(move |s| s.bg(hover_bg))
+                            .active(move |s| s.bg(active_bg))
                             .child(chrome::icon(IconName::PanelLeft, look.secondary, 15.))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(move |_, _, cx| ui.send(action.clone(), cx))
@@ -822,11 +965,12 @@ impl Render for Sidebar {
                             .id("sidebar-new-session")
                             .role(Role::Button)
                             .aria_label("New session")
-                            .size(px(15.))
+                            .size(px(24.))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
+                            .rounded(px(5.))
                             .opacity(0.4)
                             .child(chrome::icon(IconName::SquarePen, look.secondary, 15.))
                             .test_support()
@@ -843,7 +987,11 @@ impl Render for Sidebar {
                         .into_any_element()
                     }),
             )
-            .child(
+            .child({
+                let is_dark = look.content != 0xffffff;
+                let search_bg = if is_dark { rgba(0xffffff12) } else { rgba(0x0000000e) };
+                let search_hover = if is_dark { rgba(0xffffff1c) } else { rgba(0x00000016) };
+                let search_active = if is_dark { rgba(0xffffff26) } else { rgba(0x00000020) };
                 div()
                     .id("search")
                     .role(Role::Button)
@@ -856,7 +1004,10 @@ impl Render for Sidebar {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .bg(rgb(look.fill))
+                    .cursor_pointer()
+                    .bg(search_bg)
+                    .hover(move |s| s.bg(search_hover))
+                    .active(move |s| s.bg(search_active))
                     .text_color(rgb(look.tertiary))
                     .child(chrome::icon(IconName::Search, look.tertiary, 12.))
                     .child(div().flex_1().child("Search"))
@@ -865,8 +1016,8 @@ impl Render for Sidebar {
                         let ui = ui.clone();
                         move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
                     })
-                    .test_support(),
-            )
+                    .test_support()
+            })
             .children(pinned)
             // Frame 15 leaves 5.5 pt between the last pin and Home; 4 pt without
             // pins. It never shrinks, or the full column eats it.
@@ -878,6 +1029,7 @@ impl Render for Sidebar {
                 IconName::House,
                 Route::Home,
                 route == Route::Home,
+                window_active,
                 None,
                 look,
             ))
@@ -888,6 +1040,7 @@ impl Render for Sidebar {
                 IconName::Inbox,
                 Route::Inbox,
                 route == Route::Inbox,
+                window_active,
                 (waiting > 0).then_some(waiting),
                 look,
             ))
@@ -898,6 +1051,7 @@ impl Render for Sidebar {
                 IconName::GitFork,
                 Route::Reviews,
                 route == Route::Reviews,
+                window_active,
                 (reviews > 0).then_some(reviews),
                 look,
             ))
@@ -908,12 +1062,13 @@ impl Render for Sidebar {
                 IconName::SquareKanban,
                 Route::Todo,
                 route == Route::Todo,
+                window_active,
                 None,
                 look,
             ))
             .child(ui.read(|s| humata2_ui_desk::sidebar_desk::rows(ui, s, look)))
             .child(chrome::section(look, "Channels").child(new_channel(ui, look)))
-            .child(channels_box(lines.len(), list))
+            .child(channels_box(lines.len(), list, &self.scroll))
             .when(no_channels, |bar| {
                 bar.child(nothing_yet(look, "No channels yet")).child(start(
                     ui,
@@ -941,6 +1096,10 @@ impl Render for Sidebar {
                     (tick, can, actions)
                 });
                 let can_tick = machine_select.as_ref().is_some_and(|(_, can, _)| *can);
+                let host_clickable = !selecting || can_tick;
+                let hover_bg = hover_fill(look);
+                let active_bg = active_fill(look);
+                let active_selected = selected && window_active;
                 row()
                     .id(("sidebar-machine", index))
                     .role(Role::Link)
@@ -950,7 +1109,12 @@ impl Render for Sidebar {
                     .pl(px(if selecting { 4. } else { 8. }))
                     .pr(px(8.))
                     .gap(px(7.))
-                    .when(can_tick, |x| x.cursor_pointer())
+                    .rounded(px(6.))
+                    .when(host_clickable, |x| x.cursor_pointer())
+                    .when(host_clickable && !selected, |x| {
+                        x.hover(move |s| s.bg(hover_bg))
+                            .active(move |s| s.bg(active_bg))
+                    })
                     .children(machine_select.as_ref().map(|(tick, _, _)| {
                         select_mode::tick_box(look, 13., *tick)
                     }))
@@ -963,19 +1127,37 @@ impl Render for Sidebar {
                             Status::Offline
                         })
                     })
-                    .child(div().flex_1().child(m.name))
+                    .child(crate::full_text::full_text(
+                        div()
+                            .id(("sidebar-machine-name", index))
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(m.name.clone()),
+                        m.name,
+                    ))
                     .when(!m.online && !halted, |x| {
                         x.child(
                             div()
                                 .text_size(px(11.5))
-                                .text_color(rgb(if selected { 0xffffff } else { look.secondary }))
+                                .text_color(rgb(if active_selected {
+                                    0xffffff
+                                } else {
+                                    look.secondary
+                                }))
                                 .child("offline"),
                         )
                     })
                     .when(selected, |x| {
                         x.rounded(px(6.))
-                            .bg(rgb(look.selection))
-                            .text_color(rgb(0xffffff))
+                            .bg(rgb(if window_active {
+                                look.selection
+                            } else {
+                                look.fill
+                            }))
+                            .text_color(rgb(if window_active { 0xffffff } else { look.text }))
                     })
                     .on_click(move |_, _, cx| {
                         if let Some((_, can, actions)) = &machine_select {
@@ -1011,6 +1193,7 @@ impl Render for Sidebar {
                 IconName::Settings,
                 Route::Settings,
                 route == Route::Settings,
+                window_active,
                 None,
                 look,
             )))
@@ -1021,6 +1204,15 @@ impl Render for Sidebar {
                 let ui = ui.clone();
                 let session = menu.session;
                 let fill = Hsla::from(rgb(look.fill));
+                let viewport = window.viewport_size();
+                let (menu_left, menu_top) = clamp_menu_position(
+                    10.0,
+                    f32::from(menu.y),
+                    176.0,
+                    40.0,
+                    f32::from(viewport.width),
+                    f32::from(viewport.height),
+                );
                 let scrim = div()
                     .id("sidebar-row-menu-scrim")
                     .absolute()
@@ -1028,6 +1220,7 @@ impl Render for Sidebar {
                     .left(px(-10_000.))
                     .w(px(20_000.))
                     .h(px(20_000.))
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
                         close_left.update(cx, |m, cx| {
@@ -1045,8 +1238,9 @@ impl Render for Sidebar {
                 let card = crate::action_menu::card("sidebar-row-menu", 176., look)
                     .role(Role::Menu)
                     .aria_label("Session actions")
-                    .left(px(10.))
-                    .top(px(f32::from(menu.y).max(8.)))
+                    .left(px(menu_left))
+                    .top(px(menu_top))
+                    .occlude()
                     .child(
                         Button::new("sidebar-row-select-sessions")
                             .custom(
@@ -1083,7 +1277,7 @@ impl Render for Sidebar {
                             }),
                     )
                     .test_support();
-                bar.child(scrim).child(card)
+                bar.child(deferred(scrim)).child(deferred(card))
             })
             .into_any_element()
     }
@@ -1234,5 +1428,31 @@ mod tests {
             visible_from_lines(&lines),
             vec![SessionId("s1".to_owned()), SessionId("s2".to_owned())]
         );
+    }
+
+    #[::core::prelude::v1::test]
+    fn clamp_menu_position_keeps_menu_in_viewport_and_flips_upward() {
+        // Middle of viewport stays at requested position.
+        assert_eq!(clamp_menu_position(10., 120., 176., 40., 800., 600.), (10., 120.));
+        // Near top clamps to 8px margin.
+        assert_eq!(clamp_menu_position(2., 0., 176., 40., 800., 600.), (8., 8.));
+        // Near bottom flips upward (580 - 40 = 540).
+        assert_eq!(clamp_menu_position(10., 580., 176., 40., 800., 600.), (10., 540.));
+        // Narrow viewport clamps left so menu stays inside.
+        assert_eq!(clamp_menu_position(100., 100., 176., 40., 220., 600.), (36., 100.));
+    }
+
+    #[::core::prelude::v1::test]
+    fn session_indent_clamps_deep_fork_nesting() {
+        assert_eq!(session_indent(0), 8.);
+        assert_eq!(session_indent(1), 18.);
+        assert_eq!(session_indent(2), 15.);
+        assert_eq!(session_indent(6), 79.);
+        assert_eq!(session_indent(7), 79.);
+        assert_eq!(session_indent(20), 79.);
+
+        assert_eq!(select_fork_indent(2), 0.);
+        assert_eq!(select_fork_indent(6), 56.);
+        assert_eq!(select_fork_indent(15), 56.);
     }
 }

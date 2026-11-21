@@ -54,7 +54,7 @@ Dialog "New session" focused
   Button "Own clone, new branch from main"
   Button "Leave this repo out"
   #input
-    MultilineTextInput "First message" value="" placeholder="Optional. Typed into the agent once it starts, e.g. “Work on PAY-9”."
+    MultilineTextInput "First message" value="" placeholder="Optional. Sent on start, e.g. “Work on PAY-9”."
   Button "Cancel"
   Button "Start session"
 Button "Filter by channel"

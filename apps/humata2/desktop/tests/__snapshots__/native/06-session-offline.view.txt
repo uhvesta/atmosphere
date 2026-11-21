@@ -36,10 +36,10 @@ Splitter "Resize the side panel"
 Complementary "Files"
   #panel-header
     Button "Add repo…" disabled
-    Button "Refresh files"
-    text "Files"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
+    Button "Refresh files"
+    text "Files"
   #session-file-filter
     #input
       TextInput "Filter files" value="" placeholder="Filter files"
@@ -75,13 +75,12 @@ Complementary "Files"
       text "▸"
       text "🔒 read-only"
   Button "Open big"
-  Button "Open in editor" disabled
-  Button "Upload…" disabled
+  Button "Open in editor" description="Opening in an external editor is coming soon" disabled
+  Button "Upload…" description="File upload is coming soon" disabled
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 2"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
     Status "Diff: 2"
   Button "Files"

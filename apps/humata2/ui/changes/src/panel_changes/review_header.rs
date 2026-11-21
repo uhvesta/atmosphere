@@ -761,7 +761,14 @@ pub(super) fn push_scrim(ui: &Rc<Ui>) -> impl IntoElement {
 /// The anchored Push confirmation popover above the footer: shows the exact
 /// PRs/layers to push, unreviewed/open-note warnings, Draft vs Ready toggle
 /// (defaulting to Draft PRs), Cancel, and primary Push button.
-pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&RepoDiff]) -> impl IntoElement {
+pub(super) fn push_menu(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    diffs: &[&RepoDiff],
+    viewport: Size<Pixels>,
+    align_right: bool,
+) -> impl IntoElement {
     let session = state.session.open.as_ref();
     let open_notes = session.map_or(0, |id| state.comments.sendable(id).len());
     let summary = session
@@ -804,14 +811,18 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
     let cancel_ui = ui.clone();
     let push_all_ui = ui.clone();
     let repos_to_push: Vec<String> = diffs.iter().map(|d| d.repo.clone()).collect();
+    let menu_w = (f32::from(viewport.width) - 24.).clamp(220., 340.);
+    let menu_max_h = (f32::from(viewport.height) - 96.).clamp(180., 460.);
     col()
         .id("changes-push-list")
         .role(Role::ListBox)
         .aria_label("Push & PR")
         .absolute()
         .bottom(px(28.))
-        .left(px(0.))
-        .w(px(340.))
+        .when(align_right, |m| m.right(px(0.)))
+        .when(!align_right, |m| m.left(px(0.)))
+        .w(px(menu_w))
+        .max_h(px(menu_max_h))
         .p(px(10.))
         .gap(px(6.))
         .rounded(px(8.))
@@ -982,6 +993,7 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
                         .child(primary_label),
                 ),
         )
+        .overflow_y_scroll()
         .test_support()
 }
 
@@ -1260,7 +1272,12 @@ pub(super) fn looks_status(
 /// compared with, the current base ticked. "Since I last looked" is the
 /// header's switch ([`since_switch`], D852). The fork
 /// base shows only for a fork; other sessions of the channel follow.
-pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
+pub(super) fn base_menu(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    viewport: Size<Pixels>,
+) -> impl IntoElement {
     let here = state
         .session
         .open
@@ -1346,6 +1363,8 @@ pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoE
             .into_any_element(),
         );
     }
+    let menu_w = (f32::from(viewport.width) - 24.).clamp(200., 260.);
+    let menu_max_h = (f32::from(viewport.height) - 96.).clamp(180., 360.);
     col()
         .id("diff-base-menu")
         .role(Role::ListBox)
@@ -1353,7 +1372,8 @@ pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoE
         .absolute()
         .top(px(28.))
         .right(px(0.))
-        .w(px(260.))
+        .w(px(menu_w))
+        .max_h(px(menu_max_h))
         .p(px(4.))
         .gap(px(1.))
         .rounded(px(8.))
@@ -1364,6 +1384,7 @@ pub(super) fn base_menu(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoE
         .occlude()
         .text_size(px(12.5))
         .children(items)
+        .overflow_y_scroll()
         .test_support()
 }
 
@@ -1641,7 +1662,10 @@ fn repo_base_menu(
     index: usize,
 ) -> impl IntoElement {
     let Some(session) = state.session.open.clone() else {
-        return col().id("repo-base-menu").test_support();
+        return col()
+            .id("repo-base-menu")
+            .overflow_y_scroll()
+            .test_support();
     };
     let current = state.review.targets_of(&session).of(&picker.repo);
     let pick = |id: SharedString, label: String, base: RepoBase| {
@@ -1835,6 +1859,7 @@ fn repo_base_menu(
         // the panel's edge never pushes the menu past it.
         .right(px(0.))
         .w(px(240.))
+        .max_h(px(360.))
         .p(px(6.))
         .gap(px(1.))
         .rounded(px(9.))
@@ -1845,6 +1870,7 @@ fn repo_base_menu(
         .occlude()
         .text_size(px(12.5))
         .children(items)
+        .overflow_y_scroll()
         .test_support()
 }
 

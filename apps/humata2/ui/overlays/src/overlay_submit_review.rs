@@ -45,6 +45,14 @@ pub(super) struct Fields {
     subscriptions: RefCell<Vec<Subscription>>,
 }
 
+impl Fields {
+    /// Clears any in-progress draft edit when the dialog opens.
+    pub(super) fn reset(&self) {
+        *self.editing.borrow_mut() = None;
+        self.edit_filled.set(false);
+    }
+}
+
 fn submit(action: SubmitAction) -> AppAction {
     AppAction::PrSubmit(action)
 }
@@ -186,7 +194,6 @@ impl Overlays {
             .w(px(700.))
             .max_w_full()
             .max_h(relative(0.94))
-            .overflow_y_scroll()
             .gap(px(11.))
             .p(px(20.))
             .rounded(px(12.))

@@ -65,6 +65,7 @@ impl AppState {
     #[must_use]
     pub fn dialog_holds_keys(&self) -> bool {
         !self.overlays.is_empty()
+            || self.report.form.is_some()
             || self.session.closing.is_some()
             || self.machine_page.running.confirm_end.is_some()
             || self.machine_page.running.adopting.is_some()
@@ -80,6 +81,12 @@ impl AppState {
             || self.hosts.root_change.is_some()
             || self.mass_delete.sheet.is_some()
             || self.deleting_channel.is_some()
+            || self.files.naming.is_some()
+            || self.files.empty_plan.is_some()
+            || self.files.trash.is_some()
+            || self.files.pending_clear.is_some()
+            || self.files.low_disk.is_some()
+            || self.files.storage.is_some()
     }
 }
 
@@ -94,6 +101,34 @@ impl App {
         }
         if state.overlay() == Some(&Overlay::Palette) && state.palette.asking.is_some() {
             return self.child(state, AppAction::Palette(PaletteAction::Escape));
+        }
+        // Close inner pickers / + Org inside modal sheets before popping the
+        // sheet itself, so Escape does not discard form text.
+        if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut()
+            && sheet.picker.is_some()
+        {
+            sheet.picker = None;
+            return Effect::none();
+        }
+        if let Some(picker) = match state.overlays.last() {
+            Some(Overlay::NewChannel(sheet)) if sheet.search.adding_owner.is_some() => {
+                Some(crate::repo_search::RepoPicker::NewChannel)
+            }
+            Some(Overlay::ChannelAddRepo(sheet)) if sheet.search.adding_owner.is_some() => {
+                Some(crate::repo_search::RepoPicker::ChannelAddRepo)
+            }
+            Some(Overlay::SessionAddRepo(sheet)) if sheet.search.adding_owner.is_some() => {
+                Some(crate::repo_search::RepoPicker::SessionAddRepo)
+            }
+            _ => None,
+        } {
+            return self.handle(
+                state,
+                AppAction::RepoSearch(
+                    picker,
+                    crate::repo_search::RepoSearchAction::AddOwnerClosed,
+                ),
+            );
         }
         if let Some(top) = state.overlays.pop() {
             if top == Overlay::Palette {
@@ -134,6 +169,48 @@ impl App {
             return self.child(
                 state,
                 AppAction::Desk(humata2_desk::DeskAction::CancelDialog),
+            );
+        }
+        if state.files.naming.is_some() {
+            return self.child(state, AppAction::Files(humata2_files::FilesAction::CancelName));
+        }
+        if state.files.empty_plan.is_some() {
+            return self.child(
+                state,
+                AppAction::Files(humata2_files::FilesAction::CancelEmptyTrash),
+            );
+        }
+        if state.files.trash.is_some() {
+            return self.child(state, AppAction::Files(humata2_files::FilesAction::CloseTrash));
+        }
+        if state.files.pending_clear.is_some() {
+            return self.child(state, AppAction::Files(humata2_files::FilesAction::CancelClear));
+        }
+        if state.files.low_disk.is_some() {
+            return self.child(
+                state,
+                AppAction::Files(humata2_files::FilesAction::DismissLowDisk),
+            );
+        }
+        if state.files.storage.is_some() {
+            return self.child(
+                state,
+                AppAction::Files(humata2_files::FilesAction::CloseStorage),
+            );
+        }
+        if state.files.picker.is_some() {
+            return self.child(state, AppAction::Files(humata2_files::FilesAction::ClosePicker));
+        }
+        if let Some(mode) = state.files.send_menu {
+            return self.child(
+                state,
+                AppAction::Files(humata2_files::FilesAction::ToggleSendMenu(mode)),
+            );
+        }
+        if state.files.row_menu.is_some() {
+            return self.child(
+                state,
+                AppAction::Files(humata2_files::FilesAction::CloseRowMenu),
             );
         }
         if state.deleting_channel.is_some() {
@@ -258,18 +335,22 @@ impl App {
                 AppAction::MassDelete(humata2_mass_delete::MassDeleteAction::Escape),
             );
         }
-        // Last of all: Escape leaves a full-screen panel. An open menu takes
-        // the key first (the base menu closes; the others own their keys).
+        // Close any open review menu before leaving full-screen panel (or in
+        // normal session view).
+        if state.review.base_menu {
+            return self.child(state, AppAction::Review(ReviewAction::CloseBaseMenu));
+        }
+        if state.review.agent_tab_menu {
+            return self.child(state, AppAction::Review(ReviewAction::ToggleAgentTabMenu));
+        }
+        if state.review.repo_picker.is_some() {
+            return self.child(state, AppAction::Review(ReviewAction::CloseRepoBase));
+        }
+        if state.review.push_menu {
+            return self.child(state, AppAction::Review(ReviewAction::ClosePushMenu));
+        }
+        // Last of all: Escape leaves a full-screen panel.
         if state.full_screen() == Some(FullScreen::Panel) {
-            if state.review.base_menu {
-                return self.child(state, AppAction::Review(ReviewAction::ToggleBaseMenu));
-            }
-            if state.review.agent_tab_menu {
-                return self.child(state, AppAction::Review(ReviewAction::ToggleAgentTabMenu));
-            }
-            if state.review.repo_picker.is_some() || state.review.push_menu {
-                return Effect::none();
-            }
             // Through the app's own toggle, which clears the full-screen
             // mark; the session's alone only flips the view's flag.
             return self.handle(state, AppAction::ToggleFullScreen(FullScreen::Panel));

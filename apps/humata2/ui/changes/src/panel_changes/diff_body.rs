@@ -446,7 +446,7 @@ pub(crate) fn compute_scrollbar_markers(lines: &[DiffLine]) -> Vec<ScrollbarMark
     markers
 }
 
-/// Renders the read-only full-file view with a slim vertical scrollbar marker rail.
+/// Renders the read-only full-file view with a virtualized list and slim vertical scrollbar marker rail.
 pub(super) fn readonly_file_view(
     file: &humata2_clients::model::FileDiff,
     version: FileVersion,
@@ -454,38 +454,14 @@ pub(super) fn readonly_file_view(
     font_size: f32,
     line_height: f32,
 ) -> AnyElement {
-    let entries = readonly_file_lines(&file.lines, version);
+    let entries: Rc<Vec<(u32, String, LineKind)>> = Rc::new(
+        readonly_file_lines(&file.lines, version)
+            .into_iter()
+            .map(|(num, content, kind)| (num, content.to_owned(), kind))
+            .collect(),
+    );
+    let count = entries.len();
     let markers = compute_scrollbar_markers(&file.lines);
-    let rows: Vec<AnyElement> = entries
-        .into_iter()
-        .enumerate()
-        .map(|(ix, (num, content, kind))| {
-            let bg = tint(look, kind);
-            row()
-                .id(SharedString::from(format!("readonly-line-{ix}")))
-                .w_full()
-                .min_h(px(line_height))
-                .when_some(bg, |r, c| r.bg(rgb(c)))
-                .child(
-                    text(if num > 0 { num.to_string() } else { String::new() })
-                        .w(px(44.))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_end()
-                        .pr(px(8.))
-                        .text_color(rgb(look.term_dim)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .whitespace_nowrap()
-                        .text_color(rgb(look.term_text))
-                        .child(content.to_owned()),
-                )
-                .into_any_element()
-        })
-        .collect();
 
     let rail = div()
         .id("diff-file-marker-rail")
@@ -522,17 +498,46 @@ pub(super) fn readonly_file_view(
         .min_h_0()
         .bg(rgb(look.term))
         .child(
-            col()
-                .id("diff-readonly-file-scroll")
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .overflow_y_scroll()
-                .py(px(6.))
-                .font_family("Menlo")
-                .text_size(px(font_size))
-                .line_height(px(line_height))
-                .children(rows),
+            uniform_list("diff-readonly-file-scroll", count, move |range, _, _| {
+                range
+                    .filter_map(|ix| {
+                        let (num, content, kind) = entries.get(ix)?;
+                        let bg = tint(look, *kind);
+                        Some(
+                            row()
+                                .id(SharedString::from(format!("readonly-line-{ix}")))
+                                .w_full()
+                                .h(px(line_height))
+                                .when_some(bg, |r, c| r.bg(rgb(c)))
+                                .child(
+                                    text(if *num > 0 { num.to_string() } else { String::new() })
+                                        .w(px(44.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .justify_end()
+                                        .pr(px(8.))
+                                        .text_color(rgb(look.term_dim)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .whitespace_nowrap()
+                                        .text_color(rgb(look.term_text))
+                                        .child(content.clone()),
+                                )
+                                .into_any_element(),
+                        )
+                    })
+                    .collect()
+            })
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .py(px(6.))
+            .font_family("Menlo")
+            .text_size(px(font_size))
+            .line_height(px(line_height)),
         )
         .child(rail)
         .into_any_element()
@@ -928,16 +933,11 @@ impl CodeRows {
         }
     }
 
-    /// A card kept inside what can be seen of the code view. Outside a
-    /// review it starts at the code column, not under the numbers (DS-15);
-    /// the card's own 10 pt margin is part of that inset. A review keeps
-    /// frame 68's cards.
+    /// A card kept inside what can be seen of the code view, aligned to the
+    /// code column (`code_start()`) rather than under the line numbers (DS-15);
+    /// the card's own 10 pt margin is part of that inset.
     fn fit(&self, card: AnyElement) -> AnyElement {
-        let inset = if self.metrics.review {
-            0.
-        } else {
-            (self.metrics.code_start() - 10.).max(0.)
-        };
+        let inset = (self.metrics.code_start() - 10.).max(0.);
         div()
             .max_w(px(self.metrics.view_width))
             .pl(px(inset))
@@ -961,10 +961,10 @@ impl CodeRows {
         let Some(line) = lines.get(index) else {
             return (div().into_any_element(), Vec::new());
         };
-        let sign = match line.kind {
-            LineKind::Added => "+",
-            LineKind::Removed => "−",
-            _ => " ",
+        let (sign, sign_color) = match line.kind {
+            LineKind::Added => ("+", GREEN),
+            LineKind::Removed => ("−", RED),
+            _ => (" ", look.term_text),
         };
         let bg = tint(look, line.kind);
         if line.kind == LineKind::Hunk {
@@ -1283,7 +1283,7 @@ impl CodeRows {
                     .w(px(cell_width * 2.))
                     .h(px(line_height))
                     .flex_shrink_0()
-                    .text_color(rgb(look.term_text)),
+                    .text_color(rgb(sign_color)),
             )
             .child(code)
             .when_some(self.code_focus.clone(), |row, handle| {

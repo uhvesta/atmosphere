@@ -112,8 +112,20 @@ impl Inputs {
     }
 }
 
-/// Sets a text area's text to `value` when it isn't that already.
+/// Sets a text area's text to `value` when the stored value changed.
 fn sync_area(input: &Entity<TextareaState>, value: &str, window: &mut Window, cx: &mut App) {
+    let last = window.use_keyed_state(
+        ("overlay-sync-area", input.entity_id()),
+        cx,
+        |_, _| String::new(),
+    );
+    if last.read(cx).as_str() == value {
+        return;
+    }
+    last.update(cx, |synced, _| {
+        synced.clear();
+        synced.push_str(value);
+    });
     if input.read(cx).value().as_ref() != value {
         let value = value.to_owned();
         input.update(cx, |input, cx| input.set_value(value, window, cx));
@@ -146,11 +158,14 @@ impl Overlays {
         self.pr.menu.set(Menu::Closed);
         self.pr.also_open.set(false);
         if kind == Kind::PrReview {
-            sync(&self.pr.paste, "", window, cx);
-            sync(&self.pr.also, "", window, cx);
-            sync_area(&self.pr.context, "", window, cx);
-            self.pr.paste.update(cx, |input, cx| input.focus(window, cx));
+            self.pr.paste.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+            });
+            self.pr.also.update(cx, |input, cx| input.set_value("", window, cx));
+            self.pr.context.update(cx, |input, cx| input.set_value("", window, cx));
         } else {
+            self.pr.submit.reset();
             window.focus(&self.sheet, cx);
         }
     }
@@ -234,9 +249,16 @@ impl Overlays {
         let blocker = state.blocker();
         let starting = state.start == Start::Starting;
 
+        let viewport_h = f32::from(window.viewport_size().height);
+        let max_card_h = if viewport_h > 0. {
+            (viewport_h - 140.).max(260.)
+        } else {
+            560.
+        };
         let mut body = sheet("pr-review-dialog", "Review a pull request", look)
             .w(px(640.))
             .max_w_full()
+            .max_h(px(max_card_h))
             .gap(px(11.))
             .p(px(20.))
             .rounded(px(12.))

@@ -32,9 +32,9 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings"
 Splitter "Resize the sidebar"
-Heading "Home"
 Button "Done"
 Button "New session" disabled
+Heading "Home"
 Group "Delete sessions"
   Dialog "Delete sessions" focused
     #delete-sessions-totals
@@ -64,6 +64,6 @@ Link "Benchmark BRIN"
   text "pgbench run 2 of 4"
 Button "Open To-do"
 Link "API rate limiter"
-Button "Select"
 Button "Cancel"
+Button "Select"
 Button "Delete 5 sessions…"

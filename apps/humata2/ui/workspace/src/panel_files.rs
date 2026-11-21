@@ -212,6 +212,15 @@ pub fn build_agent_files_tree(files: &[&SessionFile]) -> AgentFilesTree {
     tree
 }
 
+const MAX_INDENT_DEPTH: usize = 8;
+const FILE_ROW_HEIGHT: f32 = 23.;
+
+/// Left padding (in points) for a file tree row at `depth`, clamped so deep
+/// hierarchies never collapse filenames to 0 px.
+fn file_row_indent(depth: usize) -> f32 {
+    8. + depth.min(MAX_INDENT_DEPTH) as f32 * 14.
+}
+
 #[derive(Default)]
 pub(super) struct FileNode {
     folder: bool,
@@ -220,16 +229,53 @@ pub(super) struct FileNode {
     children: std::collections::BTreeMap<String, FileNode>,
 }
 
-pub fn file_rows(
-    ui: &Rc<Ui>,
+/// A flattened, fixed-height (`23px`) row for virtualized `uniform_list` rendering.
+enum FileListRow {
+    SessionRoot {
+        folded: bool,
+    },
+    RepoRoot {
+        repo: String,
+        name: String,
+    },
+    Node {
+        repo: String,
+        path: String,
+        name: String,
+        depth: usize,
+        folder: bool,
+        folded: bool,
+        empty_folder: bool,
+        selected: bool,
+        changed: Option<bool>,
+    },
+    AgentHeader {
+        subtitle: String,
+        expanded: bool,
+    },
+    AgentEmpty,
+    AgentGroup {
+        group_key: String,
+        title: String,
+        open: bool,
+    },
+    AgentFile {
+        entry: AgentFileEntry,
+        indent_px: f32,
+        selected: bool,
+    },
+}
+
+fn collect_file_rows(
     state: &AppState,
+    changed_files: &std::collections::HashMap<(String, String), bool>,
     repo: &str,
     node: &FileNode,
     path: &str,
     depth: usize,
     filter: &str,
-    look: Look,
-) -> Vec<AnyElement> {
+    out: &mut Vec<FileListRow>,
+) {
     let mut children: Vec<_> = node.children.iter().collect();
     children.sort_by(|(an, a), (bn, b)| {
         b.folder.cmp(&a.folder).then_with(|| {
@@ -240,7 +286,6 @@ pub fn file_rows(
             }
         })
     });
-    let mut rows = Vec::new();
     for (name, child) in children {
         let path = if path.is_empty() {
             name.clone()
@@ -262,60 +307,266 @@ pub fn file_rows(
             .view()
             .and_then(|view| view.file.as_ref())
             .is_some_and(|(r, p)| r == repo && p == &path);
-        let changed = state
-            .workspace
-            .diffs
-            .iter()
-            .filter(|diff| Some(&diff.session) == state.session.open.as_ref() && diff.repo == repo)
-            .flat_map(|diff| &diff.files)
-            .find(|file| file.path == path)
-            // A file whose every line is added is new; anything else changed.
-            .map(|file| {
-                file.removed == 0
-                    && file
-                        .lines
-                        .iter()
-                        .all(|line| matches!(line.kind, LineKind::Added | LineKind::Hunk))
+        let changed = (!child.folder)
+            .then(|| changed_files.get(&(repo.to_owned(), path.clone())).copied())
+            .flatten();
+        out.push(FileListRow::Node {
+            repo: repo.to_owned(),
+            path: path.clone(),
+            name: name.clone(),
+            depth,
+            folder: child.folder,
+            folded,
+            empty_folder: child.children.is_empty(),
+            selected,
+            changed,
+        });
+        if child.folder && (!folded || !filter.is_empty()) {
+            collect_file_rows(
+                state,
+                changed_files,
+                repo,
+                child,
+                &path,
+                depth + 1,
+                filter,
+                out,
+            );
+        }
+    }
+}
+
+fn collect_agent_group_rows(
+    state: &AppState,
+    group_key: &str,
+    title_text: String,
+    entries: &[AgentFileEntry],
+    filter: &str,
+    out: &mut Vec<FileListRow>,
+) {
+    let matching: Vec<&AgentFileEntry> = entries
+        .iter()
+        .filter(|entry| entry_matches_filter(entry, filter))
+        .collect();
+    if matching.is_empty() {
+        return;
+    }
+    let fold_path = format!("__group__:{group_key}");
+    let folded = state.session.view().is_some_and(|view| {
+        view.folded_files
+            .contains(&(AGENT_STATE_REPO.to_owned(), fold_path.clone()))
+    });
+    let open = !folded || !filter.is_empty();
+    out.push(FileListRow::AgentGroup {
+        group_key: group_key.to_owned(),
+        title: title_text,
+        open,
+    });
+    if open {
+        for entry in matching {
+            let selected = state
+                .session
+                .view()
+                .and_then(|view| view.file.as_ref())
+                .is_some_and(|(r, p)| r == &entry.repo && p == &entry.path);
+            out.push(FileListRow::AgentFile {
+                entry: entry.clone(),
+                indent_px: 28.,
+                selected,
             });
-        let event = if child.folder {
-            SessionAction::ToggleFolder {
-                repo: repo.to_owned(),
-                path: path.clone(),
-            }
-        } else {
-            SessionAction::SelectFile {
-                repo: repo.to_owned(),
-                path: path.clone(),
-            }
-        };
-        let label = if repo.is_empty() {
-            path.clone()
-        } else {
-            format!("{repo}/{path}")
-        };
-        let click_ui = ui.clone();
-        rows.push(
+        }
+    }
+}
+
+fn collect_agent_rows(
+    state: &AppState,
+    agent: Agent,
+    tree: &AgentFilesTree,
+    expanded: bool,
+    filter: &str,
+    out: &mut Vec<FileListRow>,
+) {
+    let provider = agent.name();
+    let subtitle = if expanded {
+        format!("· {provider}")
+    } else {
+        format!("· {provider} · {}", tree.count_summary())
+    };
+    out.push(FileListRow::AgentHeader { subtitle, expanded });
+    if !expanded {
+        return;
+    }
+    if tree.total_files() == 0 {
+        out.push(FileListRow::AgentEmpty);
+        return;
+    }
+    for entry in &tree.top_level {
+        if entry_matches_filter(entry, filter) {
+            let selected = state
+                .session
+                .view()
+                .and_then(|view| view.file.as_ref())
+                .is_some_and(|(r, p)| r == &entry.repo && p == &entry.path);
+            out.push(FileListRow::AgentFile {
+                entry: entry.clone(),
+                indent_px: 14.,
+                selected,
+            });
+        }
+    }
+    collect_agent_group_rows(
+        state,
+        "subagents",
+        format!("Subagents ({})", tree.subagents.len()),
+        &tree.subagents,
+        filter,
+        out,
+    );
+    collect_agent_group_rows(
+        state,
+        "tool-outputs",
+        format!("Tool outputs ({})", tree.tool_outputs.len()),
+        &tree.tool_outputs,
+        filter,
+        out,
+    );
+    collect_agent_group_rows(
+        state,
+        "plans",
+        format!("Plans ({})", tree.plans.len()),
+        &tree.plans,
+        filter,
+        out,
+    );
+    collect_agent_group_rows(
+        state,
+        "todos",
+        format!("Todos ({})", tree.todos.len()),
+        &tree.todos,
+        filter,
+        out,
+    );
+    collect_agent_group_rows(
+        state,
+        "earlier",
+        format!("Earlier before /clear · {}", tree.earlier.len()),
+        &tree.earlier,
+        filter,
+        out,
+    );
+}
+
+fn render_file_list_row(ui: &Rc<Ui>, item: &FileListRow, look: Look) -> AnyElement {
+    match item {
+        FileListRow::SessionRoot { folded } => {
+            let click_ui = ui.clone();
+            row()
+                .id(SharedString::from("session-folder /"))
+                .role(Role::Button)
+                .aria_label("Session folder")
+                .test_support()
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .px(px(8.))
+                .gap(px(6.))
+                .child(icon(
+                    if *folded {
+                        IconName::Folder
+                    } else {
+                        IconName::FolderOpen
+                    },
+                    look.secondary,
+                    12.,
+                ))
+                .child(text("Session folder"))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::ToggleFolder {
+                            repo: String::new(),
+                            path: String::new(),
+                        }),
+                        cx,
+                    )
+                })
+                .into_any_element()
+        }
+        FileListRow::RepoRoot { repo, name } => {
+            let click_ui = ui.clone();
+            let repo_id = repo.clone();
+            row()
+                .id(SharedString::from(format!("session-folder {repo}/")))
+                .role(Role::Button)
+                .aria_label(repo.clone())
+                .test_support()
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .px(px(8.))
+                .gap(px(6.))
+                .child(icon(IconName::FolderGit2, look.secondary, 12.))
+                .child(text(name.clone()))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::ToggleFolder {
+                            repo: repo_id.clone(),
+                            path: String::new(),
+                        }),
+                        cx,
+                    )
+                })
+                .into_any_element()
+        }
+        FileListRow::Node {
+            repo,
+            path,
+            name,
+            depth,
+            folder,
+            folded,
+            empty_folder,
+            selected,
+            changed,
+        } => {
+            let event = if *folder {
+                SessionAction::ToggleFolder {
+                    repo: repo.clone(),
+                    path: path.clone(),
+                }
+            } else {
+                SessionAction::SelectFile {
+                    repo: repo.clone(),
+                    path: path.clone(),
+                }
+            };
+            let label = if repo.is_empty() {
+                path.clone()
+            } else {
+                format!("{repo}/{path}")
+            };
+            let click_ui = ui.clone();
             row()
                 .id(SharedString::from(format!(
                     "session-{} {repo}/{path}",
-                    if child.folder { "folder" } else { "file" }
+                    if *folder { "folder" } else { "file" }
                 )))
-                .role(if child.folder {
+                .role(if *folder {
                     Role::Button
                 } else {
                     Role::ListItem
                 })
                 .aria_label(label)
                 .test_support()
-                .h(px(23.))
-                .pl(px(8. + depth as f32 * 14.))
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .pl(px(file_row_indent(*depth)))
                 .pr(px(8.))
                 .gap(px(6.))
                 .rounded(px(5.))
-                .when(selected, |row| row.bg(rgb(look.fill)))
+                .when(*selected, |row| row.bg(rgb(look.fill)))
                 .child(icon(
-                    if child.folder {
-                        if folded || child.children.is_empty() {
+                    if *folder {
+                        if *folded || *empty_folder {
                             IconName::Folder
                         } else {
                             IconName::FolderOpen
@@ -329,7 +580,7 @@ pub fn file_rows(
                     12.,
                 ))
                 .child(text(name.clone()).flex_1())
-                .when_some(changed.filter(|_| !child.folder), |row, added| {
+                .when_some(*changed, |row, added| {
                     row.child(
                         text(if added { "A" } else { "M" })
                             .text_size(px(11.))
@@ -339,22 +590,134 @@ pub fn file_rows(
                 })
                 .cursor_pointer()
                 .on_click(move |_, _, cx| click_ui.send(AppAction::Session(event.clone()), cx))
-                .into_any_element(),
-        );
-        if child.folder && (!folded || !filter.is_empty()) {
-            rows.extend(file_rows(
-                ui,
-                state,
-                repo,
-                child,
-                &path,
-                depth + 1,
-                filter,
-                look,
-            ));
+                .into_any_element()
+        }
+        FileListRow::AgentHeader { subtitle, expanded } => {
+            let click_ui = ui.clone();
+            row()
+                .id(SharedString::from("agent-files-toggle"))
+                .role(Role::Button)
+                .aria_label(format!("Agent files {subtitle}"))
+                .test_support()
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .items_center()
+                .justify_between()
+                .px(px(8.))
+                .rounded(px(5.))
+                .bg(rgb(look.fill))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::ToggleFolder {
+                            repo: AGENT_STATE_REPO.to_owned(),
+                            path: AGENT_STATE_EXPANDED_KEY.to_owned(),
+                        }),
+                        cx,
+                    )
+                })
+                .child(
+                    row()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(
+                            text(if *expanded { "▾" } else { "▸" })
+                                .text_size(px(11.))
+                                .text_color(rgb(look.secondary)),
+                        )
+                        .child(
+                            text("Agent files")
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(look.text)),
+                        )
+                        .child(text(subtitle.clone()).text_color(rgb(look.secondary))),
+                )
+                .child(
+                    text("🔒 read-only")
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary)),
+                )
+                .into_any_element()
+        }
+        FileListRow::AgentEmpty => row()
+            .w_full()
+            .h(px(FILE_ROW_HEIGHT))
+            .pl(px(20.))
+            .child(text("No agent files yet").text_color(rgb(look.secondary)))
+            .into_any_element(),
+        FileListRow::AgentGroup {
+            group_key,
+            title,
+            open,
+        } => {
+            let click_ui = ui.clone();
+            let toggle_path = format!("__group__:{group_key}");
+            row()
+                .id(SharedString::from(format!("agent-group {group_key}")))
+                .role(Role::Button)
+                .aria_label(title.clone())
+                .test_support()
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .pl(px(14.))
+                .pr(px(8.))
+                .gap(px(6.))
+                .rounded(px(5.))
+                .child(
+                    text(if *open { "▾" } else { "▸" })
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary)),
+                )
+                .child(text(title.clone()).text_color(rgb(look.text)))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::ToggleFolder {
+                            repo: AGENT_STATE_REPO.to_owned(),
+                            path: toggle_path.clone(),
+                        }),
+                        cx,
+                    )
+                })
+                .into_any_element()
+        }
+        FileListRow::AgentFile {
+            entry,
+            indent_px,
+            selected,
+        } => {
+            let click_ui = ui.clone();
+            let repo = entry.repo.clone();
+            let path = entry.path.clone();
+            row()
+                .id(SharedString::from(format!(
+                    "agent-file {}/{}",
+                    entry.repo, entry.path
+                )))
+                .role(Role::ListItem)
+                .aria_label(entry.label.clone())
+                .test_support()
+                .w_full()
+                .h(px(FILE_ROW_HEIGHT))
+                .pl(px(*indent_px))
+                .pr(px(8.))
+                .gap(px(6.))
+                .rounded(px(5.))
+                .when(*selected, |r| r.bg(rgb(look.fill)))
+                .child(text(entry.label.clone()).flex_1())
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::SelectFile {
+                            repo: repo.clone(),
+                            path: path.clone(),
+                        }),
+                        cx,
+                    )
+                })
+                .into_any_element()
         }
     }
-    rows
 }
 
 /// Whether a file name is source code, as opposed to prose or configuration.
@@ -431,46 +794,43 @@ pub fn files(
         .view()
         .map_or("", |view| view.file_filter.as_str())
         .to_lowercase();
-    let mut rows = Vec::new();
+    let mut changed_files = std::collections::HashMap::<(String, String), bool>::new();
+    for diff in state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|diff| Some(&diff.session) == state.session.open.as_ref())
+    {
+        for file in &diff.files {
+            let added = file.removed == 0
+                && file
+                    .lines
+                    .iter()
+                    .all(|line| matches!(line.kind, LineKind::Added | LineKind::Hunk));
+            changed_files
+                .entry((diff.repo.clone(), file.path.clone()))
+                .or_insert(added);
+        }
+    }
+    let mut rows = Vec::<FileListRow>::new();
     if !session_root.children.is_empty() {
-        let children = file_rows(ui, state, "", &session_root, "", 1, &filter, look);
+        let mut children = Vec::new();
+        collect_file_rows(
+            state,
+            &changed_files,
+            "",
+            &session_root,
+            "",
+            1,
+            &filter,
+            &mut children,
+        );
         if filter.is_empty() || !children.is_empty() {
             let folded = state
                 .session
                 .view()
                 .is_some_and(|view| view.folded_files.contains(&(String::new(), String::new())));
-            let click_ui = ui.clone();
-            rows.push(
-                row()
-                    .id(SharedString::from("session-folder /"))
-                    .role(Role::Button)
-                    .aria_label("Session folder")
-                    .test_support()
-                    .h(px(23.))
-                    .px(px(8.))
-                    .gap(px(6.))
-                    .child(icon(
-                        if folded {
-                            IconName::Folder
-                        } else {
-                            IconName::FolderOpen
-                        },
-                        look.secondary,
-                        12.,
-                    ))
-                    .child(text("Session folder"))
-                    .cursor_pointer()
-                    .on_click(move |_, _, cx| {
-                        click_ui.send(
-                            AppAction::Session(SessionAction::ToggleFolder {
-                                repo: String::new(),
-                                path: String::new(),
-                            }),
-                            cx,
-                        )
-                    })
-                    .into_any_element(),
-            );
+            rows.push(FileListRow::SessionRoot { folded });
             if !folded || !filter.is_empty() {
                 rows.extend(children);
             }
@@ -480,7 +840,17 @@ pub fn files(
         if node.children.is_empty() && repo != &session.repo {
             continue;
         }
-        let children = file_rows(ui, state, repo, node, "", 1, &filter, look);
+        let mut children = Vec::new();
+        collect_file_rows(
+            state,
+            &changed_files,
+            repo,
+            node,
+            "",
+            1,
+            &filter,
+            &mut children,
+        );
         if !filter.is_empty() && children.is_empty() {
             continue;
         }
@@ -488,32 +858,11 @@ pub fn files(
             .session
             .view()
             .is_some_and(|view| view.folded_files.contains(&(repo.clone(), String::new())));
-        let repo_name = repo.rsplit('/').next().unwrap_or(repo);
-        let click_ui = ui.clone();
-        let repo_id = repo.clone();
-        rows.push(
-            row()
-                .id(SharedString::from(format!("session-folder {repo}/")))
-                .role(Role::Button)
-                .aria_label(repo.clone())
-                .test_support()
-                .h(px(23.))
-                .px(px(8.))
-                .gap(px(6.))
-                .child(icon(IconName::FolderGit2, look.secondary, 12.))
-                .child(text(repo_name.to_owned()))
-                .cursor_pointer()
-                .on_click(move |_, _, cx| {
-                    click_ui.send(
-                        AppAction::Session(SessionAction::ToggleFolder {
-                            repo: repo_id.clone(),
-                            path: String::new(),
-                        }),
-                        cx,
-                    )
-                })
-                .into_any_element(),
-        );
+        let repo_name = repo.rsplit('/').next().unwrap_or(repo).to_owned();
+        rows.push(FileListRow::RepoRoot {
+            repo: repo.clone(),
+            name: repo_name,
+        });
         if !folded || !filter.is_empty() {
             rows.extend(children);
         }
@@ -527,15 +876,7 @@ pub fn files(
             .is_some_and(|view| is_agent_files_expanded(&view.folded_files))
             || filter_matches;
         if filter.is_empty() || filter_matches {
-            rows.push(agent_files_section(
-                ui,
-                state,
-                session.agent,
-                &agent_tree,
-                expanded,
-                &filter,
-                look,
-            ));
+            collect_agent_rows(state, session.agent, &agent_tree, expanded, &filter, &mut rows);
         }
     }
     // REPOS (CH-21): Add repo to this session, in the header so the footer's
@@ -600,7 +941,9 @@ pub fn files(
                         .text_color(rgb(look.text)),
                 ),
         )
-        .child(
+        .child(if !filter.is_empty() && rows.is_empty() {
+            let clear_ui = ui.clone();
+            let clear_input = input.clone();
             col()
                 .id("session-files")
                 .role(Role::List)
@@ -608,11 +951,51 @@ pub fn files(
                 .test_support()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .p(px(16.))
+                .text_size(px(12.5))
+                .child(
+                    div()
+                        .text_color(rgb(look.secondary))
+                        .child(format!("No files match \"{filter}\"")),
+                )
+                .child(
+                    widgets::push_quiet_shape("session-files-clear-filter", "Clear filter", look)
+                        .on_click(move |_, window, cx| {
+                            clear_input.update(cx, |s, cx| s.set_value("", window, cx));
+                            clear_ui.send(
+                                AppAction::Session(SessionAction::FilterFiles(String::new())),
+                                cx,
+                            );
+                        }),
+                )
+                .into_any_element()
+        } else {
+            let list_ui = ui.clone();
+            let rows = Rc::new(rows);
+            col()
+                .id("session-files")
+                .role(Role::List)
+                .aria_label("Session files")
+                .test_support()
+                .flex_1()
+                .min_h_0()
                 .px(px(6.))
                 .text_size(px(12.5))
-                .children(rows),
-        )
+                .child(
+                    uniform_list("session-files-list", rows.len(), move |range, _, _| {
+                        range
+                            .filter_map(|at| rows.get(at))
+                            .map(|item| render_file_list_row(&list_ui, item, look))
+                            .collect()
+                    })
+                    .flex_1()
+                    .size_full(),
+                )
+                .into_any_element()
+        })
         .child(
             row()
                 .gap(px(8.))
@@ -634,257 +1017,19 @@ pub fn files(
                     Button::new("files-open-editor")
                         .label("Open in editor")
                         .small()
-                        .text_color(rgb(look.text))
-                        .opacity(1.)
+                        .text_color(rgb(look.secondary))
+                        .tooltip("Opening in an external editor is coming soon")
                         .disabled(true),
                 )
                 .child(
                     Button::new("files-upload")
                         .label("Upload…")
                         .small()
-                        .text_color(rgb(look.text))
-                        .opacity(1.)
+                        .text_color(rgb(look.secondary))
+                        .tooltip("File upload is coming soon")
                         .disabled(true),
                 )
         )
-}
-
-fn agent_file_row(
-    ui: &Rc<Ui>,
-    state: &AppState,
-    entry: &AgentFileEntry,
-    indent_px: f32,
-    look: Look,
-) -> AnyElement {
-    let selected = state
-        .session
-        .view()
-        .and_then(|view| view.file.as_ref())
-        .is_some_and(|(r, p)| r == &entry.repo && p == &entry.path);
-    let click_ui = ui.clone();
-    let repo = entry.repo.clone();
-    let path = entry.path.clone();
-    row()
-        .id(SharedString::from(format!(
-            "agent-file {}/{}",
-            entry.repo, entry.path
-        )))
-        .role(Role::ListItem)
-        .aria_label(entry.label.clone())
-        .test_support()
-        .h(px(23.))
-        .pl(px(indent_px))
-        .pr(px(8.))
-        .gap(px(6.))
-        .rounded(px(5.))
-        .when(selected, |r| r.bg(rgb(look.fill)))
-        .child(text(entry.label.clone()).flex_1())
-        .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            click_ui.send(
-                AppAction::Session(SessionAction::SelectFile {
-                    repo: repo.clone(),
-                    path: path.clone(),
-                }),
-                cx,
-            )
-        })
-        .into_any_element()
-}
-
-fn agent_group_rows(
-    ui: &Rc<Ui>,
-    state: &AppState,
-    group_key: &str,
-    title_text: String,
-    entries: &[AgentFileEntry],
-    filter: &str,
-    look: Look,
-) -> Vec<AnyElement> {
-    let matching: Vec<&AgentFileEntry> = entries
-        .iter()
-        .filter(|entry| entry_matches_filter(entry, filter))
-        .collect();
-    if matching.is_empty() {
-        return Vec::new();
-    }
-    let fold_path = format!("__group__:{group_key}");
-    let folded = state.session.view().is_some_and(|view| {
-        view.folded_files
-            .contains(&(AGENT_STATE_REPO.to_owned(), fold_path.clone()))
-    });
-    let open = !folded || !filter.is_empty();
-    let click_ui = ui.clone();
-    let toggle_path = fold_path.clone();
-    let mut out = Vec::new();
-    out.push(
-        row()
-            .id(SharedString::from(format!("agent-group {group_key}")))
-            .role(Role::Button)
-            .aria_label(title_text.clone())
-            .test_support()
-            .h(px(23.))
-            .pl(px(14.))
-            .pr(px(8.))
-            .gap(px(6.))
-            .rounded(px(5.))
-            .child(
-                text(if open { "▾" } else { "▸" })
-                    .text_size(px(11.))
-                    .text_color(rgb(look.secondary)),
-            )
-            .child(text(title_text).text_color(rgb(look.text)))
-            .cursor_pointer()
-            .on_click(move |_, _, cx| {
-                click_ui.send(
-                    AppAction::Session(SessionAction::ToggleFolder {
-                        repo: AGENT_STATE_REPO.to_owned(),
-                        path: toggle_path.clone(),
-                    }),
-                    cx,
-                )
-            })
-            .into_any_element(),
-    );
-    if open {
-        for entry in matching {
-            out.push(agent_file_row(ui, state, entry, 28., look));
-        }
-    }
-    out
-}
-
-fn agent_files_section(
-    ui: &Rc<Ui>,
-    state: &AppState,
-    agent: Agent,
-    tree: &AgentFilesTree,
-    expanded: bool,
-    filter: &str,
-    look: Look,
-) -> AnyElement {
-    let provider = agent.name();
-    let subtitle = if expanded {
-        format!("· {provider}")
-    } else {
-        format!("· {provider} · {}", tree.count_summary())
-    };
-    let click_ui = ui.clone();
-    let header = row()
-        .id(SharedString::from("agent-files-toggle"))
-        .role(Role::Button)
-        .aria_label(format!("Agent files {subtitle}"))
-        .test_support()
-        .w_full()
-        .items_center()
-        .justify_between()
-        .px(px(8.))
-        .py(px(5.))
-        .rounded(px(6.))
-        .bg(rgb(look.fill))
-        .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            click_ui.send(
-                AppAction::Session(SessionAction::ToggleFolder {
-                    repo: AGENT_STATE_REPO.to_owned(),
-                    path: AGENT_STATE_EXPANDED_KEY.to_owned(),
-                }),
-                cx,
-            )
-        })
-        .child(
-            row()
-                .items_center()
-                .gap(px(5.))
-                .child(
-                    text(if expanded { "▾" } else { "▸" })
-                        .text_size(px(11.))
-                        .text_color(rgb(look.secondary)),
-                )
-                .child(
-                    text("Agent files")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(look.text)),
-                )
-                .child(text(subtitle).text_color(rgb(look.secondary))),
-        )
-        .child(
-            text("🔒 read-only")
-                .text_size(px(11.))
-                .text_color(rgb(look.secondary)),
-        );
-
-    let mut section = col()
-        .mt(px(8.))
-        .pt(px(8.))
-        .border_t_1()
-        .border_color(rgb(look.line))
-        .gap(px(2.))
-        .child(header);
-
-    if expanded {
-        if tree.total_files() == 0 {
-            section = section.child(
-                div()
-                    .pl(px(20.))
-                    .py(px(4.))
-                    .child(text("No agent files yet").text_color(rgb(look.secondary))),
-            );
-        } else {
-            for entry in &tree.top_level {
-                if entry_matches_filter(entry, filter) {
-                    section = section.child(agent_file_row(ui, state, entry, 14., look));
-                }
-            }
-            section = section.children(agent_group_rows(
-                ui,
-                state,
-                "subagents",
-                format!("Subagents ({})", tree.subagents.len()),
-                &tree.subagents,
-                filter,
-                look,
-            ));
-            section = section.children(agent_group_rows(
-                ui,
-                state,
-                "tool-outputs",
-                format!("Tool outputs ({})", tree.tool_outputs.len()),
-                &tree.tool_outputs,
-                filter,
-                look,
-            ));
-            section = section.children(agent_group_rows(
-                ui,
-                state,
-                "plans",
-                format!("Plans ({})", tree.plans.len()),
-                &tree.plans,
-                filter,
-                look,
-            ));
-            section = section.children(agent_group_rows(
-                ui,
-                state,
-                "todos",
-                format!("Todos ({})", tree.todos.len()),
-                &tree.todos,
-                filter,
-                look,
-            ));
-            section = section.children(agent_group_rows(
-                ui,
-                state,
-                "earlier",
-                format!("Earlier before /clear · {}", tree.earlier.len()),
-                &tree.earlier,
-                filter,
-                look,
-            ));
-        }
-    }
-
-    section.into_any_element()
 }
 
 #[cfg(test)]
@@ -1007,5 +1152,14 @@ mod tests {
 
         let folded = BTreeSet::<(String, String)>::new();
         assert!(!folded.contains(&(String::new(), String::new())));
+    }
+
+    #[test]
+    fn file_row_indent_clamps_deep_hierarchies() {
+        assert_eq!(file_row_indent(0), 8.);
+        assert_eq!(file_row_indent(1), 22.);
+        assert_eq!(file_row_indent(8), 120.);
+        assert_eq!(file_row_indent(9), 120.);
+        assert_eq!(file_row_indent(25), 120.);
     }
 }

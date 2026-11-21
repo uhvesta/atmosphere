@@ -36,25 +36,25 @@ Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Diff"
   #panel-header
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
     text "Diff"
     #review-pr-line
       text "PR #482 against main · 2 repos"
-    Button "Full screen" description="Full screen  ⌃⌘↩"
-    Button "Close panel" description="Close panel"
   #github-feedback-checked-rail
     text "Checked 2m ago"
     text "·"
     Button
       text "Refresh"
   #diff-file-bar
+    #diff-file-count
+      text "1 of 1"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
-    #diff-file-count
-      text "1 of 1"
-    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
     text "api"
     text "·"
+    text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
   #review-diff
     #review-repo-acme/api
       Label "api"
@@ -80,8 +80,7 @@ Complementary "Diff"
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 1"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
   Button "Files"
   Button "To-do"

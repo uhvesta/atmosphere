@@ -38,8 +38,7 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Toolbar "Session panels"
   Button "Agent inbox"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
     Status "Diff: 2"
   Button "Files"
@@ -65,19 +64,19 @@ Tab "zsh"
   Button "Close zsh"
 Tab "rfc-brin.md" selected
   Button "Close rfc-brin.md"
-Button "New terminal"
 RadioGroup "Show the file as"
   RadioButton "Preview"
   RadioButton "Source"
   RadioButton "Side by side" selected
+Button "New terminal"
 Region "Versions"
   Button "Older version" disabled
   Button "Newer version" disabled
   Button "History ▾" disabled
+  Button "Save version"
   #doc-version-message
     #input
       TextInput "What changed? (optional)" value="" placeholder="What changed? (optional)"
-  Button "Save version"
   Region "No versions yet"
 CheckBox "Link scrolling" selected
 text "Scrolling is linked: the page follows the source. Comment on source lines; the page shows where they are."
@@ -131,8 +130,6 @@ Document "rfc-brin.md source"
   text "## Bench"
   Button "Comment on line 18"
   text ""
-  Button "Comment on line 19"
-  text "```"
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"
     Heading "Heading 1, level 1"

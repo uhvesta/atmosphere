@@ -8,6 +8,7 @@
 //! shown.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::base::TestTextExt as _;
@@ -20,16 +21,29 @@ use humata2_session::SessionAction;
 use humata2_session::editor::{self, CodeMode, Row, SideRow};
 
 use crate::bridge::Ui;
+use crate::chrome::{GREEN, RED};
 use crate::comment_cards::{self, StartReattach};
 use crate::document_tab::Documents;
 use crate::theme::Look;
 use crate::widgets::{col, row};
+
+/// Files with more rows than this draw through a virtual `ListState` so
+/// opening a 10k-line file only constructs the rows currently in view.
+const VIRTUAL_FROM: usize = 500;
+const EDITOR_LINE_HEIGHT: f32 = 18.;
+const LIST_OVERDRAW: f32 = 160.;
+
+fn should_virtualize(row_count: usize) -> bool {
+    row_count > VIRTUAL_FROM
+}
 
 /// What GPUI keeps for one changed file's editor between frames.
 #[derive(Clone)]
 pub struct EditorView {
     /// The rows' scroll position.
     pub handle: ScrollHandle,
+    /// Virtual list state for large files (`row_count > VIRTUAL_FROM`).
+    list: Rc<RefCell<Option<(usize, ListState)>>>,
     /// Set by a step; the next frame that can scroll shows the cursor's change.
     pending: Rc<Cell<bool>>,
     /// The last terminal file-link jump generation that was scrolled into view.
@@ -40,9 +54,27 @@ impl EditorView {
     pub fn new() -> Self {
         Self {
             handle: ScrollHandle::new(),
+            list: Rc::new(RefCell::new(None)),
             pending: Rc::new(Cell::new(false)),
             scrolled_jump: Rc::new(Cell::new(None)),
         }
+    }
+
+    fn list_state(&self, count: usize) -> ListState {
+        let mut slot = self.list.borrow_mut();
+        if let Some((prev_len, state)) = slot.as_mut() {
+            if *prev_len != count {
+                let top = state.logical_scroll_top();
+                state.reset_with_uniform_height(count, px(EDITOR_LINE_HEIGHT));
+                state.scroll_to(top);
+                *prev_len = count;
+            }
+            return state.clone();
+        }
+        let state = ListState::new(count, ListAlignment::Top, px(LIST_OVERDRAW))
+            .with_uniform_item_height(px(EDITOR_LINE_HEIGHT));
+        *slot = Some((count, state.clone()));
+        state
     }
 }
 
@@ -93,121 +125,20 @@ pub fn body(
         lines: file_lines,
         reattach: documents.reattach(),
     });
-    let highlights = LineHighlights::for_file(state, &session.id, repo, path, look);
+    let highlights = Rc::new(LineHighlights::for_file(state, &session.id, repo, path, look));
     let dark = ((look.term >> 8) & 0xff) < 0x80;
     let language = humata2_highlight::Language::detect(Some(path), Some(text));
     let side_rows = (code.mode == CodeMode::SideBySide).then(|| editor::side_by_side(&rows));
-    let (lines, starts, slots): (Vec<Vec<AnyElement>>, Vec<usize>, Vec<Slot>) = match &side_rows {
-        Some(side) => {
-            let old_texts: Vec<&str> = side
-                .iter()
-                .map(|row| match row {
-                    SideRow::Pair { old: Some(line), .. } => line.text.as_str(),
-                    _ => "",
-                })
-                .collect();
-            let new_texts: Vec<&str> = side
-                .iter()
-                .map(|row| match row {
-                    SideRow::Pair { new: Some(line), .. } => line.text.as_str(),
-                    _ => "",
-                })
-                .collect();
-            let old_syntax = humata2_highlight::highlight_lines_cached(language, &old_texts, dark);
-            let new_syntax = humata2_highlight::highlight_lines_cached(language, &new_texts, dark);
-            let starts = editor::side_changes(side);
-            let slots = side
-                .iter()
-                .map(|row| match row {
-                    SideRow::Pair { old, new } => Slot::Lines(old.iter().chain(new.iter()).collect()),
-                    SideRow::Fold { start, count } => Slot::Fold { start: *start, count: *count },
-                })
-                .collect();
-            let lines = side
-                .iter()
-                .enumerate()
-                .map(|(index, row)| match row {
-                    SideRow::Pair { old, new } => {
-                        let old_spans = old_syntax.line(index);
-                        let new_spans = new_syntax.line(index);
-                        vec![side_pair(
-                            index,
-                            old.as_ref(),
-                            old_spans,
-                            new.as_ref(),
-                            new_spans,
-                            &commenting,
-                            &highlights,
-                            look,
-                        )]
-                    }
-                    SideRow::Fold { start, count } => {
-                        vec![fold(ui, repo, path, *start, *count, look)]
-                    }
-                })
-                .collect();
-            (lines, starts, slots)
-        }
-        None => {
-            let line_texts: Vec<&str> = rows
-                .iter()
-                .map(|row| match row {
-                    Row::Line(line) => line.text.as_str(),
-                    Row::Fold { .. } => "",
-                })
-                .collect();
-            let syntax = humata2_highlight::highlight_lines_cached(language, &line_texts, dark);
-            let starts = editor::changes(&rows);
-            let slots = rows
-                .iter()
-                .map(|row| match row {
-                    Row::Line(line) => Slot::Lines(vec![line]),
-                    Row::Fold { start, count } => Slot::Fold { start: *start, count: *count },
-                })
-                .collect();
-            let lines = rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| match row {
-                    Row::Line(line) => {
-                        let spans = syntax.line(index);
-                        vec![line_row(index, line, spans, &commenting, &highlights, look)]
-                    }
-                    Row::Fold { start, count } => vec![fold(ui, repo, path, *start, *count, look)],
-                })
-                .collect();
-            (lines, starts, slots)
-        }
+    let row_count = side_rows.as_ref().map_or(rows.len(), Vec::len);
+    let virtualize = should_virtualize(row_count);
+    let starts = match &side_rows {
+        Some(side) => editor::side_changes(side),
+        None => editor::changes(&rows),
     };
-    let under = comments_under(ui, state, session, repo, path, &slots, documents, look);
-    let lines: Vec<AnyElement> = lines
-        .into_iter()
-        .zip(under)
-        .flat_map(|(mut elements, cards)| {
-            elements.extend(cards);
-            elements
-        })
-        .collect();
     let sendable = state.comments.sendable(&session.id).len();
     let jump = state.session.file_jump(&session.id, repo, path);
     let count = starts.len();
     let current = cursor.filter(|at| *at < count);
-    if view.pending.get() {
-        match current.and_then(|at| starts.get(at)) {
-            Some(&index) => {
-                if reveal(&view.handle, index) {
-                    view.pending.set(false);
-                }
-            }
-            None => view.pending.set(false),
-        }
-    } else if let Some(jump) = jump
-        && view.scrolled_jump.get() != Some(jump.generation)
-        && let Some(index) = slot_of(&slots, Side::New, jump.first)
-        && reveal(&view.handle, index)
-    {
-        view.scrolled_jump.set(Some(jump.generation));
-    }
 
     let mut header = row()
         .px(px(14.))
@@ -267,6 +198,313 @@ pub fn body(
         }
     });
 
+    let rows_el: AnyElement = if virtualize {
+        let slots_comments = Rc::new(match &side_rows {
+            Some(side) => {
+                let slots: Vec<Slot> = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { old, new } => {
+                            Slot::Lines(old.iter().chain(new.iter()).collect())
+                        }
+                        SideRow::Fold { start, count } => Slot::Fold {
+                            start: *start,
+                            count: *count,
+                        },
+                    })
+                    .collect();
+                SlotComments::from_slots(ui, state, session, repo, path, &slots, documents, look)
+            }
+            None => {
+                let slots: Vec<Slot> = rows
+                    .iter()
+                    .map(|row| match row {
+                        Row::Line(line) => Slot::Lines(vec![line]),
+                        Row::Fold { start, count } => Slot::Fold {
+                            start: *start,
+                            count: *count,
+                        },
+                    })
+                    .collect();
+                SlotComments::from_slots(ui, state, session, repo, path, &slots, documents, look)
+            }
+        });
+        let list_state = view.list_state(row_count);
+        if view.pending.get() {
+            match current.and_then(|at| starts.get(at)) {
+                Some(&index) => {
+                    list_state.scroll_to_reveal_item(index);
+                    view.pending.set(false);
+                }
+                None => view.pending.set(false),
+            }
+        } else if let Some(jump) = jump
+            && view.scrolled_jump.get() != Some(jump.generation)
+        {
+            let jump_index = match &side_rows {
+                Some(side) => {
+                    let slots: Vec<Slot> = side
+                        .iter()
+                        .map(|row| match row {
+                            SideRow::Pair { old, new } => {
+                                Slot::Lines(old.iter().chain(new.iter()).collect())
+                            }
+                            SideRow::Fold { start, count } => Slot::Fold {
+                                start: *start,
+                                count: *count,
+                            },
+                        })
+                        .collect();
+                    slot_of(&slots, Side::New, jump.first)
+                }
+                None => {
+                    let slots: Vec<Slot> = rows
+                        .iter()
+                        .map(|row| match row {
+                            Row::Line(line) => Slot::Lines(vec![line]),
+                            Row::Fold { start, count } => Slot::Fold {
+                                start: *start,
+                                count: *count,
+                            },
+                        })
+                        .collect();
+                    slot_of(&slots, Side::New, jump.first)
+                }
+            };
+            if let Some(index) = jump_index {
+                list_state.scroll_to_reveal_item(index);
+                view.scrolled_jump.set(Some(jump.generation));
+            }
+        }
+        let virtual_list = match side_rows {
+            Some(side) => {
+                let old_texts: Vec<&str> = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { old: Some(line), .. } => line.text.as_str(),
+                        _ => "",
+                    })
+                    .collect();
+                let new_texts: Vec<&str> = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { new: Some(line), .. } => line.text.as_str(),
+                        _ => "",
+                    })
+                    .collect();
+                let old_syntax = humata2_highlight::highlight_lines_cached(language, &old_texts, dark);
+                let new_syntax = humata2_highlight::highlight_lines_cached(language, &new_texts, dark);
+                let side = Rc::new(side);
+                let ui = ui.clone();
+                let repo = repo.to_owned();
+                let path = path.to_owned();
+                gpui_kit::list(list_state, move |index, _, _| {
+                    let Some(row) = side.get(index) else {
+                        return div().into_any_element();
+                    };
+                    let base = match row {
+                        SideRow::Pair { old, new } => side_pair(
+                            index,
+                            old.as_ref(),
+                            old_syntax.line(index),
+                            new.as_ref(),
+                            new_syntax.line(index),
+                            &commenting,
+                            &highlights,
+                            look,
+                        ),
+                        SideRow::Fold { start, count } => fold(&ui, &repo, &path, *start, *count, look),
+                    };
+                    slots_comments.wrap(index, base)
+                })
+                .flex_1()
+                .w_full()
+                .py(px(4.))
+            }
+            None => {
+                let line_texts: Vec<&str> = rows
+                    .iter()
+                    .map(|row| match row {
+                        Row::Line(line) => line.text.as_str(),
+                        Row::Fold { .. } => "",
+                    })
+                    .collect();
+                let syntax = humata2_highlight::highlight_lines_cached(language, &line_texts, dark);
+                let rows = Rc::new(rows);
+                let ui = ui.clone();
+                let repo = repo.to_owned();
+                let path = path.to_owned();
+                gpui_kit::list(list_state, move |index, _, _| {
+                    let Some(row) = rows.get(index) else {
+                        return div().into_any_element();
+                    };
+                    let base = match row {
+                        Row::Line(line) => {
+                            line_row(index, line, syntax.line(index), &commenting, &highlights, look)
+                        }
+                        Row::Fold { start, count } => fold(&ui, &repo, &path, *start, *count, look),
+                    };
+                    slots_comments.wrap(index, base)
+                })
+                .flex_1()
+                .w_full()
+                .py(px(4.))
+            }
+        };
+        col()
+            .id("editor-rows")
+            .role(Role::Code)
+            .aria_label(format!("{repo}/{path}"))
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .font_family("Menlo")
+            .text_size(px(12.))
+            .line_height(px(EDITOR_LINE_HEIGHT))
+            .when_some(clear_jump_click, |rows, handler| {
+                rows.on_mouse_down(MouseButton::Left, handler)
+            })
+            .when_some(clear_jump_scroll, |rows, handler| rows.on_scroll(handler))
+            .child(virtual_list)
+            .into_any_element()
+    } else {
+        let (lines, slots): (Vec<Vec<AnyElement>>, Vec<Slot>) = match &side_rows {
+            Some(side) => {
+                let old_texts: Vec<&str> = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { old: Some(line), .. } => line.text.as_str(),
+                        _ => "",
+                    })
+                    .collect();
+                let new_texts: Vec<&str> = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { new: Some(line), .. } => line.text.as_str(),
+                        _ => "",
+                    })
+                    .collect();
+                let old_syntax = humata2_highlight::highlight_lines_cached(language, &old_texts, dark);
+                let new_syntax = humata2_highlight::highlight_lines_cached(language, &new_texts, dark);
+                let slots = side
+                    .iter()
+                    .map(|row| match row {
+                        SideRow::Pair { old, new } => {
+                            Slot::Lines(old.iter().chain(new.iter()).collect())
+                        }
+                        SideRow::Fold { start, count } => Slot::Fold {
+                            start: *start,
+                            count: *count,
+                        },
+                    })
+                    .collect();
+                let lines = side
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| match row {
+                        SideRow::Pair { old, new } => {
+                            let old_spans = old_syntax.line(index);
+                            let new_spans = new_syntax.line(index);
+                            vec![side_pair(
+                                index,
+                                old.as_ref(),
+                                old_spans,
+                                new.as_ref(),
+                                new_spans,
+                                &commenting,
+                                &highlights,
+                                look,
+                            )]
+                        }
+                        SideRow::Fold { start, count } => {
+                            vec![fold(ui, repo, path, *start, *count, look)]
+                        }
+                    })
+                    .collect();
+                (lines, slots)
+            }
+            None => {
+                let line_texts: Vec<&str> = rows
+                    .iter()
+                    .map(|row| match row {
+                        Row::Line(line) => line.text.as_str(),
+                        Row::Fold { .. } => "",
+                    })
+                    .collect();
+                let syntax = humata2_highlight::highlight_lines_cached(language, &line_texts, dark);
+                let slots = rows
+                    .iter()
+                    .map(|row| match row {
+                        Row::Line(line) => Slot::Lines(vec![line]),
+                        Row::Fold { start, count } => Slot::Fold {
+                            start: *start,
+                            count: *count,
+                        },
+                    })
+                    .collect();
+                let lines = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| match row {
+                        Row::Line(line) => {
+                            let spans = syntax.line(index);
+                            vec![line_row(index, line, spans, &commenting, &highlights, look)]
+                        }
+                        Row::Fold { start, count } => {
+                            vec![fold(ui, repo, path, *start, *count, look)]
+                        }
+                    })
+                    .collect();
+                (lines, slots)
+            }
+        };
+        let under = comments_under(ui, state, session, repo, path, &slots, documents, look);
+        let lines: Vec<AnyElement> = lines
+            .into_iter()
+            .zip(under)
+            .flat_map(|(mut elements, cards)| {
+                elements.extend(cards);
+                elements
+            })
+            .collect();
+        if view.pending.get() {
+            match current.and_then(|at| starts.get(at)) {
+                Some(&index) => {
+                    if reveal(&view.handle, index) {
+                        view.pending.set(false);
+                    }
+                }
+                None => view.pending.set(false),
+            }
+        } else if let Some(jump) = jump
+            && view.scrolled_jump.get() != Some(jump.generation)
+            && let Some(index) = slot_of(&slots, Side::New, jump.first)
+            && reveal(&view.handle, index)
+        {
+            view.scrolled_jump.set(Some(jump.generation));
+        }
+        col()
+            .id("editor-rows")
+            .role(Role::Code)
+            .aria_label(format!("{repo}/{path}"))
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .py(px(4.))
+            .font_family("Menlo")
+            .text_size(px(12.))
+            .line_height(px(EDITOR_LINE_HEIGHT))
+            .track_scroll(&view.handle)
+            .overflow_y_scroll()
+            .when_some(clear_jump_click, |rows, handler| {
+                rows.on_mouse_down(MouseButton::Left, handler)
+            })
+            .when_some(clear_jump_scroll, |rows, handler| rows.on_scroll(handler))
+            .children(lines)
+            .into_any_element()
+    };
+
     col()
         .id("session-file")
         .role(Role::Document)
@@ -276,28 +514,7 @@ pub fn body(
         .bg(rgb(look.term))
         .text_color(rgb(look.text))
         .child(header)
-        .child(
-            col()
-                .id("editor-rows")
-                .role(Role::Code)
-                .aria_label(format!("{repo}/{path}"))
-                .test_support()
-                .flex_1()
-                .min_h_0()
-                .py(px(4.))
-                .font_family("Menlo")
-                .text_size(px(12.))
-                .line_height(px(18.))
-                .track_scroll(&view.handle)
-                .overflow_y_scroll()
-                .when_some(clear_jump_click, |rows, handler| {
-                    rows.on_mouse_down(MouseButton::Left, handler)
-                })
-                .when_some(clear_jump_scroll, |rows, handler| {
-                    rows.on_scroll(handler)
-                })
-                .children(lines),
-        )
+        .child(rows_el)
         .when(sendable > 0, |column| {
             column.child(drafts(ui, &session.id, sendable, look))
         })
@@ -335,45 +552,12 @@ pub fn plain_body(
         lines: file_lines.clone(),
         reattach: documents.reattach(),
     });
-    let highlights = LineHighlights::for_file(state, &session.id, repo, path, look);
+    let highlights = Rc::new(LineHighlights::for_file(state, &session.id, repo, path, look));
     let dark = ((look.term >> 8) & 0xff) < 0x80;
     let language = humata2_highlight::Language::detect(Some(path), Some(text));
     let line_refs: Vec<&str> = file_lines.iter().map(String::as_str).collect();
     let syntax = humata2_highlight::highlight_lines_cached(language, &line_refs, dark);
-    let diff_lines: Vec<DiffLine> = file_lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let n = u32::try_from(index + 1).unwrap_or(u32::MAX);
-            DiffLine {
-                kind: LineKind::Context,
-                old: Some(n),
-                new: Some(n),
-                text: line.clone(),
-            }
-        })
-        .collect();
-    let slots: Vec<Slot> = diff_lines.iter().map(|line| Slot::Lines(vec![line])).collect();
-    let under = comments_under(ui, state, session, repo, path, &slots, documents, look);
-    let lines: Vec<AnyElement> = diff_lines
-        .iter()
-        .enumerate()
-        .zip(under)
-        .flat_map(|((index, line), cards)| {
-            let spans = syntax.line(index);
-            let mut elements = vec![plain_line_row(index, line, spans, &commenting, &highlights, look)];
-            elements.extend(cards);
-            elements
-        })
-        .collect();
     let sendable = state.comments.sendable(&session.id).len();
-    if let Some(jump) = jump
-        && view.scrolled_jump.get() != Some(jump.generation)
-        && let Some(index) = slot_of(&slots, Side::New, jump.first)
-        && reveal(&view.handle, index)
-    {
-        view.scrolled_jump.set(Some(jump.generation));
-    }
     let clear_jump_click = jump.map(|_| {
         let ui = ui.clone();
         let session = session.id.clone();
@@ -409,6 +593,110 @@ pub fn plain_body(
         }
     });
 
+    let rows_el: AnyElement = if should_virtualize(file_lines.len()) {
+        let total = file_lines.len();
+        let slots_comments = Rc::new(SlotComments::from_plain_lines(
+            ui, state, session, repo, path, total, documents, look,
+        ));
+        let list_state = view.list_state(total);
+        if let Some(jump) = jump
+            && view.scrolled_jump.get() != Some(jump.generation)
+            && total > 0
+        {
+            let index = (jump.first.saturating_sub(1) as usize).min(total - 1);
+            list_state.scroll_to_reveal_item(index);
+            view.scrolled_jump.set(Some(jump.generation));
+        }
+        let virtual_list = gpui_kit::list(list_state, move |index, _, _| {
+            let Some(line_text) = file_lines.get(index) else {
+                return div().into_any_element();
+            };
+            let n = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            let diff_line = DiffLine {
+                kind: LineKind::Context,
+                old: Some(n),
+                new: Some(n),
+                text: line_text.clone(),
+            };
+            let base = plain_line_row(index, &diff_line, syntax.line(index), &commenting, &highlights, look);
+            slots_comments.wrap(index, base)
+        })
+        .flex_1()
+        .w_full()
+        .py(px(4.));
+        col()
+            .id("editor-rows")
+            .role(Role::Code)
+            .aria_label(display_path.clone())
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .font_family("Menlo")
+            .text_size(px(12.))
+            .line_height(px(EDITOR_LINE_HEIGHT))
+            .when_some(clear_jump_click, |rows, handler| {
+                rows.on_mouse_down(MouseButton::Left, handler)
+            })
+            .when_some(clear_jump_scroll, |rows, handler| rows.on_scroll(handler))
+            .child(virtual_list)
+            .into_any_element()
+    } else {
+        let diff_lines: Vec<DiffLine> = file_lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let n = u32::try_from(index + 1).unwrap_or(u32::MAX);
+                DiffLine {
+                    kind: LineKind::Context,
+                    old: Some(n),
+                    new: Some(n),
+                    text: line.clone(),
+                }
+            })
+            .collect();
+        let slots: Vec<Slot> = diff_lines.iter().map(|line| Slot::Lines(vec![line])).collect();
+        let under = comments_under(ui, state, session, repo, path, &slots, documents, look);
+        let lines: Vec<AnyElement> = diff_lines
+            .iter()
+            .enumerate()
+            .zip(under)
+            .flat_map(|((index, line), cards)| {
+                let spans = syntax.line(index);
+                let mut elements =
+                    vec![plain_line_row(index, line, spans, &commenting, &highlights, look)];
+                elements.extend(cards);
+                elements
+            })
+            .collect();
+        if let Some(jump) = jump
+            && view.scrolled_jump.get() != Some(jump.generation)
+            && let Some(index) = slot_of(&slots, Side::New, jump.first)
+            && reveal(&view.handle, index)
+        {
+            view.scrolled_jump.set(Some(jump.generation));
+        }
+        col()
+            .id("editor-rows")
+            .role(Role::Code)
+            .aria_label(display_path.clone())
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .py(px(4.))
+            .font_family("Menlo")
+            .text_size(px(12.))
+            .line_height(px(EDITOR_LINE_HEIGHT))
+            .track_scroll(&view.handle)
+            .overflow_y_scroll()
+            .when_some(clear_jump_click, |rows, handler| {
+                rows.on_mouse_down(MouseButton::Left, handler)
+            })
+            .when_some(clear_jump_scroll, |rows, handler| rows.on_scroll(handler))
+            .children(lines)
+            .into_any_element()
+    };
+
     col()
         .id("session-file")
         .role(Role::Document)
@@ -424,30 +712,9 @@ pub fn plain_body(
                 .flex_shrink_0()
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
-                .child(display_path.clone()),
+                .child(display_path),
         )
-        .child(
-            col()
-                .id("editor-rows")
-                .role(Role::Code)
-                .aria_label(display_path)
-                .test_support()
-                .flex_1()
-                .min_h_0()
-                .py(px(4.))
-                .font_family("Menlo")
-                .text_size(px(12.))
-                .line_height(px(18.))
-                .track_scroll(&view.handle)
-                .overflow_y_scroll()
-                .when_some(clear_jump_click, |rows, handler| {
-                    rows.on_mouse_down(MouseButton::Left, handler)
-                })
-                .when_some(clear_jump_scroll, |rows, handler| {
-                    rows.on_scroll(handler)
-                })
-                .children(lines),
-        )
+        .child(rows_el)
         .when(sendable > 0, |column| {
             column.child(drafts(ui, &session.id, sendable, look))
         })
@@ -737,6 +1004,156 @@ fn slot_of(slots: &[Slot], side: Side, number: u32) -> Option<usize> {
             })
         })
         .or_else(|| slots.len().checked_sub(1))
+}
+
+/// Sparse map of comment cards and open comment box per row index so virtual
+/// lists only build comment cards for visible rows.
+struct SlotComments {
+    ui: Rc<Ui>,
+    look: Look,
+    session_id: SessionId,
+    agent: String,
+    pull_request_review: bool,
+    reattaching: Option<CommentId>,
+    start: StartReattach,
+    input: Entity<gpui_kit::component::input::TextareaState>,
+    cards: HashMap<usize, Vec<Comment>>,
+    editing: Option<(usize, humata2_review::comments::CommentBox, comment_cards::BoxOffers)>,
+}
+
+impl SlotComments {
+    #[allow(clippy::too_many_arguments)]
+    fn from_slots(
+        ui: &Rc<Ui>,
+        state: &AppState,
+        session: &Session,
+        repo: &str,
+        path: &str,
+        slots: &[Slot],
+        documents: &Documents,
+        look: Look,
+    ) -> Self {
+        Self::build(ui, state, session, repo, path, documents, look, |side, last| {
+            slot_of(slots, side, last)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_plain_lines(
+        ui: &Rc<Ui>,
+        state: &AppState,
+        session: &Session,
+        repo: &str,
+        path: &str,
+        total_lines: usize,
+        documents: &Documents,
+        look: Look,
+    ) -> Self {
+        Self::build(ui, state, session, repo, path, documents, look, |_, last| {
+            if total_lines == 0 {
+                None
+            } else {
+                Some((last.saturating_sub(1) as usize).min(total_lines - 1))
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        ui: &Rc<Ui>,
+        state: &AppState,
+        session: &Session,
+        repo: &str,
+        path: &str,
+        documents: &Documents,
+        look: Look,
+        locate: impl Fn(Side, u32) -> Option<usize>,
+    ) -> Self {
+        let editing = state
+            .comments
+            .sessions
+            .get(&session.id)
+            .and_then(|held| held.editing.as_ref())
+            .filter(|open| open.anchor.repo == repo && open.anchor.path == path);
+        let box_comment = editing.and_then(|open| open.comment.clone());
+        let editing_slot = editing.and_then(|open| {
+            let index = locate(open.anchor.side, open.anchor.last)?;
+            let offers = comment_cards::offers(state, &session.id, &open.anchor.repo);
+            Some((index, open.clone(), offers))
+        });
+        let mut cards: HashMap<usize, Vec<Comment>> = HashMap::new();
+        for comment in state
+            .comments
+            .on_file(&session.id, repo, path)
+            .into_values()
+            .flatten()
+        {
+            if Some(&comment.id) == box_comment.as_ref() {
+                continue;
+            }
+            if let Some(index) = locate(comment.anchor.side, comment.anchor.last) {
+                cards.entry(index).or_default().push(comment.clone());
+            }
+        }
+        let reattach = documents.reattach();
+        let reattaching = reattach.borrow().clone();
+        let cell = reattach.clone();
+        let start: StartReattach = Rc::new(move |id: &CommentId, cx: &mut App| {
+            *cell.borrow_mut() = Some(id.clone());
+            cx.refresh_windows();
+        });
+        Self {
+            ui: ui.clone(),
+            look,
+            session_id: session.id.clone(),
+            agent: session.agent.command().to_owned(),
+            pull_request_review: session.pull_request_review,
+            reattaching,
+            start,
+            input: documents.input(),
+            cards,
+            editing: editing_slot,
+        }
+    }
+
+    fn wrap(&self, index: usize, base: AnyElement) -> AnyElement {
+        let has_cards = self.cards.contains_key(&index);
+        let has_box = self.editing.as_ref().is_some_and(|(at, _, _)| *at == index);
+        if !has_cards && !has_box {
+            return base;
+        }
+        let mut elements = Vec::new();
+        for comment in self.cards.get(&index).into_iter().flatten() {
+            elements.push(
+                comment_cards::card(
+                    &self.ui,
+                    self.look,
+                    comment,
+                    &self.agent,
+                    self.pull_request_review,
+                    self.reattaching.as_ref() == Some(&comment.id),
+                    &self.start,
+                )
+                .into_any_element(),
+            );
+        }
+        if let Some((_, open, offers)) = self.editing.as_ref().filter(|(at, _, _)| *at == index) {
+            elements.push(
+                comment_cards::open_box(
+                    &self.ui,
+                    self.look,
+                    &self.session_id,
+                    &open.anchor,
+                    &self.input,
+                    &self.agent,
+                    &open.text,
+                    offers,
+                )
+                .into_any_element(),
+            );
+        }
+        col().child(base).children(elements).into_any_element()
+    }
 }
 
 /// The comment cards of each row, and the open box after the row it goes
@@ -1126,10 +1543,10 @@ fn line_row(
     highlights: &LineHighlights,
     look: Look,
 ) -> AnyElement {
-    let (sign, diff_bg) = match line.kind {
-        LineKind::Added => ("+", Some(look.add)),
-        LineKind::Removed => ("−", Some(look.del)),
-        _ => (" ", None),
+    let (sign, sign_color, diff_bg) = match line.kind {
+        LineKind::Added => ("+", GREEN, Some(look.add)),
+        LineKind::Removed => ("−", RED, Some(look.del)),
+        _ => (" ", look.term_text, None),
     };
     let hl = highlights.for_line(line, None);
     let bg = highlights.bg(hl).or(diff_bg);
@@ -1153,7 +1570,7 @@ fn line_row(
             div()
                 .w(px(16.))
                 .flex_shrink_0()
-                .text_color(rgb(look.term_text))
+                .text_color(rgb(sign_color))
                 .child(sign),
         )
         .child(text_cell.test_text(line.text.clone()))
@@ -1345,5 +1762,20 @@ mod tests {
         assert_eq!(highlights.for_line(&line(12), Some(Side::Old)), None);
         assert_eq!(highlights.for_line(&line(22), Some(Side::Old)), None);
         assert_eq!(highlights.for_line(&line(31), Some(Side::Old)), None);
+    }
+
+    #[test]
+    fn large_files_switch_to_virtual_list_state() {
+        assert!(!should_virtualize(0));
+        assert!(!should_virtualize(VIRTUAL_FROM));
+        assert!(should_virtualize(VIRTUAL_FROM + 1));
+        assert!(should_virtualize(10_000));
+
+        let view = EditorView::new();
+        let list = view.list_state(10_000);
+        assert_eq!(list.item_count(), 10_000);
+        // Updating the row count resets the cached ListState cleanly.
+        let resized = view.list_state(12_345);
+        assert_eq!(resized.item_count(), 12_345);
     }
 }

@@ -37,11 +37,11 @@ Splitter "Resize the side panel"
 Complementary "Diff"
   #changes-push-scrim
   #panel-header
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
     text "Diff"
     #diff-repos-count
       text "2 repos"
-    Button "Full screen" description="Full screen  ⌃⌘↩"
-    Button "Close panel" description="Close panel"
   #changes-files
     #repo-row-0
       Button "Collapse ledger"
@@ -81,11 +81,10 @@ Complementary "Diff"
       text "+81"
       text "−3"
       CheckBox "Not looked at"
-  text "0042_accounts.sql"
-  Button "Open in editor" description="Open in editor"
   text "ledger"
   text "·"
   text "migrations/"
+  text "0042_accounts.sql"
   Button
     text "Open file ↗"
   #change-file-empty
@@ -123,8 +122,7 @@ Complementary "Diff"
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 2"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
     Status "Diff: 1"
   Button "Files"

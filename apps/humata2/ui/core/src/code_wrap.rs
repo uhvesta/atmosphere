@@ -28,9 +28,39 @@ pub fn unwrapped(text: &str) -> Fragment {
     }
 }
 
-/// Wrap at cell boundaries, never inside a grapheme. Deep indentation is
-/// limited to half the viewport so the first visual row always contains code.
-/// At least four cells are needed to fit a tab or a wide grapheme.
+/// Whether a grapheme is a good word/punctuation boundary to wrap *after*
+/// before falling back to an arbitrary character split.
+fn is_wrap_break_after(grapheme: &str) -> bool {
+    matches!(
+        grapheme.as_bytes(),
+        [b' '
+            | b'\t'
+            | b'.'
+            | b','
+            | b';'
+            | b':'
+            | b'('
+            | b')'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'/'
+            | b'\\'
+            | b'-'
+            | b'='
+            | b'+'
+            | b'*'
+            | b'|'
+            | b'?']
+    )
+}
+
+/// Wrap at cell boundaries, preferring whitespace/punctuation boundaries before
+/// falling back to character splits, and never splitting inside a grapheme.
+/// Deep indentation is limited to half the viewport so the first visual row
+/// always contains code. At least four cells are needed to fit a tab or a wide
+/// grapheme.
 pub fn wrapped(text: &str, columns: usize) -> Vec<Fragment> {
     let columns = columns.max(4);
     let mut indent_end = 0;
@@ -55,6 +85,9 @@ pub fn wrapped(text: &str, columns: usize) -> Vec<Fragment> {
     let mut source_start = 0;
     let mut current = String::new();
     let mut current_width = 0;
+    // Last whitespace/punctuation break point within `current`:
+    // `(display_byte_len, visual_width, source_byte_end)`.
+    let mut last_break: Option<(usize, usize, usize)> = None;
     for (offset, grapheme) in text[indent_end..].grapheme_indices(true) {
         let at = indent_end + offset;
         let (rendered, width) = if grapheme == "\t" {
@@ -65,19 +98,42 @@ pub fn wrapped(text: &str, columns: usize) -> Vec<Fragment> {
         };
         logical_column += width;
         if current_width > 0 && current_width + width > columns - indent {
-            fragments.push(Fragment {
-                display: format!("{}{current}", " ".repeat(indent)),
-                source: source_start..at,
-            });
-            source_start = at;
-            current.clear();
-            current_width = 0;
+            if let Some((break_disp, break_width, break_src)) = last_break
+                && break_disp > 0
+                && (!fragments.is_empty()
+                    || current[..break_disp].chars().any(|c| !c.is_whitespace()))
+            {
+                let head = &current[..break_disp];
+                let tail = current[break_disp..].to_owned();
+                fragments.push(Fragment {
+                    display: format!("{}{head}", " ".repeat(indent)),
+                    source: source_start..break_src,
+                });
+                source_start = break_src;
+                current = tail;
+                current_width -= break_width;
+                last_break = None;
+                indent = indent_limit.min(columns.saturating_sub(current_width));
+            }
+            if current_width > 0 && current_width + width > columns - indent {
+                fragments.push(Fragment {
+                    display: format!("{}{current}", " ".repeat(indent)),
+                    source: source_start..at,
+                });
+                source_start = at;
+                current.clear();
+                current_width = 0;
+                last_break = None;
+            }
         }
         if current_width == 0 {
             indent = indent_limit.min(columns.saturating_sub(width));
         }
         current.push_str(&rendered);
         current_width += width;
+        if is_wrap_break_after(grapheme) {
+            last_break = Some((current.len(), current_width, at + grapheme.len()));
+        }
     }
     fragments.push(Fragment {
         display: format!("{}{current}", " ".repeat(indent)),
@@ -124,5 +180,22 @@ mod tests {
         let line = unwrapped("\ta\tb");
         assert_eq!(line.display, "    a   b");
         assert_eq!(line.source, 0..4);
+    }
+    #[test]
+    fn wrapped_code_prefers_whitespace_and_punctuation_before_char_splits() {
+        let parts = wrapped("    let total = price + tax;", 14);
+        let displayed: Vec<&str> = parts.iter().map(|p| p.display.as_str()).collect();
+        assert_eq!(displayed, vec!["    let total ", "    = price + ", "    tax;"]);
+
+        let dotted = wrapped("  self.db.insert(&entry)", 14);
+        let dotted_display: Vec<&str> = dotted.iter().map(|p| p.display.as_str()).collect();
+        assert_eq!(dotted_display, vec!["  self.db.", "  insert(", "  &entry)"]);
+
+        // An unbroken identifier longer than the budget still falls back to char splits.
+        let long = wrapped("  supercalifragilistic", 10);
+        assert!(long.len() >= 3);
+        assert!(long.iter().all(|p| p.display.width() <= 10));
+        let restored: String = long.iter().map(|p| &"  supercalifragilistic"[p.source.clone()]).collect();
+        assert_eq!(restored, "  supercalifragilistic");
     }
 }

@@ -55,12 +55,15 @@ pub fn action(
         .id(id)
         .role(Role::Button)
         .aria_label(label)
-        .size(px(15.))
+        .size(px(24.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
+        .rounded(px(6.))
         .cursor_pointer()
+        .hover(|s| s.bg(rgba(0x80808024)))
+        .active(|s| s.bg(rgba(0x8080803c)))
         .child(icon(glyph, color, 15.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, _, cx| ui.send(event.clone(), cx))
@@ -108,6 +111,21 @@ pub fn stopped() -> Div {
                 .bg(rgb(crate::theme::GREY)),
         )
 }
+/// Wires native macOS titlebar dragging (`start_window_move`) and double-click
+/// zoom (`zoom_window`) onto a 52 pt toolbar element.
+pub fn titlebar_drag<E: InteractiveElement>(el: E) -> E {
+    el.on_mouse_down(MouseButton::Left, |event, window, _| {
+        if !native_traffic_lights() {
+            return;
+        }
+        if event.click_count == 2 {
+            window.zoom_window();
+        } else {
+            window.start_window_move();
+        }
+    })
+}
+
 pub fn lights() -> Div {
     if native_traffic_lights() {
         return div()
@@ -188,7 +206,7 @@ pub fn text(value: impl Into<SharedString>) -> Div {
 
 pub fn secondary(look: Look, value: impl Into<SharedString>) -> Div {
     text(value)
-        .text_size(px(11.5))
+        .text_size(px(12.))
         .text_color(rgb(look.secondary))
 }
 
@@ -212,11 +230,27 @@ pub fn panel_action(
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
         .flex_shrink_0()
-        .when(primary, |button| button.primary())
-        .bg(rgb(if primary { look.accent } else { look.fill }))
-        .text_color(rgb(if primary { 0xffffff } else { look.text }))
-        .when(!primary, |button| {
-            button.border_1().border_color(rgb(look.line))
+        .cursor_pointer()
+        .when(primary, |button| {
+            button
+                .primary()
+                .bg(rgb(look.accent))
+                .text_color(rgb(0xffffff))
+        })
+        .when(!primary && !look.is_dark(), |button| {
+            button
+                .bg(rgb(look.card))
+                .text_color(rgb(look.text))
+                .border_1()
+                .border_color(look.control_border)
+                .shadow_xs()
+        })
+        .when(!primary && look.is_dark(), |button| {
+            button
+                .bg(rgb(look.fill))
+                .text_color(rgb(look.text))
+                .border_1()
+                .border_color(look.control_border)
         })
         .on_click(move |_, _, cx| ui.send(event.clone(), cx))
 }
@@ -237,10 +271,12 @@ pub fn icon_action(
         .tooltip(tooltip)
         .ghost()
         .small()
-        .w(px(16.))
-        .h(px(16.))
+        .w(px(24.))
+        .h(px(24.))
+        .rounded(px(6.))
         .p_0()
         .flex_shrink_0()
+        .cursor_pointer()
         .text_color(rgb(look.secondary))
         .on_click(move |_, _, cx| ui.send(event.clone(), cx))
 }
@@ -254,7 +290,8 @@ pub fn title(panel: Panel) -> &'static str {
     }
 }
 
-/// A panel's header. Beside the terminal it is a 36 pt row: the title, what
+/// A panel's header. Beside the terminal it is a 52 pt row matching
+/// `theme::TOP_BAR` so toolbar hairlines align across panes: the title, what
 /// the panel puts beside it, and the Full screen and Close buttons; a
 /// double-click on it goes full screen. In full screen it is the one 52 pt
 /// title bar: the window lights, "# place › session", the title with the
@@ -320,15 +357,17 @@ pub fn header_with(
     lead: Option<Div>,
 ) -> Div {
     if full {
-        return row()
-            .h(px(52.))
-            .px(px(16.))
-            .gap(px(12.))
-            .flex_shrink_0()
-            .bg(rgb(look.content))
-            .border_b_1()
-            .border_color(rgb(look.line))
-            .child(lights())
+        return titlebar_drag(
+            row()
+                .h(px(crate::theme::TOP_BAR))
+                .px(px(16.))
+                .gap(px(12.))
+                .flex_shrink_0()
+                .bg(rgb(look.content))
+                .border_b(px(0.5))
+                .border_color(look.hairline()),
+        )
+        .child(lights())
             .child(div().w(px(4.)))
             .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
             // The names ellipsize; Exit full screen and Close always stay. The title
@@ -395,11 +434,11 @@ pub fn header_with(
         row()
             .id("panel-header")
             .gap(px(10.))
-            .h(px(36.))
+            .h(px(crate::theme::TOP_BAR))
             .px(px(14.))
             .flex_shrink_0()
-            .border_b_1()
-            .border_color(rgb(look.line))
+            .border_b(px(0.5))
+            .border_color(look.hairline())
             // Double-click: the macOS zoom habit.
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 if event.click_count == 2 {
@@ -416,13 +455,12 @@ pub fn header_with(
             // the base menu is a deferred child that must draw past it.
             .children(extra.map(|e| e.min_w_0().flex_shrink(1.)))
             .child(div().flex_1())
-            // The buttons are 16 pt for their 12 pt glyphs; the 6 pt gap and the
-            // -2 pt margin put the glyphs 10 pt apart and 14 pt from the edge, as
-            // the design draws them.
+            // The buttons are 24 pt hover wells around 12 pt glyphs; the 2 pt gap
+            // and -4 pt margin keep the glyphs comfortably spaced near the edge.
             .child(
                 row()
-                    .gap(px(6.))
-                    .mr(px(-2.))
+                    .gap(px(2.))
+                    .mr(px(-4.))
                     .flex_shrink_0()
                     .child(icon_action(
                         ui,
@@ -466,8 +504,8 @@ pub fn card(look: Look) -> Div {
     col()
         .rounded(px(8.))
         .bg(rgb(look.card))
-        .border_1()
-        .border_color(rgb(look.line))
+        .border(px(0.5))
+        .border_color(look.hairline())
 }
 
 pub fn selected<'a>(

@@ -7,10 +7,25 @@ use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{FocusTrapElement as _, TestTextExt as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
 use humata2_palette::{Command, PaletteAction, PaletteState};
 use std::rc::Rc;
+
+/// Height of a single command palette result row.
+const PALETTE_ROW_HEIGHT: f32 = 32.;
+
+/// Clamps the command palette list's max height to a whole number of
+/// [`PALETTE_ROW_HEIGHT`] rows so the hint footer never slices a row in half.
+fn palette_max_list_height(viewport_h: f32) -> f32 {
+    let available = if viewport_h > 0. {
+        (viewport_h - 240.).clamp(160., 416.)
+    } else {
+        416.
+    };
+    ((available / PALETTE_ROW_HEIGHT).floor() * PALETTE_ROW_HEIGHT).max(160.)
+}
 
 impl Overlays {
     /// The command palette: grouped, searchable entries.
@@ -25,11 +40,7 @@ impl Overlays {
         sync(&self.query, &palette.query, window, cx);
         let mac = cx.platform_info().is_mac();
         let viewport_h = f32::from(window.viewport_size().height);
-        let max_list_h = if viewport_h > 0. {
-            (viewport_h - 220.).clamp(160., 420.)
-        } else {
-            420.
-        };
+        let max_list_h = palette_max_list_height(viewport_h);
         let group = |command: &Command| match command {
             // D784: a session's terminals, hidden ones too, sit with its sessions.
             Command::Session(_) | Command::Terminal { .. } => 0,
@@ -62,8 +73,10 @@ impl Overlays {
             list = list.child(
                 div()
                     .flex_shrink_0()
+                    .h(px(24.))
+                    .flex()
+                    .items_end()
                     .px(px(16.))
-                    .pt(px(8.))
                     .pb(px(3.))
                     .text_size(px(11.))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -130,14 +143,17 @@ impl Overlays {
                         x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
                     })
                     .child(chrome::icon(glyph, name_color.unwrap_or(color), 15.))
-                    .child(
+                    .child(humata2_ui_core::full_text::full_text(
                         div()
+                            .id(("palette-entry-title", at))
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .text_ellipsis()
                             .when_some(name_color, |x, red| x.text_color(rgb(red)))
                             .child(entry.title.clone()),
-                    );
+                        entry.title.clone(),
+                    ));
                 // The two session-deleting entries carry a note, not a shortcut.
                 let noted = matches!(
                     entry.command,
@@ -154,16 +170,20 @@ impl Overlays {
                             .child(humata2_ui_core::keys::label(&entry.hint, mac)),
                     );
                 } else {
-                    item = item.child(
+                    let hint = humata2_ui_core::keys::label(&entry.hint, mac);
+                    item = item.child(humata2_ui_core::full_text::full_text(
                         div()
+                            .id(("palette-entry-hint", at))
                             .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_size(px(11.5))
                             .text_color(rgb(color))
-                            .child(humata2_ui_core::keys::label(&entry.hint, mac)),
-                    );
+                            .child(hint.clone()),
+                        hint,
+                    ));
                 }
                 if let Command::Session(id) = &entry.command
                     && let Some(session) = palette.workspace.session(id)
@@ -316,7 +336,13 @@ impl Overlays {
                         ),
                     ),
             )
-            .child(list)
+            .child(
+                div()
+                    .relative()
+                    .min_h_0()
+                    .child(list)
+                    .vertical_scrollbar(&self.palette_scroll),
+            )
             .when(palette.asking.is_none(), |dialog| {
                 let archived_on = palette.shows_archived();
                 let toggle_ui = ui.clone();
@@ -382,5 +408,25 @@ impl Overlays {
             })
             .focus_trap("palette-trap", &self.query.focus_handle(cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::{PALETTE_ROW_HEIGHT, palette_max_list_height};
+
+    #[test]
+    fn palette_list_height_snaps_to_whole_rows() {
+        for viewport_h in [0., 400., 520., 613., 768., 1080.] {
+            let h = palette_max_list_height(viewport_h);
+            assert!(h >= 160. && h <= 416., "height {h} out of bounds for viewport {viewport_h}");
+            assert_eq!(
+                h % PALETTE_ROW_HEIGHT,
+                0.,
+                "height {h} must be a whole multiple of row height for viewport {viewport_h}"
+            );
+        }
     }
 }

@@ -38,10 +38,14 @@ pub struct ProvidersInputs {
     ui: Rc<Ui>,
     paste: Entity<TextareaState>,
     paste_echo: Rc<RefCell<Option<String>>>,
+    paste_synced: RefCell<String>,
     variables: RefCell<HashMap<String, Entity<InputState>>>,
+    variables_present: RefCell<HashMap<String, bool>>,
     add_repo: RefCell<Option<Entity<InputState>>>,
     add_repo_echo: Rc<RefCell<Option<String>>>,
-    text_fields: RefCell<HashMap<String, (Entity<InputState>, Rc<RefCell<Option<String>>>)>>,
+    add_repo_synced: RefCell<String>,
+    text_fields: RefCell<HashMap<String, (Entity<InputState>, Rc<RefCell<Option<String>>>, Rc<RefCell<String>>)>>,
+    removing_busy: Rc<RefCell<Option<String>>>,
     subscriptions: RefCell<Vec<Subscription>>,
 }
 
@@ -72,10 +76,14 @@ impl ProvidersInputs {
             ui: ui.clone(),
             paste,
             paste_echo,
+            paste_synced: RefCell::new(String::new()),
             variables: RefCell::new(HashMap::new()),
+            variables_present: RefCell::new(HashMap::new()),
             add_repo: RefCell::new(None),
             add_repo_echo: Rc::new(RefCell::new(None)),
+            add_repo_synced: RefCell::new(String::new()),
             text_fields: RefCell::new(HashMap::new()),
+            removing_busy: Rc::new(RefCell::new(None)),
             subscriptions: RefCell::new(vec![typing]),
         }
     }
@@ -120,10 +128,13 @@ impl ProvidersInputs {
             *self.add_repo.borrow_mut() = Some(field.clone());
             field
         };
-        if field.read(cx).value().as_ref() != text {
-            *self.add_repo_echo.borrow_mut() = Some(text.to_owned());
-            let owned = text.to_owned();
-            field.update(cx, |input, cx| input.set_value(owned, window, cx));
+        if self.add_repo_synced.borrow().as_str() != text {
+            *self.add_repo_synced.borrow_mut() = text.to_owned();
+            if field.read(cx).value().as_ref() != text {
+                *self.add_repo_echo.borrow_mut() = Some(text.to_owned());
+                let owned = text.to_owned();
+                field.update(cx, |input, cx| input.set_value(owned, window, cx));
+            }
         }
         field
     }
@@ -140,11 +151,12 @@ impl ProvidersInputs {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<InputState> {
-        let (field, echo) = if let Some(existing) = self.text_fields.borrow().get(key) {
-            (existing.0.clone(), existing.1.clone())
+        let (field, echo, last_synced) = if let Some(existing) = self.text_fields.borrow().get(key) {
+            (existing.0.clone(), existing.1.clone(), existing.2.clone())
         } else {
             let field = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
             let echo = Rc::new(RefCell::new(None::<String>));
+            let last_synced = Rc::new(RefCell::new(String::new()));
             let (ui, echo_cb) = (self.ui.clone(), echo.clone());
             self.subscriptions.borrow_mut().push(cx.subscribe(
                 &field,
@@ -165,15 +177,19 @@ impl ProvidersInputs {
                     InputEvent::Focus | InputEvent::Blur => {}
                 },
             ));
-            self.text_fields
-                .borrow_mut()
-                .insert(key.to_owned(), (field.clone(), echo.clone()));
-            (field, echo)
+            self.text_fields.borrow_mut().insert(
+                key.to_owned(),
+                (field.clone(), echo.clone(), last_synced.clone()),
+            );
+            (field, echo, last_synced)
         };
-        if field.read(cx).value().as_ref() != text {
-            *echo.borrow_mut() = Some(text.to_owned());
-            let owned = text.to_owned();
-            field.update(cx, |input, cx| input.set_value(owned, window, cx));
+        if last_synced.borrow().as_str() != text {
+            *last_synced.borrow_mut() = text.to_owned();
+            if field.read(cx).value().as_ref() != text {
+                *echo.borrow_mut() = Some(text.to_owned());
+                let owned = text.to_owned();
+                field.update(cx, |input, cx| input.set_value(owned, window, cx));
+            }
         }
         field
     }
@@ -205,14 +221,25 @@ impl ProvidersInputs {
     /// row closed).
     fn sync(&self, state: &ProvidersState, window: &mut Window, cx: &mut App) {
         let text = state.import.as_ref().map_or("", |draft| draft.text.as_str());
-        if self.paste.read(cx).value().as_ref() != text {
-            *self.paste_echo.borrow_mut() = Some(text.to_owned());
-            let text = text.to_owned();
-            self.paste.update(cx, |input, cx| input.set_value(text, window, cx));
+        if self.paste_synced.borrow().as_str() != text {
+            *self.paste_synced.borrow_mut() = text.to_owned();
+            if self.paste.read(cx).value().as_ref() != text {
+                *self.paste_echo.borrow_mut() = Some(text.to_owned());
+                let text = text.to_owned();
+                self.paste.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
         }
+        if self.removing_busy.borrow().as_deref() != state.removing.as_deref() {
+            *self.removing_busy.borrow_mut() = None;
+        }
+        let mut present = self.variables_present.borrow_mut();
         for (name, field) in self.variables.borrow().iter() {
-            // Emptying reports an empty value, which the state drops anyway.
-            if !state.values.contains_key(name) && !field.read(cx).value().is_empty() {
+            let is_present = state.values.contains_key(name);
+            let was_present = present.insert(name.clone(), is_present).unwrap_or(false);
+            // Only clear once a value that was in state leaves it (sent or row
+            // closed), so a render before the first keystroke's Change event
+            // never wipes the typed character.
+            if was_present && !is_present && !field.read(cx).value().is_empty() {
                 field.update(cx, |input, cx| input.set_value(String::new(), window, cx));
             }
         }
@@ -362,9 +389,14 @@ fn variables(
 }
 
 /// Remove's in-place confirm, or why it can't remove yet.
-fn removing(ui: &Rc<Ui>, provider: &ProviderEntry, look: Look) -> Div {
-    let cancel = button(ui, "settings-provider-remove-cancel", "Cancel", send(P::CancelRemove), look);
+fn removing(ui: &Rc<Ui>, inputs: &ProvidersInputs, provider: &ProviderEntry, look: Look) -> Div {
+    let busy = inputs.removing_busy.borrow().as_deref() == Some(provider.id.as_str());
+    let cancel = button(ui, "settings-provider-remove-cancel", "Cancel", send(P::CancelRemove), look)
+        .disabled(busy);
     if provider.machines.is_empty() {
+        let ui = ui.clone();
+        let removing_busy = inputs.removing_busy.clone();
+        let id = provider.id.clone();
         return row()
             .gap(px(8.))
             .child(div().flex_1().min_w_0().child(dim(
@@ -373,14 +405,20 @@ fn removing(ui: &Rc<Ui>, provider: &ProviderEntry, look: Look) -> Div {
             )))
             .child(cancel)
             .child(
-                widgets::primary_in(
-                    look,
-                    ui,
+                widgets::push_primary_shape(
                     "settings-provider-remove-confirm",
-                    "Remove",
-                    send(P::ConfirmRemove(provider.id.clone())),
+                    if busy { "Removing\u{2026}" } else { "Remove" },
+                    look,
                 )
-                .bg(rgb(RED)),
+                .bg(rgb(RED))
+                .disabled(busy)
+                .on_click(move |_, _, cx| {
+                    if removing_busy.borrow().as_deref() == Some(id.as_str()) {
+                        return;
+                    }
+                    *removing_busy.borrow_mut() = Some(id.clone());
+                    ui.send(send(P::ConfirmRemove(id.clone())), cx);
+                }),
             );
     }
     row()
@@ -441,7 +479,7 @@ fn provider_row(
                 ),
         );
     if state.removing.as_ref() == Some(id) {
-        item = item.child(div().px(px(14.)).pb(px(10.)).child(removing(ui, provider, look)));
+        item = item.child(div().px(px(14.)).pb(px(10.)).child(removing(ui, inputs, provider, look)));
     }
     if open {
         let mut details = col()

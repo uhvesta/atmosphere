@@ -35,25 +35,25 @@ Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Diff"
   #panel-header
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
     text "Diff"
     #review-pr-line
       text "PR #482 against main · 2 repos"
-    Button "Full screen" description="Full screen  ⌃⌘↩"
-    Button "Close panel" description="Close panel"
   #github-feedback-checked-rail
     text "Checked 2m ago"
     text "·"
     Button
       text "Refresh"
   #diff-file-bar
+    #diff-file-count
+      text "1 of 2"
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
     Button "Open in editor" description="Open in editor"
-    #diff-file-count
-      text "1 of 2"
-    text "refund.rs"
     text "api"
     text "·"
+    text "refund.rs"
     text "src/"
   #review-diff
     #review-repo-acme/api
@@ -87,10 +87,10 @@ Complementary "Diff"
       #doc-comment-se_pr_1/c-1
         text "claude"
         text "line 140"
-        text "Draft"
-        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
         Button "Edit"
         Button "Drop"
+        text "Draft"
+        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
         Button "Spin off To-do"
       #change-line-3
         Button "Comment on line 141"
@@ -109,8 +109,7 @@ Complementary "Diff"
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 1"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
     Status "Diff: 2"
   Button "Files"

@@ -36,11 +36,11 @@ Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Diff"
   #panel-header
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
     text "Diff"
     #stack-header
       text "Layer 2 of 3 · journal"
-    Button "Full screen" description="Full screen  ⌃⌘↩"
-    Button "Close panel" description="Close panel"
   #stack-top
     #stack-caption
       text "STACK · 3 LAYERS"
@@ -94,10 +94,10 @@ Complementary "Diff"
     Button "3 files to skim · Cargo.lock, mod.rs, README.md" collapsed
     #stack-untouched acme/web
       text "web isn't in this layer"
-  text "pages.rs"
-  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "api"
   text "·"
+  text "pages.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   Button
     text "Open file ↗"
   Button "Open in editor"
@@ -161,8 +161,7 @@ Complementary "Diff"
 Toolbar "Session panels"
   Button "Agent inbox"
     Status "Agent inbox: 1"
-    text "Agent"
-    text "inbox"
+    text "Inbox"
   Button "Diff"
   Button "Files"
   Button "To-do"

@@ -215,7 +215,6 @@ impl Overlays {
         let send = |action: SessionAction| AppAction::Session(action);
 
         let mut body = card("fork-session", "Fork session", 640., look)
-            .overflow_y_scroll()
             .child(heading(format!("Fork “{parent_title}”")));
         let kinds = [
             (

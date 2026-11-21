@@ -28,10 +28,10 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings"
 Splitter "Resize the sidebar"
-Heading "Desk"
-Button "Sort: last used"
 Button "Clean up…"
 Button "New desk session"
+Heading "Desk"
+Button "Sort: last used"
 Dialog "Clean up closed sessions" focused
   CheckBox "Draft the onboarding doc" selected
   CheckBox "Port the cron jobs"

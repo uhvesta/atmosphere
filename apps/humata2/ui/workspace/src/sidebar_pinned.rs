@@ -39,11 +39,11 @@ const SECTION: f32 = 29.;
 /// is 37 pt tall and Home sits 5 pt under the last pin.
 const MIN_SHARE: f32 = 0.77;
 
-fn row_height(pin: &Pinned) -> f32 {
-    if pin.event.is_empty() {
-        ROW
-    } else {
+fn row_height(pin: &Pinned, workspace: &Workspace) -> f32 {
+    if !pin.event.is_empty() || facts(&pin.thing, workspace).is_some_and(|f| f.summary.is_some()) {
         EVENT_ROW + EVENT_GAP
+    } else {
+        ROW
     }
 }
 
@@ -55,6 +55,7 @@ pub fn section(
     pinned: &PinnedState,
     workspace: &Workspace,
     current: Option<&Thing>,
+    window_active: bool,
     look: Look,
     send: &SendPinned,
 ) -> Option<AnyElement> {
@@ -64,30 +65,91 @@ pub fn section(
     // The section shrinks with the column as one block, from its own height
     // down to MIN_SHARE of it; its rows then share what it gives up, so
     // together they shrink as frame 15's rows do.
-    let natural = SECTION + pinned.list.items.iter().map(row_height).sum::<f32>();
+    let natural = SECTION
+        + pinned
+            .list
+            .items
+            .iter()
+            .map(|pin| row_height(pin, workspace))
+            .sum::<f32>();
     let mut list = col()
         .id("sidebar-pinned")
-        .min_h(px(natural * MIN_SHARE))
+        .min_h(px(natural))
+        .flex_shrink_0()
         .role(Role::List)
         .aria_label("Pinned")
         .child(chrome::section(look, "Pinned"));
     if let Some(error) = &pinned.error {
         let text = format!("Pins didn't update: {error}. They show as the host last sent them.");
+        let retry = send.clone();
+        let dismiss = send.clone();
+        let current_list = pinned.list.clone();
+        let hover_bg = if look.content != 0xffffff {
+            rgba(0xffffff0f)
+        } else {
+            rgba(0x0000000a)
+        };
         list = list.child(
-            div()
+            col()
                 .id("sidebar-pinned-error")
                 .role(Role::Alert)
                 .aria_label(text.clone())
                 .mx(px(10.))
                 .px(px(8.))
                 .py(px(4.))
+                .gap(px(4.))
                 .text_size(px(11.))
                 .text_color(rgb(humata2_ui_core::theme::RED))
-                .child(text),
+                .child(text)
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("sidebar-pinned-retry")
+                                .role(Role::Button)
+                                .aria_label("Retry")
+                                .px(px(4.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover_bg))
+                                .text_color(rgb(look.accent))
+                                .child("Retry")
+                                .on_click(move |_, _, cx| retry(PinnedAction::Start, cx))
+                                .test_support(),
+                        )
+                        .child(
+                            div()
+                                .id("sidebar-pinned-dismiss")
+                                .role(Role::Button)
+                                .aria_label("Dismiss")
+                                .px(px(4.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover_bg))
+                                .text_color(rgb(look.secondary))
+                                .child("Dismiss")
+                                .on_click(move |_, _, cx| {
+                                    dismiss(PinnedAction::Changed(current_list.clone()), cx);
+                                })
+                                .test_support(),
+                        ),
+                )
+                .test_support(),
         );
     }
     for (index, pin) in pinned.list.items.iter().enumerate() {
-        list = list.child(pin_row(pin, workspace, index, current == Some(&pin.thing), look, send));
+        list = list.child(pin_row(
+            pin,
+            workspace,
+            index,
+            current == Some(&pin.thing),
+            window_active,
+            look,
+            send,
+        ));
     }
     Some(list.test_support().into_any_element())
 }
@@ -195,10 +257,12 @@ fn pin_row(
     workspace: &Workspace,
     index: usize,
     current: bool,
+    window_active: bool,
     look: Look,
     send: &SendPinned,
 ) -> AnyElement {
-    let faint = if current { 0xffffff } else { look.tertiary };
+    let active_current = current && window_active;
+    let faint = if active_current { 0xffffff } else { look.tertiary };
     let id = format!("sidebar-pinned-{index}");
     let group = SharedString::from(id.clone());
     let facts = facts(&pin.thing, workspace);
@@ -224,23 +288,23 @@ fn pin_row(
     };
     let open = send.clone();
     let drop = send.clone();
-    let icon = match &facts {
-        Some(Facts { pull: Some(_), .. }) => {
-            chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
-        }
-        Some(facts) => chrome::status(facts.status).into_any_element(),
-        None => div()
-            .h(px(LINE_EVENT))
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .child(chrome::icon(
+    let icon = div()
+        .h(px(if event { LINE_EVENT } else { ROW }))
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .child(match &facts {
+            Some(Facts { pull: Some(_), .. }) => {
+                chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
+            }
+            Some(facts) => chrome::status(facts.status).into_any_element(),
+            None => chrome::icon(
                 glyph(&pin.thing),
-                if current { 0xffffff } else { look.secondary },
+                if active_current { 0xffffff } else { look.secondary },
                 12.,
-            ))
+            )
             .into_any_element(),
-    };
+        });
     // Frame 15's session row: the title, badge and status hang from the
     // row's top padding, and the badge keeps 7 pt clear of the row's edge.
     let mut line = row()
@@ -248,16 +312,17 @@ fn pin_row(
         .gap(px(7.))
         .when(event, |line| line.items_start().pr(px(7.)))
         .child(icon)
-        .child(
+        .child(crate::full_text::full_text(
             div()
+                .id(ElementId::Name(format!("{id}-title").into()))
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                // Frame 15 clips the VIP card's title at the badge, no ellipsis.
-                .when(!event, |title| title.text_ellipsis())
+                .text_ellipsis()
                 .child(pin.title.clone()),
-        );
+            pin.title.clone(),
+        ));
     if pin.vip {
         line = line.child(
             div()
@@ -317,6 +382,7 @@ fn pin_row(
         },
         send,
     ));
+    let event_id = format!("{id}-event");
     div()
         .id(ElementId::Name(id.into()))
         .group(group)
@@ -324,6 +390,7 @@ fn pin_row(
         .aria_label(label)
         .aria_selected(current)
         .h(px(if event { EVENT_ROW } else { ROW }))
+        .flex_shrink_0()
         .when(event, |x| x.pt(px(5.)).mb(px(EVENT_GAP)))
         .overflow_hidden()
         .mx(px(10.))
@@ -331,21 +398,33 @@ fn pin_row(
         .rounded(px(6.))
         .cursor_pointer()
         .when(current, |x| {
-            x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
+            x.bg(rgb(if window_active {
+                look.selection
+            } else {
+                look.fill
+            }))
+            .text_color(rgb(if window_active { 0xffffff } else { look.text }))
         })
         .child(line)
         .children(under.map(|(text, color, left)| {
             // Hangs from the bottom edge, as frame 15's asks line does, so
             // the row's own height decides where it sits. Its left is measured
             // from the row's left edge, which sits 10 pt in from the sidebar's.
-            div()
-                .absolute()
-                .left(px(left + 8.))
-                .bottom(px(0.7))
-                .whitespace_nowrap()
-                .text_size(px(11.))
-                .text_color(rgb(color))
-                .child(text)
+            crate::full_text::full_text(
+                div()
+                    .id(ElementId::Name(event_id.into()))
+                    .absolute()
+                    .left(px(left + 8.))
+                    .right(px(8.))
+                    .bottom(px(0.7))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(11.))
+                    .text_color(rgb(color))
+                    .child(text.clone()),
+                text,
+            )
         }))
         .child(tools)
         .on_drag(dragged, |pin, _, _, cx| cx.new(|_| pin.clone()))
@@ -381,10 +460,15 @@ mod tests {
     }
 
     impl Render for View {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .children(section(&self.pinned, &Workspace::default(), None, Look::of(cx), &self.send))
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(section(
+                &self.pinned,
+                &Workspace::default(),
+                None,
+                window.is_window_active(),
+                Look::of(cx),
+                &self.send,
+            ))
         }
     }
 
@@ -517,5 +601,25 @@ mod tests {
             ..state(Vec::new())
         };
         assert!(drawn(cx, failed));
+    }
+
+    #[gpui_kit::test]
+    fn error_banner_offers_retry_and_dismiss(cx: &mut TestAppContext) {
+        let failed = PinnedState {
+            error: Some("the host is offline".to_owned()),
+            ..two_pins()
+        };
+        let expected_list = failed.list.clone();
+        let retried = run(cx, failed.clone(), |window, cx| {
+            window.click("sidebar-pinned-retry", cx);
+        })
+        .1;
+        assert_eq!(retried, vec![PinnedAction::Start]);
+
+        let dismissed = run(cx, failed, |window, cx| {
+            window.click("sidebar-pinned-dismiss", cx);
+        })
+        .1;
+        assert_eq!(dismissed, vec![PinnedAction::Changed(expected_list)]);
     }
 }

@@ -129,6 +129,7 @@ pub fn note(
             .child(div().child(words.clone()).test_text(words))
             .child(
                 row()
+                    .flex_wrap()
                     .gap(px(8.))
                     .pt(px(2.))
                     .child(
@@ -138,6 +139,7 @@ pub fn note(
                             "Try again",
                             AppAction::Restart(RestartAction::TryAgain(id.clone())),
                         )
+                        .flex_shrink_0()
                         .h(px(24.))
                         .px(px(11.)),
                     )
@@ -149,6 +151,7 @@ pub fn note(
                             AppAction::Restart(RestartAction::StartFresh(id)),
                         )
                         .outline()
+                        .flex_shrink_0()
                         .h(px(24.))
                         .px(px(11.)),
                     )
@@ -159,6 +162,8 @@ pub fn note(
                             .id("restart-report-link")
                             .role(Role::Link)
                             .aria_label(label.clone())
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
                             .gap(px(4.))
                             .cursor_pointer()
                             .text_color(rgb(look.accent))

@@ -15,6 +15,7 @@ use gpui_kit::component::{
     Sizable as _,
     button::Button,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    scroll::ScrollableElement as _,
 };
 use gpui_kit::{prelude::*, *};
 use humata2_clients::todo::{BlockerGoneResolution, Entry, TodoHistoryEntry, TodoRunsResult};
@@ -799,6 +800,9 @@ pub struct Inputs {
     dismissed_close_prompts: Rc<RefCell<std::collections::BTreeSet<String>>>,
     editing: Cell<bool>,
     step_context_at: Cell<Option<usize>>,
+    /// The item key last open in the drawer, so switching items clears local
+    /// draft inputs and sub-form flags instead of leaking text onto another item.
+    last_open: RefCell<Option<String>>,
     /// The store's text last put in quick add, search, edit and the step
     /// context, in that order. A field is written only when the store's text
     /// changes, because a field's change event arrives after the frame that
@@ -880,6 +884,7 @@ impl Inputs {
             dismissed_close_prompts: Rc::new(RefCell::new(std::collections::BTreeSet::new())),
             editing: Cell::new(false),
             step_context_at: Cell::new(None),
+            last_open: RefCell::new(None),
             synced: RefCell::new(Default::default()),
             placeholder: RefCell::new(String::new()),
             scroll: ScrollHandle::new(),
@@ -890,6 +895,24 @@ impl Inputs {
     /// Puts the state's text into the fields that differ, and focuses the
     /// drawer field when typing into it starts.
     pub fn sync(&self, state: &TodoState, window: &mut Window, cx: &mut App) {
+        if *self.last_open.borrow() != state.open {
+            *self.last_open.borrow_mut() = state.open.clone();
+            for input in [
+                &self.ask_input,
+                &self.comment_input,
+                &self.split_input,
+                &self.ext_block_input,
+            ] {
+                if !input.read(cx).value().is_empty() {
+                    input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                }
+            }
+            self.ask_details_open.set(false);
+            self.split_open.set(false);
+            self.fold_open.set(false);
+            self.ext_block_open.set(false);
+            self.milestone_start_menu_open.set(false);
+        }
         let editing = state.editing.as_ref();
         let step_at = editing.and_then(|e| match e.field {
             EditField::StepContext(i) => Some(i),
@@ -968,10 +991,6 @@ fn amber_soft(look: Look) -> Rgba {
 
 fn teal(look: Look) -> Rgba {
     tone(look, 0x0f766e, 0x35c4b5)
-}
-
-fn hairline(look: Look) -> Rgba {
-    tone(look, 0xf0f0f3, 0x2a2a2d)
 }
 
 fn selected_bg(look: Look) -> Rgba {
@@ -1109,11 +1128,22 @@ pub fn page(
     let ext_block_input = inputs.ext_block_input.clone();
     let split_input = inputs.split_input.clone();
     let ask_input = inputs.ask_input.clone();
+    let filters_open = inputs.filters_open.clone();
+    let sort_open = inputs.sort_open.clone();
+    let bulk_channel_open = inputs.bulk_channel_open.clone();
+    let milestone_start_menu_open = inputs.milestone_start_menu_open.clone();
+    let split_open = inputs.split_open.clone();
+    let fold_open = inputs.fold_open.clone();
+    let ext_block_open = inputs.ext_block_open.clone();
     col()
         .size_full()
         .relative()
         .track_focus(&inputs.page_focus)
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            let mods = event.keystroke.modifiers;
+            if mods.platform || mods.control {
+                return;
+            }
             let input_focused = [
                 &search_input,
                 &quick_add_input,
@@ -1127,14 +1157,31 @@ pub fn page(
             .any(|inp| inp.focus_handle(cx).is_focused(window))
                 || step_context_input.focus_handle(cx).is_focused(window);
             let key = event.keystroke.key.as_str();
-            let shift = event.keystroke.modifiers.shift;
-            let alt = event.keystroke.modifiers.alt;
+            let shift = mods.shift;
+            let alt = mods.alt;
+            if key == "escape" && !shift && !alt && !input_focused {
+                let any_popover = filters_open.replace(false)
+                    | sort_open.replace(false)
+                    | bulk_channel_open.replace(false)
+                    | milestone_start_menu_open.replace(false)
+                    | split_open.replace(false)
+                    | fold_open.replace(false)
+                    | ext_block_open.replace(false);
+                if any_popover {
+                    cx.stop_propagation();
+                    window.refresh();
+                    return;
+                }
+            }
             let target_key = open_key.as_deref().or(focused_key.as_deref());
             if let Some(action) =
                 milestone_start_shortcut(key, alt, input_focused, target_key, target_is_milestone)
             {
                 cx.stop_propagation();
                 key_send(action, cx);
+                return;
+            }
+            if alt {
                 return;
             }
             if let Some(cmd) =
@@ -1152,7 +1199,7 @@ pub fn page(
                 }
             }
         })
-        .child(header(send, state, inputs, look))
+        .child(header(send, state, inputs, sessions, look))
         .child(channel_bar(send, state, look))
         .children(active_filter_chips_bar(send, state, sessions, look))
         .child(
@@ -1165,14 +1212,15 @@ pub fn page(
                     col()
                         .id("todo-drawer")
                         .w(px(520.))
+                        .max_w(relative(0.55))
                         .flex_shrink_0()
                         .h_full()
-                        .overflow_y_scroll()
                         .border_l_1()
                         .border_color(rgb(look.line))
                         .px(px(14.))
                         .py(px(12.))
                         .child(drawer(send, state, e, inputs, sessions, look, true))
+                        .overflow_y_scroll()
                         .test_support()
                 })),
         )
@@ -1180,10 +1228,20 @@ pub fn page(
         .children(state.undo.as_ref().map(|toast| undo_toast(send, toast, look)))
 }
 
-fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
+fn header(
+    send: &Send,
+    state: &TodoState,
+    inputs: &Inputs,
+    sessions: Sessions<'_>,
+    look: Look,
+) -> Div {
     let (label, key) = do_next(state);
+    let sort_open = inputs.sort_open.get();
+    let filters_open = inputs.filters_open.get();
     let toggle = inputs.filters_open.clone();
+    let toggle_close_sort = inputs.sort_open.clone();
     let sort_toggle = inputs.sort_open.clone();
+    let sort_close_filters = inputs.filters_open.clone();
     let filters_on = state.view.filter.due.len()
         + state.view.filter.tags.len()
         + usize::from(state.view.filter.session.is_some())
@@ -1198,13 +1256,28 @@ fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
         .px(px(20.))
         .border_b_1()
         .border_color(rgb(look.line))
-        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("To-do"))
-        .child(small(header_text(state), look).flex_1().min_w_0().whitespace_nowrap())
+        .child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_size(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("To-do"),
+        )
+        .child(
+            small(header_text(state), look)
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis(),
+        )
         .child(
             div()
                 .id("todo-search")
                 .w(px(240.))
-                .flex_shrink_0()
+                .min_w(px(100.))
+                .flex_shrink(1.)
                 .child(
                     Input::new(&inputs.search)
                         .small()
@@ -1217,45 +1290,92 @@ fn header(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> Div {
                 .test_support(),
         )
         .child(
-            push_quiet_shape("todo-sort", sort_pill_label(state.sort), look).on_click(
-                move |_, window, _| {
-                    sort_toggle.set(!sort_toggle.get());
-                    window.refresh();
-                },
-            ),
+            div()
+                .relative()
+                .flex_shrink_0()
+                .child(
+                    push_quiet_shape("todo-sort", sort_pill_label(state.sort), look)
+                        .flex_shrink_0()
+                        .on_click(move |_, window, _| {
+                            sort_toggle.set(!sort_toggle.get());
+                            sort_close_filters.set(false);
+                            window.refresh();
+                        }),
+                )
+                .when(sort_open, |wrap| {
+                    wrap.child(deferred(popover_scrim("todo-sort-scrim", inputs.sort_open.clone())))
+                        .child(deferred(sort_popover(send, state, inputs, look)))
+                }),
         )
         .child(
-            push_quiet_shape(
-                "todo-filters",
-                if filters_on > 0 { format!("Filters · {filters_on}") } else { "Filters".to_owned() },
-                look,
-            )
-            .on_click(move |_, window, _| {
-                toggle.set(!toggle.get());
-                window.refresh();
-            }),
+            div()
+                .relative()
+                .flex_shrink_0()
+                .child(
+                    push_quiet_shape(
+                        "todo-filters",
+                        if filters_on > 0 { format!("Filters · {filters_on}") } else { "Filters".to_owned() },
+                        look,
+                    )
+                    .flex_shrink_0()
+                    .on_click(move |_, window, _| {
+                        toggle.set(!toggle.get());
+                        toggle_close_sort.set(false);
+                        window.refresh();
+                    }),
+                )
+                .when(filters_open, |wrap| {
+                    wrap.child(deferred(popover_scrim(
+                        "todo-filters-scrim",
+                        inputs.filters_open.clone(),
+                    )))
+                    .child(deferred(filter_popover(send, state, inputs, sessions, look)))
+                }),
         )
         .child(match key {
-            Some(_) => primary(send, "todo-do-next", &label, A::DoNext, look).into_any_element(),
+            Some(_) => primary(send, "todo-do-next", &label, A::DoNext, look)
+                .flex_shrink_0()
+                .into_any_element(),
             None => push_primary_shape("todo-do-next", label, look)
+                .flex_shrink_0()
                 .opacity(0.45)
                 .into_any_element(),
         })
 }
 
+fn popover_scrim(id: &'static str, open: Rc<Cell<bool>>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .absolute()
+        .top(px(-10_000.))
+        .left(px(-10_000.))
+        .w(px(20_000.))
+        .h(px(20_000.))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            open.set(false);
+            window.refresh();
+        })
+}
+
 fn sort_popover(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> impl IntoElement {
     let close = inputs.sort_open.clone();
-    row()
+    col()
         .id("todo-sort-popover")
-        .flex_shrink_0()
-        .flex_wrap()
-        .gap(px(6.))
+        .absolute()
+        .top(px(32.))
+        .right(px(0.))
+        .w(px(200.))
+        .occlude()
+        .gap(px(4.))
         .p(px(10.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(rgb(look.line))
+        .rounded(px(9.))
+        .border(px(0.5))
+        .border_color(look.hairline())
         .bg(rgb(look.card))
-        .child(small("Sort by", look).font_weight(FontWeight::SEMIBOLD))
+        .shadow(crate::theme::shadow_popover(look))
+        .child(small("Sort by", look).font_weight(FontWeight::SEMIBOLD).px(px(4.)).pb(px(2.)))
         .children(SORT_OPTIONS.into_iter().map(|opt| {
             let on = state.sort == opt;
             let send = send.clone();
@@ -1265,12 +1385,17 @@ fn sort_popover(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> 
                 .role(Role::Button)
                 .aria_label(opt.label())
                 .cursor_pointer()
+                .w_full()
                 .px(px(8.))
-                .py(px(2.))
+                .py(px(4.))
                 .rounded(px(5.))
                 .text_size(px(12.))
                 .when(on, |c| c.bg(rgb(0x1c1c1e)).text_color(rgb(0xffffff)))
-                .when(!on, |c| c.bg(rgb(look.fill)).text_color(soft(look)))
+                .when(!on, |c| {
+                    c.bg(rgb(look.fill))
+                        .text_color(soft(look))
+                        .hover(move |d| d.bg(rgb(look.line)))
+                })
                 .child(opt.label())
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
@@ -1474,47 +1599,52 @@ fn undo_toast(send: &Send, toast: &UndoToast, look: Look) -> impl IntoElement {
 fn channel_bar(send: &Send, state: &TodoState, look: Look) -> Div {
     let filter = &state.view.filter;
     let total: usize = state.channel_counts().iter().map(|(_, n)| n).sum();
-    let chip = |id: String, text: String, on: bool, action: A| {
-        let inner = div()
+    let chip = |id: String, name: String, count: usize, on: bool, action: A| {
+        let inner = row()
             .flex_shrink_0()
             .whitespace_nowrap()
+            .gap(px(5.))
             .px(px(9.))
             .py(px(3.))
             .rounded(px(6.))
             .text_size(px(12.5))
             .when(on, |c| c.bg(rgb(0x1c1c1e)).text_color(rgb(0xffffff)))
             .when(!on, |c| c.bg(rgb(look.fill)).text_color(soft(look)))
-            .child(text);
+            .child(name)
+            .child(div().opacity(0.65).child(count.to_string()));
         clickable(send, SharedString::from(id), "Filter by channel", action, inner)
     };
     row()
         .flex_shrink_0()
+        .flex_wrap()
         .gap(px(6.))
         .px(px(20.))
         .py(px(10.))
         .child(chip(
             "todo-ch-all".into(),
-            format!("All {total}"),
+            "All".into(),
+            total,
             filter.channel.is_none(),
             A::SetFilter(ViewFilter { channel: None, ..filter.clone() }),
         ))
         .children(state.channel_counts().into_iter().map(|(channel, n)| {
-            let (chip_id, label, pick) = match &channel {
+            let (chip_id, name, pick) = match &channel {
                 Some(id) => (
                     format!("todo-ch-{id}"),
-                    format!("{} {n}", state.channel_name(id)),
+                    state.channel_name(id).to_owned(),
                     ChannelPick::Channel(id.clone()),
                 ),
                 None => (
                     "todo-ch-No channel".to_owned(),
-                    format!("No channel {n}"),
+                    "No channel".to_owned(),
                     ChannelPick::NoChannel,
                 ),
             };
             let on = filter.channel.as_ref() == Some(&pick);
             chip(
                 chip_id,
-                label,
+                name,
+                n,
                 on,
                 A::SetFilter(ViewFilter { channel: Some(pick), ..filter.clone() }),
             )
@@ -1538,10 +1668,13 @@ fn channel_bar(send: &Send, state: &TodoState, look: Look) -> Div {
                 pill("Closed shown ×", tone(look, 0xdff5f1, 0x153a36), teal(look))
             } else {
                 div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .px(px(8.))
                     .py(px(2.))
                     .rounded(px(5.))
                     .border_1()
+                    .border_dashed()
                     .border_color(rgb(look.line))
                     .text_size(px(12.))
                     .text_color(rgb(look.secondary))
@@ -1572,8 +1705,6 @@ fn list(
     narrow: bool,
 ) -> impl IntoElement {
     let sections = sections(state);
-    let sort_menu = inputs.sort_open.get().then(|| sort_popover(send, state, inputs, look));
-    let filters = inputs.filters_open.get().then(|| filter_popover(send, state, inputs, sessions, look));
     let ranked = state.ranked().next.len();
     let footer = (state.shown().len() > LARGE && ranked > 0).then(|| {
         let offset = f32::from(inputs.scroll.offset().y);
@@ -1581,17 +1712,13 @@ fn list(
         let (first, last) = visible_range(-offset, height, 53., ranked);
         small(ranked_footer(first, last, ranked), look).py(px(8.))
     });
-    col()
+    let body = col()
         .id("todo-list")
         .track_scroll(&inputs.scroll)
-        .flex_1()
-        .min_w_0()
-        .h_full()
+        .size_full()
         .overflow_y_scroll()
         .px(px(20.))
         .gap(px(8.))
-        .children(sort_menu)
-        .children(filters)
         .child(quick_add(state, inputs, look))
         .children(state.migration.as_ref().map(|n| migration_banner(send, n, state.what_changed, look)))
         .children(
@@ -1605,7 +1732,14 @@ fn list(
         .children(sections.into_iter().enumerate().map(|(index, section)| {
             let is_folded = folded(state, section.group, inputs.toggled(section.group));
             group(send, state, inputs, sessions, look, narrow, index == 0, section, is_folded)
-        }))
+        }));
+    div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .child(body)
+        .vertical_scrollbar(&inputs.scroll)
 }
 
 fn quick_add(state: &TodoState, inputs: &Inputs, look: Look) -> Div {
@@ -1644,7 +1778,7 @@ fn quick_add(state: &TodoState, inputs: &Inputs, look: Look) -> Div {
                 }))
                 .children(d.tags.iter().map(|t| tag(t.clone(), look)))
                 .children(d.channel.as_ref().map(|c| tag(format!("# {}", state.channel_name(c)), look)))
-                .children(d.effort.map(|e| tag(effort_letter(e), look)))
+                .children(d.effort.map(|e| effort_badge(e, look)))
                 .children(d.impact.map(|i| tag(impact_word(i), look)))
                 .child(div().flex_1())
                 .children(preview.clone().map(|text| small(text, look)))
@@ -1797,10 +1931,18 @@ fn group(
         .test_support();
     col().flex_shrink_0().child(heading).children((!is_folded).then(|| {
         col()
-            .children(section.rows.iter().take(shown_n).filter_map(|r| {
-                let e = entry(state, &r.key)?;
-                Some(item_row(send, state, e, r, sessions, look, narrow).into_any_element())
-            }))
+            .children(
+                section
+                    .rows
+                    .iter()
+                    .take(shown_n)
+                    .filter_map(|r| entry(state, &r.key).map(|e| (e, r)))
+                    .enumerate()
+                    .map(|(i, (e, r))| {
+                        item_row(send, state, e, r, sessions, look, narrow, i > 0)
+                            .into_any_element()
+                    }),
+            )
             .children((shown_n < count).then(|| {
                 div()
                     .id(SharedString::from(format!("todo-show-all {}", g.title())))
@@ -1821,6 +1963,24 @@ fn group(
     }))
 }
 
+fn effort_badge(effort: Effort, look: Look) -> Div {
+    div()
+        .size(px(18.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .bg(rgb(look.fill))
+        .border(px(0.5))
+        .border_color(look.hairline())
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(soft(look))
+        .child(effort_letter(effort))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn item_row(
     send: &Send,
     state: &TodoState,
@@ -1829,6 +1989,7 @@ fn item_row(
     sessions: Sessions<'_>,
     look: Look,
     narrow: bool,
+    divider: bool,
 ) -> impl IntoElement {
     let t = &e.todo;
     let is_open = state.open.as_deref() == Some(t.key.as_str());
@@ -1839,7 +2000,6 @@ fn item_row(
     let key = t.key.clone();
     let click_key = key.clone();
     let sender = send.clone();
-    let reasons: Vec<String> = r.reasons.iter().map(humata2_todo::Reason::text).collect();
     let bulk_err = state.bulk_errors.get(&t.key).cloned();
     let hidden_pill = hidden_until_pill(t, state);
     let circle_action = A::SetState(key.clone(), if closed { State::Open } else { State::Closed });
@@ -1854,7 +2014,17 @@ fn item_row(
             .justify_center()
             .child("✓")
     } else {
-        div().size(px(22.)).rounded_full().border_1().border_color(tone(look, 0xc9c9cf, 0x55555a))
+        div()
+            .size(px(22.))
+            .rounded_full()
+            .border_1()
+            .border_color(tone(look, 0xc9c9cf, 0x55555a))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(11.))
+            .text_color(tone(look, 0xc9c9cf, 0x55555a))
+            .child(div().opacity(0.45).child("✓"))
     };
     let circle = clickable(
         send,
@@ -1868,6 +2038,10 @@ fn item_row(
         .flex_wrap()
         .child(
             div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(closed, |d| d.text_color(rgb(look.secondary)))
                 .child(t.title.clone()),
@@ -2007,33 +2181,45 @@ fn item_row(
             }
             tag(txt, look)
         }))
-        .children(reasons.into_iter().map(|text| {
-            div()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .px(px(6.))
-                .rounded(px(5.))
-                .border_1()
-                .border_color(rgb(look.line))
-                .text_size(px(11.5))
-                .text_color(soft(look))
-                .child(text)
+        .children(r.reasons.iter().map(|reason| {
+            let text = reason.text();
+            if matches!(reason, humata2_todo::Reason::Pinned | humata2_todo::Reason::PinnedWasVip) {
+                pill(text, tone(look, 0xe8f1ff, 0x1b2d4a), rgb(look.accent))
+                    .text_size(px(11.5))
+                    .font_weight(FontWeight::MEDIUM)
+            } else {
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .px(px(6.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(rgb(look.line))
+                    .text_size(px(11.5))
+                    .text_color(soft(look))
+                    .child(text)
+            }
         }))
         .children(closed.then(|| small(closed_note(t), look)));
     let columns = (!narrow).then(|| {
         row()
             .flex_shrink_0()
             .child(
-                div().w(px(120.)).text_size(px(12.)).text_color(soft(look)).child(
-                    match (t.effort, t.impact) {
-                        (None, None) => String::new(),
-                        (e, i) => format!(
-                            "{}  {}",
-                            e.map_or("", effort_letter),
-                            i.map_or("", impact_word)
-                        ),
-                    },
-                ),
+                row()
+                    .w(px(120.))
+                    .gap(px(6.))
+                    .overflow_hidden()
+                    .children(t.effort.map(|e| effort_badge(e, look)))
+                    .children(t.impact.map(|i| {
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(12.))
+                            .text_color(soft(look))
+                            .child(impact_word(i))
+                    })),
             )
             .child(match (t.channel.as_deref(), channel_link_action(t.channel.as_deref())) {
                 (Some(channel_id), Some(action)) => {
@@ -2041,11 +2227,16 @@ fn item_row(
                     let ch_send = send.clone();
                     div()
                         .w(px(130.))
+                        .overflow_hidden()
                         .child(
                             div()
                                 .id(SharedString::from(format!("todo-row-channel-{key}")))
                                 .role(Role::Link)
                                 .aria_label(format!("Open channel {name}"))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .px(px(4.))
                                 .py(px(1.))
                                 .rounded(px(4.))
@@ -2062,9 +2253,21 @@ fn item_row(
                         )
                         .into_any_element()
                 }
-                _ => small("No channel", look).w(px(130.)).into_any_element(),
+                _ => small("No channel", look)
+                    .w(px(130.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .into_any_element(),
             })
-            .child(small(t.key.clone(), look).w(px(52.)).text_right())
+            .child(
+                small(t.key.clone(), look)
+                    .w(px(52.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_right(),
+            )
     });
     let actions = if t.suggested {
         Some(
@@ -2079,6 +2282,9 @@ fn item_row(
         None
     };
     col()
+        .when(divider, |c| {
+            c.child(div().h(px(0.5)).mx(px(8.)).bg(look.hairline()))
+        })
         .child(
             row()
                 .id(SharedString::from(format!("todo-row {key}")))
@@ -2091,8 +2297,6 @@ fn item_row(
                 .min_h(px(50.))
                 .rounded(px(9.))
                 .cursor_pointer()
-                .border_t_1()
-                .border_color(hairline(look))
                 .when(selected, |x| x.bg(selected_bg(look)))
                 .when(is_focused && !selected, |x| x.border_1().border_color(rgb(look.accent)))
                 .when(t.suggested, |x| x.border_1().border_dashed().border_color(rgb(look.line)))
@@ -2177,7 +2381,7 @@ fn filter_popover(
     inputs: &Inputs,
     sessions: Sessions<'_>,
     look: Look,
-) -> Div {
+) -> impl IntoElement {
     let filter = &state.view.filter;
     let toggle = inputs.filters_open.clone();
     let mut tags: Vec<String> = state.items.iter().flat_map(|e| e.todo.tags.iter().cloned()).collect();
@@ -2205,13 +2409,19 @@ fn filter_popover(
     session_ids.sort();
     session_ids.dedup();
     col()
-        .flex_shrink_0()
+        .id("todo-filter-popover")
+        .absolute()
+        .top(px(32.))
+        .right(px(0.))
+        .w(px(440.))
+        .occlude()
         .gap(px(8.))
         .p(px(14.))
         .rounded(px(10.))
-        .border_1()
-        .border_color(rgb(look.line))
+        .border(px(0.5))
+        .border_color(look.hairline())
         .bg(rgb(look.card))
+        .shadow(crate::theme::shadow_popover(look))
         .child(small("DUE", look).font_weight(FontWeight::SEMIBOLD))
         .child(row().gap(px(6.)).children(due_options.into_iter().map(|(pick, name)| {
             let on = filter.due.contains(&pick);

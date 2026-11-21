@@ -136,9 +136,17 @@ impl App {
             let shown = self
                 .cx
                 .update_window(self.window, |_, window, _| {
+                    let Some(box_bounds) = window
+                        .try_find(gpui_kit::SharedString::from(container.to_owned()))
+                        .map(|found| found.bounds())
+                    else {
+                        return false;
+                    };
                     window
                         .try_find(gpui_kit::SharedString::from(id.to_owned()))
-                        .is_some_and(|found| found.visible())
+                        .is_some_and(|found| {
+                            found.visible() && box_bounds.contains(&found.bounds().center())
+                        })
                 })
                 .expect("window stays open");
             if shown {

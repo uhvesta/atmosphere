@@ -579,6 +579,7 @@ fn agent_github_draft(
         Author::Agent(name) => name.clone(),
         Author::User => "You".to_owned(),
     };
+    let todo_links = todo_hook_links(ui, look, comment, todo_ctx);
     shell(look, false)
         .id(SharedString::from(format!("doc-comment-{id}")))
         .test_support()
@@ -603,38 +604,54 @@ fn agent_github_draft(
                         .line_height(px(12.))
                         .text_color(rgb(ink)),
                 )
-                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0()),
+                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0())
+                .child(div().flex_1())
+                .child(muted_header_action(
+                    ui,
+                    look,
+                    format!("doc-edit-comment-{id}"),
+                    "Edit",
+                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                ))
+                .child(muted_header_action(
+                    ui,
+                    look,
+                    format!("doc-drop-comment-{id}"),
+                    "Drop",
+                    AppAction::Comments(CommentsAction::Drop(session, id.clone())),
+                )),
         )
         .child(text(comment.text.clone()))
-        .child(
-            row()
-                .flex_wrap()
-                .gap(px(16.))
-                .mt(px(8.))
-                .child(note_action(
-                    ui,
-                    format!("doc-edit-comment-{id}"),
-                    "Edit".to_owned(),
-                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
-                    look.accent,
-                    false,
-                    false,
-                ))
-                .child(note_action(
-                    ui,
-                    format!("doc-drop-comment-{id}"),
-                    "Drop".to_owned(),
-                    AppAction::Comments(CommentsAction::Drop(session, id.clone())),
-                    look.accent,
-                    false,
-                    true,
-                ))
-                .children(todo_hook_links(ui, look, comment, todo_ctx)),
-        )
+        .children(todo_links.map(|links| row().flex_wrap().gap(px(16.)).mt(px(8.)).child(links)))
 }
 
 /// The orange of a note (UXSIMPLE 3-4).
 const NOTE_ORANGE: u32 = 0xd98200;
+
+/// A muted secondary action (`Edit`, `Drop`) placed in the top-right card header.
+fn muted_header_action(
+    ui: &Rc<Ui>,
+    look: Look,
+    id: String,
+    label: &'static str,
+    action: AppAction,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    text(label)
+        .id(SharedString::from(id))
+        .role(Role::Button)
+        .aria_label(label)
+        .test_support()
+        .flex_shrink_0()
+        .text_size(px(11.))
+        .text_color(rgb(look.secondary))
+        .hover(move |t| t.text_color(rgb(look.text)))
+        .cursor_pointer()
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            ui.send(action.clone(), cx);
+        })
+}
 
 /// A small blue-text action of the note card.
 fn note_action(
@@ -715,7 +732,22 @@ fn agent_note(
                         .line_height(px(12.))
                         .text_color(rgb(if dark { 0xff_9f_0a } else { NOTE_ORANGE })),
                 )
-                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0()),
+                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0())
+                .child(div().flex_1())
+                .child(muted_header_action(
+                    ui,
+                    look,
+                    format!("doc-edit-comment-{id}"),
+                    "Edit",
+                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                ))
+                .child(muted_header_action(
+                    ui,
+                    look,
+                    format!("doc-drop-comment-{id}"),
+                    "Drop",
+                    AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
+                )),
         )
         .child(text(comment.text.clone()))
         .child(
@@ -732,25 +764,7 @@ fn agent_note(
                     true,
                     false,
                 ))
-                .child(note_action(
-                    ui,
-                    format!("doc-edit-comment-{id}"),
-                    "Edit".to_owned(),
-                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
-                    look.accent,
-                    false,
-                    false,
-                ))
                 .children(github)
-                .child(note_action(
-                    ui,
-                    format!("doc-drop-comment-{id}"),
-                    "Drop".to_owned(),
-                    AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
-                    look.accent,
-                    false,
-                    true,
-                ))
                 .children(todo_hook_links(ui, look, comment, todo_ctx)),
         )
 }
@@ -802,17 +816,24 @@ pub fn plain_card(
                 .children(label.map(|label| if quiet { done_chip(look, label) } else { chip(look, label) }))
                 .children((quiet || github_draft).then(|| text(lines.clone()).text_color(rgb(look.secondary))))
                 .child(div().flex_1())
-                .children(comment.counts_as_draft().then(|| {
-                    widgets::ghost_in(look,
+                .children((github_draft || comment.counts_as_draft()).then(|| {
+                    muted_header_action(
                         ui,
-                        SharedString::from(format!("doc-edit-comment-{id}")),
+                        look,
+                        format!("doc-edit-comment-{id}"),
                         "Edit",
                         AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
                     )
-                    .h(px(20.))
-                    .px(px(6.))
-                    .text_size(px(11.))
-                    .text_color(rgb(look.accent))
+                }))
+                // A detached card has its own Drop below.
+                .children((github_draft && !comment.anchor.detached).then(|| {
+                    muted_header_action(
+                        ui,
+                        look,
+                        format!("doc-drop-comment-{id}"),
+                        "Drop",
+                        AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
+                    )
                 }))
                 .children(is_note.then(|| {
                     widgets::ghost_in(look,
@@ -855,28 +876,12 @@ pub fn plain_card(
                 .child(text(who.to_owned()).font_weight(FontWeight::SEMIBOLD).flex_shrink_0())
                 .child(text(said.to_owned()).flex_1().min_w_0())
         }))
-        .children(github_draft.then(|| {
-            row()
-                .gap(px(6.))
-                .child(widgets::push_quiet(
-                    ui,
-                    SharedString::from(format!("doc-edit-comment-{id}")),
-                    "Edit",
-                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
-                    look,
-                ))
-                // A detached card has its own Drop below.
-                .children((!comment.anchor.detached).then(|| {
-                    widgets::push_quiet(
-                        ui,
-                        SharedString::from(format!("doc-drop-comment-{id}")),
-                        "Drop",
-                        AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
-                        look,
-                    )
-                }))
-                .children(todo_hook_links(ui, look, comment, todo_ctx).map(|links| links.ml(px(6.))))
-        }))
+        .children(
+            github_draft
+                .then(|| todo_hook_links(ui, look, comment, todo_ctx))
+                .flatten()
+                .map(|links| row().mt(px(4.)).child(links)),
+        )
         .children(comment.anchor.detached.then(|| {
             let start = start_reattach.clone();
             let again = id.clone();

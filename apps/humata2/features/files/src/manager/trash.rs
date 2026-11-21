@@ -15,6 +15,7 @@ impl FilesState {
                 }
                 if let Some(trash) = self.trash.as_mut().filter(|trash| &trash.machine == machine) {
                     trash.listing = Some(listing);
+                    self.error = None;
                 }
             }
             Err(error) => {
@@ -58,6 +59,7 @@ impl Files {
         if !state.is_online(&machine) {
             return Effect::none();
         }
+        state.error = None;
         state.trash = Some(TrashState {
             machine: machine.clone(),
             listing: None,

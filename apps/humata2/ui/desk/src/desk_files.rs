@@ -217,7 +217,7 @@ fn rows(
                 .aria_label(label)
                 .test_support()
                 .h(px(23.))
-                .pl(px(8. + depth as f32 * 14.))
+                .pl(px(8. + depth.min(8) as f32 * 14.))
                 .pr(px(8.))
                 .gap(px(6.))
                 .rounded(px(5.))

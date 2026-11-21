@@ -48,13 +48,17 @@ fn new_session(ui: &Rc<Ui>, machine: &MachineId, shell: bool, cx: &mut App) {
         );
     }
 }
-pub fn toolbar(ui: &Rc<Ui>, look: Look) -> Div {
-    row()
-        .h(px(52.))
-        .flex_shrink_0()
-        .px(px(20.))
-        .border_b_1()
-        .border_color(rgb(look.line))
+pub fn toolbar(ui: &Rc<Ui>, collapsed: bool, look: Look) -> Div {
+    chrome::titlebar_drag(
+        row()
+            .h(px(52.))
+            .flex_shrink_0()
+            .px(px(20.))
+            .gap(px(10.))
+            .border_b_1()
+            .border_color(rgb(look.line)),
+    )
+        .when(collapsed, |bar| bar.child(chrome::lights()))
         .child(
             div()
                 .flex_1()
@@ -242,10 +246,10 @@ pub fn page(
                     ui,
                     SharedString::from(format!("host-free {}", machine.id)),
                     "Free space…",
-                    AppAction::Hosts(A::Select(machine.id.clone())),
+                    AppAction::Navigate(humata2_app::Route::Files),
                     look,
                 )
-                .disabled(true),
+                .tooltip("Open Files to manage storage on this machine"),
             );
         }
         table = table.child(
@@ -354,10 +358,10 @@ pub fn page(
             ui,
             "host-detail-free",
             "Free space…",
-            AppAction::Hosts(A::Select(machine.id.clone())),
+            AppAction::Navigate(humata2_app::Route::Files),
             look,
         )
-        .disabled(true);
+        .tooltip("Open Files to manage storage on this machine");
         let actions = row().gap(px(8.));
         let actions = if stop.is_some() {
             actions

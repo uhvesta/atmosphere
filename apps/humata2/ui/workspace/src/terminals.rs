@@ -1034,16 +1034,22 @@ impl Terminals {
                 .map(|(reconnected, look)| reconnected_line(reconnected, look))
         });
         let notice = notice.map(|notice| {
-            let top = pane.as_ref().map_or(px(18.), |pane| {
+            let anchor_bottom = pane.as_ref().is_some_and(|pane| {
                 let pane = pane.read(cx);
-                px(10.) + pane.line_height(cx) * pane.content_rows(cx) as f32 + px(8.)
+                let visible_rows = usize::from(pane.view().read(cx).grid().size().rows);
+                notice_anchors_bottom(pane.content_rows(cx), visible_rows)
             });
-            div()
-                .absolute()
-                .top(top)
-                .left(px(14.))
-                .right(px(14.))
-                .child(notice)
+            let wrap = div().absolute().left(px(14.)).right(px(14.));
+            let wrap = if anchor_bottom {
+                wrap.bottom(px(10.))
+            } else {
+                let top = pane.as_ref().map_or(px(18.), |pane| {
+                    let pane = pane.read(cx);
+                    px(10.) + pane.line_height(cx) * pane.content_rows(cx) as f32 + px(8.)
+                });
+                wrap.top(top)
+            };
+            wrap.child(notice)
         });
         div()
             .id(if group == 0 {
@@ -1088,6 +1094,13 @@ impl Terminals {
             .test_support()
             .into_any_element()
     }
+}
+
+/// Whether a terminal notice should anchor to the bottom of the pane rather
+/// than sit below `content_rows`, because tall notices (`steps_card`, reboot,
+/// away) would otherwise clip past the bottom of a full or nearly-full pane.
+const fn notice_anchors_bottom(content_rows: usize, visible_rows: usize) -> bool {
+    visible_rows > 0 && content_rows.saturating_add(12) > visible_rows
 }
 
 /// Why the tab shows no terminal, in its place. It is an alert, so a screen
@@ -1395,7 +1408,11 @@ pub fn resolve_terminal_file_link(uri: &str, roots: &ResolveRoots) -> Option<Res
         return None;
     }
 
-    let raw_path = if uri.len() >= 7 && uri[..7].eq_ignore_ascii_case("file://") {
+    let raw_path = if uri
+        .as_bytes()
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case(b"file://"))
+    {
         let rest = &uri[7..];
         let encoded_path = if rest.starts_with('/') {
             rest
@@ -2253,6 +2270,47 @@ mod tests {
         );
         assert_eq!(resolve_terminal_file_link("/etc/passwd", &roots), None);
         assert_eq!(resolve_terminal_file_link("../secret.txt", &roots), None);
+    }
+
+    #[test]
+    fn non_ascii_uri_with_multibyte_char_at_byte_7_does_not_panic() {
+        let roots = ResolveRoots {
+            session_folder: std::path::PathBuf::from("/remote/channel/sessions/s1"),
+            local: false,
+            ..Default::default()
+        };
+        // Each emoji is 4 bytes, so byte 7 falls inside the second emoji.
+        assert_eq!(
+            resolve_terminal_file_link("🎉🎉SPEC.md", &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "🎉🎉SPEC.md".into(),
+                line: None,
+                read_only: false,
+            })
+        );
+        // "ab日本.md": bytes 0..2 ASCII, 2..5 '日', 5..8 '本' -> byte 7 is mid-char.
+        assert_eq!(
+            resolve_terminal_file_link("ab日本.md:12", &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "ab日本.md".into(),
+                line: Some((12, None)),
+                read_only: false,
+            })
+        );
+        // CJK chars (3 bytes each): byte 7 falls inside the 3rd character.
+        assert_eq!(resolve_terminal_file_link("日本語://bad", &roots), None);
+    }
+
+    #[test]
+    fn tall_terminal_notices_anchor_bottom_when_pane_is_nearly_full() {
+        assert!(!notice_anchors_bottom(0, 0));
+        assert!(!notice_anchors_bottom(5, 30));
+        assert!(!notice_anchors_bottom(18, 30));
+        assert!(notice_anchors_bottom(19, 30));
+        assert!(notice_anchors_bottom(30, 30));
+        assert!(notice_anchors_bottom(4, 10));
     }
 }
 

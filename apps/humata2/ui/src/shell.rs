@@ -141,6 +141,7 @@ impl Shell {
                 .read(|s| s.settings.preferences.theme == humata2_settings::Theme::System)
             {
                 gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx);
+                humata2_ui_core::sync_theme(cx);
             }
         });
         let focus = cx.focus_handle();
@@ -157,6 +158,9 @@ impl Shell {
             window.focus(&target, cx);
         });
         let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() && this.dragging.take().is_some() {
+                cx.notify();
+            }
             this.send(AppAction::WindowActive(window.is_window_active()), cx);
         });
         let terminals = crate::terminals::Terminals::new(&ui, cx);
@@ -201,6 +205,7 @@ impl Shell {
         self.file_filter.read(cx).focus_handle(cx).is_focused(window)
             || self.channel_filter.read(cx).focus_handle(cx).is_focused(window)
             || self.files_name.read(cx).focus_handle(cx).is_focused(window)
+            || select_key_blocked_by_context(&window.context_stack())
     }
 
     /// MASSDELETE (D875): ⌘A selects all visible on the current surface, ↑/↓
@@ -289,18 +294,21 @@ fn top_bar(
     look: Look,
 ) -> impl IntoElement {
     let show_sidebar_tip = format!("Show sidebar  {}", keys::label("⌘B", mac));
-    row()
-        .id("top-bar")
-        .h(px(theme::TOP_BAR))
-        .flex_shrink_0()
-        .px_3()
-        .gap_2()
-        .border_b_1()
-        .border_color(rgb(look.line))
+    chrome::titlebar_drag(
+        row()
+            .id("top-bar")
+            .h(px(theme::TOP_BAR))
+            .flex_shrink_0()
+            .px_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(rgb(look.line)),
+    )
         .when(sidebar_hidden, |bar| {
-            bar.child(
+            bar.pl(px(20.)).child(chrome::lights()).child(
                 widgets::ghost_in(look, ui, "show-sidebar", "", reveal_action)
                     .icon(IconName::PanelLeft)
+                    .flex_shrink_0()
                     .accessibility_label("Show sidebar")
                     .tooltip(show_sidebar_tip),
             )
@@ -331,6 +339,10 @@ fn top_bar(
                 .role(Role::Heading)
                 .aria_label(title.clone())
                 .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(look.text))
                 .child(title)
@@ -342,6 +354,7 @@ fn top_bar(
                 .label("Search")
                 .ghost()
                 .small()
+                .flex_shrink_0()
                 .accessibility_label("Search")
                 .tooltip("Command palette  ⌘K")
                 .on_click({
@@ -360,6 +373,7 @@ fn top_bar(
                         AppAction::Pane(PaneAction::Toggle(PaneId::Panel)),
                     )
                     .icon(IconName::PanelRight)
+                    .flex_shrink_0()
                     .accessibility_label("Toggle side panel")
                     .tooltip("Toggle side panel  ⌥⌘0"),
                 )
@@ -372,6 +386,7 @@ impl Shell {
     /// pane, past its narrowest to hide it; double-click to reset it.
     fn divider(&self, pane: PaneId, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
+        let active = self.dragging == Some(pane);
         let id = match pane {
             PaneId::Sidebar => "sidebar-divider",
             PaneId::Panel => "panel-divider",
@@ -390,7 +405,7 @@ impl Shell {
             .flex()
             .items_center()
             .justify_center()
-            // The grip shows under the pointer, as frames 37 and 38 draw it.
+            // The grip shows under the pointer and stays visible while dragging.
             .child(
                 div()
                     .w(px(5.))
@@ -398,7 +413,7 @@ impl Shell {
                     .flex_shrink_0()
                     .rounded_full()
                     .bg(rgb(look.secondary))
-                    .opacity(0.)
+                    .opacity(if active { 1. } else { 0. })
                     .group_hover(id, |grip| grip.opacity(1.)),
             )
             .on_mouse_down(
@@ -407,9 +422,11 @@ impl Shell {
                     cx.stop_propagation();
                     if event.click_count == 2 {
                         this.dragging = None;
+                        cx.notify();
                         this.send(AppAction::Pane(PaneAction::Reset(pane)), cx);
                     } else {
                         this.dragging = Some(pane);
+                        cx.notify();
                     }
                 }),
             )
@@ -433,6 +450,7 @@ impl Render for Shell {
                 humata2_settings::Theme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
                 humata2_settings::Theme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
             }
+            humata2_ui_core::sync_theme(cx);
         }
         let look = Look::of(cx);
         let lost_focus = self
@@ -644,11 +662,11 @@ impl Render for Shell {
             } else {
                 self.ui.read(|state| {
                     if matches!(state.route, Route::Settings) {
-                        crate::settings::toolbar(look).into_any_element()
+                        crate::settings::toolbar(collapsed, look).into_any_element()
                     } else if matches!(state.route, Route::Machine(_)) {
                         div().into_any_element()
                     } else if matches!(state.route, Route::Hosts) {
-                        crate::hosts::toolbar(&ui, look).into_any_element()
+                        crate::hosts::toolbar(&ui, collapsed, look).into_any_element()
                     } else if matches!(state.route, Route::Desk) {
                         crate::desk::toolbar(&ui, state, collapsed, look).into_any_element()
                     } else if let Route::Channel(id) = &state.route
@@ -683,7 +701,7 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_row()
-            .bg(rgb(look.content))
+            .when(self.dragging.is_some(), |shell| shell.cursor_col_resize())
             .text_color(rgb(look.text))
             .font_family(".SystemUIFont")
             .text_size(px(13.))
@@ -871,6 +889,7 @@ impl Render for Shell {
                 let Some(pane) = this.dragging else { return };
                 if event.pressed_button != Some(MouseButton::Left) {
                     this.dragging = None;
+                    cx.notify();
                     return;
                 }
                 let x = f32::from(event.position.x);
@@ -883,7 +902,19 @@ impl Render for Shell {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = None),
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.dragging.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.dragging.take().is_some() {
+                        cx.notify();
+                    }
+                }),
             )
             .when(!full, |shell| {
                 shell
@@ -956,7 +987,10 @@ impl Render for Shell {
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .cursor_pointer()
                                     .bg(rgb(look.sidebar))
+                                    .hover(move |s| s.bg(rgb(look.fill)))
+                                    .active(move |s| s.bg(rgb(look.line)))
                                     .border_l_1()
                                     .border_color(rgb(look.line))
                                     .child(chrome::icon(IconName::ChevronLeft, look.secondary, 12.))
@@ -1008,6 +1042,7 @@ impl Render for Shell {
                                     .absolute()
                                     .inset_0()
                                     .bg(rgba(0x00000040))
+                                    .occlude()
                                     .on_click({
                                         let ui = ui.clone();
                                         move |_, _, cx| {
@@ -1036,6 +1071,9 @@ fn escape_closes_something(state: &humata2_app::AppState) -> bool {
         || state.mass_delete.selecting()
         || state.report.form.is_some()
         || state.navigation_overlay
+        || state.files.picker.is_some()
+        || state.files.send_menu.is_some()
+        || state.files.row_menu.is_some()
         || state.settings.font_menu
         || state.settings.desk_rows_menu
         || state.settings.repos.adding_repo
@@ -1045,6 +1083,18 @@ fn escape_closes_something(state: &humata2_app::AppState) -> bool {
         || state.hosts.start_confirm.is_some()
         || state.machine_page.confirm.is_some()
         || state.machine_page.menu_open
+        || state.review.base_menu
+        || state.review.agent_tab_menu
+        || state.review.repo_picker.is_some()
+        || state.review.push_menu
+}
+
+/// Whether the active key-context stack is inside a terminal or text input,
+/// where mass-delete select mode must not hijack keys (UI_JANK_FIXES 1.4).
+fn select_key_blocked_by_context(contexts: &[KeyContext]) -> bool {
+    contexts.iter().any(|ctx| {
+        ctx.contains("HumataTerminal") || ctx.contains("Input") || ctx.contains("Textarea")
+    })
 }
 
 /// Select-mode keyboard actions (MASSDELETE, D875).
@@ -1242,5 +1292,23 @@ mod tests {
         assert_eq!(step_focus(&visible, Some(&s1), false), Some(s1.clone()));
         assert_eq!(step_focus(&visible, Some(&s2), false), Some(s1));
         assert_eq!(step_focus(&[], None, true), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn select_key_yields_to_terminal_and_text_inputs() {
+        let mut terminal = KeyContext::default();
+        terminal.add("HumataTerminal");
+        let mut input = KeyContext::default();
+        input.add("Input");
+        let mut textarea = KeyContext::default();
+        textarea.add("Textarea");
+        let mut sidebar = KeyContext::default();
+        sidebar.add("Sidebar");
+
+        assert!(select_key_blocked_by_context(&[sidebar.clone(), terminal]));
+        assert!(select_key_blocked_by_context(&[input]));
+        assert!(select_key_blocked_by_context(&[textarea]));
+        assert!(!select_key_blocked_by_context(&[sidebar]));
+        assert!(!select_key_blocked_by_context(&[]));
     }
 }

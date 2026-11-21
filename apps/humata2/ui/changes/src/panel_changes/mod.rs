@@ -12,6 +12,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::Comment as DaemonComment;
@@ -560,34 +561,41 @@ pub fn changes(
                 let items: Vec<AnyElement> =
                     (0..file.lines.len()).map(|index| rows.item(&file.lines, index)).collect();
                 let handle = scroll.handle.clone();
-                col()
-                    .on_scroll_wheel(sideways)
-                    .id(SharedString::from(format!("change-code {name}")))
-                    .role(Role::Code)
-                    .aria_label(name.clone())
-                    .test_support()
+                let bar_handle = scroll.handle.clone();
+                div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .track_scroll(&scroll.handle)
-                    .overflow_y_scroll()
-                    .overflow_x_hidden()
-                    // DS-15: the code's colour below the last line too.
-                    .bg(rgb(look.term))
                     .child(
                         col()
-                            .py(px(6.))
-                            .font_family("Menlo")
-                            .text_size(px(font_size))
-                            .line_height(px(line_height))
+                            .on_scroll_wheel(sideways)
+                            .id(SharedString::from(format!("change-code {name}")))
+                            .role(Role::Code)
+                            .aria_label(name.clone())
+                            .test_support()
+                            .size_full()
+                            .track_scroll(&scroll.handle)
+                            .overflow_y_scroll()
+                            .overflow_x_hidden()
+                            // DS-15: the code's colour below the last line too.
                             .bg(rgb(look.term))
-                            .on_children_prepainted(move |children, _, cx| {
-                                scroll.keep_top(width, wrap, &children, cx);
-                                if moved && let Some(child) = children.get(hunk_line.unwrap_or(0)) {
-                                    put_at_top(&handle, child, cx);
-                                }
-                            })
-                            .children(items),
+                            .child(
+                                col()
+                                    .py(px(6.))
+                                    .font_family("Menlo")
+                                    .text_size(px(font_size))
+                                    .line_height(px(line_height))
+                                    .bg(rgb(look.term))
+                                    .on_children_prepainted(move |children, _, cx| {
+                                        scroll.keep_top(width, wrap, &children, cx);
+                                        if moved && let Some(child) = children.get(hunk_line.unwrap_or(0)) {
+                                            put_at_top(&handle, child, cx);
+                                        }
+                                    })
+                                    .children(items),
+                            ),
                     )
+                    .vertical_scrollbar(&bar_handle)
                     .into_any_element()
             };
             // DS-24, DS-36: a file with nothing to draw shows its note as
@@ -861,7 +869,6 @@ pub fn changes(
                             )
                         }
                     })
-                    .when(!bar && !stacked, |header| header.child(open_in_editor(look)))
                     .when(!bar && stacked, |header| header.child(open_in_editor_words(look))),
             )
             // With no code lines the note is the body, so it isn't said twice.
@@ -994,7 +1001,7 @@ pub fn changes(
                             // Deferred, so the menu paints over the panel and
                             // takes the clicks there; the scrim first, then the menu.
                             wrap.child(deferred(base_scrim(ui)))
-                                .child(deferred(base_menu(ui, state, look)))
+                                .child(deferred(base_menu(ui, state, look, window.viewport_size())))
                         }),
                 )})
                 .when(full, |line| line.child(since_switch(ui, state, look))),
@@ -1004,11 +1011,25 @@ pub fn changes(
     crate::panel_stack::stack_keys(col(), &state.review)
         .size_full()
         .when(full && !inline, |panel| {
+            if !window.is_window_active() {
+                documents.diff_list_drag.set(None);
+                let _ = agent_tab::drag_end();
+            }
+            let file_list_dragging = documents.diff_list_drag.get().is_some();
+            let dock_drag = agent_tab::dragging();
             let move_drag = documents.diff_list_drag.clone();
             let move_ui = ui.clone();
             let up_drag = documents.diff_list_drag.clone();
+            let up_out_drag = documents.diff_list_drag.clone();
             let viewport_h = f32::from(window.viewport_size().height);
             panel
+                .when(
+                    file_list_dragging || dock_drag == Some(agent_tab::DockPosition::Right),
+                    |p| p.cursor_col_resize(),
+                )
+                .when(dock_drag == Some(agent_tab::DockPosition::Bottom), |p| {
+                    p.cursor_row_resize()
+                })
                 .on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
                     if agent_tab::drag_move(event, width, viewport_h) {
                         cx.refresh_windows();
@@ -1019,14 +1040,23 @@ pub fn changes(
                     };
                     if event.pressed_button != Some(MouseButton::Left) {
                         move_drag.set(None);
+                        cx.refresh_windows();
                         return;
                     }
                     let next = start_width + (f32::from(event.position.x) - start_x);
                     move_ui.send(AppAction::Review(ReviewAction::ResizeFileList(next)), cx);
                 })
-                .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                    up_drag.set(None);
-                    agent_tab::drag_end();
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    let was = up_drag.replace(None).is_some() | agent_tab::drag_end();
+                    if was {
+                        cx.refresh_windows();
+                    }
+                })
+                .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                    let was = up_out_drag.replace(None).is_some() | agent_tab::drag_end();
+                    if was {
+                        cx.refresh_windows();
+                    }
                 })
         })
         // A pull request review's header names the pull request instead
@@ -1154,13 +1184,19 @@ pub fn changes(
                 .children(match inline_handle {
                     Some(ref handle) => Some(
                         div()
-                            .id("review-diff")
+                            .relative()
                             .flex_1()
                             .min_h_0()
-                            .track_scroll(handle)
-                            .overflow_y_scroll()
-                            .child(list)
-                            .test_support()
+                            .child(
+                                div()
+                                    .id("review-diff")
+                                    .size_full()
+                                    .track_scroll(handle)
+                                    .overflow_y_scroll()
+                                    .child(list)
+                                    .test_support(),
+                            )
+                            .vertical_scrollbar(handle)
                             .into_any_element(),
                     ),
                     // Folded into the file bar: no list box.
@@ -1168,9 +1204,8 @@ pub fn changes(
                     None => Some(
                         div()
                         .id("changes-files")
-                        .overflow_y_scroll()
                         .min_h_0()
-                        .test_support()
+                        .overflow_y_scroll()
                         .when(full, |files| {
                             files
                                 // Stretched by the row, not h_full: a percent
@@ -1188,11 +1223,13 @@ pub fn changes(
                             files.flex_shrink_0().max_h(px(if stacked { 240. } else { 220. }))
                         })
                         .child(list)
+                        .test_support()
                         .into_any_element(),
                     ),
                 })
                 .when(full && !inline && inline_handle.is_none(), |body| {
                     let drag = documents.diff_list_drag.clone();
+                    let is_dragging = drag.get().is_some();
                     let reset_ui = ui.clone();
                     body.child(
                         div()
@@ -1216,7 +1253,7 @@ pub fn changes(
                                     .flex_shrink_0()
                                     .rounded_full()
                                     .bg(rgb(look.secondary))
-                                    .opacity(0.)
+                                    .opacity(if is_dragging { 1. } else { 0. })
                                     .group_hover("changes-files-divider", |grip| grip.opacity(1.)),
                             )
                             .on_mouse_down(
@@ -1234,6 +1271,7 @@ pub fn changes(
                                             f32::from(event.position.x),
                                             file_list_width,
                                         )));
+                                        cx.refresh_windows();
                                     }
                                 },
                             )
@@ -1354,7 +1392,14 @@ pub fn changes(
                             .when(state.review.push_menu && !diffs.is_empty(), |wrap| {
                                 wrap.relative()
                                     .child(deferred(push_scrim(ui)))
-                                    .child(deferred(push_menu(ui, state, look, &diffs)))
+                                    .child(deferred(push_menu(
+                                        ui,
+                                        state,
+                                        look,
+                                        &diffs,
+                                        window.viewport_size(),
+                                        !full,
+                                    )))
                             })
                             .into_any_element()
                     }
@@ -1452,7 +1497,14 @@ pub fn changes(
                                         })
                                         .when(state.review.push_menu, |wrap| {
                                             wrap.child(deferred(push_scrim(ui)))
-                                                .child(deferred(push_menu(ui, state, look, &diffs)))
+                                                .child(deferred(push_menu(
+                                                    ui,
+                                                    state,
+                                                    look,
+                                                    &diffs,
+                                                    window.viewport_size(),
+                                                    !full,
+                                                )))
                                         }),
                                 )
                             })

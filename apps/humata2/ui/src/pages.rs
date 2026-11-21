@@ -93,8 +93,13 @@ pub fn page(
         Route::Reviews => crate::reviews_inbox::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
             || {
-                widgets::empty_in(look, "This channel is gone.", "Pick another in the sidebar.")
-                    .into_any_element()
+                missing_route_empty(
+                    ui,
+                    state,
+                    look,
+                    "This channel is gone.",
+                    "Pick another in the sidebar or return home.",
+                )
             },
             |channel| {
                 // The channel's To-do tab is the To-do list, narrowed to it (D874).
@@ -123,8 +128,13 @@ pub fn page(
             .find(|session| &session.id == id)
             .map_or_else(
                 || {
-                    widgets::empty_in(look, "This session is gone.", "Pick another in the sidebar.")
-                        .into_any_element()
+                    missing_route_empty(
+                        ui,
+                        state,
+                        look,
+                        "This session is gone.",
+                        "Pick another in the sidebar or return home.",
+                    )
                 },
                 |session| {
                     session_body(ui, state, session, Look::of(cx), terminals, documents, cx).into_any_element()
@@ -133,6 +143,39 @@ pub fn page(
         _ => widgets::empty_in(look, "Nothing here yet.", "This screen is being built.")
             .into_any_element(),
     }
+}
+
+/// Empty state for a missing/deleted session or channel with Go back / Go home
+/// actions so the user is never stranded when the sidebar is collapsed.
+fn missing_route_empty(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    what: &'static str,
+    next: &'static str,
+) -> AnyElement {
+    let actions = row()
+        .gap(px(8.))
+        .mt(px(8.))
+        .when(!state.trail.is_empty(), |r| {
+            r.child(widgets::push_quiet(
+                ui,
+                "missing-go-back",
+                "Go back",
+                AppAction::Back,
+                look,
+            ))
+        })
+        .child(widgets::push_primary(
+            ui,
+            "missing-go-home",
+            "Go home",
+            AppAction::Switch(Route::Home),
+            look,
+        ));
+    widgets::empty_in(look, what, next)
+        .child(actions)
+        .into_any_element()
 }
 
 pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
@@ -234,7 +277,7 @@ pub(crate) fn session_header(
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(14.))
+                    .text_size(px(15.))
                     .child(title.clone()),
                 title,
             )
@@ -282,16 +325,18 @@ pub(crate) fn session_header(
             look,
         });
     }
-    row()
-        .h(px(52.))
-        .px(px(16.))
-        .gap(px(if compact { 8. } else { 12. }))
-        .flex_shrink_0()
-        .border_b_1()
-        .border_color(rgb(look.line))
-        .bg(rgb(look.content))
+    chrome::titlebar_drag(
+        row()
+            .h(px(52.))
+            .px(px(16.))
+            .gap(px(if compact { 8. } else { 12. }))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(look.line))
+            .bg(rgb(look.content)),
+    )
         .when(collapsed || terminal_full, |x| {
-            x.child(chrome::lights()).child(div().w(px(4.)))
+            x.pl(px(20.)).child(chrome::lights()).child(div().w(px(4.)))
         })
         // DS-58: the same ‹ Back as every other page's top bar, shown only
         // when there is somewhere to go back to.
@@ -420,12 +465,15 @@ pub(crate) fn session_header(
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(shown.clone()).build(window, cx)
                 })
-                .size(px(15.))
+                .size(px(24.))
+                .rounded(px(6.))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
+                .hover(|s| s.bg(rgba(0x80808024)))
+                .active(|s| s.bg(rgba(0x8080803c)))
                 .child(chrome::icon(
                     if terminal_full {
                         IconName::Minimize2
@@ -532,7 +580,8 @@ fn session_menu(ui: &Rc<Ui>, state: &AppState, session: &Session, desk: bool, lo
                 "session-menu-scrim",
                 AppAction::Session(SessionAction::Menu(false)),
             )))
-            .child(deferred(
+            .child(deferred(crate::action_menu::entrance(
+                "session-menu-card-in",
                 // Wide enough for its longest item, "New desk session for this
                 // session…", with the items' own padding.
                 crate::action_menu::card("session-menu-card", 256., look)
@@ -605,14 +654,15 @@ fn session_menu(ui: &Rc<Ui>, state: &AppState, session: &Session, desk: bool, lo
                         pick(MenuItem::PushAndPullRequest),
                         look,
                     ))
-                    .child(crate::action_menu::item(
+                    .child(crate::action_menu::separator(look))
+                    .child(crate::action_menu::item_destructive(
                         ui,
                         "session-menu-archive",
                         if desk { "Close session" } else { "Archive session…" },
                         pick(MenuItem::Archive),
                         look,
-                    ))
-            ))
+                    )),
+            )))
         })
 }
 

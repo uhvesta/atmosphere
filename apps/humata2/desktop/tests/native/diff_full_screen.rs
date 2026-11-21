@@ -281,8 +281,12 @@ fn escape_closes_the_new_agent_tab_menu_first() {
     }
     app.click("agent-dock-add");
     assert!(app.contains("agent-dock-add-menu"));
+    // First click hits the occluding scrim, dismissing the add menu without
+    // accidentally closing the dock underneath; second click closes the dock.
     app.click("agent-dock-close");
     assert!(!app.contains("agent-dock-add-menu"));
+    assert!(app.contains("agent-dock"));
+    app.click("agent-dock-close");
     assert!(!app.contains("agent-dock"));
     assert!(full(&mut app));
 }
