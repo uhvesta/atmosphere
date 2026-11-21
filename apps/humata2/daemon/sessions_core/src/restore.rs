@@ -49,6 +49,29 @@ pub fn restore_clone(
 }
 
 impl Starter {
+    /// Restores a single repository clone (using a linked worktree when
+    /// `use_worktrees` is enabled, falling back to `restore_clone`). Blocking.
+    pub fn restore_repo_blocking(
+        &self,
+        channel_folder: &str,
+        owner: &str,
+        name: &str,
+        url: &str,
+        path: &Path,
+        branch: &str,
+    ) -> Result<RestoredFrom, GitError> {
+        if crate::worktree::use_worktrees_enabled(&self.store) {
+            let bare = self.layout.repo_cache(owner, name);
+            let lock = self.layout.repo_cache_lock(owner, name);
+            if let Ok(from) = crate::worktree::worktree_restore_with(&bare, &lock, url, path, branch)
+            {
+                return Ok(from);
+            }
+        }
+        let main = self.layout.main_clone(channel_folder, name);
+        restore_clone(&main, url, path, branch)
+    }
+
     /// Clones each repository of `detail` that has no clone in the session
     /// folder, on its branch (LD-4). Returns where each branch came from.
     pub async fn reclone(
@@ -69,13 +92,21 @@ impl Starter {
                 name: repo.name.clone(),
                 source,
             };
-            let main = self.layout.main_clone(&channel.folder, &repo.name);
             let url =
                 remote_url(&self.remote_template, &repo.owner, &repo.name).map_err(git_err)?;
-            let (path, branch) = (repo.path.clone(), repo.branch.clone());
-            let from = blocking(move || restore_clone(&main, &url, &path, &branch))
-                .await?
-                .map_err(git_err)?;
+            let (this, ch_folder, owner, name, path, branch) = (
+                self.clone(),
+                channel.folder.clone(),
+                repo.owner.clone(),
+                repo.name.clone(),
+                repo.path.clone(),
+                repo.branch.clone(),
+            );
+            let from = blocking(move || {
+                this.restore_repo_blocking(&ch_folder, &owner, &name, &url, &path, &branch)
+            })
+            .await?
+            .map_err(git_err)?;
             restored.push((repo.name.clone(), from));
         }
         Ok(restored)

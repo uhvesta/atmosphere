@@ -50,6 +50,18 @@ async fn get(daemon: &common::Daemon, channel: &pb::ChannelId) -> pb::Channel {
         .into_inner()
 }
 
+fn git_head_path(repo: &std::path::Path) -> std::path::PathBuf {
+    let dot_git = repo.join(".git");
+    if dot_git.is_file()
+        && let Ok(raw) = std::fs::read_to_string(&dot_git)
+        && let Some(dir) = raw.lines().find_map(|l| l.trim().strip_prefix("gitdir:"))
+    {
+        let p = std::path::Path::new(dir.trim());
+        return if p.is_absolute() { p.join("HEAD") } else { repo.join(p).join("HEAD") };
+    }
+    dot_git.join("HEAD")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repo_added_to_a_channel_gets_a_main_clone_and_the_first_is_untouched() {
     let (daemon, world) = common::shared::shared_world().await;
@@ -59,7 +71,8 @@ async fn a_repo_added_to_a_channel_gets_a_main_clone_and_the_first_is_untouched(
     world.remote(&owner, "web");
     let (channel, _) = common::create_channel(daemon, &ch_name, &[(&owner, "api")]).await;
     let folder = world.channels.join(&channel.folder);
-    let first_head = std::fs::read(folder.join("main/api/.git/HEAD")).unwrap();
+    let api_head_path = git_head_path(&folder.join("main/api"));
+    let first_head = std::fs::read(&api_head_path).unwrap();
 
     let op = add_repo(daemon, &id_of(&channel), &owner, "web", None)
         .await
@@ -68,7 +81,7 @@ async fn a_repo_added_to_a_channel_gets_a_main_clone_and_the_first_is_untouched(
 
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     assert!(folder.join("main/web/.git").exists());
-    assert_eq!(std::fs::read(folder.join("main/api/.git/HEAD")).unwrap(), first_head);
+    assert_eq!(std::fs::read(&api_head_path).unwrap(), first_head);
     let got = get(daemon, &id_of(&channel)).await;
     assert_eq!(got.repos, vec![repo_ref(&owner, "api"), repo_ref(&owner, "web")]);
 }

@@ -166,8 +166,11 @@ impl Starter {
             .iter()
             .map(|repo| (repo.path.clone(), (repo.owner.clone(), repo.name.clone())))
             .collect();
-        let (copy_folder, copy_branch) = (folder.clone(), branch.name.clone());
-        blocking(move || copy_clones(&copy_folder, &clones, &copy_branch)).await??;
+        let (copy_folder, copy_branch, layout) =
+            (folder.clone(), branch.name.clone(), self.layout.clone());
+        let use_wt = crate::worktree::use_worktrees_enabled(&self.store);
+        blocking(move || copy_clones_with(&copy_folder, &clones, &copy_branch, &layout, use_wt))
+            .await??;
         for repo in &plan.detail.repos {
             progress(&format!("copy_code:{}", repo.name));
         }
@@ -374,7 +377,13 @@ impl Starter {
         progress("move_conversation");
 
         let (built, dest) = (partial(folder), folder.to_owned());
-        if let Err(source) = blocking(move || place_folder(&built, &dest)).await? {
+        if let Err(source) = blocking(move || {
+            place_folder(&built, &dest)?;
+            crate::worktree::repair_worktrees_in_folder(&dest);
+            Ok::<_, io::Error>(())
+        })
+        .await?
+        {
             remove_copy(&from, &to).await;
             return Err(OwnCopyError::Copy {
                 path: folder.to_owned(),
@@ -467,15 +476,48 @@ fn store_error<'a>(
 /// through partials of their own (see `copy_clone`). The partial folder is a
 /// sibling of the session folders, so start-up clears one a crash left
 /// (see `recover`). A failure removes it, so nothing is left half-copied.
+#[cfg(test)]
 fn copy_clones(
     folder: &Path,
     repos: &[(PathBuf, RepoName)],
     branch: &str,
 ) -> Result<(), OwnCopyError> {
+    copy_clones_with(
+        folder,
+        repos,
+        branch,
+        &crate::layout::Layout::new(folder),
+        false,
+    )
+}
+
+fn copy_clones_with(
+    folder: &Path,
+    repos: &[(PathBuf, RepoName)],
+    branch: &str,
+    layout: &crate::layout::Layout,
+    use_worktrees: bool,
+) -> Result<(), OwnCopyError> {
     let built = partial(folder);
+    crate::worktree::remove_worktrees_in_folder(&built);
     let _ = fs::remove_dir_all(&built);
     for (src, (owner, name)) in repos {
-        if let Err(source) = copy_clone(src, &built.join(name), branch) {
+        let dest = built.join(name);
+        let copied = if use_worktrees {
+            let bare = layout.repo_cache(owner, name);
+            let lock = layout.repo_cache_lock(owner, name);
+            if bare.join("HEAD").exists()
+                && crate::worktree::copy_worktree(src, &bare, &lock, &dest, branch).is_ok()
+            {
+                Ok(())
+            } else {
+                copy_clone(src, &dest, branch)
+            }
+        } else {
+            copy_clone(src, &dest, branch)
+        };
+        if let Err(source) = copied {
+            crate::worktree::remove_worktrees_in_folder(&built);
             let _ = fs::remove_dir_all(&built);
             return Err(OwnCopyError::Git {
                 owner: owner.clone(),

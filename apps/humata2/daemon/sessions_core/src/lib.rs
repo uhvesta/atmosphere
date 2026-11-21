@@ -25,6 +25,7 @@ pub mod tree_copy;
 #[cfg(test)]
 mod versions_tests;
 pub mod work;
+pub mod worktree;
 
 pub use add_repo::AddedRepo;
 pub use agents::{
@@ -57,3 +58,11 @@ pub use start::{
     CloneUnits, RepoName, ReviewStart, StartRequest, Started, Starter, with_clone_units,
 };
 pub use work::{FileChange, RepoWork, repo_work};
+pub use worktree::{
+    USE_WORKTREES_KEY, WorktreeDirs, collect_worktrees_in_folder, copy_clone_standalone,
+    copy_worktree, ensure_bare_cache, git_path, is_branch_checked_out, is_detached_head,
+    is_linked_worktree, lock_path_for_bare, prune_worktrees, remove_worktrees_in_folder,
+    repair_or_reattach_worktree, repair_worktrees_in_folder, resolve_worktree_dirs,
+    use_worktrees_enabled, with_repo_cache_lock, worktree_branches, worktree_main_with,
+    worktree_pull_head_with, worktree_restore_with, worktree_session_with,
+};

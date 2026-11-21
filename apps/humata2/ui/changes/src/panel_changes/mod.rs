@@ -16,7 +16,7 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::Comment as DaemonComment;
 use humata2_clients::model::{Comment, LineKind, RepoDiff, Session, SessionId};
-use humata2_review::ReviewAction;
+use humata2_review::{DiffMarkdownMode, ReviewAction};
 use humata2_review::comments::CommentsAction;
 use humata2_session::Panel;
 use std::rc::Rc;
@@ -24,6 +24,7 @@ use std::rc::Rc;
 mod agent_tab;
 mod diff_body;
 mod file_list;
+pub(crate) mod markdown_view;
 mod plan;
 mod review_header;
 mod states;
@@ -443,18 +444,29 @@ pub fn changes(
             // The numbers take their digits, an 8 pt left inset, the 4 pt right pad
             // and the 8 pt the code overlaps, so 20000 is never clipped or flush.
             let gutter_width = 34_f32.max(digits as f32 * cell_width + 20.);
+            let is_md = full && markdown_view::is_diff_markdown(&file.path);
+            let md_mode = if is_md {
+                state.review.markdown_mode(&diff.session)
+            } else {
+                DiffMarkdownMode::Diff
+            };
             let view_width = (width - if full { file_list_width } else { 0. }).max(0.);
+            let code_view_width = if md_mode == DiffMarkdownMode::Split {
+                ((view_width - 1.) / 2.).max(0.)
+            } else {
+                view_width
+            };
             // DS-19: full screen draws an old and a new number column,
             // beside the terminal one.
             let start = code_start_of(gutter_width, cell_width, full);
-            let code_width = view_width - start - 2.;
+            let code_width = code_view_width - start - 2.;
             let columns = ((code_width / cell_width).floor().max(4.)) as usize;
             // On Scroll only the code column moves sideways, as far as the
             // widest line needs.
             let max_shift = if wrap {
                 0.
             } else {
-                (widest as f32 * cell_width + cell_width) - (view_width - start)
+                (widest as f32 * cell_width + cell_width) - (code_view_width - start)
             };
             let shift = scroll.shift(max_shift);
             let rows = CodeRows::new(
@@ -469,7 +481,7 @@ pub fn changes(
                     gutter_width,
                     cell_width,
                     line_height,
-                    view_width,
+                    view_width: code_view_width,
                     review: false,
                     old: full,
                 },
@@ -488,7 +500,7 @@ pub fn changes(
             let code = if file.lines.len() > VIRTUAL_FROM {
                 // DV-5: a long file builds only the lines in view. The list
                 // keeps its top line across a rewrap by itself.
-                let state = scroll.rows(&file.lines, wrap, view_width, line_height);
+                let state = scroll.rows(&file.lines, wrap, code_view_width, line_height);
                 if moved {
                     state.scroll_to(ListOffset {
                         item_ix: hunk_line.unwrap_or(0),
@@ -652,10 +664,16 @@ pub fn changes(
                                 file_name.to_owned(),
                             ))
                     })
+                    // Full-screen Markdown files offer Diff | Split | Rendered.
+                    .when(is_md, |header| {
+                        header.child(markdown_view::mode_switch(ui, look, md_mode))
+                    })
                     // The switch does nothing on a file with no code lines. A
                     // stack's header leaves it to ⌥Z (frames 119 to 121).
-                    .when(coded && !stacked, |header| header.child(wrap_switch(ui, look, wrap)))
-                    .when(stepper, |header| {
+                    .when(coded && !stacked && md_mode != DiffMarkdownMode::Rendered, |header| {
+                        header.child(wrap_switch(ui, look, wrap))
+                    })
+                    .when(stepper && md_mode != DiffMarkdownMode::Rendered, |header| {
                         header.child(change_stepper(ui, look, change, changes))
                     })
                     // With the file bar showing, Open in editor sits there.
@@ -687,7 +705,25 @@ pub fn changes(
                     .text_ellipsis();
                 full_text(line, whole)
             }))
-            .child(code)
+            .child(match md_mode {
+                DiffMarkdownMode::Diff => code,
+                DiffMarkdownMode::Split => row()
+                    .id("diff-md-split")
+                    .test_support()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .items_stretch()
+                    .child(col().flex_1().min_w_0().min_h_0().child(code))
+                    .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(look.line)))
+                    .child(markdown_view::rendered_pane(
+                        ui, state, diff, file, documents, look, true,
+                    ))
+                    .into_any_element(),
+                DiffMarkdownMode::Rendered => markdown_view::rendered_pane(
+                    ui, state, diff, file, documents, look, false,
+                ),
+            })
         })
         .when(picked.is_none() && !failed, |view| {
             // DS-33: before the first diff arrives the panel is reading, not empty.

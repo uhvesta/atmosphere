@@ -137,6 +137,26 @@ pub const MIN_FILE_LIST_WIDTH: f32 = 180.;
 /// Widest width the full-screen Diff file list column can be dragged to.
 pub const MAX_FILE_LIST_WIDTH: f32 = 560.;
 
+/// How a Markdown file is shown in the full-screen Diff view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiffMarkdownMode {
+    /// The code diff (default).
+    #[default]
+    Diff,
+    /// Code diff and rendered Markdown side by side.
+    Split,
+    /// Full rendered Markdown.
+    Rendered,
+}
+
+/// Whether `path` is a Markdown file for the full-screen Diff renderer
+/// (`.md`, `.markdown`, or `.mdx`, any case).
+#[must_use]
+pub fn is_markdown_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx")
+}
+
 /// Clamps a full-screen Diff file list width into `[MIN_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH]`,
 /// falling back to [`DEFAULT_FILE_LIST_WIDTH`] for non-finite values.
 #[must_use]
@@ -344,6 +364,13 @@ pub struct ReviewState {
     pub base_before_looked: HashMap<SessionId, DiffBase>,
     /// The sessions whose saved looks were read from the host. Not saved.
     pub looks_read: HashSet<SessionId>,
+    /// How Markdown files are shown in the full-screen Diff view, per session.
+    /// Not saved.
+    pub markdown_mode: HashMap<SessionId, DiffMarkdownMode>,
+    /// Full file contents read for the full-screen Diff Markdown renderer,
+    /// keyed by `(session, repo, path)`. Cleared for a session when its diffs
+    /// refresh. Not saved.
+    pub diff_file_contents: HashMap<(SessionId, String, String), Result<String, String>>,
 }
 
 /// The changes (hunks) of a file: its hunk headers, or one when it has none.
@@ -873,6 +900,21 @@ impl ReviewState {
             .map_or(DEFAULT_FILE_LIST_WIDTH, |w| clamp_file_list_width(f32::from(w)))
     }
 
+    /// How Markdown files are shown in the full-screen Diff view for `session`.
+    #[must_use]
+    pub fn markdown_mode(&self, session: &SessionId) -> DiffMarkdownMode {
+        self.markdown_mode.get(session).copied().unwrap_or_default()
+    }
+
+    /// The loaded full text of `(session, repo, path)` for the full-screen
+    /// Diff Markdown renderer, if it was read successfully.
+    #[must_use]
+    pub fn diff_file_text(&self, session: &SessionId, repo: &str, path: &str) -> Option<&str> {
+        self.diff_file_contents
+            .get(&(session.clone(), repo.to_owned(), path.to_owned()))
+            .and_then(|res| res.as_deref().ok())
+    }
+
     /// Takes what was saved: the folds, the older comments and each
     /// session's diff targets, which become the targets in use.
     pub fn load_saved(&mut self, saved: ReviewSaved) {
@@ -952,6 +994,15 @@ pub enum ReviewAction {
     },
     /// Wrap long lines, or not.
     ToggleWrap,
+    /// Set how Markdown files are shown in the full-screen Diff view.
+    SetMarkdownMode(DiffMarkdownMode),
+    /// A full file read for the full-screen Diff Markdown renderer ended.
+    DiffFileLoaded {
+        session: SessionId,
+        repo: String,
+        path: String,
+        result: Result<String, String>,
+    },
     /// The daemon took this saved comment: forget it.
     HandedOver(SessionId, Comment),
     /// Compare the open session's changes with another base (RV-1).
@@ -1190,6 +1241,39 @@ impl Review {
         })
     }
 
+    /// Reads the full text of the open Markdown file in `session` when the
+    /// full-screen Diff view is showing Split or Rendered Markdown and the
+    /// file hasn't been loaded yet.
+    fn read_markdown_if_needed(
+        &self,
+        state: &ReviewState,
+        session: &SessionId,
+    ) -> Effect<ReviewAction> {
+        if state.markdown_mode(session) == DiffMarkdownMode::Diff {
+            return Effect::none();
+        }
+        let Some((repo, path)) = state.open_file(session) else {
+            return Effect::none();
+        };
+        if !is_markdown_path(&path) {
+            return Effect::none();
+        }
+        let key = (session.clone(), repo.clone(), path.clone());
+        if state.diff_file_contents.contains_key(&key) {
+            return Effect::none();
+        }
+        let reply = self.daemon.read_file(session, &repo, &path);
+        let session = session.clone();
+        Effect::future(async move {
+            ReviewAction::DiffFileLoaded {
+                session,
+                repo,
+                path,
+                result: reply.await.map_err(|error| error.to_string()),
+            }
+        })
+    }
+
     fn fetch(&self, state: &mut ReviewState, session: &SessionId) -> Effect<ReviewAction> {
         let fetch = state.fetch.entry(session.clone()).or_default();
         if fetch.loading {
@@ -1272,8 +1356,12 @@ impl Review {
                         fetch.whole_files = Some(u32::try_from(files).unwrap_or(u32::MAX));
                     }
                     replace_diffs(&mut state.workspace, &session, &diffs);
+                    state
+                        .diff_file_contents
+                        .retain(|(held, _, _), _| held != &session);
                     rebuild_layer_looks(state, &session);
                     effects.push(prepare(state));
+                    effects.push(self.read_markdown_if_needed(state, &session));
                     effects.push(Effect::send(ReviewAction::Delegate(Delegate::Fetched(
                         session.clone(),
                         diffs,
@@ -1527,9 +1615,24 @@ impl Reducer for Review {
 
     fn reduce(&self, state: &mut ReviewState, action: ReviewAction) -> Effect<ReviewAction> {
         match action {
-            ReviewAction::SelectFile { repo, path } => select_file(state, repo, path),
-            ReviewAction::NextFile => step_file(state, true),
-            ReviewAction::PrevFile => step_file(state, false),
+            ReviewAction::SelectFile { repo, path } => {
+                select_file(state, repo, path);
+                if let Some(session) = state.session.clone() {
+                    return self.read_markdown_if_needed(state, &session);
+                }
+            }
+            ReviewAction::NextFile => {
+                step_file(state, true);
+                if let Some(session) = state.session.clone() {
+                    return self.read_markdown_if_needed(state, &session);
+                }
+            }
+            ReviewAction::PrevFile => {
+                step_file(state, false);
+                if let Some(session) = state.session.clone() {
+                    return self.read_markdown_if_needed(state, &session);
+                }
+            }
             ReviewAction::NextChange => step_change(state, true),
             ReviewAction::PrevChange => step_change(state, false),
             ReviewAction::ToggleFileList => {
@@ -1961,7 +2064,12 @@ impl Reducer for Review {
             ReviewAction::ListDown => move_cursor(state, true),
             ReviewAction::ListUp => move_cursor(state, false),
             ReviewAction::ListOpen => match cursor_row(state) {
-                Some((_, ListCursor::File { repo, path })) => select_file(state, repo, path),
+                Some((_, ListCursor::File { repo, path })) => {
+                    select_file(state, repo, path);
+                    if let Some(session) = state.session.clone() {
+                        return self.read_markdown_if_needed(state, &session);
+                    }
+                }
                 Some((_, ListCursor::Repo(repo))) => toggle_repo(state, repo),
                 None => {}
             },
@@ -1988,6 +2096,26 @@ impl Reducer for Review {
                 Some((_, ListCursor::File { .. })) | None => {}
             },
             ReviewAction::ToggleWrap => state.wrap = !state.wrap,
+            ReviewAction::SetMarkdownMode(mode) => {
+                if let Some(session) = state.session.clone() {
+                    if mode == DiffMarkdownMode::Diff {
+                        state.markdown_mode.remove(&session);
+                    } else {
+                        state.markdown_mode.insert(session.clone(), mode);
+                        return self.read_markdown_if_needed(state, &session);
+                    }
+                }
+            }
+            ReviewAction::DiffFileLoaded {
+                session,
+                repo,
+                path,
+                result,
+            } => {
+                state
+                    .diff_file_contents
+                    .insert((session, repo, path), result);
+            }
             ReviewAction::HandedOver(session, comment) => forget(state, &session, &comment),
             ReviewAction::Delegate(_) => {}
         }

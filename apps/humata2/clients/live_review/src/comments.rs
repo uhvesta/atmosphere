@@ -134,6 +134,7 @@ fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
         None => (String::new(), String::new()),
     };
     let lines = anchor.lines.clone().unwrap_or_default();
+    let (first, last) = Anchor::normalized_range(lines.first, lines.last);
     Anchor {
         repo,
         path,
@@ -142,8 +143,8 @@ fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
         } else {
             Side::New
         },
-        first: lines.first,
-        last: lines.last,
+        first,
+        last,
         quoted: lines_of(&anchor.quoted),
         base: (!anchor.base.is_empty()).then(|| anchor.base.clone()),
         detached: anchor.detached,
@@ -152,15 +153,13 @@ fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
 }
 
 fn pb_anchor(anchor: &Anchor) -> pb::CommentAnchor {
+    let (first, last) = anchor.line_range();
     pb::CommentAnchor {
         file: Some(pb::RepoPath {
             repo: pb_repo_named(&anchor.repo),
             path: anchor.path.clone(),
         }),
-        lines: Some(pb::LineRange {
-            first: anchor.first,
-            last: anchor.last,
-        }),
+        lines: Some(pb::LineRange { first, last }),
         side: match anchor.side {
             Side::Old => pb::DiffSide::Old,
             Side::New => pb::DiffSide::New,
@@ -850,6 +849,46 @@ mod tests {
             ..original
         };
         assert_eq!(anchor(&pb_anchor(&outside_a_diff)), outside_a_diff);
+    }
+
+    #[test]
+    fn single_line_backward_compat_and_reversed_multi_line_anchors_normalize() {
+        // Legacy/single-line wire anchor with `last == 0` maps to `first..=first`.
+        let legacy_single = pb::CommentAnchor {
+            file: Some(pb::RepoPath {
+                repo: Some(pb::RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "api".to_owned(),
+                }),
+                path: "src/lib.rs".to_owned(),
+            }),
+            lines: Some(pb::LineRange { first: 10, last: 0 }),
+            side: pb::DiffSide::New as i32,
+            ..pb::CommentAnchor::default()
+        };
+        let mapped = anchor(&legacy_single);
+        assert_eq!((mapped.first, mapped.last), (10, 10));
+        assert!(!mapped.is_multi_line());
+
+        // Reversed range `18..=10` normalizes to `10..=18` on both decode and encode.
+        let reversed_wire = pb::CommentAnchor {
+            lines: Some(pb::LineRange { first: 18, last: 10 }),
+            ..legacy_single
+        };
+        let mapped = anchor(&reversed_wire);
+        assert_eq!((mapped.first, mapped.last), (10, 18));
+        assert!(mapped.is_multi_line());
+
+        let reversed_app = Anchor {
+            first: 18,
+            last: 10,
+            ..mapped
+        };
+        let encoded = pb_anchor(&reversed_app);
+        assert_eq!(
+            encoded.lines,
+            Some(pb::LineRange { first: 10, last: 18 })
+        );
     }
 
     #[test]

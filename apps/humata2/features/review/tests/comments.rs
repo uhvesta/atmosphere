@@ -173,6 +173,48 @@ fn opening_a_box_on_the_same_file_stretches_the_open_one_and_another_file_waits(
 }
 
 #[test]
+fn selecting_a_range_in_reverse_order_normalizes_and_extends_cleanly() {
+    let mut rig = rig();
+    // Click line 18 first.
+    rig.act(A::OpenBox(session(), anchor("a.md", 18)));
+    // Shift+click line 10 -> normalized to 10..=18.
+    let (first, last) = rig
+        .store
+        .state()
+        .extend_box_range(&session(), "notes", "a.md", Side::New, 10);
+    assert_eq!((first, last), (10, 18));
+
+    // Even if an unnormalized reversed anchor (18..=10) is passed to OpenBox,
+    // the reducer normalizes it to 10..=18.
+    let mut reversed = anchor("a.md", 18);
+    reversed.last = 10;
+    rig.act(A::OpenBox(session(), reversed));
+    let open = rig.held().editing.expect("editing box");
+    assert_eq!((open.anchor.first, open.anchor.last), (10, 18));
+
+    // Extending downward to line 22 expands the range to 10..=22.
+    assert_eq!(
+        rig.store
+            .state()
+            .extend_box_range(&session(), "notes", "a.md", Side::New, 22),
+        (10, 22)
+    );
+    // Extending on a different file or side does not stretch the existing box.
+    assert_eq!(
+        rig.store
+            .state()
+            .extend_box_range(&session(), "notes", "other.md", Side::New, 22),
+        (22, 22)
+    );
+    assert_eq!(
+        rig.store
+            .state()
+            .extend_box_range(&session(), "notes", "a.md", Side::Old, 22),
+        (22, 22)
+    );
+}
+
+#[test]
 fn another_line_keeps_a_written_box_as_a_draft_and_opens_an_empty_one_there() {
     let mut rig = rig();
     rig.act(A::OpenBox(session(), anchor("a.md", 2)));

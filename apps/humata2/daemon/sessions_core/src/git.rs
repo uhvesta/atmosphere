@@ -64,7 +64,7 @@ pub(crate) fn clone_permille(line: &str) -> Option<u64> {
 /// Runs a clone-like git command, reporting how far it is through `on_units`
 /// as git prints progress. Only values higher than the last are reported. The
 /// lines that aren't progress are what a failure says.
-fn git_with_progress(
+pub(crate) fn git_with_progress(
     dir: Option<&Path>,
     args: &[&str],
     on_units: &mut dyn FnMut(u64),
@@ -73,6 +73,7 @@ fn git_with_progress(
     cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"]);
     match args.split_first() {
         Some((first, rest)) if *first == "clone" => cmd.arg("clone").arg("--progress").args(rest),
+        Some((first, rest)) if *first == "fetch" => cmd.arg("fetch").arg("--progress").args(rest),
         _ => cmd.args(args),
     };
     cmd.env("GIT_TERMINAL_PROMPT", "0")
@@ -176,7 +177,7 @@ pub(crate) fn in_partial(
 /// Puts everything under `tmp` on disk, then renames it to `dest` and puts
 /// the rename on disk. Git writes the checkout without fsync, so without
 /// this a power cut could leave `dest` named but its files empty.
-fn settle(tmp: &Path, dest: &Path) -> Result<(), GitError> {
+pub(crate) fn settle(tmp: &Path, dest: &Path) -> Result<(), GitError> {
     sync_tree(tmp).map_err(io(tmp))?;
     humata2_durable::rename(tmp, dest).map_err(io(dest))?;
     if let Some(parent) = dest.parent() {
@@ -258,12 +259,14 @@ pub fn clone_session_with(
         git(Some(tmp), &["remote", "set-url", "origin", remote_url])?;
         copy_remote_branches(main_clone, tmp)?;
         // No upstream: the new branch is pushed to the real remote, not the base.
+        // `-B` resets the branch in this fresh standalone clone even if cloning
+        // from a worktree main whose shared bare repo already had a branch of the same name.
         git(
             Some(tmp),
             &[
                 "checkout",
                 "--no-track",
-                "-b",
+                "-B",
                 branch,
                 &format!("origin/{base}"),
             ],

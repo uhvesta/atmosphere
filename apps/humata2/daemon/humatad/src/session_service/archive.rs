@@ -380,6 +380,7 @@ fn remove_session_folder(
     {
         return Err(refused());
     }
+    humata2_sessions::remove_worktrees_in_folder(&canonical);
     std::fs::remove_dir_all(&canonical).map_err(|source| ArchiveError::Remove {
         path: canonical,
         source,

@@ -51,6 +51,20 @@ pub enum RecoveryState {
     Stuck { reason: String },
 }
 
+/// Normalizes a 1-based inclusive `(first, last)` wire line range, treating
+/// `last == 0` as a single-line comment at `first` and swapping reversed ranges.
+fn normalize_lines(first: u32, last: u32) -> (u32, u32) {
+    if first == 0 && last == 0 {
+        (0, 0)
+    } else if last == 0 {
+        (first, first)
+    } else if first == 0 {
+        (last, last)
+    } else {
+        (first.min(last), first.max(last))
+    }
+}
+
 /// Whether a comment id names one of the user's comments (`c-<n>`, with or
 /// without its session) rather than a review chat note.
 pub(super) fn is_user_id(id: Option<&pb::CommentId>) -> bool {
@@ -1265,7 +1279,7 @@ impl Review {
         let (first, last) = anchor
             .lines
             .as_ref()
-            .map_or((0, 0), |lines| (lines.first.min(lines.last), lines.first.max(lines.last)));
+            .map_or((0, 0), |lines| normalize_lines(lines.first, lines.last));
         let side = if anchor.side == pb::DiffSide::Old as i32 { Side::Old } else { Side::New };
         let mut quoted: Vec<String> = if anchor.quoted.is_empty() {
             Vec::new()
@@ -1770,7 +1784,10 @@ fn from_pb(comment: &pb::Comment) -> Option<UserComment> {
     }
     let anchor = comment.anchor.as_ref()?;
     let file = anchor.file.as_ref()?;
-    let (first, last) = anchor.lines.as_ref().map_or((0, 0), |lines| (lines.first, lines.last));
+    let (first, last) = anchor
+        .lines
+        .as_ref()
+        .map_or((0, 0), |lines| normalize_lines(lines.first, lines.last));
     let seconds = |at: &Option<Timestamp>| at.as_ref().map_or(0, |at| at.seconds);
     let status = status_from_pb(comment.status)?;
     Some(UserComment {

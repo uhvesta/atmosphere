@@ -455,8 +455,8 @@ impl Forward {
     }
 
     /// The session's machine does the search; the host first checks that
-    /// the caller may read each of the session's repos, as the local search
-    /// does. A session the host knows no repos of has no matches.
+    /// the caller may read the session's folder and each of its repos, as the
+    /// local search does.
     pub(crate) async fn find_files(
         &self,
         request: Request<pb::FindFilesRequest>,
@@ -480,14 +480,24 @@ impl Forward {
             })?
             .map(|detail| detail.repos)
             .unwrap_or_default();
-        if repos.is_empty() {
-            return Ok(Response::new(pb::FindFilesResponse {
-                entries: Vec::new(),
-                page: Some(pb::PageResponse {
-                    next_page_token: String::new(),
+        let folder_location = pb::FileLocation {
+            machine: None,
+            root: Some(pb::file_location::Root::SessionFolder(pb::SessionFolder {
+                session: Some(pb::SessionId {
+                    value: session.clone(),
                 }),
-            }));
-        }
+            })),
+            path: String::new(),
+        };
+        self.judged_read(
+            &caller,
+            Some(folder_location),
+            "session",
+            Entry::Folder,
+            "find",
+            |_| None,
+        )
+        .await?;
         for repo in repos {
             let location = pb::FileLocation {
                 machine: None,

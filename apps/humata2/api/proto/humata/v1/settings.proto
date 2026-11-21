@@ -188,6 +188,9 @@ message Settings {
   // WEBTODO (D905), output only (writes ignore it): live state and loopback URL
   // of the To-do web server.
   WebTodoStatus web_todo_status = 18;
+  // Cached bare repo checkouts + git worktrees for new sessions, forks,
+  // and PR reviews. On by default.
+  bool use_worktrees = 19;
 }
 
 // WEBTODO (D905): the host daemon's live To-do web server state.
@@ -265,6 +268,7 @@ message UpdateSettingsRequest {
   SyncSettings sync = 14;
   optional bool fusefs_enabled = 15;
   optional bool web_todo_enabled = 16;
+  optional bool use_worktrees = 17;
 }
 
 message ChannelSettings {

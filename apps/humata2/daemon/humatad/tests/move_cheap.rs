@@ -172,7 +172,12 @@ async fn a_clone_its_remote_has_is_fetched_on_the_target_not_copied() {
     let channel = payments(&rig).await;
     let id = on_box_1(&rig, &channel, "Cache warmup").await;
     let clone = on(&rig, "box-1", &channel, "sessions/cache-warmup/api");
-    let git_size = bytes_under(&clone.join(".git"));
+    let common_git = {
+        let raw = git(&["-C", &text(&clone), "rev-parse", "--git-common-dir"]);
+        let p = PathBuf::from(raw.trim());
+        if p.is_absolute() { p } else { clone.join(p) }
+    };
+    let git_size = bytes_under(&common_git);
     assert!(git_size >= 8 * MIB, "the clone holds the remote's history: {git_size} bytes");
     let head = make_work(&clone);
 
@@ -185,6 +190,7 @@ async fn a_clone_its_remote_has_is_fetched_on_the_target_not_copied() {
         "the move sent {sent} bytes for a clone whose .git is {git_size}: its history was copied, not fetched"
     );
     let moved = on(&rig, "box-2", &channel, "sessions/cache-warmup/api");
+    assert!(moved.join(".git").is_file(), "box-2 rebuilt the moved clone as a linked worktree from its own .repo-cache");
     assert_eq!(git(&["-C", &text(&moved), "rev-parse", "HEAD"]), head, "the unpushed commit came along");
     assert_eq!(std::fs::read_to_string(moved.join("README.md")).unwrap(), "changed before the move\n");
     assert_eq!(std::fs::read_to_string(moved.join("committed.txt")).unwrap(), "kept\n");

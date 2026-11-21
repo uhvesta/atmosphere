@@ -1004,7 +1004,6 @@ impl SessionSvc {
         for repo in detail.repos.clone() {
             *current = format!("clone:{}", repo.name);
             progress.set_step(current, pb::StepState::Running, None);
-            let main = starter.layout.main_clone(&channel.folder, &repo.name);
             let clone_error = |source| (
                 RebuildError::Clone {
                     owner: repo.owner.clone(),
@@ -1015,8 +1014,17 @@ impl SessionSvc {
                 false,
             );
             let url = remote_url(&starter.remote_template, &repo.owner, &repo.name).map_err(clone_error)?;
-            let (path, branch) = (repo.path.clone(), repo.branch.clone());
-            blocking_git(move || restore_clone(&main, &url, &path, &branch))
+            let (starter_clone, ch_folder, owner, name, path, branch) = (
+                starter.clone(),
+                channel.folder.clone(),
+                repo.owner.clone(),
+                repo.name.clone(),
+                repo.path.clone(),
+                repo.branch.clone(),
+            );
+            blocking_git(move || {
+                starter_clone.restore_repo_blocking(&ch_folder, &owner, &name, &url, &path, &branch)
+            })
                 .await
                 .map_err(clone_error)?;
             progress.set_step(current, pb::StepState::Done, None);

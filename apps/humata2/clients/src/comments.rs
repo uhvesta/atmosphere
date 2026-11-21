@@ -78,6 +78,74 @@ pub struct Anchor {
     pub outdated: bool,
 }
 
+impl Anchor {
+    /// Normalizes a 1-based inclusive line range `(first, last)`.
+    ///
+    /// - `(0, 0)` stays `(0, 0)` (whole-file comment).
+    /// - Single-line backward compatibility: if `last == 0` and `first > 0`,
+    ///   treats it as `(first, first)` (and symmetrically for `first == 0`).
+    /// - Reversed ranges (`first > last`) are swapped to `(last, first)`.
+    #[must_use]
+    pub const fn normalized_range(first: u32, last: u32) -> (u32, u32) {
+        if first == 0 && last == 0 {
+            (0, 0)
+        } else if last == 0 {
+            (first, first)
+        } else if first == 0 {
+            (last, last)
+        } else if first <= last {
+            (first, last)
+        } else {
+            (last, first)
+        }
+    }
+
+    /// Returns this anchor with `first` and `last` normalized.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        let (first, last) = Self::normalized_range(self.first, self.last);
+        self.first = first;
+        self.last = last;
+        self
+    }
+
+    /// The normalized `(first, last)` inclusive line range of this anchor.
+    #[must_use]
+    pub const fn line_range(&self) -> (u32, u32) {
+        Self::normalized_range(self.first, self.last)
+    }
+
+    /// Whether this anchor spans more than one line (`first > 0 && last > first`).
+    #[must_use]
+    pub const fn is_multi_line(&self) -> bool {
+        let (first, last) = self.line_range();
+        first > 0 && last > first
+    }
+
+    /// Whether `line` on `side` falls inside this anchor's inclusive line range.
+    #[must_use]
+    pub const fn contains_line(&self, side: Side, line: u32) -> bool {
+        let (first, last) = self.line_range();
+        matches!((self.side, side), (Side::Old, Side::Old) | (Side::New, Side::New))
+            && first > 0
+            && line >= first
+            && line <= last
+    }
+
+    /// Extends an existing range `(first, last)` to include `line`, returning a
+    /// normalized `(start, end)` inclusive range.
+    #[must_use]
+    pub const fn extend_range(first: u32, last: u32, line: u32) -> (u32, u32) {
+        let (lo, hi) = Self::normalized_range(first, last);
+        if lo == 0 {
+            return (line, line);
+        }
+        let start = if line < lo { line } else { lo };
+        let end = if line > hi { line } else { hi };
+        (start, end)
+    }
+}
+
 /// Whether lines in repository `anchor` can carry a draft for a pull
 /// request of `pull` (`owner/name`). Repositories are keyed `owner/name`,
 /// or the bare name when the session's clone has no owner (D624, D732):
@@ -317,4 +385,47 @@ pub trait CommentsClient: Send + Sync + 'static {
 
     /// Brings an archived comment back as it was (SM-21).
     fn unarchive(&self, id: &CommentId) -> Reply<Comment>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchor_range_normalization_and_extension() {
+        assert_eq!(Anchor::normalized_range(0, 0), (0, 0));
+        assert_eq!(Anchor::normalized_range(10, 10), (10, 10));
+        // Backward compatibility: single-line with last == 0.
+        assert_eq!(Anchor::normalized_range(10, 0), (10, 10));
+        assert_eq!(Anchor::normalized_range(0, 10), (10, 10));
+        // Multi-line forward and reverse.
+        assert_eq!(Anchor::normalized_range(10, 18), (10, 18));
+        assert_eq!(Anchor::normalized_range(18, 10), (10, 18));
+
+        // Extending a range from line 18 to line 10 normalizes to 10..=18.
+        assert_eq!(Anchor::extend_range(18, 18, 10), (10, 18));
+        assert_eq!(Anchor::extend_range(10, 18, 22), (10, 22));
+        assert_eq!(Anchor::extend_range(10, 18, 5), (5, 18));
+
+        let mut a = Anchor {
+            repo: "api".into(),
+            path: "src/lib.rs".into(),
+            side: Side::New,
+            first: 18,
+            last: 10,
+            quoted: Vec::new(),
+            base: None,
+            detached: false,
+            outdated: false,
+        };
+        assert!(a.is_multi_line());
+        assert!(a.contains_line(Side::New, 10));
+        assert!(a.contains_line(Side::New, 14));
+        assert!(a.contains_line(Side::New, 18));
+        assert!(!a.contains_line(Side::New, 9));
+        assert!(!a.contains_line(Side::Old, 14));
+
+        a = a.normalized();
+        assert_eq!((a.first, a.last), (10, 18));
+    }
 }

@@ -201,7 +201,7 @@ pub(crate) fn repos_listed(store: &Store, session: &str) -> Result<Vec<RepoWorkL
         }
         // Reading the work fetches, which writes FETCH_HEAD; a plan
         // changes nothing, so a file it made is taken away again.
-        let fetched = repo.path.join(".git").join("FETCH_HEAD");
+        let fetched = humata2_sessions::git_path(&repo.path, "FETCH_HEAD");
         let had_fetched = fetched.exists();
         let work = repo_work(&repo.path);
         if !had_fetched {
@@ -1192,6 +1192,10 @@ impl ChannelSvc {
         let item = blocking(move || -> Result<Option<String>, Status> {
             let trash = bin.get()?;
             let item = if moving.exists() {
+                let wt_commons: Vec<PathBuf> = humata2_sessions::collect_worktrees_in_folder(&moving)
+                    .into_iter()
+                    .map(|(_, common)| common)
+                    .collect();
                 let put = trash
                     .put(
                         &moving,
@@ -1207,6 +1211,7 @@ impl ChannelSvc {
                             "",
                         )
                     })?;
+                humata2_sessions::prune_worktrees(&wt_commons);
                 Some(put.id)
             } else {
                 None

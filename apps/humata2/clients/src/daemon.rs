@@ -20,7 +20,7 @@ pub const EVENT_QUEUE: usize = 256;
 
 /// The most files listed for one session: a bigger clone shows its first
 /// files in the palette and the rest are one search away.
-pub const SESSION_FILES_CAP: usize = 500;
+pub const SESSION_FILES_CAP: usize = 5_000;
 
 /// Keeps at most `cap` of `files`, shared fairly among their repos, so one
 /// big repo never hides the session's other repos. Each repo keeps its

@@ -6,6 +6,15 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **2026-11-20 ~18:37 (Gemini main): `0.10.0` released & installed (`f8bce45e`); `0.10.1` ready to release.**
+  - **Released & installed (`0.10.0`, `f8bce45e`):** FUSEFSWIRE (6/6 Lima VM), BROWSER (local + remote D891 + UI), SCREENPARSE (318 real screens), TODO2WIRE, Prepared PR View holistic fixes (D919 + 6 audit fixes + 3 real E2E `live_flows` tests), Diff View UX (short repo names + resizable LHS file list + 50% RHS panel width), `HIGHLIGHT` (21+ languages across all surfaces), `SETTINGSFIX` + `D920` (no branch push asks) + `AGENTOFF` + `PROVIDERCLI`, `MCPCOMPRESS` (~98% `tools/list` cut), `NOTIFY2`, `TODOCHNAME`, `NEWCHCLOSE`, `MACHINEARCHIVE`, `SMFIX` (P0/P1/P2), `STACKGH` (12/12), `FSKITSERVE` (macOS FSKit `.appex` signed & notarized), `CHANNELDESK`, `WEBTODO` (GPUI WASM + loopback WS), Palette & Collapsed Sidebar UX (`⌘B`, `>`/`#`/`@`/`/`, arrow-key scroll, archived off by default), Clickable To-do/Hosts sessions, `⌘+`/`⌘-` font zoom, PR Review `pr-reviews` channel & back-button fixes, plus Test-Time/Compile-Time Audit speedups. Judge rulings D921 (85 snapshots) & D922 (25 snapshots) approved.
+  - **Releasing now (`0.10.1`):**
+    1. **Files Tab Session-Root & Untracked Files:** `SessionFolder` (`<session>/notes.md`) shown in all channel sessions, `"Session folder"` UI group, `SESSION_FILES_CAP` raised to `5,000`, live `FileChanged` watches `record.folder` + forwards from remote peers.
+    2. **Git Worktree Cache (ON by default, remote-synced) + Web To-do Settings toggle:** `<channels_root>/.repo-cache`, `flock` + mutex locking, `worktree repair`, cross-channel branch uniqueness, detached-HEAD PR review fallback, fork/carry/trash/rename/Desk-move/Seatbelt containment, and cross-machine `move_cheap` direct GitHub fetch.
+    3. **Full-Screen Diff Smart Markdown Renderer:** `Diff | Split | Rendered` mode switcher, Mermaid diagrams + zoom, and rendered block commenting.
+    4. **Multi-Line Comments (`start_line..=end_line`):** Shift+click & drag range selection, range highlights, `lines X–Y` badges, and GitHub PR multi-line submission across diffs, changed code editors, and normal unchanged code file tabs.
+  - **Verification:** `desktop:native_test` (3/3 shards), `desktop:panels_test`, `features/app:every_action_test`, `presubmit.sh` (all 496/496 targets green after fixing 5 settings tests, `channel_add`/`channel_repo_propose`, `read_marks`, and `revive:lost_in_move_test`).
+
 - **2026-11-20 ~12:25 (Gemini main): 0.10.0 in progress.**
   - **D916 committed (`bf585c0e`):** `svc_stop_restart_unit_test`, `files_without_mount_test`, `fusefs_restart_test` passed 3/3; `:humatad2` built.
   - **T13 (`live_flows_fuse_vm_test`, log `20261120-114901-1e1676.log`):** 1/6 (case 6 passed; D916 shell `HUMATA_FUSE_ROOT` worked; cases 1/2/3/5 hit `identity_mismatch` on `settings get fusefs_status`, case 4 hit `mnt/m/<machine>/s/<id>` layout). Diagnostician running.

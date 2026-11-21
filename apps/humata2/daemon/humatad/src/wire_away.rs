@@ -206,6 +206,20 @@ impl PolicyGuard for PolicyGuardAdapter {
     ) -> Result<(), StoreError> {
         contained::put_channel(store, channel, on, revision)
     }
+
+    fn use_worktrees(&self, store: &Store) -> Result<bool, StoreError> {
+        Ok(store
+            .setting(humata2_sessions::USE_WORKTREES_KEY)?
+            .map_or(true, |saved| saved.value != "false"))
+    }
+
+    fn put_use_worktrees(&self, store: &Store, on: bool, revision: u64) -> Result<(), StoreError> {
+        store.put_setting(
+            humata2_sessions::USE_WORKTREES_KEY,
+            if on { "true" } else { "false" },
+            revision,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

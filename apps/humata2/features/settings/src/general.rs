@@ -76,6 +76,7 @@ pub enum GeneralAction {
     ResetBranchPrefix,
     RefreshGhLogin,
     ToggleContainAgents,
+    ToggleUseWorktrees,
     ArchivePrDaysChanged(String),
     ArchiveIdleDaysChanged(String),
     SaveRetention,
@@ -172,6 +173,19 @@ pub(crate) fn reduce(
                     security: Some(SecuritySettings {
                         contain_agents: !current.security.contain_agents,
                     }),
+                    expected_revision,
+                    ..Default::default()
+                },
+            )
+        }
+        GeneralAction::ToggleUseWorktrees => {
+            let current = state.current();
+            let expected_revision = state.settings.as_ref().map(|s| s.revision);
+            save(
+                clients,
+                state,
+                SettingsPatch {
+                    use_worktrees: Some(!current.use_worktrees),
                     expected_revision,
                     ..Default::default()
                 },

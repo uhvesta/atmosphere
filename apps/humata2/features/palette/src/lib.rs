@@ -1179,11 +1179,15 @@ impl PaletteState {
                         repo: file.repo.clone(),
                         path: file.path.clone(),
                     },
-                    title: format!(
-                        "{}/{}",
-                        file.repo.rsplit('/').next().unwrap_or(&file.repo),
-                        file.path
-                    ),
+                    title: if file.repo.is_empty() {
+                        file.path.clone()
+                    } else {
+                        format!(
+                            "{}/{}",
+                            file.repo.rsplit('/').next().unwrap_or(&file.repo),
+                            file.path
+                        )
+                    },
                     hint: owner.title.clone(),
                 });
             }

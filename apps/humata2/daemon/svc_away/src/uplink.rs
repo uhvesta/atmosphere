@@ -528,6 +528,12 @@ mod tests {
         ) -> Result<(), StoreError> {
             Ok(())
         }
+        fn use_worktrees(&self, _store: &Store) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+        fn put_use_worktrees(&self, _store: &Store, _on: bool, _revision: u64) -> Result<(), StoreError> {
+            Ok(())
+        }
     }
 
     /// SMB-066: when recording the Resume ack fails (`acked() == false`), the

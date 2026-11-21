@@ -163,15 +163,30 @@ impl Contained {
         hidden.push(self.channels.root());
         hidden.extend(self.channels.older_roots());
         hidden.push(self.state.clone());
+        let mut also_writable = Vec::new();
+        let mut also_readable = vec![
+            // The hooks agents run to tell Humata their turns (D169, D193).
+            self.state.join("claude-hooks.json"),
+            self.state.join("copilot-plugin"),
+        ];
+        // Linked worktrees in this session need read access to their shared
+        // bare repo (excluding sibling worktrees) and write access to their own
+        // worktree admin dir, objects, refs/heads, and logs.
+        for (repo_path, common) in humata2_sessions::collect_worktrees_in_folder(&session.folder) {
+            if let Some(dirs) = humata2_sessions::resolve_worktree_dirs(&repo_path) {
+                also_readable.push(common.clone());
+                hidden.push(common.join("worktrees"));
+                also_writable.push(dirs.worktree_git_dir);
+                also_writable.push(common.join("objects"));
+                also_writable.push(common.join("refs").join("heads"));
+                also_writable.push(common.join("logs"));
+            }
+        }
         Ok(Containment {
             session_folder: session.folder.clone(),
             shared,
-            also_writable: Vec::new(),
-            also_readable: vec![
-                // The hooks agents run to tell Humata their turns (D169, D193).
-                self.state.join("claude-hooks.json"),
-                self.state.join("copilot-plugin"),
-            ],
+            also_writable,
+            also_readable,
             hidden,
             socket: self.socket.clone(),
             agent_state: own.agent_state,

@@ -9,12 +9,14 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{Sizable as _, button::Button, input::Input};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::daemon::{IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode, sample_branch};
+use humata2_clients::daemon::{
+    IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode, WebTodoStatus, sample_branch,
+};
 use humata2_clients::model::Agent;
 use humata2_settings::TodoAutomationAction as TodoAction;
 use humata2_settings::{
     AgentsAction, DeskRows, FONT_SIZES, GeneralAction as G, Row, Section, SettingsAction as A,
-    Theme,
+    Theme, WebTodoAction,
 };
 use std::rc::Rc;
 
@@ -386,6 +388,19 @@ fn todo_automation_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
     let wake = |id: &str, on: bool, action: TodoAction| {
         toggle(ui, id, on, A::Todo(action), look).into_any_element()
     };
+    let web_todo_enabled = state.settings.web_todo.enabled();
+    let web_todo_desc = match state
+        .settings
+        .web_todo
+        .snapshot
+        .as_ref()
+        .map(|s| &s.status)
+    {
+        Some(WebTodoStatus::Listening { url }) => format!("Serve the To-do board in a local browser at {url}"),
+        Some(WebTodoStatus::Starting) => "Starting the local loopback To-do web server…".to_owned(),
+        Some(WebTodoStatus::Failed { reason }) => format!("Could not start the local To-do web server: {reason}"),
+        _ => "Serve the To-do board at a local loopback URL so you can view it in a browser. Off by default.".to_owned(),
+    };
     col()
         .gap(px(8.))
         .child(dim(look, "To-do").font_weight(FontWeight::SEMIBOLD))
@@ -395,6 +410,19 @@ fn todo_automation_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         ))
         .child(
             open_card(look)
+                .child(setting(
+                    look,
+                    "Web To-do",
+                    &web_todo_desc,
+                    toggle(
+                        ui,
+                        "settings-web-todo-enabled",
+                        web_todo_enabled,
+                        A::WebTodo(WebTodoAction::ToggleEnabled),
+                        look,
+                    )
+                    .into_any_element(),
+                ))
                 .child(setting(
                     look,
                     "When a pull request merges",
@@ -1114,6 +1142,19 @@ pub fn page(
                     "settings-fast-mode",
                     prefs.fast_mode,
                     A::ToggleFastMode,
+                    look,
+                )
+                .into_any_element(),
+            )))
+            .child(card(look).child(setting(
+                look,
+                Row::UseWorktrees.title(),
+                "Cache one bare git checkout per repository and create new sessions, forks, and PR reviews as git worktrees instead of full clones. Existing sessions keep their current checkouts.",
+                toggle(
+                    ui,
+                    "settings-use-worktrees",
+                    current.use_worktrees,
+                    A::General(G::ToggleUseWorktrees),
                     look,
                 )
                 .into_any_element(),

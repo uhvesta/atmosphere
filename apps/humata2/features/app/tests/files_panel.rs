@@ -106,3 +106,42 @@ fn a_big_first_repo_does_not_hide_the_sessions_other_repos() {
     assert_eq!(listed.iter().filter(|f| f.repo == "acme/web").count(), 3);
     store.skip_in_flight();
 }
+
+#[test]
+fn incremental_created_file_is_not_dropped_past_cap() {
+    let (mut store, _fakes, session) = on_a_session_page();
+    let files: Vec<_> = (0..humata2_clients::SESSION_FILES_CAP)
+        .map(|i| humata2_clients::model::SessionFile {
+            repo: "acme/api".to_owned(),
+            path: format!("src/f{i}.rs"),
+            folder: false,
+        })
+        .collect();
+    store.send(
+        A::SessionFiles {
+            session: session.clone(),
+            result: Ok(files),
+        },
+        |_| {},
+    );
+    assert_eq!(listed(&store, &session), humata2_clients::SESSION_FILES_CAP);
+
+    let created = humata2_clients::model::SessionFile {
+        repo: String::new(),
+        path: "notes.md".to_owned(),
+        folder: false,
+    };
+    store.send(
+        A::Event(humata2_clients::Event::Files {
+            session: session.clone(),
+            change: humata2_clients::FileChange::Created(created.clone()),
+        }),
+        |_| {},
+    );
+    let after = &store.state().workspace.session_files[&session];
+    assert!(
+        after.contains(&created),
+        "incremental FileChange::Created must not be dropped at SESSION_FILES_CAP"
+    );
+    store.skip_in_flight();
+}

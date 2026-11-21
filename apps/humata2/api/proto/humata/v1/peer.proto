@@ -163,7 +163,18 @@ message MachineToHost {
     // D378: the holders on this machine that are on an old release's holder
     // file. Pushed on each change, and again after UplinkResume on every link.
     HoldersReport holders = 12;
+    // A file created, deleted, or renamed in a live session on this machine.
+    FileChangedReport file_changed = 13;
   }
+}
+
+message FileChangedReport {
+  SessionId session = 1;
+  RepoRef repo = 2;
+  int32 kind = 3;
+  string path = 4;
+  string old_path = 5;
+  bool folder = 6;
 }
 
 // D378: the whole list each time, so a lost one costs nothing. Agent rows and
@@ -358,6 +369,8 @@ message PolicySnapshot {
   // Channels that chose for themselves; any other channel in `channels`
   // follows contain_agents.
   repeated ChannelContain channel_contain = 10;
+  // Settings › General › Git worktrees: synced to linked remote machines (default true).
+  optional bool use_worktrees = 11;
 }
 
 // A channel's own Contain agents choice (D217).

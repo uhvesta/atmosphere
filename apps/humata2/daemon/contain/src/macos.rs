@@ -211,17 +211,39 @@ fn profile(resolved: &Resolved) -> Result<String, ContainError> {
         "(deny file-write*)".to_string(),
         allow("file-write*", &write_filters),
     ];
+    let mut top_hidden = Vec::new();
+    let mut nested_hidden = Vec::new();
     for folder in &resolved.hidden {
+        if resolved
+            .also_readable
+            .iter()
+            .any(|readable| folder.starts_with(readable))
+        {
+            nested_hidden.push(folder);
+        } else {
+            top_hidden.push(folder);
+        }
+    }
+    for folder in top_hidden {
         rules.push(format!(
             "(deny file-read* {})",
             subpath("hidden folder", folder)?
         ));
     }
-    let mut read_filters = allowed;
-    for path in &resolved.also_readable {
-        read_filters.push(subpath("also-readable path", path)?);
+    if !resolved.also_readable.is_empty() {
+        let mut readable_filters = Vec::new();
+        for path in &resolved.also_readable {
+            readable_filters.push(subpath("also-readable path", path)?);
+        }
+        rules.push(allow("file-read*", &readable_filters));
     }
-    rules.push(allow("file-read*", &read_filters));
+    for folder in nested_hidden {
+        rules.push(format!(
+            "(deny file-read* {})",
+            subpath("hidden folder", folder)?
+        ));
+    }
+    rules.push(allow("file-read*", &allowed));
     for path in &resolved.read_only {
         rules.push(format!(
             "(deny file-write* {})",
@@ -289,4 +311,50 @@ fn quoted(role: &'static str, path: &Path) -> Result<String, ContainError> {
     })?;
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     Ok(format!("\"{escaped}\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_hidden_worktrees_rule_comes_between_also_readable_and_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let channels = dir.path().join("Humata");
+        let bare = channels.join(".repo-cache/acme/api.git");
+        let worktrees = bare.join("worktrees");
+        let mine = worktrees.join("wt1");
+        let session = channels.join("ch/sessions/s1");
+        let shared = channels.join("ch/shared");
+        let temp = session.join(".humata/tmp");
+        let socket = dir.path().join("humata.sock");
+        for p in [&mine, &session, &shared, &temp] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        let resolved = Resolved {
+            session,
+            shared,
+            also_writable: vec![mine.clone()],
+            also_readable: vec![bare.clone()],
+            hidden: vec![channels, worktrees.clone()],
+            socket,
+            agent_state: Vec::new(),
+            read_only: Vec::new(),
+            temp,
+        };
+        let sbpl = profile(&resolved).unwrap();
+        let allow_bare = sbpl
+            .find(&format!("(subpath \"{}\")", bare.display()))
+            .expect("bare in also_readable");
+        let deny_worktrees = sbpl
+            .find(&format!("(deny file-read* (subpath \"{}\"))", worktrees.display()))
+            .expect("worktrees denied");
+        let allow_mine_read = sbpl
+            .rfind(&format!("(subpath \"{}\")", mine.display()))
+            .expect("own worktree allowed");
+        assert!(
+            allow_bare < deny_worktrees && deny_worktrees < allow_mine_read,
+            "Seatbelt last-match-wins ordering violated:\n{sbpl}"
+        );
+    }
 }

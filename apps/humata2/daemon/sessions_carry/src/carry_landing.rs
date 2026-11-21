@@ -350,6 +350,7 @@ impl crate::CarryOps<'_> {
                 keep(self.stopped_where_it_was(session));
                 keep(self.put_rollout_back(&manifest, &stage, &folder));
                 keep(self.remove_landed_conversation(&manifest, &folder));
+                humata2_sessions_core::worktree::remove_worktrees_in_folder(&folder);
             }
             keep(remove(&folder));
             // A copy cut short leaves the transfer engine's staging folder

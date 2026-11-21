@@ -414,6 +414,14 @@ fn finish_restore_sessions(
                     })
                     .map_err(failed)?;
             }
+            if let Ok(Some(detail)) = store.session_detail(&id) {
+                for repo in &detail.repos {
+                    let _ = humata2_sessions::repair_or_reattach_worktree(
+                        &repo.path,
+                        Some(&repo.branch),
+                    );
+                }
+            }
         }
         let _ = std::fs::remove_file(&side);
     }
@@ -681,7 +689,15 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         // only a deleted channel's own folder carries its records' side file.
         let restoring = restoring.filter(|_| placed.join(humata2_store::SIDE_FILE).is_file());
         if let Some(store) = restoring {
-            blocking(move || crate::channel_service::finish_restore(&store, &placed))
+            blocking(move || {
+                let res = crate::channel_service::finish_restore(&store, &placed);
+                if res.is_ok() {
+                    for (repo_path, _) in humata2_sessions::collect_worktrees_in_folder(&placed) {
+                        let _ = humata2_sessions::repair_or_reattach_worktree(&repo_path, None);
+                    }
+                }
+                res
+            })
                 .await?
                 .map_err(|error| {
                     status::internal(

@@ -1131,6 +1131,23 @@ async fn report_sessions(
                     return;
                 }
             }
+            Some(pb::event::Payload::FileChanged(changed)) => {
+                let report = pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::FileChanged(
+                        pb::FileChangedReport {
+                            session: changed.session,
+                            repo: changed.repo,
+                            kind: changed.kind,
+                            path: changed.path,
+                            old_path: changed.old_path,
+                            folder: changed.folder,
+                        },
+                    )),
+                };
+                if to_host.send(Ok(report)).await.is_err() {
+                    return;
+                }
+            }
             Some(pb::event::Payload::Resync(_)) => {
                 let Ok(listed) = list_all(&mut sessions).await else {
                     return;

@@ -169,6 +169,25 @@ impl CommentsState {
             .map(|held| held.comments.iter().filter(|c| c.counts_as_draft()).collect())
             .unwrap_or_default()
     }
+
+    /// Computes the inclusive `(first, last)` line range when extending an open
+    /// comment box in `session` on `(repo, path, side)` to `line` (e.g. via
+    /// Shift+click). Returns `(line, line)` when no matching box is open.
+    #[must_use]
+    pub fn extend_box_range(
+        &self,
+        session: &SessionId,
+        repo: &str,
+        path: &str,
+        side: Side,
+        line: u32,
+    ) -> (u32, u32) {
+        self.sessions
+            .get(session)
+            .and_then(|held| held.editing.as_ref())
+            .filter(|b| b.anchor.repo == repo && b.anchor.path == path && b.anchor.side == side)
+            .map_or((line, line), |b| Anchor::extend_range(b.anchor.first, b.anchor.last, line))
+    }
 }
 
 /// The pull request a comment on `repo` in `session` can be drafted for on
@@ -698,6 +717,7 @@ impl Reducer for Comments {
             A::Failed(session, error) => Self::fail(state.sessions.entry(session).or_default(), &error),
 
             A::OpenBox(session, anchor) => {
+                let anchor = anchor.normalized();
                 let s = state.sessions.entry(session.clone()).or_default();
                 // A box with no daemon comment yet on the same file and side
                 // stretches or moves to the new lines and keeps its text.
@@ -994,6 +1014,7 @@ impl Reducer for Comments {
                 self.changed(&session, call)
             }
             A::Reattach(session, id, anchor) => {
+                let anchor = anchor.normalized();
                 let s = state.sessions.entry(session.clone()).or_default();
                 let call = self.client.reattach(&id, anchor, Self::revision(s, &id));
                 self.changed(&session, call)

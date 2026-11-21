@@ -1195,6 +1195,7 @@ impl crate::CarryOps<'_> {
                 } else if git.is_file() {
                     // A linked worktree: its `.git` file names the clone it belongs to.
                     rewrite_file(&git, &pairs)?;
+                    let _ = humata2_sessions_core::worktree::detach_copied_worktree(&entry.path());
                 }
             }
         }

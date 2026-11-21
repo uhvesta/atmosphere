@@ -383,7 +383,15 @@ fn lines_of(comment: &pb::Comment) -> (u32, u32) {
         .as_ref()
         .and_then(|anchor| anchor.lines.clone())
         .unwrap_or_default();
-    (lines.first, lines.last.max(lines.first))
+    if lines.first == 0 && lines.last == 0 {
+        (0, 0)
+    } else if lines.last == 0 {
+        (lines.first, lines.first)
+    } else if lines.first == 0 {
+        (lines.last, lines.last)
+    } else {
+        (lines.first.min(lines.last), lines.first.max(lines.last))
+    }
 }
 
 fn path_of(comment: &pb::Comment) -> String {
@@ -1095,5 +1103,47 @@ impl PullRequests {
             return;
         }
         self.settle(session, pr).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft_on(first: u32, last: u32, side: pb::DiffSide) -> pb::Comment {
+        pb::Comment {
+            anchor: Some(pb::CommentAnchor {
+                file: Some(pb::RepoPath {
+                    repo: None,
+                    path: "src/lib.rs".to_owned(),
+                }),
+                lines: Some(pb::LineRange { first, last }),
+                side: side as i32,
+                ..pb::CommentAnchor::default()
+            }),
+            text: "Check this block".to_owned(),
+            ..pb::Comment::default()
+        }
+    }
+
+    #[test]
+    fn comment_json_sets_start_line_for_multi_line_and_omits_for_single_line() {
+        let single = comment_json(&draft_on(10, 10, pb::DiffSide::New));
+        assert_eq!(single["line"], json!(10));
+        assert_eq!(single["side"], json!("RIGHT"));
+        assert!(single.get("start_line").is_none());
+        assert!(single.get("start_side").is_none());
+
+        // Backward-compatible single-line with last == 0.
+        let legacy = comment_json(&draft_on(10, 0, pb::DiffSide::New));
+        assert_eq!(legacy["line"], json!(10));
+        assert!(legacy.get("start_line").is_none());
+
+        // Multi-line range (including reversed 18..=10) normalizes to start_line=10, line=18.
+        let multi = comment_json(&draft_on(18, 10, pb::DiffSide::Old));
+        assert_eq!(multi["start_line"], json!(10));
+        assert_eq!(multi["start_side"], json!("LEFT"));
+        assert_eq!(multi["line"], json!(18));
+        assert_eq!(multi["side"], json!("LEFT"));
     }
 }

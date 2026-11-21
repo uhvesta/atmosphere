@@ -7,6 +7,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # at any step (SE-4, PER-11, PER-27). humatad2's ChannelService and
 # SessionService drive it; it knows nothing about gRPC.
 SESSIONS_CORE_DEPS = [
+    "@crates//:rustix",
     "@crates//:serde",
     "@crates//:serde_json",
     "@crates//:thiserror",

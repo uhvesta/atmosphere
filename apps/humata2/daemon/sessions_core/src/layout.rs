@@ -109,6 +109,21 @@ impl Layout {
         self.channel(folder).join("shared")
     }
 
+    /// Root directory for shared bare git repository caches (`<channels_root>/.repo-cache`).
+    pub fn repo_cache_root(&self) -> PathBuf {
+        self.root().join(".repo-cache")
+    }
+
+    /// Shared bare git repository cache for `owner/name` (`<channels_root>/.repo-cache/<owner>/<name>.git`).
+    pub fn repo_cache(&self, owner: &str, name: &str) -> PathBuf {
+        self.repo_cache_root().join(owner).join(format!("{name}.git"))
+    }
+
+    /// Per-repo OS lock file for serializing bare cache & worktree operations.
+    pub fn repo_cache_lock(&self, owner: &str, name: &str) -> PathBuf {
+        self.repo_cache_root().join(owner).join(format!("{name}.lock"))
+    }
+
     /// Makes `main/`, `sessions/` and `shared/`; already existing is fine.
     pub fn create_channel(&self, folder: &str) -> Result<(), LayoutError> {
         for dir in [

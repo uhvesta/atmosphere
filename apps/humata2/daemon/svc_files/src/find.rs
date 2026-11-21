@@ -29,7 +29,7 @@ use tonic::{Request, Response, Status};
 
 use crate::Reads;
 use crate::ports::{
-    DESK_CHANNEL, blocking, caller, invalid_field, missing, not_found, store_error, timestamp,
+    blocking, caller, invalid_field, missing, not_found, store_error, timestamp,
 };
 use crate::roots::{Roots, Target, io_failure};
 
@@ -128,9 +128,10 @@ impl Find {
         let offset = offset_of(&token)?;
 
         let mut targets = Vec::with_capacity(repos.len() + 1);
-        // D382: a Desk session's documents sit in its own folder, outside
-        // every clone; they come first, without the clones inside it.
-        if record.channel == DESK_CHANNEL {
+        let skip_dirs = clone_dir_names(&record.folder, &repos);
+        // Every session's own folder may hold files outside its clones (e.g.
+        // notes or Desk documents); they come first, without the clones inside it.
+        {
             let location = pb::FileLocation {
                 machine: None,
                 root: Some(pb::file_location::Root::SessionFolder(pb::SessionFolder {
@@ -144,7 +145,7 @@ impl Find {
             self.reads
                 .require(&caller, target.place.clone(), "find", || None)
                 .await?;
-            targets.push((target, Scope::OwnFolder));
+            targets.push((target, Scope::OwnFolder { skip_dirs }));
         }
         for repo in repos {
             let location = pb::FileLocation {
@@ -193,13 +194,35 @@ fn offset_of(token: &str) -> Result<usize, Status> {
 }
 
 /// What a target of a search holds.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Scope {
     /// A repository's clone.
     Clone,
-    /// A Desk session's own folder: its files, not those of the clones in
-    /// it, which are searched as clones.
-    OwnFolder,
+    /// A session's own folder: its files, not those of the clones in it,
+    /// which are searched as clones.
+    OwnFolder { skip_dirs: HashSet<String> },
+}
+
+/// Top-level directory names under `folder` that belong to `repos`, so walking
+/// the session folder never double-lists clone files (even for non-git clones).
+pub(crate) fn clone_dir_names(
+    folder: &Path,
+    repos: &[humata2_store::SessionRepo],
+) -> HashSet<String> {
+    let mut names = HashSet::with_capacity(repos.len());
+    for repo in repos {
+        if !repo.name.is_empty() {
+            names.insert(repo.name.clone());
+        }
+        if let Ok(rel) = repo.path.strip_prefix(folder)
+            && let Some(first) = rel.components().next().and_then(|c| c.as_os_str().to_str())
+        {
+            names.insert(first.to_owned());
+        } else if let Some(name) = repo.path.file_name().and_then(|n| n.to_str()) {
+            names.insert(name.to_owned());
+        }
+    }
+    names
 }
 
 fn search(
@@ -221,7 +244,7 @@ fn search(
         };
         let paths = match scope {
             Scope::Clone => candidates(&root)?,
-            Scope::OwnFolder => own_files(&root)?,
+            Scope::OwnFolder { skip_dirs } => own_files(&root, skip_dirs)?,
         };
         let matched = ranked(paths, query);
         if consumed == size {
@@ -304,15 +327,26 @@ fn candidates(root: &Path) -> Result<Vec<String>, Status> {
     walk(root)
 }
 
-/// The files of a Desk session's folder, leaving out every git work tree
-/// in it: those are its clones, listed on their own.
-fn own_files(root: &Path) -> Result<Vec<String>, Status> {
+/// The files of a session's own folder (excluding clones), or
+/// `Listing::Failed` / `Listing::TooMany` when it can't be listed or has `cap`
+/// files or more.
+pub(crate) fn own_folder_listing(root: &Path, skip_dirs: &HashSet<String>, cap: usize) -> Listing {
+    match own_files(root, skip_dirs) {
+        Ok(paths) if paths.len() < cap => Listing::Files(paths),
+        Ok(_) => Listing::TooMany,
+        Err(_) => Listing::Failed,
+    }
+}
+
+/// The files of a session's folder, leaving out every git work tree and
+/// known clone directory in it: those are its clones, listed on their own.
+fn own_files(root: &Path, skip_dirs: &HashSet<String>) -> Result<Vec<String>, Status> {
     if root.join(".git").exists()
         && let Some(paths) = git_paths(root)
     {
         return Ok(paths);
     }
-    walk_from(root, "", true)
+    walk_from(root, "", true, skip_dirs)
 }
 
 /// Tracked files and untracked files that aren't ignored, or `None` when git
@@ -366,7 +400,17 @@ pub(crate) fn subtree_files(root: &Path, start: &str) -> Option<Vec<String>> {
     {
         return Some(paths);
     }
-    walk_from(root, start, false).ok()
+    walk_from(root, start, false, &HashSet::new()).ok()
+}
+
+/// The files under the folder `start` of a session folder, skipping git work
+/// trees and known clone directories.
+pub(crate) fn own_subtree_files(
+    root: &Path,
+    start: &str,
+    skip_dirs: &HashSet<String>,
+) -> Option<Vec<String>> {
+    walk_from(root, start, true, skip_dirs).ok()
 }
 
 /// Of `paths` (files of a git clone), those git ignores; none when the clone
@@ -415,13 +459,18 @@ pub(crate) fn ignored_among(root: &Path, paths: &[String]) -> HashSet<String> {
 
 /// The files under `root` without following symlinks, skipping `.git`.
 fn walk(root: &Path) -> Result<Vec<String>, Status> {
-    walk_from(root, "", false)
+    walk_from(root, "", false, &HashSet::new())
 }
 
 /// The files under the folder `start` of `root` (empty for all of it), as
 /// paths from `root`. With `skip_work_trees`, a folder below `first` that
-/// is a git work tree is left out whole.
-fn walk_from(root: &Path, start: &str, skip_work_trees: bool) -> Result<Vec<String>, Status> {
+/// is a git work tree or a known top-level clone directory is left out whole.
+fn walk_from(
+    root: &Path,
+    start: &str,
+    skip_work_trees: bool,
+    skip_dirs: &HashSet<String>,
+) -> Result<Vec<String>, Status> {
     let first = if start.is_empty() {
         root.to_owned()
     } else {
@@ -448,13 +497,14 @@ fn walk_from(root: &Path, start: &str, skip_work_trees: bool) -> Result<Vec<Stri
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
+            let is_top_clone = skip_work_trees && prefix.is_empty() && skip_dirs.contains(&name);
             let relative = if prefix.is_empty() {
                 name
             } else {
                 format!("{prefix}/{name}")
             };
             if kind.is_dir() {
-                if skip_work_trees && entry.path().join(".git").exists() {
+                if is_top_clone || (skip_work_trees && entry.path().join(".git").exists()) {
                     continue;
                 }
                 stack.push((entry.path(), relative));

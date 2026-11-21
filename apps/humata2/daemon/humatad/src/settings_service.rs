@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{Agents, BRANCH_PREFIX_KEY, default_prefix, set_default_prefix, valid_prefix};
+use humata2_sessions::{
+    Agents, BRANCH_PREFIX_KEY, USE_WORKTREES_KEY, default_prefix, set_default_prefix, valid_prefix,
+};
 use humata2_store::Store;
 use tonic::{Code, Request, Response, Status};
 
@@ -215,6 +217,7 @@ impl SettingsSvc {
             && request.agents.is_none()
             && request.security.is_none()
             && request.sync.is_none()
+            && request.use_worktrees.is_none()
             && !sections::sets_any(&request)
         {
             return self.shown().await.map(Gated::Done);
@@ -268,8 +271,13 @@ impl SettingsSvc {
             })?;
         }
         let saves_sync = request.sync.is_some();
-        let (store, prefix, saves_agents, security) =
-            (self.store.clone(), request.branch_prefix, request.agents.is_some(), request.security);
+        let (store, prefix, saves_agents, security, use_worktrees) = (
+            self.store.clone(),
+            request.branch_prefix,
+            request.agents.is_some(),
+            request.security,
+            request.use_worktrees,
+        );
         blocking(move || -> Result<(), humata2_store::StoreError> {
             // The agents' switches live in agents.toml; this key keeps the
             // revision moving when only they change.
@@ -278,6 +286,9 @@ impl SettingsSvc {
             }
             if let Some(security) = security {
                 crate::contained::put_global(&store, security.contain_agents, current + 1)?;
+            }
+            if let Some(on) = use_worktrees {
+                store.put_setting(USE_WORKTREES_KEY, if on { "true" } else { "false" }, current + 1)?;
             }
             if let Some(prefix) = prefix {
                 store.put_setting(BRANCH_PREFIX_KEY, &prefix, current + 1)?;
@@ -421,27 +432,37 @@ impl SettingsSvc {
 
     async fn shown(&self) -> Result<pb::Settings, Status> {
         let (store, agents) = (self.store.clone(), self.agents.clone());
-        let (saved, in_agent, codex_needs_trust, (contain, contain_revision), sections_revision) =
-            blocking(move || -> Result<_, humata2_store::StoreError> {
-                Ok((
-                    store.setting(BRANCH_PREFIX_KEY)?,
-                    permission::every_kind_in_agent(&agents, &crate::wire_inbox::AgentGateAdapter),
-                    permission::codex_trust::needs_trust(&store)?,
-                    crate::contained::global(&store)?,
-                    store.setting(sections::REVISION_KEY)?.map_or(0, |saved| saved.revision),
-                ))
-            })
+        let (
+            saved,
+            in_agent,
+            codex_needs_trust,
+            (contain, contain_revision),
+            sections_revision,
+            worktrees_saved,
+        ) = blocking(move || -> Result<_, humata2_store::StoreError> {
+            Ok((
+                store.setting(BRANCH_PREFIX_KEY)?,
+                permission::every_kind_in_agent(&agents, &crate::wire_inbox::AgentGateAdapter),
+                permission::codex_trust::needs_trust(&store)?,
+                crate::contained::global(&store)?,
+                store.setting(sections::REVISION_KEY)?.map_or(0, |saved| saved.revision),
+                store.setting(USE_WORKTREES_KEY)?,
+            ))
+        })
         .await?
         .map_err(|error| status::store(error, &self.machine, "read the settings"))?;
         // One revision for every section: the newest of their saves.
         if saved.is_none() && default_prefix().is_empty() {
             self.refresh_gh_login();
         }
+        let worktrees_revision = worktrees_saved.as_ref().map_or(0, |s| s.revision);
+        let use_worktrees = worktrees_saved.as_ref().map_or(true, |s| s.value != "false");
         let revision = saved
             .as_ref()
             .map_or(0, |saved| saved.revision)
             .max(contain_revision)
-            .max(sections_revision);
+            .max(sections_revision)
+            .max(worktrees_revision);
         let mut shown = pb::Settings {
             branch_prefix_is_default: saved.is_none(),
             // The default is the host's gh login and "/", or none until it is known.
@@ -452,6 +473,7 @@ impl SettingsSvc {
                 codex_hooks_need_trust: codex_needs_trust,
             }),
             security: Some(pb::SecuritySettings { contain_agents: contain }),
+            use_worktrees,
             ..Default::default()
         };
         self.sections.show(&mut shown);
@@ -592,6 +614,13 @@ fn global_settings_card(before: &pb::Settings, request: &pb::UpdateSettingsReque
             "web_todo_enabled: {} -> {}",
             on_off(before.web_todo_enabled),
             on_off(enabled)
+        ));
+    }
+    if let Some(on) = request.use_worktrees {
+        lines.push(format!(
+            "use_worktrees: {} -> {}",
+            on_off(before.use_worktrees),
+            on_off(on)
         ));
     }
     if let Some(long_lines) = request.long_lines {
@@ -1074,5 +1103,64 @@ mod tests {
         };
         assert!(cmd.notes.contains("contain_agents: on -> off"));
         assert!(cmd.notes.contains("WARNING"));
+    }
+
+    #[tokio::test]
+    async fn use_worktrees_defaults_true_persists_and_shows_inbox_diff() {
+        let h = Harness::new();
+
+        // Default is true (on).
+        let initial = h
+            .svc
+            .get_settings(Harness::user_request(pb::GetSettingsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(initial.use_worktrees);
+
+        // User turns it off with expected_revision check.
+        let rev = initial.revision.unwrap().value;
+        let updated = h
+            .svc
+            .update_settings(Harness::user_request(pb::UpdateSettingsRequest {
+                use_worktrees: Some(false),
+                expected_revision: Some(pb::Revision { value: rev }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!updated.use_worktrees);
+        assert_eq!(updated.revision.unwrap().value, rev + 1);
+
+        // Stale revision is rejected.
+        let stale = h
+            .svc
+            .update_settings(Harness::user_request(pb::UpdateSettingsRequest {
+                use_worktrees: Some(true),
+                expected_revision: Some(pb::Revision { value: rev }),
+                ..Default::default()
+            }))
+            .await;
+        assert!(stale.is_err());
+
+        // Agent proposal hits AskNoAllow Inbox card with `use_worktrees: off -> on`.
+        let _ = h
+            .svc
+            .update_settings(Harness::agent_request(pb::UpdateSettingsRequest {
+                use_worktrees: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("agent update must wait in Inbox");
+        let cards = h.list_pending().await;
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0].always.is_none());
+        let Some(pb::request_preview::Preview::Command(cmd)) =
+            cards[0].preview.as_ref().and_then(|p| p.preview.as_ref())
+        else {
+            panic!("expected CommandPreview");
+        };
+        assert!(cmd.notes.contains("use_worktrees: off -> on"), "{}", cmd.notes);
     }
 }

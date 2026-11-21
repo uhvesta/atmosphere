@@ -258,7 +258,8 @@ async fn an_approval_after_the_user_added_the_repo_succeeds_without_a_second_clo
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     let clone = world.channels.join(&channel.folder).join("main/web");
     std::fs::write(clone.join("MARKER"), "not cloned again\n").unwrap();
-    let head = std::fs::read(clone.join(".git/HEAD")).unwrap();
+    let head_path = git_head_path(&clone);
+    let head = std::fs::read(&head_path).unwrap();
 
     let waited = approve_and_wait(&daemon, &token, &pending_request(&pending)).await;
 
@@ -266,11 +267,23 @@ async fn an_approval_after_the_user_added_the_repo_succeeds_without_a_second_clo
     let ended = finished(&daemon, &op).await;
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     assert!(clone.join("MARKER").exists(), "the clone was made again");
-    assert_eq!(std::fs::read(clone.join(".git/HEAD")).unwrap(), head);
+    assert_eq!(std::fs::read(&head_path).unwrap(), head);
     assert_eq!(
         get(&daemon, &id_of(&channel)).await.repos,
         vec![repo_ref("acme", "api"), repo_ref("acme", "web")]
     );
+}
+
+fn git_head_path(repo: &std::path::Path) -> std::path::PathBuf {
+    let dot_git = repo.join(".git");
+    if dot_git.is_file()
+        && let Ok(raw) = std::fs::read_to_string(&dot_git)
+        && let Some(dir) = raw.lines().find_map(|l| l.trim().strip_prefix("gitdir:"))
+    {
+        let p = std::path::Path::new(dir.trim());
+        return if p.is_absolute() { p.join("HEAD") } else { repo.join(p).join("HEAD") };
+    }
+    dot_git.join("HEAD")
 }
 
 fn step_keys(operation: &pb::Operation) -> Vec<&str> {

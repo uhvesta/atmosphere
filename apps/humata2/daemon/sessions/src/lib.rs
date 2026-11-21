@@ -19,11 +19,18 @@ pub use humata2_sessions_core::{
     GateRefusal, GitError, HeldMessages, HumataTools, LaunchPlan, Layout, LayoutError, Leftovers,
     NameError, NewChannel, OwnCopyError, PushError, Recovery, RepoName, RepoWork, Resend,
     RestoredFrom, ReviewStart, SetupError, StartError, StartRequest, StartSignal, Started,
-    Starter as CoreStarter, Totals, TurnEnd, TurnsError, WriteGate, branch_slug, channel_folder,
-    clone_main, clone_main_with, clone_mains, clone_mains_with, clone_session, clone_session_with,
-    commit_all, create_channel, default_branch, default_prefix, effective_prefix, handover_file,
-    local_branches, partial, pick_branch, push_branch, remote_branches, remote_url, repo_work,
-    restore_clone, set_default_prefix, totals, valid_branch_name, valid_prefix, with_clone_units,
+    Starter as CoreStarter, Totals, TurnEnd, TurnsError, USE_WORKTREES_KEY, WorktreeDirs,
+    WriteGate, branch_slug, channel_folder, clone_main, clone_main_with, clone_mains,
+    clone_mains_with, clone_session, clone_session_with, collect_worktrees_in_folder, commit_all,
+    copy_clone_standalone, copy_worktree, create_channel, default_branch, default_prefix,
+    effective_prefix, ensure_bare_cache, git_path, handover_file, is_branch_checked_out,
+    is_detached_head, is_linked_worktree, local_branches, lock_path_for_bare, partial,
+    pick_branch, prune_worktrees, push_branch, remote_branches, remote_url,
+    remove_worktrees_in_folder, repair_or_reattach_worktree, repair_worktrees_in_folder,
+    repo_work, resolve_worktree_dirs, restore_clone, set_default_prefix, totals,
+    use_worktrees_enabled, valid_branch_name, valid_prefix, with_clone_units,
+    with_repo_cache_lock, worktree_branches, worktree_main_with, worktree_pull_head_with,
+    worktree_restore_with, worktree_session_with,
 };
 pub use humata2_sessions_desk::{
     ChannelDeskStart, DeskError, DeskFolder, DeskMoveError, DeskMoveRepo, DeskStart, DeskStarter,
@@ -199,6 +206,19 @@ impl Starter {
         new_title: &str,
     ) -> Result<BranchRename, StartError> {
         self.to_core().plan_branch_rename(session, new_title)
+    }
+
+    pub fn restore_repo_blocking(
+        &self,
+        channel_folder: &str,
+        owner: &str,
+        name: &str,
+        url: &str,
+        path: &Path,
+        branch: &str,
+    ) -> Result<RestoredFrom, GitError> {
+        self.to_core()
+            .restore_repo_blocking(channel_folder, owner, name, url, path, branch)
     }
 
     pub async fn reclone(

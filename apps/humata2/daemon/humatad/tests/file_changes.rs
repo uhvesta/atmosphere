@@ -200,3 +200,60 @@ async fn a_file_the_user_deletes_is_told_as_deleted() {
     assert_eq!(kind(&changed), pb::file_changed::Kind::Deleted);
     assert_eq!(changed.path, "gone.rs");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_written_to_the_session_folder_is_told_without_a_repo() {
+    use pb::write_file_message::Message as Part;
+    let (daemon, _clone) = daemon_with_clone().await;
+    let mut events = session_events(&daemon).await;
+
+    let data = b"# Notes\n";
+    let sha: String = Sha256::digest(data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let chunk = Encoder::new(Codec::None).encode(data.to_vec()).unwrap();
+    let location = pb::FileLocation {
+        machine: None,
+        root: Some(pb::file_location::Root::SessionFolder(pb::SessionFolder {
+            session: Some(pb::SessionId {
+                value: SESSION.to_owned(),
+            }),
+        })),
+        path: "notes.md".to_owned(),
+    };
+    let messages = vec![
+        pb::WriteFileMessage {
+            message: Some(Part::Header(pb::WriteFileHeader {
+                idempotency_key: None,
+                location: Some(location),
+                size: data.len() as u64,
+                sha256: sha,
+                replace: false,
+                expected_sha256: None,
+            })),
+        },
+        pb::WriteFileMessage {
+            message: Some(Part::Chunk(pb::FileChunk {
+                offset: 0,
+                data: chunk.data,
+                last: true,
+                codec: chunk.header.codec.wire(),
+                raw_size: chunk.header.raw_len,
+                crc32: chunk.header.crc32,
+                ..Default::default()
+            })),
+        },
+    ];
+    files(&daemon)
+        .await
+        .write_file(tokio_stream::iter(messages))
+        .await
+        .unwrap();
+
+    let changed = next_change(&mut events).await;
+    assert_eq!(kind(&changed), pb::file_changed::Kind::Created);
+    assert_eq!(changed.path, "notes.md");
+    assert_eq!(changed.session.as_ref().map(|id| id.value.as_str()), Some(SESSION));
+    assert!(changed.repo.is_none(), "session-folder changes have no repo: {changed:?}");
+}

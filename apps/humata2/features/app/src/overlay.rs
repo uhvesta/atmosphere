@@ -386,7 +386,7 @@ impl App {
             .entry(session)
             .or_default();
         let add = |files: &mut Vec<SessionFile>, file: SessionFile| {
-            if !files.contains(&file) && files.len() < SESSION_FILES_CAP {
+            if !files.contains(&file) {
                 files.push(file);
             }
         };

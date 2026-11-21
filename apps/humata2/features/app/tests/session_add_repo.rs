@@ -88,6 +88,41 @@ fn a_picked_repo_is_cloned_in_the_session_and_the_sheet_closes() {
     );
     assert!(clones_of(&fakes, &id).contains(&"acme/web".to_owned()));
     assert!(sheet(&store).is_none());
+    store.skip_in_flight();
+}
+
+#[test]
+fn adding_a_repo_refreshes_the_sessions_files() {
+    let id = SessionId::new("ledger");
+    let (mut store, fakes) = on_session(fixture::design(), &id);
+    store.send(A::SessionFiles { session: id.clone(), result: Ok(Vec::new()) }, |_| {});
+    open(&mut store, &id);
+    let before = fakes
+        .daemon
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("find_files"))
+        .count();
+
+    store.send(A::SessionAddRepo(Add::Add(Some("acme/web".into()))), |_| {});
+    store.receive_matching(
+        "the daemon answered",
+        |action| matches!(action, A::SessionAddRepo(Add::Added { result: Ok(()), .. })),
+        |_| {},
+    );
+    store.receive_matching(
+        "the session's files are fetched again",
+        |action| matches!(action, A::SessionFiles { session, .. } if *session == id),
+        |_| {},
+    );
+    let after = fakes
+        .daemon
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("find_files"))
+        .count();
+    assert_eq!(after, before + 1);
+    store.skip_in_flight();
 }
 
 #[test]

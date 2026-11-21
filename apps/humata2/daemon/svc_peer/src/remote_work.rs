@@ -484,6 +484,7 @@ pub trait Memory: Send + Sync + 'static {
 pub trait Sink: Send + Sync + 'static {
     async fn changed(&self, view: &RemoteView);
     async fn gone(&self, machine: &str, session: &str);
+    async fn file_changed(&self, _session: &str, _changed: &pb::FileChanged) {}
 }
 
 /// What a reconnect brought back (HO-6).
@@ -1695,6 +1696,9 @@ impl RemoteWork {
             ReportUpdate::Freshness {
                 freshness: Freshness::Live, ..
             } => {}
+            ReportUpdate::FileChanged { session, changed, .. } => {
+                self.inner.sink.file_changed(session, changed).await;
+            }
         }
     }
 

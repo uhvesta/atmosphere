@@ -145,6 +145,7 @@ async fn remove_own_copy_partials(starter: &Starter) {
                     // start tries again.
                     let note = crate::own_copy::own_copy_note(&entry.path());
                     if crate::fork::remove_noted_copy(&note).is_ok() {
+                        crate::worktree::remove_worktrees_in_folder(&entry.path());
                         let _ = fs::remove_dir_all(entry.path());
                     }
                 } else if !named.contains(&entry.path()) {
@@ -154,12 +155,14 @@ async fn remove_own_copy_partials(starter: &Starter) {
                     let note = crate::own_copy::own_copy_note(&entry.path());
                     if note.exists() {
                         if crate::fork::remove_noted_copy(&note).is_ok() {
+                            crate::worktree::remove_worktrees_in_folder(&entry.path());
                             let _ = fs::remove_dir_all(entry.path());
                         }
                     } else if let Some(notes) = copy_notes_only(&entry.path()) {
                         // A continue cut after its copy note and before its
                         // records: the folder holds the note and nothing else.
                         if notes.iter().all(|note| crate::fork::remove_noted_copy(note).is_ok()) {
+                            crate::worktree::remove_worktrees_in_folder(&entry.path());
                             let _ = fs::remove_dir_all(entry.path());
                         }
                     }
@@ -351,7 +354,11 @@ async fn finish(
         // A clone cut short left a partial next to where it was going.
         for repo in &detail.repos {
             let stale = partial(&repo.path);
-            let _ = blocking(move || std::fs::remove_dir_all(stale)).await;
+            let _ = blocking(move || {
+                crate::worktree::remove_worktrees_in_folder(&stale);
+                let _ = std::fs::remove_dir_all(stale);
+            })
+            .await;
         }
         starter.clone_repos(&channel, &detail, &mut |_| {}).await?;
         starter.set_step(&mut detail, StartStep::Cloned).await?;

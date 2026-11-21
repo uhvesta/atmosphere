@@ -37,8 +37,8 @@ const THIS_MAC_ROOT: &str = "this_machine_root";
 const THIS_MAC_OLDER_ROOTS: &str = "this_machine_older_roots";
 
 /// Folders under a root that belong to the machine, not to a channel, and
-/// move with the channels: the trash and what other machines sent.
-const MACHINE_FOLDERS: [&str; 2] = [".trash", "received"];
+/// move with the channels: the trash, what other machines sent, and the shared bare repo cache.
+const MACHINE_FOLDERS: [&str; 3] = [".trash", "received", ".repo-cache"];
 
 /// What a root change reaches on one machine.
 #[derive(Debug, Default, PartialEq, Eq)]

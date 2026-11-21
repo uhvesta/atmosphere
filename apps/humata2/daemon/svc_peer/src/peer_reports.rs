@@ -69,6 +69,12 @@ pub enum ReportUpdate {
     Gone { machine: String, session: String },
     /// The machine's link went up or down; held reports changed freshness.
     Freshness { machine: String, freshness: Freshness },
+    /// A file was created, deleted, or renamed in a remote session.
+    FileChanged {
+        machine: String,
+        session: String,
+        changed: pb::FileChanged,
+    },
 }
 
 #[derive(Default)]
@@ -163,6 +169,23 @@ impl PeerReports {
                 entry.pointers = report.pointers;
                 entry.pointers_at = report.at;
                 self.changed(machine, held, session);
+            }
+            Some(Message::FileChanged(report)) => {
+                let Some(session) = report.session.as_ref().map(|id| id.value.clone()) else {
+                    return;
+                };
+                self.push(ReportUpdate::FileChanged {
+                    machine: machine.to_owned(),
+                    session,
+                    changed: pb::FileChanged {
+                        session: report.session,
+                        repo: report.repo,
+                        kind: report.kind,
+                        path: report.path,
+                        old_path: report.old_path,
+                        folder: report.folder,
+                    },
+                });
             }
             Some(_) => self.finish(machine, held),
             None => {}
@@ -379,6 +402,53 @@ mod tests {
         );
 
         assert!(reports.machine(MACHINE).unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn file_changed_reports_are_forwarded_without_ending_snapshot() {
+        let reports = PeerReports::default();
+        let mut updates = reports.subscribe();
+        reports.link_up(MACHINE);
+        reports.accept(MACHINE, status("se_1", pb::SessionStatus::Working));
+        reports.accept(
+            MACHINE,
+            pb::MachineToHost {
+                message: Some(pb::machine_to_host::Message::FileChanged(
+                    pb::FileChangedReport {
+                        session: Some(pb::SessionId {
+                            value: "se_1".to_owned(),
+                        }),
+                        repo: None,
+                        kind: pb::file_changed::Kind::Created as i32,
+                        path: "notes.md".to_owned(),
+                        old_path: String::new(),
+                        folder: false,
+                    },
+                )),
+            },
+        );
+        // A second session still arrives in the same snapshot.
+        reports.accept(MACHINE, status("se_2", pb::SessionStatus::Idle));
+        reports.accept(MACHINE, ack());
+
+        assert!(reports.session(MACHINE, "se_1").is_some());
+        assert!(reports.session(MACHINE, "se_2").is_some());
+        let mut saw_file = false;
+        while let Ok(update) = updates.try_recv() {
+            if let ReportUpdate::FileChanged {
+                machine,
+                session,
+                changed,
+            } = &*update
+            {
+                assert_eq!(machine, MACHINE);
+                assert_eq!(session, "se_1");
+                assert_eq!(changed.path, "notes.md");
+                assert!(changed.repo.is_none());
+                saw_file = true;
+            }
+        }
+        assert!(saw_file, "FileChanged must be pushed to ReportUpdate subscribers");
     }
 
     #[test]

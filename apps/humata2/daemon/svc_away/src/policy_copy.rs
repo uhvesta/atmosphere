@@ -47,6 +47,8 @@ pub trait PolicyGuard: Send + Sync {
         on: Option<bool>,
         revision: u64,
     ) -> Result<(), StoreError>;
+    fn use_worktrees(&self, store: &Store) -> Result<bool, StoreError>;
+    fn put_use_worktrees(&self, store: &Store, on: bool, revision: u64) -> Result<(), StoreError>;
 }
 
 /// Why a policy copy couldn't be made, kept or put in force.
@@ -251,6 +253,7 @@ impl PolicySource {
             approval_verifier: passphrase::verifier(&self.store).map_err(store_error)?,
             contain_agents: self.guard.global_contain(&self.store).map_err(store_error)?,
             channel_contain,
+            use_worktrees: Some(self.guard.use_worktrees(&self.store).map_err(store_error)?),
         })
     }
 
@@ -427,6 +430,11 @@ impl PolicySource {
         self.guard
             .put_global_contain(&self.store, snapshot.contain_agents, revision)
             .map_err(store_error)?;
+        if let Some(on) = snapshot.use_worktrees {
+            self.guard
+                .put_use_worktrees(&self.store, on, revision)
+                .map_err(store_error)?;
+        }
         let overrides: BTreeMap<&str, bool> = snapshot
             .channel_contain
             .iter()

@@ -273,11 +273,13 @@ pub enum Row {
     SyncEnabled,
     /// The cross-machine mount (FUSEFS).
     FuseFsEnabled,
+    /// Opt-in cached bare repo checkouts + git worktrees.
+    UseWorktrees,
 }
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
@@ -293,6 +295,7 @@ impl Row {
         Self::FastMode,
         Self::SyncEnabled,
         Self::FuseFsEnabled,
+        Self::UseWorktrees,
     ];
 
     /// Its label on the page.
@@ -315,6 +318,7 @@ impl Row {
             Self::FastMode => "Fast mode",
             Self::SyncEnabled => "Sync agent config",
             Self::FuseFsEnabled => "Mount the cross-machine view",
+            Self::UseWorktrees => "Git worktrees",
         }
     }
 
@@ -327,9 +331,10 @@ impl Row {
             | Self::SidebarShowsPinned
             | Self::DeskRowsInSidebar
             | Self::LongLines => Section::Layout,
-            Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals | Self::FastMode => {
-                Section::General
-            }
+            Self::ConfirmBulkApprovals
+            | Self::FreeHiddenTerminals
+            | Self::FastMode
+            | Self::UseWorktrees => Section::General,
             Self::DefaultAgent => Section::Agents,
             Self::DesktopNotifications | Self::PlaySound | Self::PermissionRequestAlerts => {
                 Section::Notifications
@@ -504,6 +509,14 @@ impl Settings {
         })
     }
 
+    /// Reads the loopback To-do web UI switch and live URL (WEBTODO).
+    fn read_web_todo(&self) -> Effect<SettingsAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            SettingsAction::WebTodo(WebTodoAction::Loaded(daemon.web_todo_settings().await))
+        })
+    }
+
     /// Reads full daemon settings (branch prefix, security, retention, model, terminal, quiet hours).
     fn read_general(&self) -> Effect<SettingsAction> {
         let daemon = self.clients.daemon.clone();
@@ -621,7 +634,11 @@ impl Reducer for Settings {
                     return self.read_browser();
                 }
                 if section == Section::General {
-                    return Effect::concat([self.read_todo(), self.read_general()]);
+                    return Effect::concat([
+                        self.read_todo(),
+                        self.read_web_todo(),
+                        self.read_general(),
+                    ]);
                 }
                 if matches!(section, Section::Layout | Section::Notifications) {
                     return self.read_general();
@@ -651,7 +668,11 @@ impl Reducer for Settings {
                     return self.read_browser();
                 }
                 if section == Section::General {
-                    return Effect::concat([self.read_todo(), self.read_general()]);
+                    return Effect::concat([
+                        self.read_todo(),
+                        self.read_web_todo(),
+                        self.read_general(),
+                    ]);
                 }
                 if matches!(section, Section::Layout | Section::Notifications) {
                     return self.read_general();

@@ -51,9 +51,10 @@ pub(super) struct Cache {
     /// Sessions whose status or files changed since the loop last looked.
     pending: Mutex<HashMap<String, Dirty>>,
     wake: Notify,
-    /// What watches each live session's clones, so a commit, a branch move,
-    /// a push or a file edit wakes a look at that session alone.
-    watching: Mutex<HashMap<String, Vec<notify::RecommendedWatcher>>>,
+    /// What watches each live session's folder and clones, keyed by session,
+    /// along with the exact set of paths being watched so adding a repo
+    /// refreshes the watchers.
+    watching: Mutex<HashMap<String, (HashSet<PathBuf>, Vec<notify::RecommendedWatcher>)>>,
 }
 
 /// The cache every `Tell` of this process shares: the host builds more than
@@ -88,13 +89,15 @@ impl Cache {
         lock(&self.watching).remove(session);
     }
 
-    /// Notes what a clone's watcher said, and wakes a look unless it was a read
-    /// or only touched noisy subdirs inside the clone.
+    /// Notes what a watcher said, and wakes a look unless it was a read
+    /// or only touched noisy subdirs (or clone subdirs when watching a session
+    /// folder).
     fn touch(
         &self,
         session: &str,
         root: &Path,
         canon: Option<&Path>,
+        skip_dirs: &HashSet<String>,
         event: notify::Result<notify::Event>,
     ) {
         {
@@ -109,7 +112,7 @@ impl Cache {
                         let kept: Vec<PathBuf> = event
                             .paths
                             .into_iter()
-                            .filter(|path| !is_noisy_path(root, canon, path))
+                            .filter(|path| !is_noisy_path(root, canon, path, skip_dirs))
                             .collect();
                         if kept.is_empty() {
                             return;
@@ -135,30 +138,59 @@ impl Cache {
         self.wake.notify_one();
     }
 
-    /// Watches the clones of `session`, once; an event in one wakes a look.
-    /// A clone that can't be watched is still looked at on every status
-    /// change.
-    fn watch(self: &Arc<Self>, session: &str, repos: &[SessionRepo]) {
+    /// Watches the session's folder and clones; refreshes when the set of
+    /// watched paths changes (e.g. a repo is added to the session).
+    fn watch(
+        self: &Arc<Self>,
+        session: &str,
+        folder: Option<&Path>,
+        repos: &[SessionRepo],
+        skip_dirs: &HashSet<String>,
+    ) {
+        let mut wanted_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
+        if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
+            wanted_paths.insert(folder.to_owned());
+        }
         let mut watching = lock(&self.watching);
-        if watching.contains_key(session) {
+        if watching
+            .get(session)
+            .is_some_and(|(paths, _)| *paths == wanted_paths)
+        {
             return;
         }
-        let watchers = repos
-            .iter()
-            .filter_map(|repo| {
-                let cache = Arc::clone(self);
-                let id = session.to_owned();
-                let root = repo.path.clone();
-                let canon = repo.path.canonicalize().ok();
-                let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                    cache.touch(&id, &root, canon.as_deref(), event);
+        let mut watchers = Vec::with_capacity(wanted_paths.len());
+        if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
+            let cache = Arc::clone(self);
+            let id = session.to_owned();
+            let root = folder.to_owned();
+            let canon = folder.canonicalize().ok();
+            let skip = skip_dirs.clone();
+            if let Ok(mut watcher) =
+                notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    cache.touch(&id, &root, canon.as_deref(), &skip, event);
                 })
-                .ok()?;
-                watcher.watch(&repo.path, RecursiveMode::Recursive).ok()?;
-                Some(watcher)
-            })
-            .collect();
-        watching.insert(session.to_owned(), watchers);
+                && watcher.watch(folder, RecursiveMode::Recursive).is_ok()
+            {
+                watchers.push(watcher);
+            }
+        }
+        let empty_skip = HashSet::new();
+        for repo in repos {
+            let cache = Arc::clone(self);
+            let id = session.to_owned();
+            let root = repo.path.clone();
+            let canon = repo.path.canonicalize().ok();
+            let skip = empty_skip.clone();
+            if let Ok(mut watcher) =
+                notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    cache.touch(&id, &root, canon.as_deref(), &skip, event);
+                })
+                && watcher.watch(&repo.path, RecursiveMode::Recursive).is_ok()
+            {
+                watchers.push(watcher);
+            }
+        }
+        watching.insert(session.to_owned(), (wanted_paths, watchers));
     }
 
     /// Stores `now` for `session`; whether it differs from what was kept.
@@ -194,10 +226,16 @@ fn same(before: &[pb::Pointer], now: &[pb::Pointer]) -> bool {
 }
 
 /// Whether `path` lies inside a noisy subdir of the clone (`target`,
-/// `node_modules`, or non-state `.git/` internals like `.git/objects`).
-/// Strips the watched clone root first so path components above the clone
-/// never match; if stripping fails, returns `false` (fail-open).
-fn is_noisy_path(root: &Path, canon: Option<&Path>, path: &Path) -> bool {
+/// `node_modules`, or non-state `.git/` internals like `.git/objects`), or
+/// inside a top-level skipped clone directory when watching a session folder.
+/// Strips the watched root first so path components above the root never
+/// match; if stripping fails, returns `false` (fail-open).
+fn is_noisy_path(
+    root: &Path,
+    canon: Option<&Path>,
+    path: &Path,
+    skip_dirs: &HashSet<String>,
+) -> bool {
     let Some(rel) = path
         .strip_prefix(root)
         .ok()
@@ -212,6 +250,9 @@ fn is_noisy_path(root: &Path, canon: Option<&Path>, path: &Path) -> bool {
     let Some(first) = components.next() else {
         return false;
     };
+    if skip_dirs.contains(first) {
+        return true;
+    }
     if first == ".git" {
         let Some(second) = components.next() else {
             return false;
@@ -294,25 +335,52 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
             })
             .map(|agent| agent.session)
             .collect();
-        let here: HashSet<String> = records
+        let here: HashMap<String, PathBuf> = records
             .iter()
             .filter(|record| !remote::elsewhere(record, &machine))
-            .map(|record| record.id.clone())
+            .map(|record| (record.id.clone(), record.folder.clone()))
             .collect();
         let wanted = |session: &str| only.as_ref().is_none_or(|only| only.contains_key(session));
         let mut found = Vec::new();
         let mut watched = HashSet::new();
+        let empty_skip = HashSet::new();
         for detail in details {
-            if !(live.contains(&detail.session) && here.contains(&detail.session)) || !wanted(&detail.session) {
+            let Some(folder) = here.get(&detail.session) else {
+                continue;
+            };
+            if !live.contains(&detail.session) || !wanted(&detail.session) {
                 continue;
             }
-            cache.watch(&detail.session, &detail.repos);
+            let skip_dirs = clone_dir_names(folder, &detail.repos);
+            let session_folder = (!folder.as_os_str().is_empty()).then_some(folder.as_path());
+            cache.watch(&detail.session, session_folder, &detail.repos, &skip_dirs);
             watched.insert(detail.session.clone());
             // Bug 23: the watcher wakes this look on every file change in the
-            // clone, an agent's edits included. Only the paths it named are
-            // looked at; the clone is listed again only when events were lost
-            // or it has no list yet (the first pass, which names none).
+            // session folder or clone, an agent's edits included. Only the paths
+            // it named are looked at; the root is listed again only when events
+            // were lost or it has no list yet (the first pass, which names none).
             let dirty = only.as_ref().and_then(|only| only.get(&detail.session));
+            let rescan = dirty.is_some_and(|dirty| dirty.rescan);
+            if let Some(folder) = session_folder {
+                let canon = dirty
+                    .filter(|dirty| !dirty.paths.is_empty())
+                    .and_then(|_| folder.canonicalize().ok());
+                let touched: Vec<String> = dirty
+                    .map(|dirty| {
+                        dirty
+                            .paths
+                            .iter()
+                            .filter_map(|path| inside(folder, canon.as_deref(), path))
+                            .filter(|rel| {
+                                rel.split('/')
+                                    .next()
+                                    .is_none_or(|first| !skip_dirs.contains(first))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                file_changes.look(&detail.session, None, folder, &touched, rescan, &skip_dirs);
+            }
             for repo in &detail.repos {
                 let named = pb::RepoRef {
                     owner: repo.owner.clone(),
@@ -330,8 +398,14 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                             .collect()
                     })
                     .unwrap_or_default();
-                let rescan = dirty.is_some_and(|dirty| dirty.rescan);
-                file_changes.look(&detail.session, &named, &repo.path, &touched, rescan);
+                file_changes.look(
+                    &detail.session,
+                    Some(&named),
+                    &repo.path,
+                    &touched,
+                    rescan,
+                    &empty_skip,
+                );
             }
             let pointers: Vec<pb::Pointer> = detail.repos.iter().filter_map(pointer).collect();
             found.push((detail.session, pointers));
@@ -361,6 +435,24 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
             }
         }
     }
+}
+
+/// Top-level directory names under `folder` belonging to `repos`.
+fn clone_dir_names(folder: &Path, repos: &[SessionRepo]) -> HashSet<String> {
+    let mut names = HashSet::with_capacity(repos.len());
+    for repo in repos {
+        if !repo.name.is_empty() {
+            names.insert(repo.name.clone());
+        }
+        if let Ok(rel) = repo.path.strip_prefix(folder)
+            && let Some(first) = rel.components().next().and_then(|c| c.as_os_str().to_str())
+        {
+            names.insert(first.to_owned());
+        } else if let Some(name) = repo.path.file_name().and_then(|n| n.to_str()) {
+            names.insert(name.to_owned());
+        }
+    }
+    names
 }
 
 /// The pointer of one repo's clone; none when the clone can't be read.
@@ -672,12 +764,17 @@ mod tests {
     #[test]
     fn noisy_path_strips_clone_root_and_keeps_git_state_files() {
         let root = Path::new("/tmp/target/node_modules/repo");
+        let empty = HashSet::new();
         // Above-root `target`/`node_modules` must NOT match.
-        assert!(!is_noisy_path(root, None, &root.join("src/lib.rs")));
+        assert!(!is_noisy_path(root, None, &root.join("src/lib.rs"), &empty));
         // Inside-clone noisy subdirs ARE filtered.
-        assert!(is_noisy_path(root, None, &root.join("target/debug/app")));
-        assert!(is_noisy_path(root, None, &root.join("web/node_modules/pkg/index.js")));
-        assert!(is_noisy_path(root, None, &root.join(".git/objects/ab/1234")));
+        assert!(is_noisy_path(root, None, &root.join("target/debug/app"), &empty));
+        assert!(is_noisy_path(root, None, &root.join("web/node_modules/pkg/index.js"), &empty));
+        assert!(is_noisy_path(root, None, &root.join(".git/objects/ab/1234"), &empty));
+        // Top-level skipped clone directories ARE filtered when watching a session folder.
+        let skip: HashSet<String> = ["api".to_owned()].into_iter().collect();
+        assert!(is_noisy_path(root, None, &root.join("api/src/lib.rs"), &skip));
+        assert!(!is_noisy_path(root, None, &root.join("notes.md"), &skip));
         // Essential git state files must NOT be ignored.
         for keep in [
             ".git/HEAD",
@@ -692,7 +789,7 @@ mod tests {
             ".git/rebase-apply/next",
             ".git/FETCH_HEAD",
         ] {
-            assert!(!is_noisy_path(root, None, &root.join(keep)), "should keep {keep}");
+            assert!(!is_noisy_path(root, None, &root.join(keep), &empty), "should keep {keep}");
         }
     }
 

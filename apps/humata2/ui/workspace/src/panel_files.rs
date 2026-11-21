@@ -79,6 +79,11 @@ pub fn file_rows(
                 path: path.clone(),
             }
         };
+        let label = if repo.is_empty() {
+            path.clone()
+        } else {
+            format!("{repo}/{path}")
+        };
         let click_ui = ui.clone();
         rows.push(
             row()
@@ -91,7 +96,7 @@ pub fn file_rows(
                 } else {
                     Role::ListItem
                 })
-                .aria_label(format!("{repo}/{path}"))
+                .aria_label(label)
                 .test_support()
                 .h(px(23.))
                 .pl(px(8. + depth as f32 * 14.))
@@ -172,7 +177,9 @@ pub fn files(
     if let Some(panel) = humata2_ui_desk::desk_files::panel(ui, state, session, look) {
         return col().size_full().child(panel);
     }
-    // The session's own repository first, the rest in the order they arrive.
+    // Session-root files (`repo == ""`) sit outside clones; the session's own
+    // repository comes first among clones, then the rest in arrival order.
+    let mut session_root = FileNode::default();
     let mut repos = Vec::<(String, FileNode)>::new();
     let mut arrived = 0_usize;
     if !session.repo.is_empty() {
@@ -185,14 +192,18 @@ pub fn files(
         .into_iter()
         .flatten()
     {
-        let at = repos
-            .iter()
-            .position(|(repo, _)| *repo == file.repo)
-            .unwrap_or_else(|| {
-                repos.push((file.repo.clone(), FileNode::default()));
-                repos.len() - 1
-            });
-        let mut node = &mut repos[at].1;
+        let mut node = if file.repo.is_empty() {
+            &mut session_root
+        } else {
+            let at = repos
+                .iter()
+                .position(|(repo, _)| *repo == file.repo)
+                .unwrap_or_else(|| {
+                    repos.push((file.repo.clone(), FileNode::default()));
+                    repos.len() - 1
+                });
+            &mut repos[at].1
+        };
         for component in file.path.split('/').filter(|part| !part.is_empty()) {
             node.folder = true;
             arrived += 1;
@@ -212,6 +223,50 @@ pub fn files(
         .map_or("", |view| view.file_filter.as_str())
         .to_lowercase();
     let mut rows = Vec::new();
+    if !session_root.children.is_empty() {
+        let children = file_rows(ui, state, "", &session_root, "", 1, &filter, look);
+        if filter.is_empty() || !children.is_empty() {
+            let folded = state
+                .session
+                .view()
+                .is_some_and(|view| view.folded_files.contains(&(String::new(), String::new())));
+            let click_ui = ui.clone();
+            rows.push(
+                row()
+                    .id(SharedString::from("session-folder /"))
+                    .role(Role::Button)
+                    .aria_label("Session folder")
+                    .test_support()
+                    .h(px(23.))
+                    .px(px(8.))
+                    .gap(px(6.))
+                    .child(icon(
+                        if folded {
+                            IconName::Folder
+                        } else {
+                            IconName::FolderOpen
+                        },
+                        look.secondary,
+                        12.,
+                    ))
+                    .child(text("Session folder"))
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| {
+                        click_ui.send(
+                            AppAction::Session(SessionAction::ToggleFolder {
+                                repo: String::new(),
+                                path: String::new(),
+                            }),
+                            cx,
+                        )
+                    })
+                    .into_any_element(),
+            );
+            if !folded || !filter.is_empty() {
+                rows.extend(children);
+            }
+        }
+    }
     for (repo, node) in &repos {
         if node.children.is_empty() && repo != &session.repo {
             continue;

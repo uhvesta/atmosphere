@@ -155,7 +155,11 @@ fn rewrite_git(placement: &Placement, known: &[PathBuf], clone: &Path) -> Result
     let git = clone.join(".git");
     match fs::symlink_metadata(&git) {
         Ok(meta) if meta.is_dir() => rewrite_tree(placement, known, &git, true, 0),
-        Ok(meta) if meta.is_file() => rewrite_file(placement, known, &git, &meta),
+        Ok(meta) if meta.is_file() => {
+            rewrite_file(placement, known, &git, &meta)?;
+            humata2_sessions::repair_worktrees_in_folder(clone);
+            Ok(())
+        }
         _ => Ok(()),
     }
 }

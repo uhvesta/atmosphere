@@ -43,6 +43,9 @@ pub(super) struct Clones {
 pub(super) struct Recipe {
     /// The clone's folder, directly in the session's folder.
     pub(super) name: String,
+    /// The repository's owner, used to locate `<channels_root>/.repo-cache/<owner>/<repo>.git`.
+    #[serde(default)]
+    pub(super) owner: String,
     /// The repository's name, which names its main clone in the channel.
     pub(super) repo: String,
     pub(super) remote_url: String,
@@ -144,38 +147,125 @@ impl crate::CarryOps<'_> {
         channel: &ChannelRecord,
         stage: &Path,
     ) -> Result<(), CarryError> {
+        let use_wt = humata2_sessions_core::worktree::use_worktrees_enabled(&self.store);
         for recipe in &recipes.clones {
             let dest = folder.join(&recipe.name);
             let building = partial(&dest);
             let fail = |source| CarryError::Rebuild { name: recipe.name.clone(), source };
+            humata2_sessions_core::worktree::remove_worktrees_in_folder(&building);
             remove(&building)?;
-            let main = self.layout.main_clone(&channel.folder, &recipe.repo);
-            let from = if main.join(".git").exists() {
-                text(&main).map(str::to_owned)
+
+            let owner = if !recipe.owner.is_empty() {
+                Some(recipe.owner.as_str())
             } else {
-                Ok(recipe.remote_url.clone())
+                channel
+                    .repos
+                    .iter()
+                    .find(|r| r.name == recipe.repo)
+                    .map(|r| r.owner.as_str())
             };
-            let from = from.map_err(fail)?;
-            let target = text(&building).map_err(fail)?;
-            git(None, &["clone", "--no-checkout", "--", from.as_str(), target]).map_err(fail)?;
-            git(Some(building.as_path()), &["remote", "set-url", "origin", recipe.remote_url.as_str()]).map_err(fail)?;
-            if recipe.bundle {
-                let bundle = stage.join(BUNDLES).join(format!("{}.bundle", recipe.name));
-                let shown = text(&bundle).map_err(fail)?;
-                let wanted = format!("refs/heads/{}", recipe.branch);
-                git(Some(building.as_path()), &["fetch", "--no-tags", "--", shown, wanted.as_str()]).map_err(fail)?;
+
+            let built_as_worktree = if use_wt && let Some(owner) = owner {
+                let bare = self.layout.repo_cache(owner, &recipe.repo);
+                let lock = self.layout.repo_cache_lock(owner, &recipe.repo);
+                let wt_res = humata2_sessions_core::worktree::with_repo_cache_lock(&lock, || {
+                    // Each machine fetches directly from remote_url into its own bare cache.
+                    humata2_sessions_core::worktree::ensure_bare_cache(
+                        &bare,
+                        recipe.remote_url.as_str(),
+                        &mut |_| {},
+                    )?;
+                    if recipe.bundle {
+                        let bundle = stage.join(BUNDLES).join(format!("{}.bundle", recipe.name));
+                        let shown = text(&bundle)?;
+                        let wanted = format!("refs/heads/{}", recipe.branch);
+                        git(Some(bare.as_path()), &["fetch", "--no-tags", "--", shown, wanted.as_str()])?;
+                    }
+                    if humata2_sessions_core::worktree::has_gitmodules(&bare, recipe.head.as_str()) {
+                        return Err(humata2_sessions_core::GitError::Failed {
+                            args: "worktree add (submodules)".to_owned(),
+                            status: "skipped".to_owned(),
+                            stderr: "repository uses .gitmodules".to_owned(),
+                        });
+                    }
+                    let detach = humata2_sessions_core::worktree::is_branch_checked_out(
+                        &bare,
+                        recipe.branch.as_str(),
+                    );
+                    let target = text(&building)?;
+                    if detach {
+                        git(
+                            Some(bare.as_path()),
+                            &["worktree", "add", "--no-checkout", "--detach", target, recipe.head.as_str()],
+                        )?;
+                    } else {
+                        git(
+                            Some(bare.as_path()),
+                            &[
+                                "worktree",
+                                "add",
+                                "--no-checkout",
+                                "--no-track",
+                                "-B",
+                                recipe.branch.as_str(),
+                                target,
+                                recipe.head.as_str(),
+                            ],
+                        )?;
+                    }
+                    if !recipe.humata.is_empty() {
+                        let bundle = stage.join(BUNDLES).join(format!("{}.{HUMATA_BUNDLE}", recipe.name));
+                        let shown = text(&bundle)?;
+                        git(
+                            Some(building.as_path()),
+                            &["fetch", "--no-tags", "--", shown, "+refs/humata/*:refs/humata/*"],
+                        )?;
+                    }
+                    git(Some(building.as_path()), &["checkout", "-f", "HEAD"])?;
+                    Ok(())
+                });
+                match wt_res {
+                    Ok(()) => Some(bare),
+                    Err(_) => {
+                        humata2_sessions_core::worktree::remove_worktrees_in_folder(&building);
+                        let _ = remove(&building);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            if built_as_worktree.is_none() {
+                let main = self.layout.main_clone(&channel.folder, &recipe.repo);
+                let from = if main.join(".git").is_dir() {
+                    text(&main).map(str::to_owned)
+                } else {
+                    Ok(recipe.remote_url.clone())
+                };
+                let from = from.map_err(fail)?;
+                let target = text(&building).map_err(fail)?;
+                git(None, &["clone", "--no-checkout", "--", from.as_str(), target]).map_err(fail)?;
+                git(Some(building.as_path()), &["remote", "set-url", "origin", recipe.remote_url.as_str()]).map_err(fail)?;
+                if recipe.bundle {
+                    let bundle = stage.join(BUNDLES).join(format!("{}.bundle", recipe.name));
+                    let shown = text(&bundle).map_err(fail)?;
+                    let wanted = format!("refs/heads/{}", recipe.branch);
+                    git(Some(building.as_path()), &["fetch", "--no-tags", "--", shown, wanted.as_str()]).map_err(fail)?;
+                }
+                git(Some(building.as_path()), &["checkout", "-f", "--no-track", "-B", recipe.branch.as_str(), recipe.head.as_str()])
+                    .map_err(fail)?;
+                if !recipe.humata.is_empty() {
+                    let bundle = stage.join(BUNDLES).join(format!("{}.{HUMATA_BUNDLE}", recipe.name));
+                    let shown = text(&bundle).map_err(fail)?;
+                    git(
+                        Some(building.as_path()),
+                        &["fetch", "--no-tags", "--", shown, "+refs/humata/*:refs/humata/*"],
+                    )
+                    .map_err(fail)?;
+                }
             }
-            git(Some(building.as_path()), &["checkout", "-f", "--no-track", "-B", recipe.branch.as_str(), recipe.head.as_str()])
-                .map_err(fail)?;
-            if !recipe.humata.is_empty() {
-                let bundle = stage.join(BUNDLES).join(format!("{}.{HUMATA_BUNDLE}", recipe.name));
-                let shown = text(&bundle).map_err(fail)?;
-                git(
-                    Some(building.as_path()),
-                    &["fetch", "--no-tags", "--", shown, "+refs/humata/*:refs/humata/*"],
-                )
-                .map_err(fail)?;
-            }
+
             let head = git(Some(building.as_path()), &["rev-parse", "HEAD"]).map_err(fail)?;
             if head.trim() != recipe.head {
                 return Err(CarryError::Changed { item: format!("the commit of the clone {}", recipe.name) });
@@ -193,6 +283,13 @@ impl crate::CarryOps<'_> {
             sync_tree(&building).map_err(io("put on disk", &building))?;
             humata2_durable::rename(&building, &dest).map_err(io("place", &dest))?;
             humata2_durable::sync_dir(folder).map_err(io("put on disk", folder))?;
+            if let Some(bare) = built_as_worktree {
+                let lock = humata2_sessions_core::worktree::lock_path_for_bare(&bare);
+                let _ = humata2_sessions_core::worktree::with_repo_cache_lock(&lock, || {
+                    git(Some(bare.as_path()), &["worktree", "repair", text(&dest)?])?;
+                    Ok(())
+                });
+            }
         }
         Ok(())
     }
@@ -202,7 +299,7 @@ impl crate::CarryOps<'_> {
 /// commits written into `stage`; none when git can't say.
 fn recipe_of(repo: &SessionRepo, name: &str, stage: &Path) -> Option<Recipe> {
     let dir = repo.path.as_path();
-    if !dir.join(".git").is_dir() || dir.join(".gitmodules").exists() {
+    if !dir.join(".git").exists() || dir.join(".gitmodules").exists() {
         return None;
     }
     let out = |args: &[&str]| git(Some(dir), args).ok();
@@ -248,6 +345,7 @@ fn recipe_of(repo: &SessionRepo, name: &str, stage: &Path) -> Option<Recipe> {
     let clean = in_head.iter().filter(|rel| !changed.contains(*rel) && !gone.contains(rel)).cloned().collect();
     Some(Recipe {
         name: name.to_owned(),
+        owner: repo.owner.clone(),
         repo: repo.name.clone(),
         remote_url,
         branch,
@@ -347,6 +445,7 @@ mod tests {
     fn what_the_clones_hold_of_humata_is_part_of_their_digest() {
         let recipe = |humata: &str| Recipe {
             name: "api".to_owned(),
+            owner: "acme".to_owned(),
             repo: "api".to_owned(),
             remote_url: "u".to_owned(),
             branch: "b".to_owned(),

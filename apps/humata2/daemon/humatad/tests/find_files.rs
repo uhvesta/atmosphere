@@ -17,6 +17,7 @@ const SESSION: &str = "se_find";
 const EMPTY: &str = "se_find_empty";
 const PLAIN: &str = "se_find_plain";
 const DESK: &str = "se_find_desk";
+const ROOT_FILES: &str = "se_find_root";
 
 struct World {
     daemon: Daemon,
@@ -91,15 +92,19 @@ async fn world() -> &'static World {
 
 async fn build_world() -> World {
     let dir = folder();
-    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
-    store.put_session(&record(SESSION, dir.path())).unwrap();
-    store.put_session_detail(&detail(SESSION, &["web", "api"])).unwrap();
-    store.put_session(&record(EMPTY, dir.path())).unwrap();
-    store.put_session_detail(&detail(EMPTY, &[])).unwrap();
+    let session_dir = dir.path().join("main-session");
+    let empty_dir = dir.path().join("empty-session");
+    fs::create_dir_all(&empty_dir).unwrap();
     let plain_parent = dir.path().join("plain-session");
+    let desk = dir.path().join("desk-session");
+    let root_session = dir.path().join("root-session");
+    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    store.put_session(&record(SESSION, &session_dir)).unwrap();
+    store.put_session_detail(&detail(SESSION, &["web", "api"])).unwrap();
+    store.put_session(&record(EMPTY, &empty_dir)).unwrap();
+    store.put_session_detail(&detail(EMPTY, &[])).unwrap();
     store.put_session(&record(PLAIN, &plain_parent)).unwrap();
     store.put_session_detail(&detail(PLAIN, &["docs"])).unwrap();
-    let desk = dir.path().join("desk-session");
     store
         .put_session(&SessionRecord {
             channel: "desk".to_owned(),
@@ -107,14 +112,20 @@ async fn build_world() -> World {
         })
         .unwrap();
     store.put_session_detail(&detail(DESK, &["ledger"])).unwrap();
+    store.put_session(&record(ROOT_FILES, &root_session)).unwrap();
+    store.put_session_detail(&detail(ROOT_FILES, &["api"])).unwrap();
     drop(store);
 
     write(&desk.join("rfc.md"), "# RFC\n");
     write(&desk.join("notes/bench.md"), "bench\n");
     repo_with(&desk.join("ledger"), &["schema.sql"]);
 
+    write(&root_session.join("notes.md"), "# Session notes\n");
+    write(&root_session.join("scratch/plan.md"), "plan\n");
+    repo_with(&root_session.join("api"), &["src/lib.rs"]);
+
     repo_with(
-        &dir.path().join("api"),
+        &session_dir.join("api"),
         &[
             "README.md",
             "src/lib.rs",
@@ -124,7 +135,7 @@ async fn build_world() -> World {
         ],
     );
     repo_with(
-        &dir.path().join("web"),
+        &session_dir.join("web"),
         &["package.json", "src/app.ts", "src/lib/index.ts"],
     );
     write(&plain_parent.join("docs/a.txt"), "a\n");
@@ -336,5 +347,38 @@ async fn a_desk_sessions_own_files_are_found_before_its_clones_and_only_once() {
     assert!(
         !found.iter().any(|path| path.starts_with("folder:ledger")),
         "the clone isn't listed again through the folder: {found:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_channel_sessions_root_files_are_found_under_session_folder_without_duplicating_clones() {
+    let world = world().await;
+    let response = find_in(&world.daemon, ROOT_FILES, "", None).await.unwrap();
+    let found: Vec<String> = response
+        .entries
+        .iter()
+        .map(|entry| {
+            let location = entry.location.as_ref().unwrap();
+            match &location.root {
+                Some(pb::file_location::Root::SessionFolder(_)) => {
+                    format!("folder:{}", location.path)
+                }
+                Some(pb::file_location::Root::SessionClone(clone)) => {
+                    format!("{}:{}", clone.repo.as_ref().unwrap().name, location.path)
+                }
+                other => panic!("an unexpected root: {other:?}"),
+            }
+        })
+        .collect();
+    let mut own: Vec<&String> = found
+        .iter()
+        .filter(|path| path.starts_with("folder:"))
+        .collect();
+    own.sort();
+    assert_eq!(own, ["folder:notes.md", "folder:scratch/plan.md"], "{found:?}");
+    assert!(found.contains(&"api:src/lib.rs".to_owned()), "{found:?}");
+    assert!(
+        !found.iter().any(|path| path.starts_with("folder:api")),
+        "clone files must not be duplicated under SessionFolder: {found:?}"
     );
 }

@@ -318,7 +318,7 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
 fn file_event(changed: &pb::FileChanged) -> Option<Event> {
     use pb::file_changed::Kind;
     let session = map::session_id(changed.session.as_ref());
-    let repo = map::repo_text(changed.repo.as_ref()?);
+    let repo = changed.repo.as_ref().map(map::repo_text).unwrap_or_default();
     let file = |path: &str| SessionFile {
         repo: repo.clone(),
         path: path.to_owned(),
@@ -399,11 +399,18 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_no_kind_or_no_repo_is_dropped() {
+    fn a_change_of_no_kind_is_dropped_and_no_repo_maps_to_session_folder() {
         assert!(file_event(&wire(pb::file_changed::Kind::Unspecified, "a.rs", "")).is_none());
-        let mut nameless = wire(pb::file_changed::Kind::Created, "a.rs", "");
-        nameless.repo = None;
-        assert!(file_event(&nameless).is_none());
+        let mut root_file = wire(pb::file_changed::Kind::Created, "notes.md", "");
+        root_file.repo = None;
+        let Some(Event::Files { session, change }) = file_event(&root_file) else {
+            panic!("a session-folder file change must become a Files event");
+        };
+        assert_eq!(session.as_str(), "se_1");
+        let FileChange::Created(file) = change else {
+            panic!("created stays created");
+        };
+        assert_eq!((file.repo.as_str(), file.path.as_str(), file.folder), ("", "notes.md", false));
     }
 
     #[tokio::test]

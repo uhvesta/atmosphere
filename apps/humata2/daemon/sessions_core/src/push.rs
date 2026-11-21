@@ -70,14 +70,23 @@ pub fn commit_all(clone: &Path, message: &str) -> Result<bool, PushError> {
 }
 
 /// Pushes `branch` to origin and makes origin's branch its upstream.
+/// When `clone` is on a detached `HEAD` (e.g. a concurrent PR review worktree),
+/// pushes `HEAD:refs/heads/<branch>` cleanly without `--set-upstream`.
 pub fn push_branch(clone: &Path, branch: &str) -> Result<(), PushError> {
+    let err = |source| PushError::Push {
+        path: clone.to_path_buf(),
+        branch: branch.to_owned(),
+        source,
+    };
+    if crate::worktree::is_detached_head(clone) {
+        let refspec = format!("HEAD:refs/heads/{branch}");
+        return git(Some(clone), &["push", "origin", &refspec])
+            .map(|_| ())
+            .map_err(err);
+    }
     git(Some(clone), &["push", "--set-upstream", "origin", branch])
         .map(|_| ())
-        .map_err(|source| PushError::Push {
-            path: clone.to_path_buf(),
-            branch: branch.to_owned(),
-            source,
-        })
+        .map_err(err)
 }
 
 #[cfg(test)]

@@ -206,6 +206,7 @@ impl Starter {
         repos: &[RepoName],
         own: Option<&str>,
     ) -> Result<HashSet<String>, StartError> {
+        let use_wt = crate::worktree::use_worktrees_enabled(&self.store);
         let mut taken: HashSet<String> = HashSet::new();
         for (owner, name) in repos {
             let main = self.layout.main_clone(&channel.folder, name);
@@ -214,6 +215,15 @@ impl Starter {
                 name: name.clone(),
                 source,
             })?);
+            let bare = self.layout.repo_cache(owner, name);
+            if use_wt || bare.join("HEAD").exists() {
+                if let Ok(bare_local) = local_branches(&bare) {
+                    taken.extend(bare_local);
+                }
+                if let Ok(wt_branches) = crate::worktree::worktree_branches(&bare) {
+                    taken.extend(wt_branches);
+                }
+            }
             if let Ok(url) = remote_url(&self.remote_template, owner, name) {
                 if let Ok(remote) = remote_branches(&url) {
                     taken.extend(remote);
@@ -228,9 +238,26 @@ impl Starter {
             .filter(|s| s.channel == channel.id)
             .map(|s| s.id)
             .collect();
+        let wanted_repos: HashSet<(&str, &str)> = repos
+            .iter()
+            .map(|(o, n)| (o.as_str(), n.as_str()))
+            .collect();
         for detail in self.store.session_details().map_err(store_err("list the sessions"))? {
-            if in_channel.contains(&detail.session) && own != Some(detail.session.as_str()) {
+            if own == Some(detail.session.as_str()) {
+                continue;
+            }
+            if in_channel.contains(&detail.session) {
                 taken.extend(detail.repos.into_iter().map(|r| r.branch));
+            } else if use_wt {
+                // Cross-channel uniqueness: a branch held by another channel's
+                // in-flight or active session on the same shared bare repo cannot be reused.
+                for r in detail.repos {
+                    if wanted_repos.contains(&(r.owner.as_str(), r.name.as_str()))
+                        && (detail.start != StartStep::Done || r.path.join(".git").exists())
+                    {
+                        taken.insert(r.branch);
+                    }
+                }
             }
         }
         Ok(taken)
@@ -492,11 +519,30 @@ impl Starter {
                 source,
             };
             let main = self.layout.main_clone(&channel.folder, &repo.name);
+            let bare = self.layout.repo_cache(&repo.owner, &repo.name);
+            let lock = self.layout.repo_cache_lock(&repo.owner, &repo.name);
+            let use_wt = crate::worktree::use_worktrees_enabled(&self.store);
             let url = remote_url(&self.remote_template, &repo.owner, &repo.name).map_err(git_err)?;
             let (path, branch, number) = (repo.path.clone(), repo.branch.clone(), pr.number);
             let mut report = clone_reporter(clone_units(), &repo.name);
             let at = blocking(move || -> Result<String, GitError> {
-                clone_pull_head_with(&main, &url, &path, &branch, number, &mut report)?;
+                let done = if use_wt {
+                    crate::worktree::worktree_pull_head_with(
+                        &bare,
+                        &lock,
+                        &url,
+                        &path,
+                        &branch,
+                        number,
+                        &mut report,
+                    )
+                    .is_ok()
+                } else {
+                    false
+                };
+                if !done {
+                    clone_pull_head_with(&main, &url, &path, &branch, number, &mut report)?;
+                }
                 Ok(git(Some(&path), &["rev-parse", "HEAD"])?.trim().to_owned())
             })
             .await?
@@ -678,6 +724,9 @@ impl Starter {
                 continue;
             }
             let main = self.layout.main_clone(&channel.folder, &repo.name);
+            let bare = self.layout.repo_cache(&repo.owner, &repo.name);
+            let lock = self.layout.repo_cache_lock(&repo.owner, &repo.name);
+            let use_wt = crate::worktree::use_worktrees_enabled(&self.store);
             let url =
                 remote_url(&self.remote_template, &repo.owner, &repo.name).map_err(|source| {
                     StartError::Git {
@@ -688,7 +737,22 @@ impl Starter {
                 })?;
             let (path, branch) = (repo.path.clone(), repo.branch.clone());
             let mut report = clone_reporter(clone_units(), &repo.name);
-            blocking(move || clone_session_with(&main, &url, &path, &branch, &mut report))
+            blocking(move || {
+                if use_wt
+                    && crate::worktree::worktree_session_with(
+                        &bare,
+                        &lock,
+                        &url,
+                        &path,
+                        &branch,
+                        &mut report,
+                    )
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+                clone_session_with(&main, &url, &path, &branch, &mut report)
+            })
                 .await?
                 .map_err(|source| StartError::Git {
                     owner: repo.owner.clone(),
@@ -825,6 +889,7 @@ impl Starter {
             // A fork's conversation copy may be outside the folder.
             crate::fork::remove_fork_copy(&folder, &id)?;
             if !shared {
+                crate::worktree::remove_worktrees_in_folder(&folder);
                 remove_folder(&folder)?;
             }
             store

@@ -1237,6 +1237,10 @@ impl SessionSvc {
             crate::fault::point("delete_sessions.snapshotted");
             let (moving, text, title, bin) = (folder.clone(), note.data.clone(), record.title.clone(), bin.clone());
             item = blocking(move || -> Result<String, Status> {
+                let wt_commons: Vec<PathBuf> = humata2_sessions::collect_worktrees_in_folder(&moving)
+                    .into_iter()
+                    .map(|(_, common)| common)
+                    .collect();
                 let put = bin
                     .get()?
                     .put(
@@ -1248,6 +1252,7 @@ impl SessionSvc {
                         },
                     )
                     .map_err(|error| status::internal(status::chain(&error), ""))?;
+                humata2_sessions::prune_worktrees(&wt_commons);
                 Ok(put.id)
             })
             .await

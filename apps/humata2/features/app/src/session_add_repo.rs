@@ -126,11 +126,20 @@ impl App {
     ) -> Effect<AppAction> {
         match result {
             Ok(()) => {
+                let session = sheet_of(state)
+                    .map(|sheet| sheet.session.clone())
+                    .or_else(|| state.session.open.clone());
                 state
                     .overlays
                     .retain(|overlay| !matches!(overlay, Overlay::SessionAddRepo(_)));
                 let clock = self.clients.clock.clone();
-                state.toast(format!("Added {repo} to this session"), &clock)
+                let toast = state.toast(format!("Added {repo} to this session"), &clock);
+                if let Some(session) = session {
+                    state.files_asked.remove(&session);
+                    Effect::merge([toast, self.ask_files(state, session)])
+                } else {
+                    toast
+                }
             }
             Err(error) => {
                 if let Some(sheet) = sheet_of(state) {

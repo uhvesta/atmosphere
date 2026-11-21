@@ -26,7 +26,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use humata2_access::Entry;
 use crate::pb;
 
-use crate::find::{Listing, WALK_MAX, clone_listing, ignored_among, subtree_files};
+use crate::find::{
+    Listing, WALK_MAX, clone_dir_names, clone_listing, ignored_among, own_folder_listing,
+    own_subtree_files, subtree_files,
+};
 use crate::ports::FileFeedPort;
 use crate::roots::Roots;
 
@@ -48,30 +51,42 @@ pub struct FileChanges {
     tracker: Mutex<Tracker>,
 }
 
-/// A session's clone of one repo, as a file call names it, and the paths
-/// the call changed in it.
+/// A session's clone of one repo (or the session's own folder when `repo` is
+/// `None`), as a file call names it, and the paths the call changed in it.
 #[derive(Clone)]
 pub(crate) struct Spot {
     session: String,
-    repo: pb::RepoRef,
+    repo: Option<pb::RepoRef>,
     root: PathBuf,
-    /// Paths in the clone, `/`-separated, that the call wrote, renamed or trashed.
+    skip_dirs: HashSet<String>,
+    /// Paths in the root, `/`-separated, that the call wrote, renamed or trashed.
     touched: Vec<String>,
 }
 
 impl Spot {
-    /// The clone `location` is in, if it is a session's clone on this machine.
+    /// The clone or session folder `location` is in, if it is on this machine.
     pub(crate) fn of(roots: &Roots, location: Option<&pb::FileLocation>) -> Option<Self> {
         let location = location?;
-        let Some(pb::file_location::Root::SessionClone(clone)) = &location.root else {
-            return None;
+        let (session, repo) = match &location.root {
+            Some(pb::file_location::Root::SessionClone(clone)) => {
+                let session = clone
+                    .session
+                    .as_ref()
+                    .map(|session| session.value.clone())
+                    .filter(|id| !id.is_empty())?;
+                let repo = clone.repo.clone()?;
+                (session, Some(repo))
+            }
+            Some(pb::file_location::Root::SessionFolder(folder)) => {
+                let session = folder
+                    .session
+                    .as_ref()
+                    .map(|session| session.value.clone())
+                    .filter(|id| !id.is_empty())?;
+                (session, None)
+            }
+            _ => return None,
         };
-        let session = clone
-            .session
-            .as_ref()
-            .map(|session| session.value.clone())
-            .filter(|id| !id.is_empty())?;
-        let repo = clone.repo.clone()?;
         let root = pb::FileLocation {
             machine: location.machine.clone(),
             root: location.root.clone(),
@@ -82,15 +97,28 @@ impl Spot {
             .ok()?
             .existing()
             .ok()?;
+        let skip_dirs = if repo.is_none() {
+            let repos = roots
+                .store()
+                .session_detail(&session)
+                .ok()
+                .flatten()
+                .map(|detail| detail.repos)
+                .unwrap_or_default();
+            clone_dir_names(&root, &repos)
+        } else {
+            HashSet::new()
+        };
         Some(Self {
             session,
             repo,
             root,
+            skip_dirs,
             touched: vec![location.path.clone()],
         })
     }
 
-    /// Whether `other` is the same session's clone of the same repo.
+    /// Whether `other` is the same session's clone (or folder).
     pub(crate) fn same_clone(&self, other: &Self) -> bool {
         self.session == other.session && self.repo == other.repo && self.root == other.root
     }
@@ -110,11 +138,18 @@ impl Spot {
     }
 
     pub(crate) fn remember(&self, changes: &FileChanges) {
-        changes.remember(&self.session, &self.repo, &self.root);
+        changes.remember(&self.session, self.repo.as_ref(), &self.root, &self.skip_dirs);
     }
 
     pub(crate) fn look(&self, changes: &FileChanges) {
-        changes.look(&self.session, &self.repo, &self.root, &self.touched, false);
+        changes.look(
+            &self.session,
+            self.repo.as_ref(),
+            &self.root,
+            &self.touched,
+            false,
+            &self.skip_dirs,
+        );
     }
 }
 
@@ -124,8 +159,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 type Key = (String, String);
 
-fn key_of(session: &str, repo: &pb::RepoRef) -> Key {
-    (session.to_owned(), format!("{}/{}", repo.owner, repo.name))
+fn key_of(session: &str, repo: Option<&pb::RepoRef>) -> Key {
+    let repo_key = match repo {
+        Some(repo) => format!("{}/{}", repo.owner, repo.name),
+        None => String::new(),
+    };
+    (session.to_owned(), repo_key)
 }
 
 impl FileChanges {
@@ -136,10 +175,16 @@ impl FileChanges {
         }
     }
 
-    /// Keeps the clone's files if none are kept yet, saying nothing. Runs
-    /// git and stats files: call it on a blocking thread.
-    pub fn remember(&self, session: &str, repo: &pb::RepoRef, root: &Path) {
-        lock(&self.tracker).sight(&key_of(session, repo), root);
+    /// Keeps the clone's (or session folder's) files if none are kept yet,
+    /// saying nothing. Runs git and stats files: call it on a blocking thread.
+    pub fn remember(
+        &self,
+        session: &str,
+        repo: Option<&pb::RepoRef>,
+        root: &Path,
+        skip_dirs: &HashSet<String>,
+    ) {
+        lock(&self.tracker).sight(&key_of(session, repo), root, skip_dirs);
     }
 
     /// Drops every remembered file list for `session`, so archived or freed
@@ -150,29 +195,30 @@ impl FileChanges {
         tracker.over.retain(|(id, _)| id != session);
     }
 
-    /// Tells what happened to `named`, the paths (relative to the clone) that
-    /// changed. With `rescan` the clone is listed again and every difference
-    /// told, for when the watcher lost events. A clone with no list yet only
-    /// gets one. A clone that can't be listed (or has more files than a list
+    /// Tells what happened to `named`, the paths (relative to the root) that
+    /// changed. With `rescan` the root is listed again and every difference
+    /// told, for when the watcher lost events. A root with no list yet only
+    /// gets one. A root that can't be listed (or has more files than a list
     /// holds) is left as it was. Runs git and stats files: call it on a
     /// blocking thread.
     pub fn look(
         &self,
         session: &str,
-        repo: &pb::RepoRef,
+        repo: Option<&pb::RepoRef>,
         root: &Path,
         named: &[String],
         rescan: bool,
+        skip_dirs: &HashSet<String>,
     ) {
         // Held through the telling, so two looks never tell one change twice or out of order.
         let mut tracker = lock(&self.tracker);
-        let changes = tracker.apply(&key_of(session, repo), root, named, rescan);
+        let changes = tracker.apply(&key_of(session, repo), root, named, rescan, skip_dirs);
         if !changes.is_empty() {
             self.tell(session, repo, changes);
         }
     }
 
-    fn tell(&self, session: &str, repo: &pb::RepoRef, changes: Vec<Change>) {
+    fn tell(&self, session: &str, repo: Option<&pb::RepoRef>, changes: Vec<Change>) {
         use pb::file_changed::Kind;
         for change in changes {
             let (kind, path, old_path) = match change {
@@ -186,7 +232,7 @@ impl FileChanges {
                     session: Some(pb::SessionId {
                         value: session.to_owned(),
                     }),
-                    repo: Some(repo.clone()),
+                    repo: repo.cloned(),
                     kind: kind as i32,
                     path,
                     old_path,
@@ -229,14 +275,15 @@ impl Tracker {
         }
     }
 
-    /// Lists the clone and keeps it, unless a list is already kept or the
-    /// clone is known to be too big for one.
-    fn sight(&mut self, key: &Key, root: &Path) {
+    /// Lists the clone (or session folder) and keeps it, unless a list is
+    /// already kept or it is known to be too big for one.
+    fn sight(&mut self, key: &Key, root: &Path, skip_dirs: &HashSet<String>) {
         if self.seen.contains_key(key) || self.over.contains(key) {
             return;
         }
         self.lists += 1;
-        match files(root, self.cap) {
+        let is_session_folder = key.1.is_empty();
+        match files(root, self.cap, is_session_folder, skip_dirs) {
             Some(Some(now)) => {
                 self.seen.insert(key.clone(), now);
             }
@@ -247,24 +294,32 @@ impl Tracker {
         }
     }
 
-    /// Updates the clone's list for `named` (or all of it on `rescan`) and
-    /// returns what changed, at most [`CHANGES_MAX`] of it.
-    fn apply(&mut self, key: &Key, root: &Path, named: &[String], rescan: bool) -> Vec<Change> {
+    /// Updates the clone's (or session folder's) list for `named` (or all of
+    /// it on `rescan`) and returns what changed, at most [`CHANGES_MAX`] of it.
+    fn apply(
+        &mut self,
+        key: &Key,
+        root: &Path,
+        named: &[String],
+        rescan: bool,
+        skip_dirs: &HashSet<String>,
+    ) -> Vec<Change> {
+        let is_session_folder = key.1.is_empty();
         if self.over.contains(key) {
             // Too big to follow: only lost events are a reason to look again.
             if rescan {
                 self.over.remove(key);
-                self.sight(key, root);
+                self.sight(key, root, skip_dirs);
             }
             return Vec::new();
         }
         if !self.seen.contains_key(key) {
-            self.sight(key, root);
+            self.sight(key, root, skip_dirs);
             return Vec::new();
         }
         if rescan {
             self.lists += 1;
-            return match files(root, self.cap) {
+            return match files(root, self.cap, is_session_folder, skip_dirs) {
                 Some(Some(now)) => match self.seen.get_mut(key) {
                     Some(before) => {
                         let changes = diff(before, &now);
@@ -296,6 +351,12 @@ impl Tracker {
             if hidden(&path) {
                 continue;
             }
+            if is_session_folder
+                && let Some(first) = path.split('/').next()
+                && (skip_dirs.contains(first) || root.join(first).join(".git").exists())
+            {
+                continue;
+            }
             self.stats += 1;
             let meta = root.join(&path).symlink_metadata();
             let is_dir = meta.as_ref().is_ok_and(std::fs::Metadata::is_dir);
@@ -305,7 +366,12 @@ impl Tracker {
                     gone.insert(path.clone());
                 }
                 // A folder that is here: what is in it now and not listed is new.
-                for file in subtree_files(root, &path).unwrap_or_default() {
+                let listed = if is_session_folder {
+                    own_subtree_files(root, &path, skip_dirs)
+                } else {
+                    subtree_files(root, &path)
+                };
+                for file in listed.unwrap_or_default() {
                     if partial(&file) || before.contains(&file) {
                         continue;
                     }
@@ -375,13 +441,23 @@ fn hidden(path: &str) -> bool {
     path.split('/').next() == Some(".git") || partial(path)
 }
 
-/// The files of a clone as people see them: what git knows or would add,
-/// that is on disk, without the half-written files of an upload.
+/// The files of a clone (or session folder) as people see them: what git knows
+/// or would add, that is on disk, without the half-written files of an upload.
 ///
-/// `None` when the clone can't be listed, `Some(None)` when it has `cap`
+/// `None` when the root can't be listed, `Some(None)` when it has `cap`
 /// files or more (a list cut short would tell false removals).
-fn files(root: &Path, cap: usize) -> Option<Option<HashSet<String>>> {
-    match clone_listing(root, cap) {
+fn files(
+    root: &Path,
+    cap: usize,
+    is_session_folder: bool,
+    skip_dirs: &HashSet<String>,
+) -> Option<Option<HashSet<String>>> {
+    let listing = if is_session_folder {
+        own_folder_listing(root, skip_dirs, cap)
+    } else {
+        clone_listing(root, cap)
+    };
+    match listing {
         Listing::Files(listed) => Some(Some(
             listed
                 .into_iter()
@@ -509,6 +585,10 @@ mod tests {
         std::fs::write(at, b"x\n").unwrap();
     }
 
+    fn apply(tracker: &mut Tracker, key: &Key, root: &Path, named: &[String], rescan: bool) -> Vec<Change> {
+        tracker.apply(key, root, named, rescan, &HashSet::new())
+    }
+
     /// A clone of `count` files in 200 folders, with its list recorded.
     fn big_clone(count: usize) -> (tempfile::TempDir, Tracker) {
         let dir = tempfile::tempdir().unwrap();
@@ -516,7 +596,7 @@ mod tests {
             put(dir.path(), &format!("d{}/f{n}.rs", n % 200));
         }
         let mut tracker = Tracker::default();
-        assert!(tracker.apply(&key(), dir.path(), &[], false).is_empty());
+        assert!(apply(&mut tracker, &key(), dir.path(), &[], false).is_empty());
         assert_eq!(tracker.seen[&key()].len(), count);
         (dir, tracker)
     }
@@ -530,7 +610,7 @@ mod tests {
         assert_eq!(kept.len(), 20_000);
         put(dir.path(), "d7/new.rs");
 
-        let changes = tracker.apply(&key(), dir.path(), &named(&["d7/new.rs"]), false);
+        let changes = apply(&mut tracker, &key(), dir.path(), &named(&["d7/new.rs"]), false);
 
         assert_eq!(changes, vec![Change::Created("d7/new.rs".to_owned())]);
         assert_eq!(tracker.lists, 1, "no full listing after the first");
@@ -543,8 +623,7 @@ mod tests {
         let (dir, mut tracker) = big_clone(200);
         std::fs::write(dir.path().join("d3/f3.rs"), b"changed\n").unwrap();
         assert!(
-            tracker
-                .apply(&key(), dir.path(), &named(&["d3/f3.rs", "./d3//f3.rs"]), false)
+            apply(&mut tracker, &key(), dir.path(), &named(&["d3/f3.rs", "./d3//f3.rs"]), false)
                 .is_empty()
         );
         assert_eq!(tracker.lists, 1);
@@ -555,7 +634,7 @@ mod tests {
         let (dir, mut tracker) = big_clone(400);
         std::fs::remove_dir_all(dir.path().join("d5")).unwrap();
 
-        let changes = tracker.apply(&key(), dir.path(), &named(&["d5"]), false);
+        let changes = apply(&mut tracker, &key(), dir.path(), &named(&["d5"]), false);
 
         assert_eq!(
             changes,
@@ -579,13 +658,13 @@ mod tests {
         let (dir, mut tracker) = big_clone(10);
         std::fs::remove_file(dir.path().join("d1/f1.rs")).unwrap();
         assert_eq!(
-            tracker.apply(&key(), dir.path(), &named(&["d1/f1.rs"]), false),
+            apply(&mut tracker, &key(), dir.path(), &named(&["d1/f1.rs"]), false),
             vec![Change::Deleted("d1/f1.rs".to_owned())]
         );
 
         std::fs::rename(dir.path().join("d2/f2.rs"), dir.path().join("d2/g2.rs")).unwrap();
         assert_eq!(
-            tracker.apply(&key(), dir.path(), &named(&["d2/f2.rs", "d2/g2.rs"]), false),
+            apply(&mut tracker, &key(), dir.path(), &named(&["d2/f2.rs", "d2/g2.rs"]), false),
             vec![Change::Renamed {
                 from: "d2/f2.rs".to_owned(),
                 to: "d2/g2.rs".to_owned()
@@ -601,7 +680,7 @@ mod tests {
         put(dir.path(), "fresh/a.rs");
         put(dir.path(), "fresh/deep/b.rs");
 
-        let changes = tracker.apply(&key(), dir.path(), &named(&["fresh"]), false);
+        let changes = apply(&mut tracker, &key(), dir.path(), &named(&["fresh"]), false);
 
         assert_eq!(
             changes,
@@ -618,7 +697,7 @@ mod tests {
         let (dir, mut tracker) = big_clone(10);
         std::fs::rename(dir.path().join("d4"), dir.path().join("e4")).unwrap();
 
-        let changes = tracker.apply(&key(), dir.path(), &named(&["d4", "e4"]), false);
+        let changes = apply(&mut tracker, &key(), dir.path(), &named(&["d4", "e4"]), false);
 
         assert_eq!(
             changes,
@@ -636,7 +715,8 @@ mod tests {
         put(dir.path(), ".git/objects/ab");
         put(dir.path(), "d1/.f.rs.humata-partial-1");
 
-        let changes = tracker.apply(
+        let changes = apply(
+            &mut tracker,
             &key(),
             dir.path(),
             &named(&[
@@ -661,7 +741,7 @@ mod tests {
         put(dir.path(), "n2.rs");
         std::fs::remove_file(dir.path().join("d0/f0.rs")).unwrap();
 
-        let changes = tracker.apply(&key(), dir.path(), &[], true);
+        let changes = apply(&mut tracker, &key(), dir.path(), &[], true);
 
         assert_eq!(
             changes,
@@ -681,9 +761,7 @@ mod tests {
         put(dir.path(), "a.rs");
         let mut tracker = Tracker::default();
         assert!(
-            tracker
-                .apply(&key(), dir.path(), &named(&["a.rs"]), false)
-                .is_empty()
+            apply(&mut tracker, &key(), dir.path(), &named(&["a.rs"]), false).is_empty()
         );
         assert_eq!(tracker.lists, 1);
         assert!(tracker.seen[&key()].contains("a.rs"));
@@ -696,13 +774,14 @@ mod tests {
             put(dir.path(), &format!("d/f{n}.rs"));
         }
         let mut tracker = Tracker::capped(5);
-        assert!(tracker.apply(&key(), dir.path(), &[], false).is_empty());
+        assert!(apply(&mut tracker, &key(), dir.path(), &[], false).is_empty());
         assert_eq!(tracker.lists, 1);
         assert!(!tracker.seen.contains_key(&key()));
 
         put(dir.path(), "d/new.rs");
         std::fs::remove_file(dir.path().join("d/f1.rs")).unwrap();
-        let changes = tracker.apply(
+        let changes = apply(
+            &mut tracker,
             &key(),
             dir.path(),
             &named(&["d/new.rs", "d/f1.rs", "d"]),
@@ -720,20 +799,20 @@ mod tests {
             put(dir.path(), &format!("d/f{n}.rs"));
         }
         let mut tracker = Tracker::capped(5);
-        tracker.apply(&key(), dir.path(), &[], false);
-        assert!(tracker.apply(&key(), dir.path(), &[], true).is_empty());
+        apply(&mut tracker, &key(), dir.path(), &[], false);
+        assert!(apply(&mut tracker, &key(), dir.path(), &[], true).is_empty());
         assert_eq!(tracker.lists, 2);
         assert!(!tracker.seen.contains_key(&key()));
 
         for n in 0..8 {
             std::fs::remove_file(dir.path().join(format!("d/f{n}.rs"))).unwrap();
         }
-        assert!(tracker.apply(&key(), dir.path(), &[], true).is_empty());
+        assert!(apply(&mut tracker, &key(), dir.path(), &[], true).is_empty());
         assert_eq!(tracker.lists, 3);
         assert_eq!(tracker.seen[&key()].len(), 2);
         put(dir.path(), "d/z.rs");
         assert_eq!(
-            tracker.apply(&key(), dir.path(), &named(&["d/z.rs"]), false),
+            apply(&mut tracker, &key(), dir.path(), &named(&["d/z.rs"]), false),
             vec![Change::Created("d/z.rs".to_owned())]
         );
     }
@@ -747,8 +826,30 @@ mod tests {
         for path in &paths {
             put(dir.path(), path);
         }
-        let changes = tracker.apply(&key(), dir.path(), &paths, false);
+        let changes = apply(&mut tracker, &key(), dir.path(), &paths, false);
         assert_eq!(changes.len(), CHANGES_MAX);
         assert_eq!(tracker.seen[&key()].len(), 10 + CHANGES_MAX + 20);
+    }
+
+    #[test]
+    fn session_folder_tracks_root_files_and_skips_clones() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "api/src/lib.rs");
+        let folder_key = ("se".to_owned(), String::new());
+        let skip: HashSet<String> = ["api".to_owned()].into_iter().collect();
+        let mut tracker = Tracker::default();
+        assert!(tracker.apply(&folder_key, dir.path(), &[], false, &skip).is_empty());
+        assert!(tracker.seen[&folder_key].is_empty());
+
+        put(dir.path(), "notes.md");
+        put(dir.path(), "api/src/extra.rs");
+        let changes = tracker.apply(
+            &folder_key,
+            dir.path(),
+            &named(&["notes.md", "api/src/extra.rs"]),
+            false,
+            &skip,
+        );
+        assert_eq!(changes, vec![Change::Created("notes.md".to_owned())]);
     }
 }

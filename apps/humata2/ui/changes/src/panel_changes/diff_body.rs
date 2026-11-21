@@ -209,8 +209,61 @@ pub(super) fn file_lines<'a>(state: &'a AppState, session: &SessionId, repo: &st
         .map(|file| file.lines.as_slice())
 }
 
+/// Active gutter drag state for selecting a multi-line comment range in the
+/// diff view. GPUI runs on a single UI thread, so a thread-local cell keeps
+/// drag state across per-frame `CodeRows` rebuilds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffDrag {
+    session: SessionId,
+    repo: String,
+    path: String,
+    side: Side,
+    start: u32,
+    last: u32,
+}
+
+thread_local! {
+    static DIFF_DRAG: RefCell<Option<DiffDrag>> = const { RefCell::new(None) };
+}
+
+fn clear_diff_drag() {
+    DIFF_DRAG.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn line_number_for_side(side: Side, old_line: Option<u32>, new_line: Option<u32>) -> Option<u32> {
+    match side {
+        Side::Old => old_line,
+        Side::New => new_line,
+    }
+}
+
+/// Computes `(side, first, last)` for clicking or Shift+clicking a diff row
+/// when `editing` may hold an open box's anchor on `(repo, path)`.
+fn resolve_diff_click(
+    editing: Option<&Anchor>,
+    repo: &str,
+    path: &str,
+    default_side: Side,
+    old_line: Option<u32>,
+    new_line: Option<u32>,
+    extend: bool,
+) -> Option<(Side, u32, u32)> {
+    if extend
+        && let Some(anchor) = editing.filter(|a| a.repo == repo && a.path == path)
+        && let Some(n) = line_number_for_side(anchor.side, old_line, new_line)
+    {
+        let (first, last) = Anchor::extend_range(anchor.first, anchor.last, n);
+        return Some((anchor.side, first, last));
+    }
+    let n = line_number_for_side(default_side, old_line, new_line)?;
+    Some((default_side, n, n))
+}
+
 impl Target {
     fn anchor(&self, lines: &[DiffLine], side: Side, first: u32, last: u32) -> Anchor {
+        let (first, last) = Anchor::normalized_range(first, last);
         let quoted = lines
             .iter()
             .filter(|line| is_code(line))
@@ -241,10 +294,22 @@ impl Target {
 
     /// A number was clicked: it takes a comment being re-attached, or opens
     /// the box on its line, or with `extend` stretches the open box to it
-    /// when that box is on the same file and side.
-    fn click(&self, side: Side, line: u32, extend: bool, cx: &mut App) {
+    /// when that box is on the same file and side (including context lines on
+    /// `Side::Old`).
+    fn click_line(
+        &self,
+        side: Side,
+        old_line: Option<u32>,
+        new_line: Option<u32>,
+        extend: bool,
+        cx: &mut App,
+    ) {
         let pending = self.reattach.borrow_mut().take();
         if let Some(id) = pending {
+            clear_diff_drag();
+            let Some(line) = line_number_for_side(side, old_line, new_line) else {
+                return;
+            };
             self.ui.send(
                 AppAction::Comments(CommentsAction::Reattach(
                     self.session.clone(),
@@ -255,31 +320,67 @@ impl Target {
             );
             return;
         }
-        let range = extend
-            .then(|| {
-                self.ui.read(|state| {
-                    state
-                        .comments
-                        .sessions
-                        .get(&self.session)
-                        .and_then(|held| held.editing.as_ref())
-                        .filter(|b| {
-                            b.anchor.repo == self.repo
-                                && b.anchor.path == self.path
-                                && b.anchor.side == side
-                        })
-                        .map(|b| (b.anchor.first.min(line), b.anchor.last.max(line)))
-                })
-            })
-            .flatten()
-            .unwrap_or((line, line));
+        let resolved = self.ui.read(|state| {
+            let editing = state
+                .comments
+                .sessions
+                .get(&self.session)
+                .and_then(|held| held.editing.as_ref())
+                .map(|b| &b.anchor);
+            resolve_diff_click(editing, &self.repo, &self.path, side, old_line, new_line, extend)
+        });
+        let Some((resolved_side, first, last)) = resolved else {
+            return;
+        };
+        if !extend {
+            DIFF_DRAG.with(|cell| {
+                *cell.borrow_mut() = Some(DiffDrag {
+                    session: self.session.clone(),
+                    repo: self.repo.clone(),
+                    path: self.path.clone(),
+                    side: resolved_side,
+                    start: first,
+                    last,
+                });
+            });
+        } else {
+            clear_diff_drag();
+        }
         self.ui.send(
             AppAction::Comments(CommentsAction::OpenBox(
                 self.session.clone(),
-                self.anchor_now(side, range.0, range.1),
+                self.anchor_now(resolved_side, first, last),
             )),
             cx,
         );
+    }
+
+    /// Extends an active gutter drag to the hovered line if it is on the same
+    /// file and has a line number on the drag's side.
+    fn drag_over(&self, old_line: Option<u32>, new_line: Option<u32>, cx: &mut App) {
+        let update = DIFF_DRAG.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let drag = slot.as_mut()?;
+            if drag.session != self.session || drag.repo != self.repo || drag.path != self.path {
+                return None;
+            }
+            let n = line_number_for_side(drag.side, old_line, new_line)?;
+            if n == drag.last {
+                return None;
+            }
+            drag.last = n;
+            let (first, last) = Anchor::normalized_range(drag.start, n);
+            Some((drag.side, first, last))
+        });
+        if let Some((side, first, last)) = update {
+            self.ui.send(
+                AppAction::Comments(CommentsAction::OpenBox(
+                    self.session.clone(),
+                    self.anchor_now(side, first, last),
+                )),
+                cx,
+            );
+        }
     }
 }
 
@@ -321,6 +422,10 @@ pub(super) struct CodeRows {
     input: Entity<gpui_kit::component::input::TextareaState>,
     target: Option<Rc<Target>>,
     lit_color: u32,
+    /// Subtle highlight for lines covered by a saved multi-line comment.
+    comment_lit_color: u32,
+    /// Multi-line spans `(side, first, last)` of visible non-detached comments.
+    comment_spans: Vec<(Side, u32, u32)>,
     /// The agent's focus, and the index of the first line it is on.
     focus: Option<(Side, u32)>,
     pub(super) focus_index: Option<usize>,
@@ -461,6 +566,16 @@ impl CodeRows {
             .map(|line| if is_code(line) { line.text.as_str() } else { "" })
             .collect();
         let syntax = humata2_highlight::highlight_lines_cached(language, &code_lines, dark);
+        let comment_spans: Vec<(Side, u32, u32)> = cards
+            .values()
+            .flatten()
+            .filter(|comment| !comment.anchor.detached && comment.anchor.is_multi_line())
+            .map(|comment| {
+                let (first, last) = comment.anchor.line_range();
+                (comment.anchor.side, first, last)
+            })
+            .collect();
+        let comment_lit_color = blend(look.term, look.accent, if dark { 0.12 } else { 0.06 });
         Self {
             ui: ui.clone(),
             metrics,
@@ -481,6 +596,8 @@ impl CodeRows {
             input: documents.input(),
             target,
             lit_color: if look.term == 0xffffff { 0xeaf2ff } else { 0x1c2a3f },
+            comment_lit_color,
+            comment_spans,
             focus,
             focus_index,
             code_focus: (!metrics.review).then(|| documents.diff_code.clone()),
@@ -617,9 +734,13 @@ impl CodeRows {
         let focused = self.focus_index == Some(index);
         let editing = self.editing.as_ref();
         let lit = editing.is_some_and(|b| {
-            b.anchor.side == side
-                && number.is_some_and(|n| b.anchor.first <= n && n <= b.anchor.last)
+            let (first, last) = b.anchor.line_range();
+            within_span(line, b.anchor.side, first, last)
         });
+        let comment_lit = self
+            .comment_spans
+            .iter()
+            .any(|&(c_side, first, last)| within_span(line, c_side, first, last));
         let fragments = if self.wrap {
             code_wrap::wrapped(&line.text, columns)
         } else {
@@ -628,6 +749,8 @@ impl CodeRows {
         // DS-19: the number that is the comment target keeps `change-gutter-<n>`;
         // the other column of a full-screen row gets `-old-` or `-new-`.
         let number_width = (gutter_width - 8.).max(0.);
+        let old_n = line.old;
+        let new_n = line.new;
         let column = |shown: Option<u32>, id: String, first: bool| -> AnyElement {
             let mut cell = text(shown.map_or_else(String::new, |n| n.to_string()))
                 .w(px(number_width))
@@ -638,20 +761,31 @@ impl CodeRows {
                 .text_color(rgb(look.term_dim))
                 .flex_shrink_0()
                 .id(SharedString::from(id))
-                .when(first && (lit || focused), |gutter| {
+                .when(first && (lit || comment_lit || focused), |gutter| {
                     gutter.border_l_2().border_color(rgb(look.accent))
                 })
                 .when(focused, |gutter| {
                     gutter.font_weight(FontWeight::BOLD).text_color(rgb(look.accent))
                 });
             if let (Some(target), Some(n), Some(_)) = (self.target.clone(), number, shown) {
+                let target_move = target.clone();
                 cell = cell
                     .role(Role::Button)
                     .aria_label(format!("Comment on line {n}"))
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        target.click(side, n, event.modifiers.shift, cx);
+                        target.click_line(side, old_n, new_n, event.modifiers.shift, cx);
+                    })
+                    .on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            target_move.drag_over(old_n, new_n, cx);
+                        } else {
+                            clear_diff_drag();
+                        }
+                    })
+                    .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                        clear_diff_drag();
                     });
             }
             cell.test_support().into_any_element()
@@ -730,6 +864,7 @@ impl CodeRows {
             .w_full()
             .min_h(px(line_height))
             .when_some(bg, |row, bg| row.bg(rgb(bg)))
+            .when(comment_lit && !lit, |row| row.bg(rgb(self.comment_lit_color)))
             .when(lit, |row| row.bg(rgb(self.lit_color)))
             .children(gutters)
             .child(
@@ -1088,5 +1223,78 @@ mod tests {
             })
             .collect();
         assert_eq!(found.concat(), "tax");
+    }
+
+    #[test]
+    fn within_span_matches_every_line_in_range_on_the_right_side() {
+        let context = DiffLine {
+            kind: LineKind::Context,
+            old: Some(10),
+            new: Some(12),
+            text: "ctx".into(),
+        };
+        let added = DiffLine {
+            kind: LineKind::Added,
+            old: None,
+            new: Some(13),
+            text: "add".into(),
+        };
+        let removed = DiffLine {
+            kind: LineKind::Removed,
+            old: Some(11),
+            new: None,
+            text: "rem".into(),
+        };
+        // New-side range 12..=14 covers context (new=12) and added (new=13), not removed.
+        assert!(within_span(&context, Side::New, 12, 14));
+        assert!(within_span(&added, Side::New, 12, 14));
+        assert!(!within_span(&removed, Side::New, 12, 14));
+
+        // Old-side range 10..=11 covers context (old=10) and removed (old=11), not added.
+        assert!(within_span(&context, Side::Old, 10, 11));
+        assert!(within_span(&removed, Side::Old, 10, 11));
+        assert!(!within_span(&added, Side::Old, 10, 11));
+    }
+
+    #[test]
+    fn resolve_diff_click_extends_and_normalizes_reverse_order() {
+        let anchor_18 = Anchor {
+            repo: "api".into(),
+            path: "src/lib.rs".into(),
+            side: Side::New,
+            first: 18,
+            last: 18,
+            quoted: vec!["line 18".into()],
+            base: Some("origin/main".into()),
+            detached: false,
+            outdated: false,
+        };
+
+        // Shift+click line 10 while box is on line 18 -> normalized 10..=18.
+        assert_eq!(
+            resolve_diff_click(Some(&anchor_18), "api", "src/lib.rs", Side::New, Some(8), Some(10), true),
+            Some((Side::New, 10, 18))
+        );
+        // Plain click without Shift starts a fresh single-line selection.
+        assert_eq!(
+            resolve_diff_click(Some(&anchor_18), "api", "src/lib.rs", Side::New, Some(8), Some(10), false),
+            Some((Side::New, 10, 10))
+        );
+        // Shift+click on a different file starts a single-line selection there.
+        assert_eq!(
+            resolve_diff_click(Some(&anchor_18), "api", "src/other.rs", Side::New, Some(8), Some(10), true),
+            Some((Side::New, 10, 10))
+        );
+        // Shift+click a context line while box is on Side::Old extends on Side::Old.
+        let old_anchor = Anchor {
+            side: Side::Old,
+            first: 10,
+            last: 10,
+            ..anchor_18
+        };
+        assert_eq!(
+            resolve_diff_click(Some(&old_anchor), "api", "src/lib.rs", Side::New, Some(14), Some(16), true),
+            Some((Side::Old, 10, 14))
+        );
     }
 }

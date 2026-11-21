@@ -51,6 +51,14 @@ fn opening_general_loads_the_section() {
     store.receive(A::Todo(T::Loaded(Ok(TodoAutomation::default()))), |s| {
         s.todo.section = Some(TodoAutomation::default());
     });
+    store.receive(
+        A::WebTodo(humata2_settings::WebTodoAction::Loaded(Ok(
+            humata2_clients::daemon::WebTodoSnapshot::default(),
+        ))),
+        |s| {
+            s.web_todo.snapshot = Some(humata2_clients::daemon::WebTodoSnapshot::default());
+        },
+    );
     store.receive_matching(
         "general loaded",
         |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),

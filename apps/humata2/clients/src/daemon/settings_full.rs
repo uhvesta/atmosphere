@@ -109,6 +109,7 @@ pub struct FullSettings {
     pub skills: SkillsSettings,
     pub notifications: NotificationSettings,
     pub security: SecuritySettings,
+    pub use_worktrees: bool,
     pub revision: u64,
 }
 
@@ -124,6 +125,7 @@ impl Default for FullSettings {
             skills: SkillsSettings::default(),
             notifications: NotificationSettings::default(),
             security: SecuritySettings::default(),
+            use_worktrees: true,
             revision: 0,
         }
     }
@@ -141,6 +143,7 @@ pub struct SettingsPatch {
     pub skills: Option<SkillsSettings>,
     pub notifications: Option<NotificationSettings>,
     pub security: Option<SecuritySettings>,
+    pub use_worktrees: Option<bool>,
     pub expected_revision: Option<u64>,
 }
 

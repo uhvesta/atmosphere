@@ -242,6 +242,19 @@ impl Tell {
         .ok()?
     }
 
+    /// Publishes a `FileChanged` event (e.g. forwarded from a peer machine) on the feed.
+    pub(crate) fn file_changed(&self, session: &str, changed: pb::FileChanged) {
+        self.feed.publish_in(
+            pb::Change::Updated,
+            pb::event::Payload::FileChanged(changed),
+            crate::events::Scope {
+                channel: String::new(),
+                session: session.to_owned(),
+            },
+            None,
+        );
+    }
+
     /// Reads `session` back and publishes it as GetSession would show it.
     /// A session that can't be read is not told; publishing never fails
     /// the call that changed it.

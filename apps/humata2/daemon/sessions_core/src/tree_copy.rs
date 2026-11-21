@@ -35,13 +35,33 @@ pub enum Dirs {
 /// unless the copy is made aside and renamed): a link into `from` points
 /// into `lands_at` in the copy.
 pub fn copy_tree(from: &Path, to: &Path, lands_at: &Path, dirs: Dirs) -> Result<(), TreeCopyError> {
-    copy_under(from, to, &Rebase { from, to: lands_at }, dirs)
+    copy_under(from, to, &Rebase { from, to: lands_at }, dirs, false)
 }
 
-fn copy_under(from: &Path, to: &Path, rebase: &Rebase<'_>, dirs: Dirs) -> Result<(), TreeCopyError> {
+/// Copies `from` to `to` (landing at `lands_at`), skipping any top-level `.git`
+/// entry so linked worktrees never duplicate raw `.git` pointer files.
+pub fn copy_tree_excluding_git(
+    from: &Path,
+    to: &Path,
+    lands_at: &Path,
+    dirs: Dirs,
+) -> Result<(), TreeCopyError> {
+    copy_under(from, to, &Rebase { from, to: lands_at }, dirs, true)
+}
+
+fn copy_under(
+    from: &Path,
+    to: &Path,
+    rebase: &Rebase<'_>,
+    dirs: Dirs,
+    skip_top_git: bool,
+) -> Result<(), TreeCopyError> {
     fs::create_dir_all(to).map_err(io("create", to))?;
     for entry in fs::read_dir(from).map_err(io("read the folder", from))? {
         let entry = entry.map_err(io("read the folder", from))?;
+        if skip_top_git && entry.file_name() == ".git" {
+            continue;
+        }
         let (source, target) = (entry.path(), to.join(entry.file_name()));
         if git_lock(&source, rebase.from) {
             continue;
@@ -59,8 +79,11 @@ fn copy_under(from: &Path, to: &Path, rebase: &Rebase<'_>, dirs: Dirs) -> Result
 fn copy_entry(source: &Path, target: &Path, rebase: &Rebase<'_>, dirs: Dirs) -> Result<(), TreeCopyError> {
     let meta = fs::symlink_metadata(source).map_err(io("look at", source))?;
     if meta.is_dir() {
-        copy_under(source, target, rebase, dirs)
+        copy_under(source, target, rebase, dirs, false)
     } else if meta.is_symlink() {
+        if fs::symlink_metadata(target).is_ok() {
+            let _ = fs::remove_file(target);
+        }
         copy_link(source, target, rebase)
     } else if meta.is_file() {
         copy_file(source, target, &meta)

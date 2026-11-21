@@ -289,9 +289,14 @@ pub async fn read_session_file(
             break;
         }
     }
+    let display = if repo.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{repo}/{path}")
+    };
     String::from_utf8(bytes).map_err(|_| DaemonError::Refused {
         what: WHAT.to_owned(),
-        reason: format!("{repo}/{path} isn't UTF-8 text, so it can't be shown as text; open it with Open big or in another app"),
+        reason: format!("{display} isn't UTF-8 text, so it can't be shown as text; open it with Open big or in another app"),
     })
 }
 

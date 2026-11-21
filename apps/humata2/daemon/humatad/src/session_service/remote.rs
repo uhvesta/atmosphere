@@ -36,6 +36,10 @@ impl Sink for TellSink {
 
     /// The host's record decides whether the session still exists; nothing to publish.
     async fn gone(&self, _machine: &str, _session: &str) {}
+
+    async fn file_changed(&self, session: &str, changed: &pb::FileChanged) {
+        self.0.file_changed(session, changed.clone());
+    }
 }
 
 /// The start the restart's report names as one it couldn't finish or remove:

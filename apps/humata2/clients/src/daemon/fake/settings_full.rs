@@ -60,6 +60,9 @@ pub(super) fn update_settings(daemon: &FakeDaemon, patch: SettingsPatch) -> Repl
             if let Some(security) = patch.security {
                 inner.full_settings.security = security;
             }
+            if let Some(use_worktrees) = patch.use_worktrees {
+                inner.full_settings.use_worktrees = use_worktrees;
+            }
             inner.full_settings.revision += 1;
             let saved = inner.full_settings.clone();
             inner.emit(Event::SettingsChanged);

@@ -121,6 +121,23 @@ fn security_retention_layout_and_quiet_hours_sync_with_daemon() {
     );
     assert!(daemon.full_settings_snapshot().security.contain_agents);
 
+    // Git worktrees: default true, toggles off and back on.
+    assert!(daemon.full_settings_snapshot().use_worktrees);
+    store.send(A::General(G::ToggleUseWorktrees), |_| {});
+    store.receive_matching(
+        "worktrees off",
+        |a| matches!(a, A::General(G::Saved(Ok(_)))),
+        |_| {},
+    );
+    assert!(!daemon.full_settings_snapshot().use_worktrees);
+    store.send(A::General(G::ToggleUseWorktrees), |_| {});
+    store.receive_matching(
+        "worktrees on",
+        |a| matches!(a, A::General(G::Saved(Ok(_)))),
+        |_| {},
+    );
+    assert!(daemon.full_settings_snapshot().use_worktrees);
+
     // Retention defaults
     store.send(A::General(G::ArchivePrDaysChanged("7".into())), |_| {});
     store.send(A::General(G::ArchiveIdleDaysChanged("14".into())), |_| {});

@@ -10,6 +10,7 @@ use crate::error::{GitError, SetupError};
 use crate::git::{clone_main_with, remote_url};
 use crate::layout::Layout;
 use crate::names::channel_folder;
+use crate::worktree::{use_worktrees_enabled, worktree_main_with};
 
 /// A channel to create.
 #[derive(Clone, Debug)]
@@ -119,11 +120,24 @@ pub fn clone_mains_with(
     {
         let dest = layout.main_clone(&channel.folder, &repo.name);
         let shown = format!("{}/{}", repo.owner, repo.name);
+        let use_wt = use_worktrees_enabled(store);
         let result = if dest.join(".git").exists() {
             Ok(())
         } else {
-            remote_url(remote_template, &repo.owner, &repo.name)
-                .and_then(|url| clone_main_with(&url, &dest, &mut |done| on_units(&shown, done, 1000)))
+            remote_url(remote_template, &repo.owner, &repo.name).and_then(|url| {
+                if use_wt {
+                    let bare = layout.repo_cache(&repo.owner, &repo.name);
+                    let lock = layout.repo_cache_lock(&repo.owner, &repo.name);
+                    if worktree_main_with(&bare, &lock, &url, &dest, &mut |done| {
+                        on_units(&shown, done, 1000)
+                    })
+                    .is_ok()
+                    {
+                        return Ok(());
+                    }
+                }
+                clone_main_with(&url, &dest, &mut |done| on_units(&shown, done, 1000))
+            })
         };
         point("sessions.channel.cloned");
         let main = match &result {

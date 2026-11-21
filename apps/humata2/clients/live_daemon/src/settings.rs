@@ -635,6 +635,7 @@ fn full_settings_of_wire(wire: &pb::Settings) -> FullSettings {
         skills,
         notifications,
         security,
+        use_worktrees: wire.use_worktrees,
         revision: wire.revision.as_ref().map_or(0, |r| r.value),
     }
 }
@@ -671,6 +672,7 @@ fn update_settings_to_wire(patch: &SettingsPatch) -> pb::UpdateSettingsRequest {
         security: patch.security.map(|s| pb::SecuritySettings {
             contain_agents: s.contain_agents,
         }),
+        use_worktrees: patch.use_worktrees,
         expected_revision: patch
             .expected_revision
             .map(|value| pb::Revision { value }),
@@ -782,6 +784,7 @@ mod tests {
                 vip_breaks_quiet_hours: true,
             }),
             security: Some(pb::SecuritySettings { contain_agents: true }),
+            use_worktrees: true,
             revision: Some(pb::Revision { value: 9 }),
             ..Default::default()
         };
@@ -802,15 +805,18 @@ mod tests {
         assert_eq!(parsed.notifications.quiet_until, "07:30");
         assert!(parsed.notifications.vip_breaks_quiet_hours);
         assert!(parsed.security.contain_agents);
+        assert!(parsed.use_worktrees);
         assert_eq!(parsed.revision, 9);
 
         let patch = SettingsPatch {
             branch_prefix: Some("team/".into()),
+            use_worktrees: Some(false),
             expected_revision: Some(9),
             ..Default::default()
         };
         let req = update_settings_to_wire(&patch);
         assert_eq!(req.branch_prefix.as_deref(), Some("team/"));
+        assert_eq!(req.use_worktrees, Some(false));
         assert_eq!(req.expected_revision, Some(pb::Revision { value: 9 }));
 
         let ch_id = ChannelId::new("eng");

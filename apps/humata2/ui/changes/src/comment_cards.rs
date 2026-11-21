@@ -67,10 +67,11 @@ fn agent_label(author: &Author) -> String {
 
 /// "line 7" or "lines 13–14".
 pub fn lines_label(anchor: &Anchor) -> String {
-    if anchor.first == anchor.last {
-        format!("line {}", anchor.first)
+    let (first, last) = anchor.line_range();
+    if first == last {
+        format!("line {first}")
     } else {
-        format!("lines {}–{}", anchor.first, anchor.last)
+        format!("lines {first}–{last}")
     }
 }
 
@@ -684,7 +685,7 @@ fn plain_card(
                 .gap(px(if quiet { 8. } else { 6. }))
                 .child(text(if quiet { who.to_owned() } else { title }).font_weight(FontWeight::SEMIBOLD))
                 .children(label.map(|label| if quiet { done_chip(look, label) } else { chip(look, label) }))
-                .children(quiet.then(|| text(lines.clone()).text_color(rgb(look.secondary))))
+                .children((quiet || github_draft).then(|| text(lines.clone()).text_color(rgb(look.secondary))))
                 .child(div().flex_1())
                 .children(comment.counts_as_draft().then(|| {
                     widgets::ghost_in(look,
@@ -1028,5 +1029,28 @@ mod tests {
         c.anchor.detached = true;
         assert_eq!(add_to_steps_action(&c, &ctx), None);
         assert_eq!(spin_off_todo_action(&c, &ctx), None);
+    }
+
+    #[test]
+    fn lines_label_formats_single_and_multi_line_ranges() {
+        let mut a = comment(Status::Draft).anchor;
+        a.first = 10;
+        a.last = 10;
+        assert_eq!(lines_label(&a), "line 10");
+
+        // Backward-compatible single-line anchor with `last == 0`.
+        a.first = 10;
+        a.last = 0;
+        assert_eq!(lines_label(&a), "line 10");
+
+        // Multi-line range uses en-dash.
+        a.first = 10;
+        a.last = 18;
+        assert_eq!(lines_label(&a), "lines 10–18");
+
+        // Reversed range normalizes to ascending order.
+        a.first = 18;
+        a.last = 10;
+        assert_eq!(lines_label(&a), "lines 10–18");
     }
 }

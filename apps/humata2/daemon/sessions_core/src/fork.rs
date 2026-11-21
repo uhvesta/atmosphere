@@ -425,10 +425,22 @@ impl Starter {
         point("sessions.fork.recorded");
         progress("write_record");
         if clones {
+            let use_wt = crate::worktree::use_worktrees_enabled(&self.store);
             for (repo, from) in detail.repos.iter().zip(&parent_detail.repos) {
                 let (src, dest, branch) =
                     (from.path.clone(), repo.path.clone(), repo.branch.clone());
-                blocking(move || copy_clone(&src, &dest, &branch))
+                let bare = self.layout.repo_cache(&repo.owner, &repo.name);
+                let lock = self.layout.repo_cache_lock(&repo.owner, &repo.name);
+                blocking(move || {
+                    if use_wt
+                        && bare.join("HEAD").exists()
+                        && crate::worktree::copy_worktree(&src, &bare, &lock, &dest, &branch)
+                            .is_ok()
+                    {
+                        return Ok(());
+                    }
+                    copy_clone(&src, &dest, &branch)
+                })
                     .await?
                     .map_err(|source| StartError::Git {
                         owner: repo.owner.clone(),
@@ -732,7 +744,12 @@ fn turn_offset(from: &Path, turn: u32) -> Result<u64, StartError> {
 
 /// Copies the clone at `src` exactly to `dest` through `<dest>.partial`,
 /// then starts `branch` there; the working changes stay.
+/// If `src` is a linked worktree (`.git` is a file), materializes a standalone
+/// `.git/` clone instead of duplicating the raw `.git` pointer file.
 pub fn copy_clone(src: &Path, dest: &Path, branch: &str) -> Result<(), GitError> {
+    if crate::worktree::is_linked_worktree(src) {
+        return crate::worktree::copy_clone_standalone(src, dest, branch);
+    }
     in_partial(dest, |tmp| {
         // `tmp` is renamed to `dest`: a link into the clone points into `dest`.
         // The error names the file that failed, not just the clone.

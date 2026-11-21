@@ -94,7 +94,17 @@ impl Starter {
             let branch = self.pick_excluding(&channel, std::slice::from_ref(repo), &record.title, Some(session))?;
             let main = self.layout.main_clone(&channel.folder, name);
             let url = remote_url(&self.remote_template, owner, name).map_err(git_error)?;
-            clone_session_with(&main, &url, &path, &branch.name, report).map_err(git_error)?;
+            let wt_done = if crate::worktree::use_worktrees_enabled(&self.store) {
+                let bare = self.layout.repo_cache(owner, name);
+                let lock = self.layout.repo_cache_lock(owner, name);
+                crate::worktree::worktree_session_with(&bare, &lock, &url, &path, &branch.name, report)
+                    .is_ok()
+            } else {
+                false
+            };
+            if !wt_done {
+                clone_session_with(&main, &url, &path, &branch.name, report).map_err(git_error)?;
+            }
             branch.name
         };
         let added = SessionRepo {

@@ -226,6 +226,7 @@ async fn kill_holder(socket: &Path) {
 async fn lose_holder_and_reconcile(world: &World, marker: bool) -> humata2_revive::Reconciled {
     let store = world.store();
     world.launch_with(&store, world.launch()).await;
+    read_until(&world.socket(), 0, "agent up --session-id").await;
     if marker {
         fs::write(humata2_holder::handoff_path(&world.socket()), b"H2HANDOFF").unwrap();
     }

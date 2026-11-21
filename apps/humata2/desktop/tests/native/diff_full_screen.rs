@@ -336,3 +336,159 @@ fn a_missing_agent_row_is_listed_and_opens_nothing() {
     app.click("new-agent-tab-claude");
     assert!(!app.contains("new-agent-tab-menu"));
 }
+
+#[test]
+fn non_markdown_files_do_not_show_markdown_mode_switcher() {
+    let mut app = app();
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    assert!(full(&mut app));
+    assert!(
+        !app.contains("diff-md-modes"),
+        "non-markdown diff files must not show Diff | Split | Rendered"
+    );
+}
+
+#[test]
+fn full_screen_diff_markdown_renders_mermaid_switches_modes_and_comments_on_blocks() {
+    use humata2_clients::model::{DiffLine, FileDiff, LineKind, SessionId};
+    use humata2_review::DiffMarkdownMode;
+
+    const MD_PATH: &str = "docs/architecture.md";
+    let md_lines = [
+        "# Architecture",
+        "",
+        "Overview of the pipeline.",
+        "",
+        "```mermaid",
+        "graph TD",
+        "  A[Diff] --> B[MarkdownView]",
+        "```",
+    ];
+    let md_full = md_lines.join("\n");
+
+    let mut workspace = fixture::design();
+    let session = SessionId::new("ledger");
+    let repo = workspace
+        .diffs
+        .iter()
+        .find(|diff| diff.session == session)
+        .expect("fixture has a diff for ledger")
+        .repo
+        .clone();
+    let md_file = FileDiff {
+        path: MD_PATH.to_owned(),
+        added: md_lines.len() as u32,
+        lines: std::iter::once(DiffLine {
+            kind: LineKind::Hunk,
+            old: None,
+            new: None,
+            text: format!("@@ -0,0 +1,{} @@", md_lines.len()),
+        })
+        .chain(md_lines.iter().enumerate().map(|(ix, text)| DiffLine {
+            kind: LineKind::Added,
+            old: None,
+            new: Some((ix + 1) as u32),
+            text: (*text).to_owned(),
+        }))
+        .collect(),
+        ..FileDiff::default()
+    };
+    workspace
+        .diffs
+        .iter_mut()
+        .find(|diff| diff.session == session && diff.repo == repo)
+        .unwrap()
+        .files
+        .insert(0, md_file);
+    let diagram_offset = md_full
+        .find("```mermaid")
+        .expect("fixture markdown contains a mermaid diagram");
+    workspace
+        .file_contents
+        .insert((session.clone(), repo.clone(), MD_PATH.to_owned()), md_full);
+
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(R::SelectFile {
+        repo: repo.clone(),
+        path: MD_PATH.to_owned(),
+    }));
+
+    // Narrow diff does not show the full-screen Markdown mode switcher.
+    assert!(!full(&mut app));
+    assert!(!app.contains("diff-md-modes"));
+
+    // Enter full-screen Diff: switcher appears, defaulting to Diff.
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    assert!(full(&mut app));
+    assert!(app.contains("diff-md-modes"));
+    assert!(app.contains("diff-md-mode-diff"));
+    assert!(app.contains("diff-md-mode-split"));
+    assert!(app.contains("diff-md-mode-rendered"));
+    assert!(!app.contains("diff-md-rendered"));
+    assert!(!app.contains("diff-md-split"));
+
+    // Switch to Split: both code diff and smart MarkdownView render side by side.
+    app.click("diff-md-mode-split");
+    assert_eq!(
+        app.ui.read(|state| state.review.markdown_mode(&session)),
+        DiffMarkdownMode::Split
+    );
+    assert!(app.contains("diff-md-split"));
+    assert!(app.contains("diff-md-rendered"));
+    assert!(app.contains("md-view"));
+    // Mermaid diagram block is parsed and rendered by MarkdownView.
+    assert!(
+        app.cx
+            .update_window(app.window, |_, window, _| {
+                window.try_find(("md-diagram", diagram_offset)).is_some()
+            })
+            .unwrap(),
+        "expected Mermaid diagram block to render in smart MarkdownView"
+    );
+
+    // Switch to Rendered: full rendered Markdown without split wrapper.
+    app.click("diff-md-mode-rendered");
+    assert_eq!(
+        app.ui.read(|state| state.review.markdown_mode(&session)),
+        DiffMarkdownMode::Rendered
+    );
+    assert!(app.contains("diff-md-rendered"));
+    assert!(!app.contains("diff-md-split"));
+    assert!(app.contains("md-view"));
+
+    // Click the rendered block's '+' gutter button to open a draft comment.
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.click(("md-comment-block", 0usize), cx);
+        })
+        .unwrap();
+    app.settle();
+    assert!(
+        app.contains("doc-comment-box"),
+        "clicking a rendered Markdown block should open the review draft comment box"
+    );
+    let anchor = app.ui.read(|state| {
+        state
+            .comments
+            .sessions
+            .get(&session)
+            .and_then(|held| held.editing.as_ref())
+            .map(|b| (b.anchor.repo.clone(), b.anchor.path.clone(), b.anchor.first, b.anchor.last))
+    });
+    assert_eq!(
+        anchor,
+        Some((repo, MD_PATH.to_owned(), 1, 1)),
+        "comment box should anchor to the clicked rendered block's lines"
+    );
+
+    // Switch back to Diff: rendered pane closes cleanly.
+    app.click("diff-md-mode-diff");
+    assert_eq!(
+        app.ui.read(|state| state.review.markdown_mode(&session)),
+        DiffMarkdownMode::Diff
+    );
+    assert!(!app.contains("diff-md-rendered"));
+    assert!(!app.contains("diff-md-split"));
+}

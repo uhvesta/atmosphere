@@ -19,8 +19,10 @@ use humata2_clients::comments::{Anchor, Comment, CommentId, Side};
 use humata2_clients::docs::VersionText;
 use humata2_clients::model::{Session, SessionId};
 use humata2_markdown::{
-    Anchor as PageAnchor, Comment as PageComment, CommentMarks, LineRange, MarkdownOptions, MarkdownView,
+    Anchor as PageAnchor, Comment as PageComment, CommentMarks, LineRange, MarkdownEvent,
+    MarkdownOptions, MarkdownView,
 };
+use humata2_review::DiffMarkdownMode;
 use humata2_review::comments::CommentsAction;
 use humata2_session::{DocumentMode, SessionAction, Tab, TabGroup, is_markdown};
 use unicode_width::UnicodeWidthStr;
@@ -58,16 +60,37 @@ struct Page {
     last_old: Option<String>,
 }
 
+/// Rendered Markdown page for a file shown in the full-screen Diff view, with
+/// block commenting wired directly into the review draft comment flow.
+struct DiffPage {
+    view: Entity<MarkdownView>,
+    source: String,
+    marks: Vec<Mark>,
+    line_map: Rc<RefCell<Option<Vec<u32>>>>,
+    lines: Rc<RefCell<Vec<String>>>,
+    _subscription: Subscription,
+}
+
 /// What a sync needs from the store, copied out so no store borrow is held
 /// while entities change.
 #[derive(Default)]
 struct Plan {
     sessions: Vec<SessionId>,
     documents: Vec<Want>,
+    /// The full-screen Diff panel's active Markdown file when in Split or
+    /// Rendered mode.
+    diff_markdown: Option<WantDiff>,
     /// The open comment box: session, first line, last line, text.
     editing: Option<(SessionId, u32, u32, String)>,
     /// The History strip's parts: old versions shown, the Save version box.
     history: crate::doc_history::Wanted,
+}
+
+struct WantDiff {
+    key: Key,
+    source: String,
+    line_map: Option<Vec<u32>>,
+    marks: Vec<Mark>,
 }
 
 struct Want {
@@ -91,7 +114,7 @@ fn plan(state: &AppState) -> Plan {
         ..Plan::default()
     };
     plan.history = crate::doc_history::wanted(state);
-    let (Some(id), Some(view)) = (state.session.open.as_ref(), state.session.view()) else {
+    let Some(id) = state.session.open.as_ref() else {
         return plan;
     };
     plan.editing = state
@@ -100,6 +123,77 @@ fn plan(state: &AppState) -> Plan {
         .get(id)
         .and_then(|held| held.editing.as_ref())
         .map(|b| (id.clone(), b.anchor.first, b.anchor.last, b.text.clone()));
+
+    // Full-screen Diff Markdown renderer (Split or Rendered mode).
+    if state.review.markdown_mode(id) != DiffMarkdownMode::Diff {
+        let diffs: Vec<_> = state
+            .workspace
+            .diffs
+            .iter()
+            .filter(|diff| &diff.session == id)
+            .collect();
+        if let Some((diff, file)) = crate::chrome::selected(state, &diffs)
+            && crate::panel_changes::markdown_view::is_diff_markdown(&file.path)
+        {
+            let (source, line_map) =
+                crate::panel_changes::markdown_view::diff_markdown_source(state, diff, file);
+            let mut marks: Vec<Mark> = state
+                .comments
+                .on_file(id, &diff.repo, &file.path)
+                .into_values()
+                .flatten()
+                .filter(|comment| !comment.anchor.detached)
+                .filter_map(|comment| {
+                    let (first, last) =
+                        crate::panel_changes::markdown_view::map_real_to_rendered_lines(
+                            comment.anchor.first,
+                            comment.anchor.last,
+                            line_map.as_deref(),
+                        )?;
+                    Some(Mark {
+                        id: comment.id.to_string(),
+                        first,
+                        last,
+                        text: comment.text.clone(),
+                    })
+                })
+                .collect();
+            if let Some(b) = state
+                .comments
+                .sessions
+                .get(id)
+                .and_then(|held| held.editing.as_ref())
+                .filter(|b| {
+                    b.comment.is_none()
+                        && b.anchor.repo == diff.repo
+                        && b.anchor.path == file.path
+                })
+                && let Some((first, last)) =
+                    crate::panel_changes::markdown_view::map_real_to_rendered_lines(
+                        b.anchor.first,
+                        b.anchor.last,
+                        line_map.as_deref(),
+                    )
+            {
+                marks.push(Mark {
+                    id: "box".to_owned(),
+                    first,
+                    last,
+                    text: b.text.clone(),
+                });
+            }
+            plan.diff_markdown = Some(WantDiff {
+                key: (id.clone(), diff.repo.clone(), file.path.clone()),
+                source,
+                line_map,
+                marks,
+            });
+        }
+    }
+
+    let Some(view) = state.session.view() else {
+        return plan;
+    };
     let mut seen = HashSet::new();
     for group in &view.groups {
         for tab in &group.tabs {
@@ -270,6 +364,7 @@ impl Target {
 /// The open documents of the shown session.
 pub struct Documents {
     pages: HashMap<Key, Page>,
+    diff_pages: HashMap<Key, DiffPage>,
     comment_input: Entity<TextareaState>,
     /// The box the field was last set for: session, lines and text.
     seen: Option<(SessionId, u32, u32, String)>,
@@ -577,6 +672,7 @@ impl Documents {
         };
         Self {
             pages: HashMap::new(),
+            diff_pages: HashMap::new(),
             comment_input,
             seen: None,
             reattach: Rc::new(RefCell::new(None)),
@@ -597,6 +693,18 @@ impl Documents {
             diff_code: cx.focus_handle(),
             diff_list_drag: Rc::new(Cell::new(None)),
         }
+    }
+
+    /// The rendered Markdown view for a file in the full-screen Diff panel.
+    pub fn diff_markdown_view(
+        &self,
+        session: &SessionId,
+        repo: &str,
+        path: &str,
+    ) -> Option<Entity<MarkdownView>> {
+        self.diff_pages
+            .get(&(session.clone(), repo.to_owned(), path.to_owned()))
+            .map(|page| page.view.clone())
     }
 
     /// The Diff panel's "Filter files" field.
@@ -710,6 +818,120 @@ impl Documents {
             }
         }
         self.pages
+            .retain(|(session, _, _), _| plan.sessions.contains(session));
+
+        if let Some(want) = plan.diff_markdown {
+            match self.diff_pages.get_mut(&want.key) {
+                None => {
+                    let mut options = MarkdownOptions::new(want.key.2.clone());
+                    options.comments = true;
+                    options.marks = CommentMarks::Counts;
+                    options.document = Some(file_name(&want.key.2).into());
+                    let source = want.source.clone();
+                    let view = cx.new(|cx| MarkdownView::new(&source, options, cx));
+                    set_marks(&view, &want.marks, cx);
+                    let line_map = Rc::new(RefCell::new(want.line_map));
+                    let lines = Rc::new(RefCell::new(
+                        source.lines().map(str::to_owned).collect::<Vec<_>>(),
+                    ));
+                    let sub_ui = ui.clone();
+                    let (sub_session, sub_repo, sub_path) = want.key.clone();
+                    let sub_line_map = line_map.clone();
+                    let sub_lines = lines.clone();
+                    let subscription = cx.subscribe(
+                        &view,
+                        move |_view, event: &MarkdownEvent, cx: &mut App| match event {
+                            MarkdownEvent::CommentRequested(selection) => {
+                                let (first, last) =
+                                    crate::panel_changes::markdown_view::map_rendered_lines(
+                                        selection.lines.start,
+                                        selection.lines.end,
+                                        sub_line_map.borrow().as_deref(),
+                                    );
+                                let quoted = {
+                                    let held = sub_lines.borrow();
+                                    let start = selection.lines.start.saturating_sub(1);
+                                    let end = selection.lines.end.min(held.len());
+                                    if start < end {
+                                        held[start..end].to_vec()
+                                    } else {
+                                        selection.source.lines().map(str::to_owned).collect()
+                                    }
+                                };
+                                let anchor = Anchor {
+                                    repo: sub_repo.clone(),
+                                    path: sub_path.clone(),
+                                    side: Side::New,
+                                    first,
+                                    last,
+                                    quoted,
+                                    base: None,
+                                    detached: false,
+                                    outdated: false,
+                                };
+                                sub_ui.send(
+                                    AppAction::Comments(CommentsAction::OpenBox(
+                                        sub_session.clone(),
+                                        anchor,
+                                    )),
+                                    cx,
+                                );
+                            }
+                            MarkdownEvent::CommentActivated { id } if id != "box" => {
+                                let draft_id = sub_ui.read(|state| {
+                                    state.comments.sessions.get(&sub_session).and_then(|held| {
+                                        held.comments
+                                            .iter()
+                                            .find(|c| {
+                                                c.id.to_string() == *id && c.counts_as_draft()
+                                            })
+                                            .map(|c| c.id.clone())
+                                    })
+                                });
+                                if let Some(comment_id) = draft_id {
+                                    sub_ui.send(
+                                        AppAction::Comments(CommentsAction::EditDraft(
+                                            sub_session.clone(),
+                                            comment_id,
+                                        )),
+                                        cx,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        },
+                    );
+                    self.diff_pages.insert(
+                        want.key,
+                        DiffPage {
+                            view,
+                            source: want.source,
+                            marks: want.marks,
+                            line_map,
+                            lines,
+                            _subscription: subscription,
+                        },
+                    );
+                }
+                Some(page) => {
+                    let text_changed = page.source != want.source;
+                    if text_changed {
+                        let source = want.source.clone();
+                        page.view
+                            .update(cx, |view, cx| view.set_source(&source, cx));
+                        *page.lines.borrow_mut() =
+                            source.lines().map(str::to_owned).collect();
+                        page.source = want.source;
+                    }
+                    *page.line_map.borrow_mut() = want.line_map;
+                    if text_changed || page.marks != want.marks {
+                        set_marks(&page.view, &want.marks, cx);
+                        page.marks = want.marks;
+                    }
+                }
+            }
+        }
+        self.diff_pages
             .retain(|(session, _, _), _| plan.sessions.contains(session));
 
         // The comment box's field follows the store: set when a box opens or

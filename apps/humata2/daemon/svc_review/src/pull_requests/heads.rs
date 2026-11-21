@@ -816,9 +816,17 @@ impl PullRequests {
         );
         blocking(move || -> Result<(), HeadsError> {
             for (name, branch, tip) in moves {
+                let repo_dir = folder.join(name);
                 // Keeps files the new head doesn't touch; refuses, saying
                 // so, if the clone has changes it would overwrite.
-                git(&folder.join(name), &["checkout", "--quiet", "-B", &branch, &tip])?;
+                let detached = git(&repo_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+                    .map(|out| out.trim() == "HEAD")
+                    .unwrap_or(false);
+                if detached {
+                    git(&repo_dir, &["checkout", "--quiet", "--detach", &tip])?;
+                } else {
+                    git(&repo_dir, &["checkout", "--quiet", "-B", &branch, &tip])?;
+                }
             }
             Ok(())
         })

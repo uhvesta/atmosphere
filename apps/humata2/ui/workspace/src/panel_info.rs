@@ -62,7 +62,7 @@ pub fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: 
         .into_iter()
         .flatten()
     {
-        if !clones.contains(&file.repo.as_str()) {
+        if !file.repo.is_empty() && !clones.contains(&file.repo.as_str()) {
             clones.push(file.repo.as_str());
         }
     }
