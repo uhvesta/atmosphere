@@ -1,0 +1,37 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(
+    ["lore.proto"],
+    visibility = ["//tools/lore:__subpackages__"],
+)
+
+rust_library(
+    name = "proto",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "lore_proto",
+    visibility = ["//tools/lore:__subpackages__"],
+    deps = [
+        "@crates//:crc32fast",
+        "@crates//:prost",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:uuid",
+        "@crates//:zstd",
+    ],
+)
+
+rust_test(
+    name = "proto_test",
+    crate = ":proto",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

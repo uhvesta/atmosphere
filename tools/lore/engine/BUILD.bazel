@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "engine",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "lore_engine",
+    visibility = ["//tools/lore:__subpackages__"],
+    deps = [
+        "//tools/lore/context",
+        "//tools/lore/proto",
+        "@crates//:prost",
+        "@crates//:regex",
+        "@crates//:rusqlite",
+        "@crates//:rustix",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:toml",
+        "@crates//:zstd",
+    ],
+)
+
+rust_test(
+    name = "engine_test",
+    crate = ":engine",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

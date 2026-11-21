@@ -1,0 +1,226 @@
+syntax = "proto3";
+package lore.v1;
+
+enum ClaimKind {
+  CLAIM_KIND_UNSPECIFIED = 0;
+  CLAIM_KIND_AXIOM = 1;
+  CLAIM_KIND_FACT = 2;
+  CLAIM_KIND_DECISION = 3;
+  CLAIM_KIND_SOLUTION = 4;
+  CLAIM_KIND_DEAD_END = 5;
+  CLAIM_KIND_WARNING = 6;
+  CLAIM_KIND_PREFERENCE = 7;
+  CLAIM_KIND_QUESTION = 8;
+  CLAIM_KIND_HANDOFF = 9;
+}
+
+enum ClaimStatus {
+  CLAIM_STATUS_UNSPECIFIED = 0;
+  CLAIM_STATUS_ACTIVE = 1;
+  CLAIM_STATUS_SUPERSEDED = 2;
+  CLAIM_STATUS_INVALIDATED = 3;
+  CLAIM_STATUS_RETRACTED = 4;
+  CLAIM_STATUS_EXPIRED = 5;
+  CLAIM_STATUS_QUARANTINED = 6;
+}
+
+enum PredicateOp {
+  PREDICATE_OP_UNSPECIFIED = 0;
+  PREDICATE_OP_EQ = 1;
+  PREDICATE_OP_IN = 2;
+  PREDICATE_OP_GLOB = 3;
+  PREDICATE_OP_SEMVER_REQ = 4;
+  PREDICATE_OP_ANCESTOR_OF = 5;
+  PREDICATE_OP_NOT_ANCESTOR_OF = 6;
+}
+
+enum EdgeRel {
+  EDGE_REL_UNSPECIFIED = 0;
+  EDGE_REL_SUPERSEDES = 1;
+  EDGE_REL_CONTRADICTS = 2;
+  EDGE_REL_SUPPORTS = 3;
+  EDGE_REL_DERIVED_FROM = 4;
+  EDGE_REL_ANSWERS = 5;
+  EDGE_REL_CONTRASTS_WITH = 6;
+}
+
+enum PrincipalKind {
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+  PRINCIPAL_KIND_OWNER = 1;
+  PRINCIPAL_KIND_AGENT = 2;
+  PRINCIPAL_KIND_IMPORT = 3;
+}
+
+enum OutcomeKind {
+  OUTCOME_KIND_UNSPECIFIED = 0;
+  OUTCOME_KIND_HELPFUL = 1;
+  OUTCOME_KIND_HARMFUL = 2;
+  OUTCOME_KIND_NOT_APPLICABLE = 3;
+  OUTCOME_KIND_CORROBORATED = 4;
+  OUTCOME_KIND_DISPUTED = 5;
+}
+
+// Tight, closed language & ecosystem enums (no unbounded free-form strings).
+// Polyglot and unrecognized ecosystems map explicitly to POLYGLOT / OTHER / UNSPECIFIED.
+enum Language {
+  LANGUAGE_UNSPECIFIED = 0; // unknown
+  LANGUAGE_RUST = 1;
+  LANGUAGE_GO = 2;
+  LANGUAGE_PYTHON = 3;
+  LANGUAGE_JAVA = 4;
+  LANGUAGE_BAZEL = 5;
+  LANGUAGE_STARLARK = 6;
+  LANGUAGE_SWIFT = 7;
+  LANGUAGE_POLYGLOT = 8;
+  LANGUAGE_OTHER = 9;
+}
+
+enum Ecosystem {
+  ECOSYSTEM_UNSPECIFIED = 0; // unknown
+  ECOSYSTEM_CARGO = 1;       // Rust: Cargo.lock / Cargo.toml (`prost`)
+  ECOSYSTEM_GO = 2;          // Go: go.mod / go.sum (`github.com/spf13/cobra`)
+  ECOSYSTEM_PYTHON = 3;      // Python: uv.lock / poetry.lock / requirements.txt / pyproject.toml (PEP 503 name)
+  ECOSYSTEM_MAVEN = 4;       // Java: pom.xml / gradle.lockfile / libs.versions.toml (`groupId:artifactId`)
+  ECOSYSTEM_BAZEL = 5;       // Bazel/Bzlmod: MODULE.bazel.lock / MODULE.bazel (`rules_rust`)
+  ECOSYSTEM_SWIFT = 6;       // SwiftPM: Package.resolved / Package.swift (`swift-nio`)
+  ECOSYSTEM_POLYGLOT = 7;
+  ECOSYSTEM_OTHER = 8;
+}
+
+enum LockfileKind {
+  LOCKFILE_KIND_UNSPECIFIED = 0;
+  LOCKFILE_KIND_CARGO_LOCK = 1;
+  LOCKFILE_KIND_GO_MOD = 2;
+  LOCKFILE_KIND_PY_UV_LOCK = 3;
+  LOCKFILE_KIND_PY_POETRY_LOCK = 4;
+  LOCKFILE_KIND_PY_REQUIREMENTS = 5;
+  LOCKFILE_KIND_JAVA_POM = 6;
+  LOCKFILE_KIND_JAVA_GRADLE_LOCK = 7;
+  LOCKFILE_KIND_BAZEL_MODULE_LOCK = 8;
+  LOCKFILE_KIND_SWIFT_PACKAGE_RESOLVED = 9;
+  LOCKFILE_KIND_OTHER = 10;
+}
+
+message Predicate {
+  string axis = 1;       // e.g. "os", "arch", "machine", "agent", "branch_glob", "dep:cargo/prost"
+  PredicateOp op = 2;
+  string value = 3;      // comma-separated for IN
+}
+
+message Principal {
+  PrincipalKind kind = 1;
+  string id = 2;
+  string session_id = 3;
+  string agent_kind = 4; // claude | agy | codex | copilot | opencode | human
+  string model = 5;
+  string machine_id = 6;
+}
+
+message OriginSnapshot {
+  string machine_id = 1;
+  string repo_id = 2;
+  string branch = 3;
+  string head_commit = 4;
+  string os = 5;
+  string arch = 6;
+}
+
+message Verifier {
+  oneof check {
+    FileDigestCheck file_digest = 1;
+    PathExistsCheck path_exists = 2;
+    SymbolPresentCheck symbol_present = 3;
+    LockfileSemverCheck lockfile_semver = 4;
+    BlobRef blob_ref = 5;
+  }
+}
+
+message FileDigestCheck {
+  string repo_id = 1;
+  string path = 2;        // repo-relative path
+  uint32 start_line = 3;  // 0 = whole file
+  uint32 end_line = 4;
+  string sha256 = 5;
+}
+
+message PathExistsCheck {
+  string repo_id = 1;
+  string path = 2;
+  bool expect_exists = 3;
+}
+
+message SymbolPresentCheck {
+  string repo_id = 1;
+  string path = 2;
+  string symbol = 3;
+  Language language = 4;
+}
+
+message LockfileSemverCheck {
+  Ecosystem ecosystem = 1;
+  LockfileKind lockfile_kind = 2; // optional; UNSPECIFIED = auto-detect ecosystem lockfile
+  string package_name = 3;        // canonical notation per ecosystem (e.g. `groupId:artifactId` for Maven)
+  string semver_req = 4;
+}
+
+message BlobRef {
+  string sha256 = 1;
+  string role = 2;        // stderr | diff | trace
+  string summary = 3;
+}
+
+message Claim {
+  // Facet 1: Identity & Lifecycle
+  string id = 1;                 // clm_<ts_hex>_<rand_hex>
+  ClaimKind kind = 2;
+  ClaimStatus status = 3;
+  int64 created_at_ms = 4;
+  int64 updated_at_ms = 5;
+  int64 valid_from_ms = 6;       // 0 = unset
+  int64 valid_until_ms = 7;      // 0 = unset
+  int64 review_after_ms = 8;     // 0 = unset
+
+  // Facet 2: Progressive Content
+  string statement = 10;         // <= 280 UTF-8 chars (L0 card)
+  string body = 11;              // optional L1 markdown
+  repeated string dead_ends = 12;
+  repeated string keywords = 13;
+  map<string, string> attrs = 14;
+
+  // Facet 3: Scope vs. Entities
+  string scope = 20;             // global | channel:<id> | repo:<id> | machine:<id> | dir:<m>:<h> | session:<id>
+  repeated string about = 21;    // typed <ns>:<key> URIs
+
+  // Facet 4: Applicability
+  repeated Predicate applies_when = 30;
+
+  // Facet 5: Provenance, Taint & Verifiers
+  Principal author = 40;
+  bool tainted = 41;
+  OriginSnapshot origin = 42;
+  repeated Verifier verifiers = 43;
+
+  // Facet 6: Raw Signals
+  bool pinned = 50;
+  float importance = 51;         // default 1.0
+}
+
+message LogEvent {
+  uint64 seq = 1;
+  string event_id = 2;           // client idempotency key for away-spool replay
+  int64 recorded_at_ms = 3;
+  Principal actor = 4;
+  oneof payload {
+    ClaimUpserted claim_upserted = 10;
+    ClaimTransitioned claim_transitioned = 11;
+    EdgeAdded edge_added = 12;
+    FeedbackRecorded feedback_recorded = 13;
+    ClaimForgotten claim_forgotten = 14;
+  }
+}
+
+message ClaimUpserted { Claim claim = 1; }
+message ClaimTransitioned { string claim_id = 1; ClaimStatus new_status = 2; string reason = 3; }
+message EdgeAdded { string src_id = 1; EdgeRel rel = 2; string dst_id = 3; string note = 4; }
+message FeedbackRecorded { string claim_id = 1; OutcomeKind outcome = 2; string note = 3; }
+message ClaimForgotten { string claim_id = 1; string reason = 2; }

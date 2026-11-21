@@ -1,0 +1,66 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":linux.bzl", "linux_builds")
+
+rust_library(
+    name = "lore_cli",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "lore_cli",
+    crate_root = "src/lib.rs",
+    visibility = ["//tools/lore:__subpackages__"],
+    deps = [
+        "//tools/lore/context",
+        "//tools/lore/engine",
+        "//tools/lore/mcp",
+        "//tools/lore/proto",
+        "@crates//:clap",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_binary(
+    name = "lore",
+    srcs = ["src/main.rs"],
+    visibility = [
+        "//apps/humata2/app:__pkg__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//tools/lore:__subpackages__",
+    ],
+    deps = [":lore_cli"],
+)
+
+# Static musl Linux builds, cross-built on any host: `tools/bq/bq --build //tools/lore:lore_linux`.
+linux_builds(
+    name = "lore_linux",
+    binary = ":lore",
+    file_name = "lore",
+    platforms = {
+        "//bazel/platforms:linux_arm64": "linux-aarch64",
+        "//bazel/platforms:linux_x86_64": "linux-x86_64",
+    },
+    visibility = [
+        "//apps/humata2/app:__pkg__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//tools/lore:__subpackages__",
+    ],
+)
+
+rust_test(
+    name = "lore_cli_test",
+    crate = ":lore_cli",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "linux.bzl",
+    ],
+    tags = ["starlark"],
+)

@@ -1,0 +1,31 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "context",
+    srcs = [
+        "src/discover.rs",
+        "src/lib.rs",
+        "src/lockfile.rs",
+        "src/predicate.rs",
+        "src/tokenize.rs",
+        "src/verify.rs",
+    ],
+    crate_name = "lore_context",
+    visibility = ["//tools/lore:__subpackages__"],
+    deps = [
+        "//tools/lore/proto",
+        "@crates//:regex",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:versions",
+    ],
+)
+
+rust_test(
+    name = "context_test",
+    crate = ":context",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)

@@ -1,0 +1,30 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "mcp",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "lore_mcp",
+    visibility = ["//tools/lore:__subpackages__"],
+    deps = [
+        "//tools/lore/context",
+        "//tools/lore/engine",
+        "//tools/lore/proto",
+        "@crates//:regex",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "mcp_test",
+    crate = ":mcp",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
