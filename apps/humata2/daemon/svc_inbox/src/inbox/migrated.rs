@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use tonic::Status;
 

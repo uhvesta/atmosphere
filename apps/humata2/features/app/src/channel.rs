@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tab {
     #[default]
-    Sessions,
     Desk,
+    Sessions,
     Inbox,
     Board,
     Repos,

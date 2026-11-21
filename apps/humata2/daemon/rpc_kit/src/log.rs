@@ -41,7 +41,6 @@ pub fn line(line: &str) {
 /// where that one is, if there was one. Without a log the daemon still
 /// runs; it says so, and restart reports lack its lines.
 pub fn start(logs: &Path) -> Option<PathBuf> {
-    humata2_daemon_ports::set_log_sink(line);
     let current = logs.join(CURRENT);
     let previous = logs.join(PREVIOUS);
     let kept = match fs::rename(&current, &previous) {

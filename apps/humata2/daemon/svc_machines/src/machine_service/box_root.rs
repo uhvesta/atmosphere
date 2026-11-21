@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::log::say;
 use humata2_rpc_kit::{chain, failed, failure, internal, now_ms};
 use humata2_sessions::DESK_CHANNEL;

@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use tonic::codegen::http;
 use tonic::{Code, Status};

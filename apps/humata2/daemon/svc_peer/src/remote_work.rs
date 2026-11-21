@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::{RemoteReportRow, StoreError};
 use prost::Message;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -433,7 +433,7 @@ pub struct RemoteView {
     pub exit_code: i32,
     pub problem: Option<pb::Error>,
     pub pointers: Vec<pb::Pointer>,
-    pub pointers_at: Option<humata2_grpc::Timestamp>,
+    pub pointers_at: Option<humata2_grpc_core::Timestamp>,
     /// The machine's read mark for the session (CH-16, D394). Kept with the
     /// last report (D396), so a restart shows it before the machine links.
     pub unread: bool,

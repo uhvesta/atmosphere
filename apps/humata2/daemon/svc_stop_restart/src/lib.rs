@@ -10,5 +10,9 @@ pub mod ports;
 pub mod restart;
 pub mod stop;
 
-#[allow(unused_imports)]
-pub(crate) use humata2_grpc::humata::v1 as pb;
+#[allow(unused_imports, ambiguous_glob_reexports)]
+pub(crate) mod pb {
+    pub use humata2_grpc_core::humata::v1::*;
+    pub use humata2_grpc_inbox::humata::v1::*;
+    pub use humata2_grpc_peer::humata::v1::*;
+}

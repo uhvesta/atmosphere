@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use humata2_access::Refusal;
 use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::fault;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::InstalledFile;
 use humata2_rpc_kit::helpers as status;
 use sha2::{Digest, Sha256};

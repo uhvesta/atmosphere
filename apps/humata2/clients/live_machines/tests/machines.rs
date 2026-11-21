@@ -150,7 +150,7 @@ impl Host {
         let deadline = Instant::now() + WAIT;
         while UnixStream::connect(&socket).await.is_err() {
             assert!(Instant::now() < deadline, "humatad2 never started listening");
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         let daemon = LiveConnection::connect(LiveOptions::new(socket.clone()))
             .await
@@ -224,7 +224,7 @@ impl Host {
                 return;
             }
             assert!(Instant::now() < deadline, "the peer link to box-1 never came up");
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -311,7 +311,7 @@ async fn ssh_ran(machine: &FakeMachine, before: usize) {
     let deadline = Instant::now() + WAIT;
     while machine.ssh_calls() <= before {
         assert!(Instant::now() < deadline, "the add never reached the machine");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -534,7 +534,7 @@ async fn a_provider_that_needs_a_login_is_logged_in_by_hand_and_becomes_a_machin
             Err(DaemonError::NotFound { .. }) => break,
             other => assert!(Instant::now() < deadline, "the ended login stayed open: {other:?}"),
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -574,7 +574,7 @@ async fn a_first_skills_sync_is_previewed_then_applied_with_its_plan() {
     let deadline = Instant::now() + WAIT;
     while std::fs::read(&on_machine).ok().as_deref() != Some(b"alpha v1".as_slice()) {
         assert!(Instant::now() < deadline, "the skill never reached the machine");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let next = host.machines.skills_preview(&box_1()).await.unwrap();
     assert!(!next.first_sync);
@@ -618,7 +618,7 @@ async fn answering(host: &Host) {
             return;
         }
         assert!(Instant::now() < deadline, "the daemon never listed box-1 as answering: {listed:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 

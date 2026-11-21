@@ -149,6 +149,12 @@ xcrun stapler staple "$app"
 assets="$scratch/assets"
 mkdir "$assets"
 (cd "$scratch" && ditto -c -k --keepParent "Humata 2.app" "$assets/Humata2-$version.zip")
+if [ -d "$app/Contents/Resources/browser_extension/chromium" ]; then
+  (cd "$app/Contents/Resources/browser_extension" && ditto -c -k --keepParent "chromium" "$assets/Humata2-browser-extension-chromium-$version.zip")
+fi
+if [ -d "$app/Contents/Resources/browser_extension/firefox" ]; then
+  (cd "$app/Contents/Resources/browser_extension" && ditto -c -k --keepParent "firefox" "$assets/Humata2-browser-extension-firefox-$version.zip")
+fi
 for name in humata humatad2 humata2_holder stack humata2_fusefs; do
   cp "$app/Contents/Helpers/$name" "$assets/$name-darwin-arm64"
 done
@@ -157,7 +163,8 @@ done
 echo "Uploading a draft release ${tag}…"
 notes="Humata 2 $version, built from $commit. Signed with Developer ID and notarized by Apple.
 
-- Humata2-$version.zip: the Mac app (Apple silicon), with humatad2, humata2_holder, humata, stack and humata2_fusefs inside. Move Humata 2.app into Applications and open it; it installs its tools into ~/.humata2 and starts the daemon as a login agent.
+- Humata2-$version.zip: the Mac app (Apple silicon), with humatad2, humata2_holder, humata, stack, humata2_fusefs and the read-only browser extension inside. Move Humata 2.app into Applications and open it; it installs its tools into ~/.humata2 and starts the daemon as a login agent.
+- Humata2-browser-extension-chromium-$version.zip, Humata2-browser-extension-firefox-$version.zip: the unpacked read-only browser extensions (view tabs, page snapshots and screenshots only; also bundled in Humata 2.app/Contents/Resources/browser_extension/).
 - humata-darwin-arm64, humatad2-darwin-arm64, humata2_holder-darwin-arm64, stack-darwin-arm64, humata2_fusefs-darwin-arm64: the command line, the daemon, the terminal holder, the stacked-PR command line and the FUSEFS helper on their own, the same files as in the app.
 - SHA256SUMS: \`shasum -a 256 -c SHA256SUMS\` checks the downloads."
 gh release create "$tag" "$assets"/* --draft --target "$commit" --title "Humata 2 $version" --notes "$notes"

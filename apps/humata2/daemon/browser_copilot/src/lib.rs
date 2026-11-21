@@ -1,10 +1,10 @@
 //! Humata 2 Native Browser Co-Pilot (`0.7.0 BROWSER`).
 //!
 //! Connects coding agents (`claude`, `codex`, `copilot`, `agy`) to the user's
-//! existing native desktop browsers via WebExtension Native Messaging, with an
-//! Agent Inbox permission gate that grants 30-minute sessions for read actions
-//! and enforces strict per-action approval for every write action (guide
-//! highlights only draw an overlay and are classified as reads).
+//! existing native desktop browsers via WebExtension Native Messaging for
+//! strictly read-only inspection (`list_tabs`, `read_tab`, `screenshot`),
+//! gated by an Agent Inbox permission policy with 30-minute read session
+//! grants. Never clicks, types, navigates, mutates the DOM, or executes code.
 
 pub mod detect;
 pub mod manifest;
@@ -26,7 +26,7 @@ pub use policy::{
     PolicyError, READ_GRANT_TTL_MS, SupportedAgent,
 };
 pub use protocol::{
-    BrowserAction, BrowserReply, BrowserReplyPayload, BrowserRequest, GuideHighlight,
-    InteractiveElement, MAX_NATIVE_MESSAGE_BYTES, PageSnapshot, ProtocolError, TabInfo, read_frame,
+    BrowserAction, BrowserReply, BrowserReplyPayload, BrowserRequest, InteractiveElement,
+    MAX_NATIVE_MESSAGE_BYTES, PageScreenshot, PageSnapshot, ProtocolError, TabInfo, read_frame,
     write_frame,
 };

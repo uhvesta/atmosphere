@@ -1,8 +1,8 @@
-//! BROWSER: approval cards for actions in the user's own browser (read a
-//! tab, list tabs, highlight guide, click, type, navigate), for claude,
+//! BROWSER: approval cards for read-only actions in the user's own browser
+//! (list tabs, read a tab snapshot, capture a screenshot), for claude,
 //! codex, copilot and agy only. Reads may be allowed for 30 minutes per
-//! session (in memory only; lost on daemon restart); writes are asked every
-//! time.
+//! session (in memory only; lost on daemon restart). Write/execute actions are
+//! rejected at deserialization.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::PoisonError;
@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use humata2_access::Refusal;
 use humata2_browser_copilot::{ActionClass, BrowserAction, READ_GRANT_TTL_MS, SupportedAgent};
 use humata2_daemon_ports::{AgentCaller, Caller};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use pb::invalid_field::Problem;
 use tonic::{Code, Request, Response, Status};
@@ -83,7 +83,7 @@ impl Inbox {
                 "action_json",
                 Problem::BadFormat,
                 format!("browser action JSON isn't valid: {error}"),
-                "send a supported browser action JSON object (list_tabs, read_tab, highlight_guide, click, type, navigate)",
+                "send a supported read-only browser action JSON object (list_tabs, read_tab, screenshot)",
             )
         })?;
         let reason = req.reason.trim().to_owned();
@@ -456,7 +456,7 @@ pub(super) fn decide(
 
 #[cfg(test)]
 mod tests {
-    use humata2_grpc::humata::v1::inbox_service_server::InboxService;
+    use crate::pb::inbox_service_server::InboxService;
     use humata2_store::SessionRecord;
 
     use super::*;
@@ -489,8 +489,18 @@ mod tests {
         r#"{"type":"list_tabs"}"#.to_owned()
     }
 
-    fn click_json() -> String {
-        r#"{"type":"click","tab_id":1,"url":"https://app.example.com/settings","selector":"button#save","element_preview":"Save"}"#.to_owned()
+    fn screenshot_json() -> String {
+        r#"{"type":"screenshot","tab_id":1}"#.to_owned()
+    }
+
+    fn disallowed_execute_jsons() -> [&'static str; 5] {
+        [
+            r#"{"type":"click","tab_id":1,"url":"https://app.example.com/settings","selector":"button#save","element_preview":"Save"}"#,
+            r#"{"type":"type","tab_id":1,"url":"https://app.example.com","selector":"input","text":"hi"}"#,
+            r#"{"type":"navigate","url":"https://app.example.com"}"#,
+            r#"{"type":"submit","url":"https://app.example.com","selector":"form"}"#,
+            r#"{"type":"highlight_guide","url":"https://app.example.com","selector":"a","title":"t","body":"b"}"#,
+        ]
     }
 
     #[tokio::test]
@@ -518,7 +528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_30m_grant_is_per_session_and_reused_for_later_reads_but_never_writes() {
+    async fn read_30m_grant_is_per_session_and_execute_actions_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let inbox = test_inbox(&dir);
         seed_session(&inbox, "se_1", "claude");
@@ -566,25 +576,26 @@ mod tests {
             .await
             .unwrap();
 
-        // A second read in se_1 is approved immediately without raising a card.
-        let read_tab = r#"{"type":"read_tab"}"#.to_owned();
-        let fast = inbox
-            .request_browser_approval(agent_req(
-                pb::RequestBrowserApprovalRequest {
-                    action_json: read_tab,
-                    reason: "read active tab".to_owned(),
-                    ..Default::default()
-                },
-                "se_1",
-            ))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(fast.state, pb::RequestState::Approved as i32);
-        assert!(matches!(
-            fast.answer.and_then(|a| a.answer),
-            Some(pb::request_answer::Answer::AllowFor30Min(_))
-        ));
+        // Subsequent reads (read_tab & screenshot) in se_1 are approved immediately without raising a card.
+        for read_json in [r#"{"type":"read_tab"}"#.to_owned(), screenshot_json()] {
+            let fast = inbox
+                .request_browser_approval(agent_req(
+                    pb::RequestBrowserApprovalRequest {
+                        action_json: read_json,
+                        reason: "inspect active tab".to_owned(),
+                        ..Default::default()
+                    },
+                    "se_1",
+                ))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(fast.state, pb::RequestState::Approved as i32);
+            assert!(matches!(
+                fast.answer.and_then(|a| a.answer),
+                Some(pb::request_answer::Answer::AllowFor30Min(_))
+            ));
+        }
 
         // se_2 does NOT inherit se_1's read grant.
         let other = inbox
@@ -601,39 +612,25 @@ mod tests {
             .into_inner();
         assert_eq!(other.state, pb::RequestState::Pending as i32);
 
-        // A write in se_1 still requires per-action approval despite the active read grant.
-        let write_wait = inbox
-            .request_browser_approval(agent_req(
-                pb::RequestBrowserApprovalRequest {
-                    action_json: click_json(),
-                    reason: "save settings".to_owned(),
-                    ..Default::default()
-                },
-                "se_1",
-            ))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(write_wait.state, pb::RequestState::Pending as i32);
-        let write_id = write_wait.id.unwrap().value;
-
-        let write_card = inbox
-            .get_request(user_req(pb::GetRequestRequest { id: id(&write_id) }))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(write_card.kind, pb::RequestKind::BrowserWrite as i32);
-        let Some(pb::request_preview::Preview::BrowserWrite(wp)) =
-            write_card.preview.and_then(|p| p.preview)
-        else {
-            panic!("expected BrowserWrite preview");
-        };
-        assert!(!wp.supports_30m_grant);
-        assert_eq!(wp.url, "https://app.example.com/settings");
+        // Execute/write/mutate payloads are rejected outright with InvalidArgument.
+        for bad_json in disallowed_execute_jsons() {
+            let err = inbox
+                .request_browser_approval(agent_req(
+                    pb::RequestBrowserApprovalRequest {
+                        action_json: bad_json.to_owned(),
+                        reason: "disallowed".to_owned(),
+                        ..Default::default()
+                    },
+                    "se_1",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), Code::InvalidArgument, "{bad_json}");
+        }
     }
 
     #[tokio::test]
-    async fn browser_write_rejects_allow_30m_and_always_and_is_skipped_by_approve_all() {
+    async fn browser_read_rejects_always_and_consumes_single_use_approval_once() {
         let dir = tempfile::tempdir().unwrap();
         let inbox = test_inbox(&dir);
         seed_session(&inbox, "se_1", "agy");
@@ -641,8 +638,8 @@ mod tests {
         let read_rq = inbox
             .request_browser_approval(agent_req_kind(
                 pb::RequestBrowserApprovalRequest {
-                    action_json: list_tabs_json(),
-                    reason: "list".to_owned(),
+                    action_json: screenshot_json(),
+                    reason: "screenshot".to_owned(),
                     ..Default::default()
                 },
                 "se_1",
@@ -655,31 +652,12 @@ mod tests {
             .unwrap()
             .value;
 
-        let write_rq = inbox
-            .request_browser_approval(agent_req_kind(
-                pb::RequestBrowserApprovalRequest {
-                    action_json: click_json(),
-                    reason: "click".to_owned(),
-                    ..Default::default()
-                },
-                "se_1",
-                "agy",
-            ))
-            .await
-            .unwrap()
-            .into_inner()
-            .id
-            .unwrap()
-            .value;
-
-        // AllowFor30Min on BrowserWrite is rejected.
+        // AlwaysLet on BrowserRead is rejected.
         let err = inbox
             .answer_request(user_req(pb::AnswerRequestRequest {
-                id: id(&write_rq),
+                id: id(&read_rq),
                 answer: Some(pb::RequestAnswer {
-                    answer: Some(pb::request_answer::Answer::AllowFor30Min(
-                        pb::AllowFor30Min {},
-                    )),
+                    answer: Some(pb::request_answer::Answer::Always(pb::AlwaysLet::default())),
                 }),
                 ..Default::default()
             }))
@@ -687,53 +665,20 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
 
-        // AlwaysLet on both BrowserRead and BrowserWrite is rejected.
-        for rq in [&read_rq, &write_rq] {
-            let err = inbox
-                .answer_request(user_req(pb::AnswerRequestRequest {
-                    id: id(rq),
-                    answer: Some(pb::RequestAnswer {
-                        answer: Some(pb::request_answer::Answer::Always(pb::AlwaysLet::default())),
-                    }),
-                    ..Default::default()
-                }))
-                .await
-                .unwrap_err();
-            assert_eq!(err.code(), Code::InvalidArgument);
-        }
-
-        // Approve all approves BrowserRead once and skips BrowserWrite.
-        let bulk = inbox
-            .answer_all(user_req(pb::AnswerAllRequest {
-                ids: vec![
-                    pb::RequestId { value: read_rq.clone() },
-                    pb::RequestId { value: write_rq.clone() },
-                ],
-                approve: true,
-                ..Default::default()
-            }))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(bulk.answered.len(), 1);
-        assert_eq!(bulk.answered[0].id.as_ref().map(|i| i.value.as_str()), Some(read_rq.as_str()));
-        assert_eq!(bulk.skipped.len(), 1);
-        assert_eq!(bulk.skipped[0].value, write_rq);
-
-        // One-use approval verification: consuming write_rq before approval fails,
-        // after approval succeeds once, and a second use fails.
-        let click = BrowserAction::from_json(&click_json()).unwrap();
-        let key = click.action_key();
+        // One-use approval verification: consuming before approval fails,
+        // after Approve succeeds once, and a second use fails.
+        let shot = BrowserAction::from_json(&screenshot_json()).unwrap();
+        let key = shot.action_key();
         assert!(
             inbox
-                .consume_browser_approval("se_1", Some(&write_rq), &key, true)
+                .consume_browser_approval("se_1", Some(&read_rq), &key, false)
                 .await
                 .is_err()
         );
 
         inbox
             .answer_request(user_req(pb::AnswerRequestRequest {
-                id: id(&write_rq),
+                id: id(&read_rq),
                 answer: Some(pb::RequestAnswer {
                     answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
                 }),
@@ -745,19 +690,19 @@ mod tests {
         // Wrong action key fails.
         assert!(
             inbox
-                .consume_browser_approval("se_1", Some(&write_rq), "wrong-key", true)
+                .consume_browser_approval("se_1", Some(&read_rq), "wrong-key", false)
                 .await
                 .is_err()
         );
         // Matching key succeeds once.
         inbox
-            .consume_browser_approval("se_1", Some(&write_rq), &key, true)
+            .consume_browser_approval("se_1", Some(&read_rq), &key, false)
             .await
             .unwrap();
         // Reusing the same approval fails.
         assert!(
             inbox
-                .consume_browser_approval("se_1", Some(&write_rq), &key, true)
+                .consume_browser_approval("se_1", Some(&read_rq), &key, false)
                 .await
                 .is_err()
         );
@@ -886,13 +831,19 @@ mod tests {
             .await
             .unwrap();
 
-        // A write still fails without per-action approval.
-        let click_key = BrowserAction::from_json(&click_json())
+        // Subsequent screenshot with no approval id also succeeds under the replayed 30-min grant.
+        let screenshot_key = BrowserAction::from_json(&screenshot_json())
             .unwrap()
             .action_key();
+        inbox
+            .consume_browser_approval("se_rem", None, &screenshot_key, false)
+            .await
+            .unwrap();
+
+        // A write still fails without per-action approval.
         assert!(
             inbox
-                .consume_browser_approval("se_rem", None, &click_key, true)
+                .consume_browser_approval("se_rem", None, "any-write-key", true)
                 .await
                 .is_err()
         );

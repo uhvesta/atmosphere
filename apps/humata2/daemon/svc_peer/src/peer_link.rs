@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -44,7 +44,7 @@ use humata2_rpc_kit::link_proof;
 use crate::peer::{self, Gate, Handshake, Peer};
 use crate::relay::{self, Relay};
 use humata2_rpc_kit::sync;
-use humata2_daemon_ports::release::Release;
+use humata2_daemon_runtime::release::Release;
 use humata2_svc_stop_restart::daemon::Daemon;
 use humata2_svc_stop_restart::ports::DaemonLinkPort;
 

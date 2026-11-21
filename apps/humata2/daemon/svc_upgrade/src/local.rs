@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use notify::{EventKind, RecursiveMode, Watcher};
 

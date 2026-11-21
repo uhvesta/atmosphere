@@ -1,6 +1,13 @@
 //! TerminalService, RemoteTerminal, RunningHolders, and kernel terminal-session
 //! detection (`humata2_svc_terminal`).
 
+#[allow(unused_imports, ambiguous_glob_reexports)]
+pub(crate) mod pb {
+    pub use humata2_grpc_core::humata::v1::*;
+    pub use humata2_grpc_machines::humata::v1::*;
+    pub use humata2_grpc_terminal::humata::v1::*;
+}
+
 pub mod agent_tabs;
 pub mod ports;
 pub mod remote_terminal;

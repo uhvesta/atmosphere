@@ -41,6 +41,7 @@ sh_test(
 # `bazel build --compilation_mode=opt //apps/humata2/app`.
 humata2_app(
     name = "app",
+    browser_extension = "//apps/humata2/browser_extension:bundle",
     bundle_id = HUMATA2_BUNDLE_ID,
     executable = "//apps/humata2/desktop:humata2",
     fskit_appex = ":fskit_appex",
@@ -88,6 +89,7 @@ filegroup(
 # the host tools.
 humata2_app(
     name = "app_fakes",
+    browser_extension = "//apps/humata2/browser_extension:bundle",
     bundle_id = HUMATA2_BUNDLE_ID + ".fakes",
     executable = "//apps/humata2/desktop:humata2_fakes",
     icon = "//apps/humata2/app/icon:icns",

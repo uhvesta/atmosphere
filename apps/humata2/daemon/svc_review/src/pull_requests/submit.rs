@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, Capability, Target};
 use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::fault;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{
     blocking, chain, error_of, failed, invalid_field, log::say, missing, not_found,
 };

@@ -36,12 +36,55 @@ fn the_desk_tab_lists_the_sessions_and_the_sidebar_has_its_row() {
 #[test]
 fn a_fresh_channel_desk_tab_auto_starts_and_embeds_its_primary_terminal() {
     let mut app = App::new(fixture::design());
-    app.send(AppAction::OpenChannelDesk(payments()));
+    // Navigating to a channel defaults to Tab::Desk and auto-starts its primary Desk.
+    app.send(AppAction::Switch(Route::Channel(payments())));
     assert!(app.contains("channel-desk-primary"));
     assert!(app.contains("channel-desk-primary-bar"));
     assert!(app.contains("terminal-area"));
     assert!(app.contains("channel-desk-new"));
     assert!(app.contains("sidebar-channel-desk-payments-rewrite"));
+
+    // Verify Tab::Desk is the first tab (left of Sessions) and the embedded
+    // primary panel + terminal-area have real non-zero rendered bounds inside
+    // the 1280x760 viewport.
+    app.draw();
+    let (desk_tab, sessions_tab, primary_bounds, terminal_bounds) = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            let find = |id: &str| {
+                window
+                    .try_find(gpui_kit::SharedString::from(id.to_owned()))
+                    .unwrap_or_else(|| panic!("{id} should be laid out"))
+                    .bounds()
+            };
+            (
+                find("channel-tab-Desk"),
+                find("channel-tab-Sessions"),
+                find("channel-desk-primary"),
+                find("terminal-area"),
+            )
+        })
+        .expect("window stays open");
+    assert!(
+        f32::from(desk_tab.origin.x) < f32::from(sessions_tab.origin.x),
+        "Desk tab should appear before Sessions tab: desk={desk_tab:?}, sessions={sessions_tab:?}"
+    );
+    for (name, bounds) in [
+        ("channel-desk-primary", primary_bounds),
+        ("terminal-area", terminal_bounds),
+    ] {
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        let right = f32::from(bounds.origin.x) + w;
+        let bottom = f32::from(bounds.origin.y) + h;
+        assert!(w >= 300.0, "{name} width too small: {bounds:?}");
+        assert!(h >= 200.0, "{name} height too small: {bounds:?}");
+        assert!(
+            right <= 1280.5 && bottom <= 760.5,
+            "{name} overflows viewport: {bounds:?}"
+        );
+    }
+
     let first_id = app.ui.read(|state| state.active_channel_desk());
     assert!(first_id.is_some());
 
@@ -58,6 +101,30 @@ fn a_fresh_channel_desk_tab_auto_starts_and_embeds_its_primary_terminal() {
             .read(|state| state.desk.channel_rows(&payments()).len()),
         1
     );
+
+    // Opening as a full session and then closing returns to the channel Desk
+    // tab in Closed state without reopening as a full session or respawning.
+    app.click("channel-desk-primary-open");
+    assert_eq!(
+        app.ui.read(|state| state.route.clone()),
+        Route::Session(first_id.clone().unwrap())
+    );
+    app.click("channel-desk-bar-close");
+    assert!(app.contains("channel-desk-close"));
+    app.click("channel-desk-close-confirm");
+    assert_eq!(
+        app.ui.read(|state| state.route.clone()),
+        Route::Channel(payments())
+    );
+    assert!(app.contains("channel-desk-closed-state"));
+    assert_eq!(app.ui.read(|state| state.active_channel_desk()), None);
+    assert!(app
+        .fakes
+        .daemon
+        .workspace()
+        .desk
+        .channel_sessions
+        .is_empty());
 }
 
 #[test]

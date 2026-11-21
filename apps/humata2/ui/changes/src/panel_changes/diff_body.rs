@@ -434,7 +434,7 @@ pub(super) struct CodeRows {
     /// Linked To-do context for Add to steps / Spin off To-do comment hooks.
     todo_ctx: comment_cards::TodoHookContext,
     /// Cached per-line syntax highlight spans for `file.lines`.
-    syntax: std::sync::Arc<Vec<Vec<(Range<usize>, HighlightStyle)>>>,
+    syntax: std::sync::Arc<humata2_highlight::LineHighlights>,
 }
 
 impl CodeRows {
@@ -815,7 +815,7 @@ impl CodeRows {
                 })
             })
             .filter(|(span, _)| !span.is_empty());
-        let line_syntax = self.syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+        let line_syntax = self.syntax.line(index);
         let code = col().children(fragments.into_iter().enumerate().map(|(part, fragment)| {
             let overlay = mark.as_ref().and_then(|(span, color)| {
                 let range = display_range(&line.text, &fragment, self.wrap, span)?;

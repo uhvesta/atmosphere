@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_daemon_runtime::tool_path::gh_program;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use serde_json::Value;
 use tonic::{Code, Status};
 
@@ -233,7 +233,7 @@ pub(super) fn status_of(err: &GithubError, repo: Option<&pb::RepoRef>, number: O
                     fix,
                     pb::error::Kind::RateLimited(pb::RateLimited {
                         service: pb::rate_limited::Service::Github as i32,
-                        resets_at: reset.map(|seconds| humata2_grpc::Timestamp { seconds, nanos: 0 }),
+                        resets_at: reset.map(|seconds| humata2_grpc_core::Timestamp { seconds, nanos: 0 }),
                     }),
                 ),
             )

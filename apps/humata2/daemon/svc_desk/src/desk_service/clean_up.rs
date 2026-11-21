@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{DESK_CHANNEL, folder_bytes, held_work, scratch_child};
 use humata2_store::{DeskFolderKind, DeskRow, SessionRecord, StoreError};
 use humata2_transfers::NewItem;

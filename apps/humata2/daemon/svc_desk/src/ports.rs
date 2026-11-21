@@ -12,7 +12,7 @@ use std::future::Future;
 
 use humata2_access::{AccessRequest, Call, ChannelId, MachineId, Refusal, SessionId, SessionRef};
 use humata2_daemon_ports::{Caller, Deferred};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_revive::FollowStep;
 use humata2_sessions::Agents;
 use humata2_store::{SessionRecord, Store, StoreError, TabRecord};

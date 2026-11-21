@@ -4,10 +4,10 @@
 //! stack and the FUSEFS helper are one host tools item: it waits while any differs. Only a file
 //! that is there and differs counts: a missing one is nothing to migrate.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::InstalledFile;
 
-pub use humata2_daemon_ports::release::installed_tools as installed;
+pub use humata2_daemon_runtime::release::installed_tools as installed;
 
 /// The tools a release is checked for, each with the thing its Migrate item is.
 pub(crate) const TOOLS: [(InstalledFile, pb::MigrateThing); 4] = [

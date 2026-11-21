@@ -3,10 +3,13 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # What svc_inbox is built on that has no fault-point build.
 SVC_INBOX_SHARED_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/browser_copilot",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
     "@crates//:prost",

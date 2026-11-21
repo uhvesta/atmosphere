@@ -9,7 +9,6 @@
 //! that version's text and recorded comments, and nothing can be edited.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
@@ -21,11 +20,12 @@ use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::{Comment, Status};
 use humata2_clients::docs::{DocVersion, VersionText};
 use humata2_clients::model::{DiffLine, LineKind, SessionId};
-use humata2_markdown::{CommentMarks, MarkdownOptions, MarkdownView};
+use humata2_markdown::{CommentMarks, MarkdownOptions, MarkdownView, MermaidCache};
 use humata2_session::{DocHistory, HistoryAction, SessionAction, Tab, is_markdown};
 
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::document_tab::{LruMap, MAX_CACHED_VIEWS};
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
 
@@ -100,12 +100,13 @@ pub struct HistoryUi {
     /// Whether the Save version box has focus, read at each sync. Unfocused
     /// and empty, the box shows its own placeholder, cut with an ellipsis.
     focused: Cell<bool>,
-    viewed: HashMap<(SessionId, String), (String, Entity<MarkdownView>)>,
+    viewed: LruMap<(SessionId, String), (String, Entity<MarkdownView>)>,
+    diagrams: MermaidCache,
     _typing: Subscription,
 }
 
 impl HistoryUi {
-    pub fn new(ui: &Rc<Ui>, window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(ui: &Rc<Ui>, diagrams: MermaidCache, window: &mut Window, cx: &mut App) -> Self {
         let message =
             cx.new(|cx| InputState::new(window, cx).placeholder(PLACEHOLDER));
         let path: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -146,7 +147,8 @@ impl HistoryUi {
             path,
             menu: Rc::new(Cell::new(false)),
             focused: Cell::new(false),
-            viewed: HashMap::new(),
+            viewed: LruMap::new(MAX_CACHED_VIEWS),
+            diagrams,
             _typing: typing,
         }
     }
@@ -176,6 +178,7 @@ impl HistoryUi {
                     let mut options = MarkdownOptions::new(want.key.1.clone());
                     options.comments = false;
                     options.marks = CommentMarks::Counts;
+                    options.diagrams = self.diagrams.clone();
                     let name = want.key.1.rsplit('/').next().unwrap_or(&want.key.1);
                     options.document = Some(name.to_owned().into());
                     let text = want.text.clone();

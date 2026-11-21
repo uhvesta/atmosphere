@@ -2,7 +2,7 @@
 //! to-do ask (a board item's change or a new item an agent wants) leaves its
 //! agent working and shows on its item in To-do instead.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 
 /// Whether `request` is listed and counted in the Agent inbox.
 pub(super) fn in_agent_inbox(request: &pb::InboxRequest) -> bool {

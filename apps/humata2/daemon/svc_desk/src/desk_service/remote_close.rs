@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::{ChannelDeskRow, SessionRecord};
 use tonic::Status;
 use tonic::transport::Channel;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, SessionToken, ToolError};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
@@ -169,7 +169,7 @@ fn signed_request<T>(
     if let Some(bundle) = bundle {
         request
             .metadata_mut()
-            .insert(humata2_daemon_ports::release::BUNDLE_HEADER, bundle.clone());
+            .insert(humata2_daemon_ports::BUNDLE_HEADER, bundle.clone());
     }
     Some(request)
 }

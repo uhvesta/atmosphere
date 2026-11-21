@@ -168,7 +168,7 @@ impl Host {
         let deadline = Instant::now() + Duration::from_secs(30);
         while tokio::net::UnixStream::connect(&host.socket).await.is_err() {
             assert!(Instant::now() < deadline, "humatad2 never started listening");
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         host
     }
@@ -299,12 +299,30 @@ impl<'r> App<'r> {
     /// Runs what the last step started, lets the sockets move, and draws a
     /// frame as the app would.
     fn settle(&mut self) {
-        for _ in 0..5 {
+        for _ in 0..3 {
             self.runtime.block_on(async {
                 for _ in 0..16 {
                     tokio::task::yield_now().await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            });
+            self.cx.run_until_parked();
+        }
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                humata2_engine::frame::natural_frame(window, cx);
+            })
+            .expect("the window stays open");
+    }
+
+    /// Non-sleeping drain + frame for `wait_until`, which already parks
+    /// between iterations.
+    fn drain_and_frame(&mut self) {
+        for _ in 0..2 {
+            self.runtime.block_on(async {
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
             });
             self.cx.run_until_parked();
         }
@@ -373,7 +391,7 @@ impl<'r> App<'r> {
         );
         let until = Instant::now() + DEADLINE;
         loop {
-            self.settle();
+            self.drain_and_frame();
             if done(self) {
                 return;
             }
@@ -382,7 +400,7 @@ impl<'r> App<'r> {
                 let why = self.diagnose();
                 panic!("timed out waiting for {what}\n{why}");
             }
-            std::thread::park_timeout(left);
+            std::thread::park_timeout(left.min(Duration::from_millis(5)));
         }
     }
 
@@ -1087,7 +1105,7 @@ impl Remote {
         let deadline = Instant::now() + Duration::from_secs(30);
         while tokio::net::UnixStream::connect(&remote.socket).await.is_err() {
             assert!(Instant::now() < deadline, "the machine's humatad2 never started listening");
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         remote
     }

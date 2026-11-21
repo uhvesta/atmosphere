@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::scratch_child;
 use humata2_store::{AgentState, ChannelDeskRow, Placement, SessionRecord, Store, StoreError, TabKind, TabRecord};
 use humata2_transfers::NewItem;

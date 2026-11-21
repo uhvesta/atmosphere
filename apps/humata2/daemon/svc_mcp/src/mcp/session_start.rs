@@ -3,7 +3,7 @@
 //! names one. The daemon's StartSession runs the access check and asks the
 //! user first when the rule says so.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use serde_json::{Map, Value, json};
 

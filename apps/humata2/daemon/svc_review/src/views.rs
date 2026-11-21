@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, SessionRef, Target};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::Timestamp;
-use humata2_grpc::humata::v1 as pb;
+use humata2_grpc_core::Timestamp;
+use crate::pb;
 use humata2_review_diff::{NoteState, NoteTarget, wire};
 use humata2_store::{SessionRecord, StoreError, ViewRecord};
 use pb::invalid_field::Problem;

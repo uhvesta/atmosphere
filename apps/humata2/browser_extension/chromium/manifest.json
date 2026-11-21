@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Humata 2 Browser Co-Pilot",
+  "name": "Humata 2 Browser Co-Pilot (Read-Only)",
   "version": "0.7.0",
-  "description": "Connects your native desktop browser to Humata 2 coding agents (Claude, Codex, Copilot, Agy) via Native Messaging with per-action Agent Inbox approvals.",
+  "description": "Provides strictly read-only browser view, page snapshot, and screenshot access to Humata 2 coding agents via Native Messaging. Never clicks, types, navigates, or executes code.",
   "permissions": [
     "nativeMessaging",
     "tabs",
-    "activeTab",
-    "scripting"
+    "activeTab"
   ],
   "background": {
     "service_worker": "shared/background.js"

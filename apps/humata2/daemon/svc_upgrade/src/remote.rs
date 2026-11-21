@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use humata2_daemon_ports::PortError;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{
     BuildsError, LoginError, ManageError, Platform, RemoteStageError, StageError, StagedRelease,
     SystemRunner, existing_link, stage_next_remote,

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use hyper_util::rt::TokioIo;
 use pb::peer_service_client::PeerServiceClient;
 use pb::peer_unproven::Reason;
@@ -1128,7 +1128,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
     use humata2_machines::{Bundle, Machines, MachinesConfig, Platform, RetryPolicy};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::sync::mpsc;
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     #[cfg(any())]
-    fn seconds(at: &Option<humata2_grpc::Timestamp>) -> Option<i64> {
+    fn seconds(at: &Option<humata2_grpc_core::Timestamp>) -> Option<i64> {
         at.as_ref().map(|at| at.seconds)
     }
 

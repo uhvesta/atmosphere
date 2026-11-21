@@ -1,7 +1,7 @@
 //! Narrow port traits for `humata2_svc_channels` so it compiles standalone
 //! without depending on `daemon/humatad`.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tonic::Status;
 
 /// Machine reachability/status lookup used by channel grid and known-repo checks.

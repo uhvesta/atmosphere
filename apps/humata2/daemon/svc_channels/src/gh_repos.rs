@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{invalid_field, rfc3339};
 use tonic::{Code, Status};
 
@@ -132,7 +132,7 @@ pub struct Repo {
     pub description: String,
     pub is_private: bool,
     default_branch: String,
-    pushed_at: Option<humata2_grpc::Timestamp>,
+    pushed_at: Option<humata2_grpc_core::Timestamp>,
 }
 
 impl Repo {
@@ -693,7 +693,7 @@ mod tests {
 
     fn repo_pushed(full_name: &str, seconds: i64) -> Repo {
         let mut r = repo(full_name);
-        r.pushed_at = Some(humata2_grpc::Timestamp { seconds, nanos: 0 });
+        r.pushed_at = Some(humata2_grpc_core::Timestamp { seconds, nanos: 0 });
         r
     }
 

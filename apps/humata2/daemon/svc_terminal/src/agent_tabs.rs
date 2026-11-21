@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_holder::{HolderError, HolderSpec};
 use humata2_rpc_kit::{chain, internal, invalid_field};
 use humata2_sessions::{AgentError, Agents};

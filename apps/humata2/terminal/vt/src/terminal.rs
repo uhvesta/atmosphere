@@ -17,6 +17,14 @@ mod view_support;
 
 pub use view_support::DecMode;
 
+/// Default client-side scrollback line cap when restoring a terminal replica.
+pub const CLIENT_SCROLLBACK_MAX_LINES: usize = 5_000;
+/// Default client-side scrollback byte cap (4 MiB) when restoring a terminal replica.
+pub const CLIENT_SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Upper bound on scrollback bytes for [`Terminal::new`] so history never
+/// grows without bound while still accommodating dense 10k-line checkpoints.
+const DEFAULT_SCROLLBACK_MAX_BYTES: usize = 32 * 1024 * 1024;
+
 /// A cell on the screen: column `x` of row `y`, where row 0 is the oldest
 /// row of scrollback and the last row is the bottom of the active area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,12 +241,13 @@ impl Terminal {
                 .map_err(|source| Error::Configure { what, source })
         };
 
-        // History is limited by lines only, not the default 10,000 bytes.
-        let unlimited = usize::MAX;
+        // Bound scrollback bytes cleanly instead of usize::MAX while still
+        // allowing callers to configure line counts via `scrollback_lines`.
+        let max_bytes = DEFAULT_SCROLLBACK_MAX_BYTES;
         set(
             "scrollback size",
             ffi::TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-            (&raw const unlimited).cast(),
+            (&raw const max_bytes).cast(),
         )?;
         set(
             "scrollback length",

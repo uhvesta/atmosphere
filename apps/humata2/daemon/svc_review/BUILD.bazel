@@ -2,9 +2,14 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # What svc_review is built on that has no fault-point build.
 SVC_REVIEW_SHARED_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:peer",
+    "//apps/humata2/api/grpc:review",
+    "//apps/humata2/api/grpc:sessions",
+    "//apps/humata2/api/grpc:terminal",
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/rpc_kit",

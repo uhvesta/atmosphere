@@ -6,7 +6,7 @@
 //! reachability: all are CHANNEL_READ on the agent's own channel, so the tool
 //! needs no machine-list access the agent doesn't have.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Reply, ToolError};
 use serde_json::{Value, json};
 

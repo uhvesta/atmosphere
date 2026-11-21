@@ -354,12 +354,12 @@ if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/mat
                     r#"#!/bin/sh
 if [ "$1" = 2 ]; then
   n=0
-  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/active" ] || [ "$n" -ge 100 ]; do
-    {real} 0.1; n=$((n + 1))
+  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/active" ] || [ -e "$STATE/broken" ] || [ "$n" -ge 100 ]; do
+    {real} 0.005; n=$((n + 1))
   done
   exit 0
 fi
-exec {real} 0.2
+exec {real} 0.005
 "#,
                     real = real_sleep.display()
                 ),

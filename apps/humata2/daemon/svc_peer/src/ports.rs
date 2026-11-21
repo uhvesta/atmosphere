@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_daemon_ports::{Caller, UserVia};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::StoreError;
 use tokio::sync::{broadcast, watch};
 use tonic::{Code, Request, Status};
@@ -349,7 +349,7 @@ pub mod stop {
 
 /// Session service peer hooks (decoupled from `humatad::session_service`).
 pub mod session_hooks {
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
     use humata2_rpc_kit::helpers::{error, failure, status_error_of};
     use tonic::{Code, Status};
 

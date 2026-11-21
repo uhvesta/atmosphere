@@ -14,7 +14,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::Layout;
 use humata2_transfers as tr;
 use fusefs_cas::{ChunkHash, FileManifest, hash_bytes};

@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{
     Call, Daemon, ErrorKind, Operation, Reply, RequestId, Retry, Server, SessionToken, ToolError,
     WaitEvent,
@@ -151,7 +151,7 @@ impl GrpcDaemon {
         // UP-1, D290 m: a call with a session token is a CLI's, so it names
         // its release as the humata CLI does.
         if let Some(bundle) = &self.bundle {
-            request.metadata_mut().insert(humata2_daemon_ports::release::BUNDLE_HEADER, bundle.clone());
+            request.metadata_mut().insert(humata2_daemon_ports::BUNDLE_HEADER, bundle.clone());
         }
         Ok(request)
     }
@@ -1584,13 +1584,10 @@ impl Daemon for GrpcDaemon {
             Operation::ProviderCheck => self.provider_check(call),
             Operation::ProviderRender => self.provider_render(call),
             Operation::ProviderParse => self.provider_parse(call),
-            // BROWSER
+            // BROWSER (read-only)
             Operation::BrowserListTabs
             | Operation::BrowserReadTab
-            | Operation::BrowserGuideHighlight
-            | Operation::BrowserClick
-            | Operation::BrowserType
-            | Operation::BrowserNavigate => self.browser_call(call).await,
+            | Operation::BrowserScreenshot => self.browser_call(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)
@@ -2210,7 +2207,7 @@ mod files {
 
 /// The view tools' arguments and answers, as JSON.
 mod views {
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
     use humata2_mcp::{ErrorKind, ToolError};
     use serde_json::{Map, Value, json};
 
@@ -2328,7 +2325,7 @@ mod views {
 
 /// `inbox_request`'s arguments, as the access protos.
 mod access {
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
     use humata2_mcp::{ErrorKind, ToolError};
     use serde_json::{Map, Value, json};
 
@@ -2420,7 +2417,7 @@ mod access {
 
 /// The review tools' arguments and answers, as JSON.
 mod review {
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
     use humata2_mcp::{ErrorKind, ToolError};
     use serde_json::{Map, Value, json};
 

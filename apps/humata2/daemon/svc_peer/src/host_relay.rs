@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tokio::sync::{broadcast, watch};
 use tonic::metadata::{MetadataValue, errors::InvalidMetadataValue};
 use tonic::transport::Channel;

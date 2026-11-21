@@ -17,15 +17,67 @@ use crate::Language;
 const MAX_LINE_BYTES: usize = 1024;
 
 /// Maximum number of cached highlighted documents kept in memory.
-const CACHE_CAPACITY: usize = 64;
+const CACHE_CAPACITY: usize = 16;
 
 /// Maximum total lines highlighted in one full-file pass; files larger than
 /// this still highlight their first `MAX_FILE_LINES` lines cleanly and leave
 /// the tail plain rather than stalling.
 const MAX_FILE_LINES: usize = 8_000;
 
-/// Per-line highlight spans: `lines[i]` holds byte ranges relative to line `i`.
-pub type LineHighlights = Vec<Vec<(Range<usize>, HighlightStyle)>>;
+/// Flat per-line highlight spans: `line_offsets[i]..line_offsets[i + 1]`
+/// indexes into `spans` for line `i`, avoiding one heap `Vec` per line.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LineHighlights {
+    spans: Vec<(Range<usize>, HighlightStyle)>,
+    line_offsets: Vec<u32>,
+}
+
+impl LineHighlights {
+    /// Empty highlight table for `line_count` plain lines.
+    #[must_use]
+    pub fn empty(line_count: usize) -> Self {
+        Self {
+            spans: Vec::new(),
+            line_offsets: vec![0; line_count + 1],
+        }
+    }
+
+    /// Number of lines covered by this highlight table.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.line_offsets.len().saturating_sub(1)
+    }
+
+    /// Whether this highlight table has zero lines.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Highlight spans for line `index`, or `None` if out of bounds.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&[(Range<usize>, HighlightStyle)]> {
+        let start = *self.line_offsets.get(index)? as usize;
+        let end = *self.line_offsets.get(index + 1)? as usize;
+        self.spans.get(start..end)
+    }
+
+    /// Highlight spans for line `index`, or an empty slice if out of bounds.
+    #[must_use]
+    pub fn line(&self, index: usize) -> &[(Range<usize>, HighlightStyle)] {
+        self.get(index).unwrap_or(&[])
+    }
+}
+
+impl std::ops::Index<usize> for LineHighlights {
+    type Output = [(Range<usize>, HighlightStyle)];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        let start = self.line_offsets[index] as usize;
+        let end = self.line_offsets[index + 1] as usize;
+        &self.spans[start..end]
+    }
+}
 
 /// The default light or dark highlight theme from `gpui-component`.
 #[must_use]
@@ -76,12 +128,11 @@ pub fn highlight_line(
 /// byte ranges.
 #[must_use]
 pub fn highlight_lines(language: Language, lines: &[&str], dark: bool) -> LineHighlights {
-    let mut per_line = vec![Vec::new(); lines.len()];
     let Some(token) = language.syntax_token() else {
-        return per_line;
+        return LineHighlights::empty(lines.len());
     };
     if lines.is_empty() {
-        return per_line;
+        return LineHighlights::empty(0);
     }
 
     let limit = lines.len().min(MAX_FILE_LINES);
@@ -98,9 +149,12 @@ pub fn highlight_lines(language: Language, lines: &[&str], dark: bool) -> LineHi
     }
 
     let palette = theme(dark);
-    let spans = highlight_code(token, &joined, palette.as_ref());
+    let raw_spans = highlight_code(token, &joined, palette.as_ref());
+    let mut flat: Vec<(u32, Range<usize>, HighlightStyle)> = Vec::with_capacity(raw_spans.len());
+    let mut sorted = true;
+    let mut prev_line = 0u32;
     let mut line_ix = 0;
-    for (range, style) in spans {
+    for (range, style) in raw_spans {
         if range.is_empty() || !is_styled(&style) {
             continue;
         }
@@ -119,13 +173,39 @@ pub fn highlight_lines(language: Language, lines: &[&str], dark: bool) -> LineHi
                 let local = (start - line_start)..(end - line_start);
                 let line = lines[cursor];
                 if line.is_char_boundary(local.start) && line.is_char_boundary(local.end) {
-                    per_line[cursor].push((local, style));
+                    let cur = cursor as u32;
+                    if cur < prev_line {
+                        sorted = false;
+                    }
+                    prev_line = cur;
+                    flat.push((cur, local, style));
                 }
             }
             cursor += 1;
         }
     }
-    per_line
+    if !sorted {
+        flat.sort_by_key(|(line, _, _)| *line);
+    }
+    let mut line_offsets = Vec::with_capacity(lines.len() + 1);
+    let mut spans = Vec::with_capacity(flat.len());
+    let mut next_line = 0usize;
+    line_offsets.push(0u32);
+    for (line, range, style) in flat {
+        let line = line as usize;
+        while next_line < line {
+            line_offsets.push(spans.len() as u32);
+            next_line += 1;
+        }
+        spans.push((range, style));
+    }
+    while line_offsets.len() <= lines.len() {
+        line_offsets.push(spans.len() as u32);
+    }
+    LineHighlights {
+        spans,
+        line_offsets,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,7 +229,7 @@ pub fn highlight_lines_cached(
     dark: bool,
 ) -> Arc<LineHighlights> {
     if language == Language::Plain || lines.is_empty() {
-        return Arc::new(vec![Vec::new(); lines.len()]);
+        return Arc::new(LineHighlights::empty(lines.len()));
     }
     let mut hasher = DefaultHasher::new();
     for line in lines {
@@ -162,13 +242,20 @@ pub fn highlight_lines_cached(
         hash: hasher.finish(),
         line_count: lines.len(),
     };
-    if let Ok(cache) = LINE_CACHE.lock()
-        && let Some((_, hit)) = cache.iter().find(|(k, _)| *k == key)
+    if let Ok(mut cache) = LINE_CACHE.lock()
+        && let Some(pos) = cache.iter().position(|(k, _)| *k == key)
     {
-        return hit.clone();
+        let (k, hit) = cache.remove(pos).expect("position within bounds");
+        cache.push_back((k, hit.clone()));
+        return hit;
     }
     let computed = Arc::new(highlight_lines(language, lines, dark));
     if let Ok(mut cache) = LINE_CACHE.lock() {
+        if let Some(pos) = cache.iter().position(|(k, _)| *k == key) {
+            let (_, existing) = cache.remove(pos).expect("position within bounds");
+            cache.push_back((key, existing.clone()));
+            return existing;
+        }
         if cache.len() >= CACHE_CAPACITY {
             cache.pop_front();
         }
@@ -504,11 +591,68 @@ mod tests {
         }
     }
 
+    static TEST_CACHE_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
     #[test]
     fn cached_line_highlights_reuse_arc_across_frames() {
+        let _guard = TEST_CACHE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let lines = ["pub fn main() {", "    let x = \"hello\";", "}"];
         let first = highlight_lines_cached(Language::Rust, &lines, true);
         let second = highlight_lines_cached(Language::Rust, &lines, true);
         assert!(Arc::ptr_eq(&first, &second), "repeated frame must hit cache");
+    }
+
+    #[test]
+    fn flat_line_highlights_match_per_line_spans_and_bounds() {
+        let lines = [
+            "/* block",
+            "   comment */",
+            "",
+            "pub fn f(x: i32) -> i32 { x + 1 }",
+        ];
+        let hl = highlight_lines(Language::Rust, &lines, false);
+        assert_eq!(hl.len(), 4);
+        assert!(!hl.is_empty());
+        assert!(!hl.line(0).is_empty());
+        assert!(!hl.line(1).is_empty());
+        assert!(hl.line(2).is_empty());
+        assert!(distinct_colors(hl.line(3)) >= 2);
+        assert!(hl.get(4).is_none());
+        assert!(hl.line(4).is_empty());
+    }
+
+    #[test]
+    fn line_cache_promotes_hits_and_evicts_least_recently_used() {
+        let _guard = TEST_CACHE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(mut cache) = LINE_CACHE.lock() {
+            cache.clear();
+        }
+        // Fill cache with CACHE_CAPACITY distinct entries (0..16).
+        let docs: Vec<String> = (0..=CACHE_CAPACITY)
+            .map(|i| format!("let lru_probe_{i} = {i};"))
+            .collect();
+        let first = highlight_lines_cached(Language::Rust, &[docs[0].as_str()], true);
+        let second = highlight_lines_cached(Language::Rust, &[docs[1].as_str()], true);
+        for doc in &docs[2..CACHE_CAPACITY] {
+            let _ = highlight_lines_cached(Language::Rust, &[doc.as_str()], true);
+        }
+        // Touch entry 0 so it becomes most recently used; entry 1 is now LRU.
+        let first_hit = highlight_lines_cached(Language::Rust, &[docs[0].as_str()], true);
+        assert!(Arc::ptr_eq(&first, &first_hit), "entry 0 must still be cached");
+
+        // Insert one more entry (index CACHE_CAPACITY) to evict the LRU (entry 1).
+        let _ = highlight_lines_cached(Language::Rust, &[docs[CACHE_CAPACITY].as_str()], true);
+
+        // Entry 0 must still be a cache hit; entry 1 must have been evicted and recomputed.
+        let first_after = highlight_lines_cached(Language::Rust, &[docs[0].as_str()], true);
+        assert!(
+            Arc::ptr_eq(&first, &first_after),
+            "promoted entry 0 must survive LRU eviction"
+        );
+        let second_after = highlight_lines_cached(Language::Rust, &[docs[1].as_str()], true);
+        assert!(
+            !Arc::ptr_eq(&second, &second_after),
+            "least recently used entry 1 must be evicted past capacity {CACHE_CAPACITY}"
+        );
     }
 }

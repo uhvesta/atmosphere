@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use humata2_access::Refusal;
 use humata2_daemon_ports::{Caller, UserVia};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{internal, missing, not_built_status};
 use tonic::{Request, Response, Status};
 

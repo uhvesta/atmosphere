@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tokio::sync::broadcast;
 
 use humata2_rpc_kit::lock;
@@ -39,7 +39,7 @@ const UPDATE_BACKLOG: usize = 256;
 pub struct SessionReport {
     pub status: Option<pb::SessionStatusReport>,
     pub pointers: Vec<pb::Pointer>,
-    pub pointers_at: Option<humata2_grpc::Timestamp>,
+    pub pointers_at: Option<humata2_grpc_core::Timestamp>,
 }
 
 /// Whether what is held was read over a live link.

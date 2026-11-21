@@ -7,7 +7,7 @@ use std::process::Command;
 
 use humata2_access::{Capability, SessionRef};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_review_diff::{DiffError, wire};
 use humata2_store::SessionRecord;
 use tonic::{Code, Status};

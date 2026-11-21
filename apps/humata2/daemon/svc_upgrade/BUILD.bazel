@@ -3,8 +3,11 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # Same-release peers, Migrate inbox items, release gating, local/remote
 # upgrade execution, rollback, and holder migration (SPLIT_PHASE3_DAEMON §2.1).
 SVC_UPGRADE_COMMON_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",

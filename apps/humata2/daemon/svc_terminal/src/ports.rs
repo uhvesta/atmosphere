@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use prost_types::Timestamp;
 use tokio::sync::watch;
 use tokio_stream::Stream;

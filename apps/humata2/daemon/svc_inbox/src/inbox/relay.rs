@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Code, Status};

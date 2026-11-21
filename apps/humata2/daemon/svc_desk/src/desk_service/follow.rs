@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::DESK_CHANNEL;
 use humata2_store::StoreError;
 use tokio::sync::broadcast::error::RecvError;

@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::InstalledFile;
 use humata2_revive::{HolderBuilds, ReviveError, Revived};
 use humata2_rpc_kit::helpers as status;

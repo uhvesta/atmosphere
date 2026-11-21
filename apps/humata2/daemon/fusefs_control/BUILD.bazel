@@ -1,0 +1,29 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Leaf DTO + Unix-socket control client crate shared between `humatad_core` and
+# `fusefs_adapter`. Intentionally has zero dependencies on `//libs/fusefs/*`
+# (no VFS, CAS, zstd, lz4_flex, FSKit, or Linux FUSE).
+rust_library(
+    name = "fusefs_control",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_fusefs_control",
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "fusefs_control_unit_test",
+    crate = ":fusefs_control",
+    deps = [
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

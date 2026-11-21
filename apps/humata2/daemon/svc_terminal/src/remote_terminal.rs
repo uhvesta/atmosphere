@@ -43,7 +43,7 @@ use std::future::{Future, pending};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use pb::attach_client_message::Message as ClientMessage;
 use pb::attach_server_message::Message as ServerMessage;
 use pb::terminal_service_client::TerminalServiceClient;

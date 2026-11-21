@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use humata2_chunk::{CHUNK_MAX, Decoder, Encoder, Link, Sample};
-use humata2_grpc::Timestamp;
-use humata2_grpc::humata::v1 as pb;
+use humata2_grpc_core::Timestamp;
+use crate::pb;
 use humata2_transfers::{End, EndError, Entry, Kind, Problem, Sink, Snapshot, State, TrashError};
 use prost::Message;
 use tokio::runtime::Handle;

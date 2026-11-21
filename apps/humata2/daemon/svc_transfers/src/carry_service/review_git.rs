@@ -12,7 +12,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::{Store, StoreError};
 use tonic::{Code, Status};
 

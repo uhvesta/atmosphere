@@ -1,11 +1,11 @@
 //! T10: `fs status` summary and `fs materialize` byte-count estimator +
 //! explicit confirmation planner.
 
-use std::fmt;
 use std::path::PathBuf;
 
 use fusefs_host::MountState;
 use fusefs_vfs::{CallerContext, FileKind, NodeId, ROOT_NODE_ID, VfsResult, Volume};
+pub use humata2_fusefs_control::FsMountMode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -14,35 +14,6 @@ use crate::layout::{BuildCacheStub, HUMATA_OMITTED_STUB_FILENAME, read_all_bytes
 /// Default byte threshold above which `fs materialize` requires explicit user
 /// confirmation (50 MiB).
 pub const DEFAULT_CONFIRMATION_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024;
-
-/// Active mount backend mode for `humata2_fusefs`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FsMountMode {
-    FsKit,
-    Linux,
-    Degraded,
-}
-
-#[cfg(target_os = "linux")]
-impl From<fusefs_linux::MountMode> for FsMountMode {
-    fn from(mode: fusefs_linux::MountMode) -> Self {
-        match mode {
-            fusefs_linux::MountMode::DevFuse => Self::Linux,
-            fusefs_linux::MountMode::DegradedSymlinkSkeleton => Self::Degraded,
-        }
-    }
-}
-
-impl fmt::Display for FsMountMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FsKit => f.write_str("fskit"),
-            Self::Linux => f.write_str("linux"),
-            Self::Degraded => f.write_str("degraded"),
-        }
-    }
-}
 
 /// Human- and machine-readable `humata2 fs status` summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

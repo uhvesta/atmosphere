@@ -12,7 +12,7 @@ mod highlighter;
 mod language;
 
 pub use highlighter::{
-    highlight_code_block, highlight_line, highlight_lines, highlight_lines_cached, highlight_text,
-    merge_overlay, shared_code_block_highlighter, theme,
+    LineHighlights, highlight_code_block, highlight_line, highlight_lines, highlight_lines_cached,
+    highlight_text, merge_overlay, shared_code_block_highlighter, theme,
 };
 pub use language::Language;

@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::{Code, Status};

@@ -1,7 +1,7 @@
 //! What a Desk session looks like to the app: its folder, its switches, its
 //! times and the work that holds its folder (DK-2, DK-11, DK-4, D182).
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::doc_repo::{self, DocGit};
 use humata2_sessions::{documents_under, repos_under};
 use humata2_store::{DeskFolderKind, DeskRow, SessionRecord};

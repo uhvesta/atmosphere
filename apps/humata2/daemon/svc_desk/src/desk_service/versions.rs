@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_access::{Call, Entry, Place, RepoPath, Root};
 use humata2_sessions::doc_repo::{self, DocGit, DocRepoError, SavedBy, Version};
 use humata2_store::{SessionRecord, StoreError};

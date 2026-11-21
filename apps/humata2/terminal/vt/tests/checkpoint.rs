@@ -150,6 +150,33 @@ fn reducing_history_limits_reclaims_existing_history() {
     same(&mut t, &mut restored);
 }
 
+#[test]
+fn from_checkpoint_bounded_caps_scrollback_rows() {
+    let mut t = Terminal::new(80, 10, 10_000).unwrap();
+    for n in 0..8_000 {
+        t.feed(format!("bounded-line-{n}\r\n").as_bytes());
+    }
+    assert!(t.scrollback_rows() > 6_000);
+    let bytes = t.checkpoint(LIMIT).unwrap();
+    let restored = Terminal::from_checkpoint_bounded(
+        &bytes,
+        ghostty_vt::CLIENT_SCROLLBACK_MAX_LINES,
+        ghostty_vt::CLIENT_SCROLLBACK_MAX_BYTES,
+    )
+    .unwrap();
+    assert!(
+        restored.scrollback_rows() < t.scrollback_rows(),
+        "bounded restore should trim scrollback: {} -> {}",
+        t.scrollback_rows(),
+        restored.scrollback_rows()
+    );
+    assert!(
+        restored.scrollback_rows() <= ghostty_vt::CLIENT_SCROLLBACK_MAX_LINES + 512,
+        "page-granular retention should stay close to the 5k line cap: {}",
+        restored.scrollback_rows()
+    );
+}
+
 fn terminal_payload(checkpoint: &[u8]) -> usize {
     // The pinned format begins with our 20-byte envelope, Ghostty's 10-byte
     // envelope, then a 10-byte TERMINAL record header.

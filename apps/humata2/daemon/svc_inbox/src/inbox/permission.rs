@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use humata2_daemon_ports::{AgentCaller, Caller};
 use humata2_daemon_runtime::agent_switches::{self, Change, SwitchesError};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{blocking, helpers as status, log};
 use humata2_sessions_core::Agents;
 use humata2_store::{Store, StoreError};

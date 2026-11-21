@@ -4,9 +4,12 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # and RemoteEnd/RouterEnd for humatad2 (SPLIT §3.2; SPLIT_PHASE3_DAEMON §2.3).
 SHARED_DEPS = [
     "//libs/fusefs/cas",
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:files",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:sessions",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
     "@crates//:prost",

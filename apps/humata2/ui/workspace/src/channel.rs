@@ -489,8 +489,8 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
                 .text_size(px(12.5))
                 .children(
                     [
-                        (Tab::Sessions, "Sessions", (sessions > 0).then_some(sessions)),
                         (Tab::Desk, "Desk", (desk > 0).then_some(desk)),
+                        (Tab::Sessions, "Sessions", (sessions > 0).then_some(sessions)),
                         (Tab::Inbox, "Agent inbox", (waiting > 0).then_some(waiting)),
                         (Tab::Board, "To-do", None),
                         (Tab::Repos, "Repos and machines", None),
@@ -1342,7 +1342,7 @@ mod tests {
     #[core::prelude::v1::test]
     fn channel_page_supports_switching_to_settings_tab() {
         let mut view = View::default();
-        assert_eq!(view.tab, Tab::Sessions);
+        assert_eq!(view.tab, Tab::Desk);
         view.tab = Tab::Settings;
         assert_eq!(view.tab, Tab::Settings);
         // Ensure Action::Tab(Tab::Settings) is constructible for the tab bar.

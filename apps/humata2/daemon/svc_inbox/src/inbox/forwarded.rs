@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use humata2_svc_away::{Forwarder, Method};
 use prost::Message;

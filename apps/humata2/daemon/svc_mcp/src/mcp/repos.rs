@@ -4,7 +4,7 @@
 //! scope for that one call; saving the scope and removing a repo have no
 //! tool (D479).
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use pb::repo_scope::Kind;
 use serde_json::{Map, Value, json};

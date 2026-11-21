@@ -1,14 +1,12 @@
 //! Agent Inbox Permission Policy for Humata 2 Native Browser Co-Pilot.
 //!
-//! Strictly scoped to `claude`, `codex`, `copilot`, and `agy`:
-//! - **Read actions** (`ListTabs`, `ReadTab`, `HighlightGuide`) may be granted
+//! Strictly scoped to `claude`, `codex`, `copilot`, and `agy` and strictly
+//! read-only (`ListTabs`, `ReadTab`, `Screenshot`):
+//! - All supported browser actions are **Read actions** and may be granted
 //!   `AllowOnce` or a 30-minute session grant (`AllowFor30Min`, 1,800,000 ms).
-//!   `HighlightGuide` only draws a dismissible overlay on the page and does not
-//!   change the page's state.
-//! - **Write actions** (`Click`, `Type`, `Navigate`, `Submit`) NEVER cache or
-//!   accept `AllowFor30Min` and ALWAYS emit a per-action `BrowserInboxAsk`
-//!   containing exact target URL, selector/element preview, and action summary,
-//!   offering ONLY `AllowOnce` or `Deny`.
+//! - Execute / write / mutate actions (`click`, `type`, `navigate`, `submit`,
+//!   `highlight_guide`, scripting) do not exist in `BrowserAction` and are
+//!   rejected at deserialization.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -69,16 +67,12 @@ pub enum ActionClass {
 }
 
 impl ActionClass {
-    /// Classifies a `BrowserAction` into `Read` or `Write`.
+    /// Classifies a `BrowserAction`. Every supported action is strictly `Read`.
     pub const fn classify(action: &BrowserAction) -> Self {
         match action {
             BrowserAction::ListTabs
             | BrowserAction::ReadTab { .. }
-            | BrowserAction::HighlightGuide { .. } => ActionClass::Read,
-            BrowserAction::Click { .. }
-            | BrowserAction::Type { .. }
-            | BrowserAction::Navigate { .. }
-            | BrowserAction::Submit { .. } => ActionClass::Write,
+            | BrowserAction::Screenshot { .. } => ActionClass::Read,
         }
     }
 }
@@ -144,7 +138,7 @@ struct PendingAsk {
     action_class: ActionClass,
 }
 
-/// Stateful Agent Inbox permission gate for browser co-pilot actions.
+/// Stateful Agent Inbox permission gate for read-only browser co-pilot actions.
 #[derive(Debug, Default)]
 pub struct PermissionGate {
     /// Active 30-minute `Read` session grant expiration timestamps (`expires_at_ms`) per agent.
@@ -177,7 +171,6 @@ impl PermissionGate {
             }
         }
 
-        // Write actions ALWAYS emit a per-action ask and never consult `read_grants`.
         self.next_ask_seq += 1;
         let ask_id = format!("browser-ask-{}", self.next_ask_seq);
         let allowed_decisions = match action_class {
@@ -208,10 +201,6 @@ impl PermissionGate {
     }
 
     /// Resolves a pending `BrowserInboxAsk` with the user's `decision`.
-    ///
-    /// If `decision == Decision::AllowFor30Min` on a `Write` ask, returns
-    /// `Err(PolicyError::WriteRequiresPerActionApproval)` and leaves the ask
-    /// pending so the user can choose `AllowOnce` or `Deny`.
     pub fn resolve_ask(
         &mut self,
         ask_id: &str,
@@ -234,8 +223,6 @@ impl PermissionGate {
                 Ok(ApprovalOutcome::ApprovedWithSessionGrant { expires_at_ms })
             }
             (ActionClass::Write, Decision::AllowFor30Min) => {
-                // Write asks never take a session grant: put the ask back so it
-                // stays pending for the user's AllowOnce or Deny.
                 self.pending_asks.insert(ask_id.to_string(), pending);
                 Err(PolicyError::WriteRequiresPerActionApproval)
             }
@@ -260,15 +247,6 @@ impl PermissionGate {
 mod tests {
     use super::*;
 
-    fn sample_click() -> BrowserAction {
-        BrowserAction::Click {
-            tab_id: Some(1),
-            url: "https://app.example.com/settings/billing".to_string(),
-            selector: "button[data-testid='upgrade']".to_string(),
-            element_preview: Some("Upgrade to Pro".to_string()),
-        }
-    }
-
     #[test]
     fn strictly_scoped_to_claude_codex_copilot_agy() {
         assert_eq!(SupportedAgent::parse("claude"), Ok(SupportedAgent::Claude));
@@ -289,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn read_30_min_grant_works_at_29m59s_and_expires_at_30m01s() {
+    fn read_30_min_grant_covers_list_read_and_screenshot_and_expires() {
         let mut gate = PermissionGate::new();
         let t0 = 10_000;
 
@@ -313,7 +291,7 @@ mod tests {
             }
         );
 
-        // 29m59s later -> still allowed without asking.
+        // 29m59s later -> ReadTab and Screenshot both allowed without asking.
         let t_29m59s = t0 + (29 * 60 + 59) * 1_000;
         assert_eq!(
             gate.check(
@@ -325,6 +303,11 @@ mod tests {
                 t_29m59s
             )
             .unwrap(),
+            GateCheck::Allowed
+        );
+        assert_eq!(
+            gate.check("claude", &BrowserAction::Screenshot { tab_id: Some(1) }, t_29m59s)
+                .unwrap(),
             GateCheck::Allowed
         );
 
@@ -361,7 +344,7 @@ mod tests {
 
         // Next read immediately asks again.
         let ask2 = match gate
-            .check("copilot", &BrowserAction::ListTabs, t0 + 100)
+            .check("copilot", &BrowserAction::Screenshot { tab_id: None }, t0 + 100)
             .unwrap()
         {
             GateCheck::NeedsApproval(ask) => ask,
@@ -376,122 +359,17 @@ mod tests {
     }
 
     #[test]
-    fn write_always_requires_per_action_approval_even_with_active_read_grant() {
-        let mut gate = PermissionGate::new();
-        let t0 = 1_000;
-
-        // First establish a 30-min Read grant for `agy`.
-        let read_ask = match gate.check("agy", &BrowserAction::ListTabs, t0).unwrap() {
-            GateCheck::NeedsApproval(ask) => ask,
-            GateCheck::Allowed => panic!("expected ask"),
-        };
-        gate.resolve_ask(&read_ask.ask_id, Decision::AllowFor30Min, t0)
-            .unwrap();
-        assert_eq!(
-            gate.check("agy", &BrowserAction::ListTabs, t0 + 1_000)
-                .unwrap(),
-            GateCheck::Allowed
-        );
-
-        // Now issue a Write action while the Read grant is active.
-        let click = sample_click();
-        let write_ask = match gate.check("agy", &click, t0 + 2_000).unwrap() {
-            GateCheck::NeedsApproval(ask) => ask,
-            GateCheck::Allowed => panic!("Write must NEVER be auto-allowed"),
-        };
-        assert_eq!(write_ask.action_class, ActionClass::Write);
-        assert_eq!(
-            write_ask.allowed_decisions,
-            vec![Decision::AllowOnce, Decision::Deny]
-        );
-        assert_eq!(
-            write_ask.target_url.as_deref(),
-            Some("https://app.example.com/settings/billing")
-        );
-        assert_eq!(
-            write_ask.target_preview.as_deref(),
-            Some("button[data-testid='upgrade'] (Upgrade to Pro)")
-        );
-        assert!(write_ask.action_summary.contains("button[data-testid='upgrade']"));
-        assert!(write_ask.action_summary.contains("https://app.example.com/settings/billing"));
-
-        // Attempting AllowFor30Min on a Write ask MUST fail with WriteRequiresPerActionApproval.
-        assert_eq!(
-            gate.resolve_ask(&write_ask.ask_id, Decision::AllowFor30Min, t0 + 2_500),
-            Err(PolicyError::WriteRequiresPerActionApproval)
-        );
-
-        // The ask remains pending and can be approved once.
-        assert_eq!(
-            gate.resolve_ask(&write_ask.ask_id, Decision::AllowOnce, t0 + 3_000)
-                .unwrap(),
-            ApprovalOutcome::ApprovedOnce
-        );
-
-        // Issuing the exact same Write action 1 second later MUST ask again.
-        assert!(matches!(
-            gate.check("agy", &click, t0 + 4_000).unwrap(),
-            GateCheck::NeedsApproval(_)
-        ));
-    }
-
-    #[test]
-    fn highlight_guide_is_a_read_and_a_read_grant_covers_it() {
-        let highlight = BrowserAction::HighlightGuide {
-            tab_id: Some(1),
-            url: "https://app.example.com/projects".to_string(),
-            selector: "button#new-project".to_string(),
-            title: "Create your project".to_string(),
-            body: "Start here.".to_string(),
-            step_label: None,
-        };
-        assert_eq!(ActionClass::classify(&highlight), ActionClass::Read);
-
-        let mut gate = PermissionGate::new();
-        let t0 = 7_000;
-        let ask = match gate.check("codex", &BrowserAction::ListTabs, t0).unwrap() {
-            GateCheck::NeedsApproval(ask) => ask,
-            GateCheck::Allowed => panic!("expected approval ask"),
-        };
-        gate.resolve_ask(&ask.ask_id, Decision::AllowFor30Min, t0)
-            .unwrap();
-
-        assert_eq!(
-            gate.check("codex", &highlight, t0 + 1_000).unwrap(),
-            GateCheck::Allowed
-        );
-    }
-
-    #[test]
-    fn click_type_navigate_and_submit_remain_writes() {
+    fn all_supported_actions_classify_as_read() {
         let actions = [
-            BrowserAction::Click {
+            BrowserAction::ListTabs,
+            BrowserAction::ReadTab {
                 tab_id: None,
-                url: "https://app.example.com".to_string(),
-                selector: "button".to_string(),
-                element_preview: None,
+                max_chars: None,
             },
-            BrowserAction::Type {
-                tab_id: None,
-                url: "https://app.example.com".to_string(),
-                selector: "input".to_string(),
-                text: "hello".to_string(),
-                clear_first: false,
-                element_preview: None,
-            },
-            BrowserAction::Navigate {
-                tab_id: None,
-                url: "https://app.example.com".to_string(),
-            },
-            BrowserAction::Submit {
-                tab_id: None,
-                url: "https://app.example.com".to_string(),
-                selector: "form".to_string(),
-                element_preview: None,
-            },
+            BrowserAction::Screenshot { tab_id: Some(1) },
         ];
         for action in &actions {
-            assert_eq!(ActionClass::classify(action), ActionClass::Write);
+            assert_eq!(ActionClass::classify(action), ActionClass::Read);
         }
     }
 }

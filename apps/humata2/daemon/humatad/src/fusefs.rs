@@ -18,11 +18,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use fusefs_host::{ControlClient, ControlResponse, MountState};
-use humata2_fusefs_adapter::layout::{
-    DaemonLinkState, HostUpdate, MachineProjection, SessionWire, TopologyWire, probe_mount_mode,
+use humata2_fusefs_control::{
+    ControlClient, ControlResponse, DaemonLinkState, FsMountMode, HostUpdate, MachineProjection,
+    MountState, SessionWire, TopologyWire, probe_mount_mode,
 };
-use humata2_fusefs_adapter::materialize::FsMountMode;
 use humata2_grpc::humata::v1 as pb;
 
 use crate::events::Feed;

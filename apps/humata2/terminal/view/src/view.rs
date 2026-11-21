@@ -450,6 +450,18 @@ impl<G: Grid + 'static> TerminalView<G> {
         Bounds::new(frame.origin, frame.extent)
     }
 
+    /// Releases cached shaped rows when the view is hidden or parked so
+    /// off-screen terminals do not retain shaped line buffers. The next
+    /// render rebuilds them from the grid.
+    pub fn clear_frame(&mut self) {
+        let mut frame = self.frame.borrow_mut();
+        frame.rows.clear();
+        frame.rows.shrink_to_fit();
+        frame.cursor = None;
+        frame.preedit = None;
+        frame.size = Size { cols: 0, rows: 0 };
+    }
+
     /// What the last frame cost.
     pub fn stats(&self) -> FrameStats {
         FrameStats {

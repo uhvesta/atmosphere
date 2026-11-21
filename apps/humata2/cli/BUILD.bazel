@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":descriptors.bzl", "proto_descriptor_set")
 
 # `humata`, Humata 2's command for people and their scripts (../api/CLI.md):
@@ -95,27 +96,33 @@ rust_test(
     )
 ]
 
+HOSTS_LIVE_DATA = [
+    ":humata",
+    "//apps/humata2/daemon/humatad:holder_for_clients",
+    "//apps/humata2/daemon/humatad:humatad2_test_away_board",
+    "//apps/humata2/daemon/humatad:humatad2_test_away_board_release",
+]
+
+HOSTS_LIVE_ENV = {
+    "HUMATA": "$(rootpath :humata)",
+    "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+    "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
+    "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board_release)",
+}
+
 # `humata host|provider|skills sync` against a real humatad2 (the admin build) and a fake
 # machine behind a fake `ssh`: no network, never the real ~/.ssh or home folder.
 rust_test(
-    name = "hosts_live_test",
+    name = "hosts_live_cases",
     srcs = [
         "tests/hosts_live.rs",
         "//apps/humata2/daemon/humatad:tests/common/mod.rs",
     ],
     crate_root = "tests/hosts_live.rs",
-    data = [
-        ":humata",
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA": "$(rootpath :humata)",
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
-    },
+    data = HOSTS_LIVE_DATA,
+    env = HOSTS_LIVE_ENV,
+    # Run through hosts_live_test (sharded).
+    tags = ["manual"],
     deps = [
         "//apps/humata2/chunk:humata2_chunk",
         "//apps/humata2/daemon/humatad:grpc",
@@ -133,6 +140,17 @@ rust_test(
         "@crates//:tonic",
         "@crates//:tower",
     ],
+)
+
+sh_test(
+    name = "hosts_live_test",
+    srcs = ["//apps/humata2/testing:rust_test_shard.sh"],
+    data = [":hosts_live_cases"] + HOSTS_LIVE_DATA,
+    env = dict(
+        HOSTS_LIVE_ENV,
+        RUST_TEST_BIN = "$(rootpath :hosts_live_cases)",
+    ),
+    shard_count = 2,
 )
 
 filegroup(

@@ -11,6 +11,7 @@ app is a Rust executable, so this rule lays the bundle out itself:
     Humata2.app/Contents/Resources/Humata2.icns (with `icon`)
     Humata2.app/Contents/Resources/machine-tools/ (with `machine_tools`: the Linux tools bundle)
     Humata2.app/Contents/Resources/manifest.json (with `machine_tools`: Mac + Linux, the release)
+    Humata2.app/Contents/Resources/browser_extension/{chromium,firefox} (with `browser_extension`: read-only browser extension)
     Humata2.app/Contents/Resources/humata2-{inbox,todo}.wav (`sounds`: the notification sounds)
 
 The app finds its tools in Contents/Helpers (desktop/src/live.rs). The
@@ -22,7 +23,7 @@ tools/release/release.sh signs it again and names the copy "Humata 2.app".
 _SCRIPT = r"""
 set -eu
 app="$1"; exe="$2"; tools="$3"; platform="$4"; plist="$5"; bundle_id="$6"
-notices="$7"; icon="$8"; machine_tools="${9:-}"; fskit_appex="${10:-}"
+notices="$7"; icon="$8"; machine_tools="${9:-}"; fskit_appex="${10:-}"; browser_extension="${11:-}"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
 cp "$exe" "$contents/MacOS/humata2"
@@ -67,9 +68,14 @@ if [ -n "$fskit_appex" ]; then
   cp -RL "$fskit_appex" "$contents/Extensions/$(basename "$fskit_appex")"
   chmod -R u+w "$contents/Extensions/$(basename "$fskit_appex")"
 fi
+# The read-only browser extension (chromium & firefox), in Contents/Resources/browser_extension.
+if [ -n "$browser_extension" ]; then
+  cp -RL "$browser_extension" "$contents/Resources/browser_extension"
+  chmod -R u+w "$contents/Resources/browser_extension"
+fi
 # The notification sounds (NOTIFY2), by name: macOS finds a named
 # notification sound in the bundle's Resources.
-shift 10
+shift 11
 for sound in "$@"; do
   cp "$sound" "$contents/Resources/$(basename "$sound")"
 done
@@ -99,10 +105,12 @@ def _humata2_app_impl(ctx):
     args.add(machine_tools.path if machine_tools else "")
     fskit_appex = ctx.file.fskit_appex
     args.add(fskit_appex.path if fskit_appex else "")
+    browser_extension = ctx.file.browser_extension
+    args.add(browser_extension.path if browser_extension else "")
     sounds = ctx.files.sounds
     args.add_all(sounds)
     ctx.actions.run_shell(
-        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []) + ([fskit_appex] if fskit_appex else []) + sounds,
+        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []) + ([fskit_appex] if fskit_appex else []) + ([browser_extension] if browser_extension else []) + sounds,
         outputs = [app],
         command = _SCRIPT,
         arguments = [args],
@@ -114,6 +122,9 @@ def _humata2_app_impl(ctx):
 humata2_app = rule(
     implementation = _humata2_app_impl,
     attrs = {
+        # The read-only browser extension bundle (chromium & firefox), copied to
+        # Contents/Resources/browser_extension. Optional.
+        "browser_extension": attr.label(allow_single_file = True),
         # The reverse-DNS bundle ID; the release daemon accepts only this one.
         "bundle_id": attr.string(mandatory = True),
         # The desktop binary, which becomes Contents/MacOS/humata2.
@@ -130,13 +141,13 @@ humata2_app = rule(
         "machine_tools": attr.label(allow_single_file = True),
         # THIRD_PARTY_NOTICES.txt, copied to Contents/Resources. Optional.
         "notices": attr.label(allow_single_file = [".txt"]),
+        # The tools folder's subfolder for this Mac, as `uname -sm` names it.
+        "platform": attr.string(mandatory = True),
         # The notification sounds, copied by name to Contents/Resources.
         "sounds": attr.label_list(
             allow_files = [".wav"],
             default = ["//apps/humata2/app/sounds:sounds"],
         ),
-        # The tools folder's subfolder for this Mac, as `uname -sm` names it.
-        "platform": attr.string(mandatory = True),
         # A tools_bundle folder (daemon/humatad/tools.bzl).
         "tools": attr.label(mandatory = True, allow_single_file = True),
     },

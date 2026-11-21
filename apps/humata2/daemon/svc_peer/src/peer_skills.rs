@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{Managed, SkillEntry, SkillSet, SkillsError, SkillsManifest, SkillsSource};
 use pb::peer_service_client::PeerServiceClient;
 use sha2::{Digest, Sha256};

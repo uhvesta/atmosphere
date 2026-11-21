@@ -35,11 +35,12 @@ impl AppState {
         let Route::Channel(channel) = &self.route else {
             return None;
         };
-        if self
+        let tab = self
             .channel_pages
             .get(channel)
-            .is_none_or(|view| view.tab != crate::channel::Tab::Desk)
-        {
+            .map(|view| view.tab)
+            .unwrap_or_default();
+        if tab != crate::channel::Tab::Desk {
             return None;
         }
         self.desk
@@ -66,20 +67,22 @@ impl App {
         let Some(found) = state.workspace.channel(channel).cloned() else {
             return Effect::none();
         };
+        if !force {
+            if state.desk.channel_status.get(channel) == Some(&ChannelDeskStatus::Closed) {
+                return Effect::none();
+            }
+            if state.desk.closed_primary_channel_desk(channel).is_some()
+                && state.desk.primary_channel_desk(channel).is_none()
+            {
+                return Effect::none();
+            }
+        }
         if state.desk.primary_channel_desk(channel).is_some() {
             state.desk.channel_status.remove(channel);
             return Effect::none();
         }
         if state.desk.channel_status.get(channel) == Some(&ChannelDeskStatus::Starting) {
             return Effect::none();
-        }
-        if !force {
-            if state.desk.channel_status.get(channel) == Some(&ChannelDeskStatus::Closed) {
-                return Effect::none();
-            }
-            if state.desk.closed_primary_channel_desk(channel).is_some() {
-                return Effect::none();
-            }
         }
         let Ok(agent) = state.default_agent(Some(channel)) else {
             state
@@ -200,36 +203,13 @@ impl App {
             // tab sends Settings' pick) starts on one that is on, or not at
             // all when none is.
             // CD-4: closing a channel's Desk session from its own page goes
-            // back to that channel's Desk tab.
+            // back to that channel's Desk tab without respawning it.
             DeskAction::Changed {
                 session,
                 change: Change::Close,
                 result: Ok(()),
-            } if state.workspace.desk.channel_sessions.contains_key(session) => {
-                let Some((channel, is_primary)) = state
-                    .workspace
-                    .desk
-                    .channel_sessions
-                    .get(session)
-                    .map(|found| (found.channel.clone(), found.target.is_none()))
-                else {
-                    return Effect::none();
-                };
-                if is_primary {
-                    state
-                        .desk
-                        .channel_status
-                        .insert(channel.clone(), ChannelDeskStatus::Closed);
-                }
-                if state.route == Route::Session(session.clone()) {
-                    state.channel_pages.entry(channel.clone()).or_default().tab =
-                        crate::channel::Tab::Desk;
-                    let gone = Route::Session(session.clone());
-                    let go = self.leave(state, &gone, Route::Channel(channel));
-                    Effect::merge([go, self.load()])
-                } else {
-                    self.load()
-                }
+            } if self.channel_desk_close_info(state, session).is_some() => {
+                self.finish_channel_desk_close(state, session)
             }
             DeskAction::Changed {
                 session,
@@ -262,6 +242,91 @@ impl App {
                 result: Err(error), ..
             } if state.route != Route::Desk => state.toast(error.to_string(), &clock),
             _ => Effect::none(),
+        }
+    }
+    /// Resolves `(channel, is_primary)` for a channel Desk session being closed,
+    /// checking both the workspace and `channel_close` in case a daemon event
+    /// removed the session from the workspace before the close RPC returned.
+    fn channel_desk_close_info(
+        &self,
+        state: &AppState,
+        session: &SessionId,
+    ) -> Option<(ChannelId, bool)> {
+        state
+            .workspace
+            .desk
+            .channel_sessions
+            .get(session)
+            .map(|found| (found.channel.clone(), found.target.is_none()))
+            .or_else(|| {
+                state
+                    .desk
+                    .channel_close
+                    .as_ref()
+                    .filter(|sheet| &sheet.session == session)
+                    .and_then(|sheet| sheet.channel.clone())
+            })
+    }
+
+    /// Marks a closed channel Desk session closed in local state, navigates off
+    /// its full-session route back to the channel's Desk tab without respawning
+    /// it, and triggers a workspace reload.
+    fn finish_channel_desk_close(
+        &self,
+        state: &mut AppState,
+        session: &SessionId,
+    ) -> Effect<AppAction> {
+        let Some((channel, is_primary)) = self.channel_desk_close_info(state, session) else {
+            return Effect::none();
+        };
+        if is_primary {
+            state
+                .desk
+                .channel_status
+                .insert(channel.clone(), ChannelDeskStatus::Closed);
+        }
+        // Immediately reflect the close in `state.workspace` so intervening
+        // events or `arrive()` cannot see the closed session as an open primary
+        // and wipe `ChannelDeskStatus::Closed` before `self.load()` returns.
+        let workspace = std::sync::Arc::make_mut(&mut state.workspace);
+        if let Some(record) = workspace.desk.channel_sessions.get_mut(session) {
+            if record.desk.version_count > 0 {
+                record.desk.closed = Some(humata2_clients::desk::Closed {
+                    when: "just now".to_owned(),
+                    days_left: None,
+                });
+            } else {
+                workspace.desk.channel_sessions.remove(session);
+            }
+        }
+        if state.route == Route::Session(session.clone()) {
+            state.channel_pages.entry(channel.clone()).or_default().tab =
+                crate::channel::Tab::Desk;
+            let gone = Route::Session(session.clone());
+            let go = self.leave(state, &gone, Route::Channel(channel));
+            Effect::merge([go, self.load()])
+        } else {
+            self.load()
+        }
+    }
+
+    /// Handles `SessionAction::DeskEnded` (e.g. closing a Desk session via the
+    /// terminal tab's `End for good` action) so primary channel Desks stay
+    /// closed and leave their full-session route cleanly.
+    pub(super) fn desk_session_ended(
+        &self,
+        state: &mut AppState,
+        session: &SessionId,
+    ) -> Effect<AppAction> {
+        if self.channel_desk_close_info(state, session).is_some() {
+            return self.finish_channel_desk_close(state, session);
+        }
+        if state.route == Route::Session(session.clone()) {
+            let gone = Route::Session(session.clone());
+            let go = self.leave(state, &gone, Route::Desk);
+            Effect::merge([go, self.load()])
+        } else {
+            self.load()
         }
     }
 }

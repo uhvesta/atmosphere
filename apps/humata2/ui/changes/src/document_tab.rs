@@ -7,7 +7,7 @@
 //! the comment box. Everything else is read from the store on each draw.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
@@ -20,7 +20,7 @@ use humata2_clients::docs::VersionText;
 use humata2_clients::model::{Session, SessionId};
 use humata2_markdown::{
     Anchor as PageAnchor, Comment as PageComment, CommentMarks, LineRange, MarkdownEvent,
-    MarkdownOptions, MarkdownView,
+    MarkdownOptions, MarkdownView, MermaidCache,
 };
 use humata2_review::DiffMarkdownMode;
 use humata2_review::comments::CommentsAction;
@@ -35,6 +35,85 @@ use crate::theme::Look;
 use crate::widgets::{self, col, row};
 
 type Key = (SessionId, String, String);
+
+/// Maximum number of retained views/editors per cache in [`Documents`].
+pub(crate) const MAX_CACHED_VIEWS: usize = 8;
+
+/// Small LRU-bounded map that evicts the least recently used entry past `cap`.
+pub(crate) struct LruMap<K, V> {
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+    cap: usize,
+}
+
+impl<K: Eq + std::hash::Hash + Clone, V> LruMap<K, V> {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap,
+        }
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_overflow(&mut self) {
+        while self.order.len() > self.cap {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&oldest);
+        }
+    }
+
+    pub(crate) fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if self.map.contains_key(key) {
+            self.touch(key);
+            self.map.get_mut(key)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn get_or_insert_with(&mut self, key: K, make: impl FnOnce() -> V) -> &mut V {
+        if !self.map.contains_key(&key) {
+            let value = make();
+            self.map.insert(key.clone(), value);
+        }
+        self.touch(&key);
+        self.evict_overflow();
+        self.map.get_mut(&key).expect("just inserted")
+    }
+
+    pub(crate) fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_overflow();
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        self.map.retain(&mut keep);
+        self.order.retain(|k| self.map.contains_key(k));
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.map.iter_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+}
 
 /// A comment as the page shows it: where it is and what it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +155,7 @@ struct DiffPage {
 #[derive(Default)]
 struct Plan {
     sessions: Vec<SessionId>,
+    active_session: Option<SessionId>,
     documents: Vec<Want>,
     /// The full-screen Diff panel's active Markdown file when in Split or
     /// Rendered mode.
@@ -109,8 +189,10 @@ fn plan(state: &AppState) -> Plan {
             .workspace
             .sessions
             .iter()
+            .filter(|session| !session.archived)
             .map(|session| session.id.clone())
             .collect(),
+        active_session: state.session.open.clone(),
         ..Plan::default()
     };
     plan.history = crate::doc_history::wanted(state);
@@ -363,18 +445,21 @@ impl Target {
 
 /// The open documents of the shown session.
 pub struct Documents {
-    pages: HashMap<Key, Page>,
-    diff_pages: HashMap<Key, DiffPage>,
+    pages: LruMap<Key, Page>,
+    diff_pages: LruMap<Key, DiffPage>,
+    /// Shared bounded Mermaid diagram cache across all Markdown views owned by
+    /// this holder, preventing each view from keeping its own 96 MB cache.
+    diagrams: MermaidCache,
     comment_input: Entity<TextareaState>,
     /// The box the field was last set for: session, lines and text.
     seen: Option<(SessionId, u32, u32, String)>,
     /// The detached comment whose new line the next click picks.
     unfolded: comment_cards::Unfolded,
     reattach: Rc<RefCell<Option<CommentId>>>,
-    /// The Diff panel's code views, by `repo/path`.
-    diff_views: RefCell<HashMap<String, DiffView>>,
-    /// The editors of changed code files, by repository and path.
-    editors: RefCell<HashMap<(String, String), EditorView>>,
+    /// The Diff panel's code views, by `session\x1frepo/path` (or `repo/path`).
+    diff_views: RefCell<LruMap<String, DiffView>>,
+    /// The editors of changed code files, by session, repository and path.
+    editors: RefCell<LruMap<Key, EditorView>>,
     pub conversation: crate::bridge::ConversationScroll,
     /// The History strip's Save version box, list and old versions' pages.
     history: crate::doc_history::HistoryUi,
@@ -585,7 +670,8 @@ impl Documents {
                 .placeholder("Write a comment")
                 .auto_grow(1, 12)
         });
-        let history = crate::doc_history::HistoryUi::new(ui, window, cx);
+        let diagrams = MermaidCache::default();
+        let history = crate::doc_history::HistoryUi::new(ui, diagrams.clone(), window, cx);
         let typing_ui = ui.clone();
         let typing = cx.subscribe(
             &comment_input,
@@ -671,14 +757,15 @@ impl Documents {
             )
         };
         Self {
-            pages: HashMap::new(),
-            diff_pages: HashMap::new(),
+            pages: LruMap::new(MAX_CACHED_VIEWS),
+            diff_pages: LruMap::new(MAX_CACHED_VIEWS),
+            diagrams,
             comment_input,
             seen: None,
             reattach: Rc::new(RefCell::new(None)),
             unfolded: Default::default(),
-            diff_views: RefCell::new(HashMap::new()),
-            editors: RefCell::new(HashMap::new()),
+            diff_views: RefCell::new(LruMap::new(MAX_CACHED_VIEWS)),
+            editors: RefCell::new(LruMap::new(MAX_CACHED_VIEWS)),
             conversation: Default::default(),
             history,
             _typing: typing,
@@ -721,8 +808,7 @@ impl Documents {
     pub fn diff_view(&self, name: &str) -> DiffView {
         self.diff_views
             .borrow_mut()
-            .entry(name.to_owned())
-            .or_insert_with(|| DiffView {
+            .get_or_insert_with(name.to_owned(), || DiffView {
                 handle: ScrollHandle::new(),
                 anchor: Rc::new(RefCell::new(None)),
                 list: Rc::new(RefCell::new(None)),
@@ -740,11 +826,13 @@ impl Documents {
     }
 
     /// The editor state of a changed code file, kept across frames.
-    pub fn editor_view(&self, repo: &str, path: &str) -> EditorView {
+    pub fn editor_view(&self, session: &SessionId, repo: &str, path: &str) -> EditorView {
         self.editors
             .borrow_mut()
-            .entry((repo.to_owned(), path.to_owned()))
-            .or_insert_with(EditorView::new)
+            .get_or_insert_with(
+                (session.clone(), repo.to_owned(), path.to_owned()),
+                EditorView::new,
+            )
             .clone()
     }
 
@@ -771,7 +859,9 @@ impl Documents {
         self.history.sync(&plan.history, window, cx);
         let mut following = HashSet::new();
         let mut olds = HashMap::new();
+        let mut wanted_pages = HashSet::new();
         for want in plan.documents {
+            wanted_pages.insert(want.key.clone());
             if want.follow {
                 following.insert(want.key.clone());
             }
@@ -783,6 +873,7 @@ impl Documents {
                     // shows where they are.
                     options.comments = false;
                     options.marks = CommentMarks::Counts;
+                    options.diagrams = self.diagrams.clone();
                     // The page's own typography, and a byline ending in the
                     // file's name.
                     options.document = Some(file_name(&want.key.2).into());
@@ -817,8 +908,10 @@ impl Documents {
                 }
             }
         }
-        self.pages
-            .retain(|(session, _, _), _| plan.sessions.contains(session));
+        self.pages.retain(|key, _| {
+            plan.sessions.contains(&key.0)
+                && (plan.active_session.as_ref() != Some(&key.0) || wanted_pages.contains(key))
+        });
 
         if let Some(want) = plan.diff_markdown {
             match self.diff_pages.get_mut(&want.key) {
@@ -826,6 +919,7 @@ impl Documents {
                     let mut options = MarkdownOptions::new(want.key.2.clone());
                     options.comments = true;
                     options.marks = CommentMarks::Counts;
+                    options.diagrams = self.diagrams.clone();
                     options.document = Some(file_name(&want.key.2).into());
                     let source = want.source.clone();
                     let view = cx.new(|cx| MarkdownView::new(&source, options, cx));
@@ -933,6 +1027,15 @@ impl Documents {
         }
         self.diff_pages
             .retain(|(session, _, _), _| plan.sessions.contains(session));
+        self.editors
+            .borrow_mut()
+            .retain(|(session, _, _), _| plan.sessions.contains(session));
+        self.diff_views.borrow_mut().retain(|key, _| {
+            match key.split_once('\u{1f}') {
+                Some((session_id, _)) => plan.sessions.iter().any(|s| s.as_str() == session_id),
+                None => true,
+            }
+        });
 
         // The comment box's field follows the store: set when a box opens or
         // a draft is loaded into it, cleared when it closes. Only a value
@@ -1006,7 +1109,7 @@ impl Documents {
 
         // Linked scrolling: the block at the source's top line goes to the
         // top of the page.
-        for (key, page) in &mut self.pages {
+        for (key, page) in self.pages.iter_mut() {
             if !following.contains(key) {
                 page.last_top = None;
                 continue;
@@ -1274,7 +1377,7 @@ impl Documents {
             } else {
                 look.term_text
             };
-            let line_spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+            let line_spans = syntax.line(index);
             let click = target.clone();
             let gutter = div()
                 .id(SharedString::from(if read.is_some() {
@@ -1595,5 +1698,32 @@ pub fn mode_switch(
             }))
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn lru_map_evicts_oldest_and_promotes_on_access() {
+        let mut lru = LruMap::new(MAX_CACHED_VIEWS);
+        for i in 0..MAX_CACHED_VIEWS {
+            lru.insert(i, i * 10);
+        }
+        assert_eq!(lru.len(), MAX_CACHED_VIEWS);
+        // Touch key 0 so key 1 becomes the LRU entry.
+        assert_eq!(lru.get_mut(&0).copied(), Some(0));
+        // Inserting one more evicts key 1 and retains key 0.
+        lru.insert(MAX_CACHED_VIEWS, MAX_CACHED_VIEWS * 10);
+        assert_eq!(lru.len(), MAX_CACHED_VIEWS);
+        assert_eq!(lru.get(&0), Some(&0));
+        assert_eq!(lru.get(&1), None);
+        assert_eq!(lru.get(&MAX_CACHED_VIEWS), Some(&(MAX_CACHED_VIEWS * 10)));
+
+        lru.retain(|k, _| *k % 2 == 0);
+        assert!(lru.get(&0).is_some());
+        assert!(lru.get(&3).is_none());
+    }
 }
 

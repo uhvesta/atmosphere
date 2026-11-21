@@ -27,6 +27,7 @@ rust_library(
     },
     visibility = ["//apps/humata2:__subpackages__"],
     deps = [
+        "//apps/humata2/daemon/fusefs_control",
         "//libs/fusefs/cas",
         "//libs/fusefs/host",
         "//libs/fusefs/vfs",

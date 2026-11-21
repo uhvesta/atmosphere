@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::log::say;
 use humata2_rpc_kit::{chain, error, failed, failure, internal, lock, now_ms};
 use humata2_sessions::{DESK_CHANNEL, Layout};

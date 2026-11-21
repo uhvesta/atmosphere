@@ -384,6 +384,27 @@ pub fn change_count(file: &humata2_clients::model::FileDiff) -> usize {
 }
 
 impl ReviewState {
+    /// Releases cached per-session review data when a session is archived or removed.
+    pub fn evict_session(&mut self, session: &SessionId) {
+        self.fetch.remove(session);
+        self.diff_file_contents.retain(|(id, _, _), _| id != session);
+        self.plans.remove(session);
+        self.pushes.retain(|(id, _), _| id != session);
+        self.collapsed.retain(|(id, _)| id != session);
+        self.layer.remove(session);
+        self.skim_open.retain(|(id, _)| id != session);
+        self.ask_again_error.remove(session);
+        self.change.remove(session);
+        self.file_list_open.remove(session);
+        self.file_filter.remove(session);
+        self.list_cursor.remove(session);
+        self.looked.remove(session);
+        self.layer_looks.retain(|(id, _), _| id != session);
+        self.base_before_looked.remove(session);
+        self.looks_read.remove(session);
+        self.markdown_mode.remove(session);
+    }
+
     /// The row `session`'s file list has its keyboard cursor on, if the
     /// keys have placed it (DS-84).
     #[must_use]
@@ -2452,5 +2473,41 @@ mod unit_tests {
             },
         );
         assert_eq!(state.current_base(&session), DiffBase::Spec(vec![spec]));
+    }
+
+    #[test]
+    fn evict_session_clears_fetch_and_diff_file_contents() {
+        let s1 = SessionId::new("se_1");
+        let s2 = SessionId::new("se_2");
+        let mut state = ReviewState::default();
+        state.fetch.insert(s1.clone(), Fetch::default());
+        state.fetch.insert(s2.clone(), Fetch::default());
+        state.diff_file_contents.insert(
+            (s1.clone(), "repo".into(), "a.md".into()),
+            Ok("old".into()),
+        );
+        state.diff_file_contents.insert(
+            (s2.clone(), "repo".into(), "b.md".into()),
+            Ok("keep".into()),
+        );
+        state.plans.insert(s1.clone(), PlanView::default());
+        state.plans.insert(s2.clone(), PlanView::default());
+
+        state.evict_session(&s1);
+
+        assert!(!state.fetch.contains_key(&s1));
+        assert!(state.fetch.contains_key(&s2));
+        assert!(
+            !state
+                .diff_file_contents
+                .contains_key(&(s1.clone(), "repo".into(), "a.md".into()))
+        );
+        assert!(
+            state
+                .diff_file_contents
+                .contains_key(&(s2.clone(), "repo".into(), "b.md".into()))
+        );
+        assert!(!state.plans.contains_key(&s1));
+        assert!(state.plans.contains_key(&s2));
     }
 }

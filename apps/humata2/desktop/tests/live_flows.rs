@@ -253,12 +253,30 @@ impl<'r> App<'r> {
     /// Runs what the last step started, lets the sockets move, and draws a
     /// frame as the app would.
     fn settle(&mut self) {
-        for _ in 0..5 {
+        for _ in 0..3 {
             self.runtime.block_on(async {
                 for _ in 0..16 {
                     tokio::task::yield_now().await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            });
+            self.drain();
+        }
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                humata2_engine::frame::natural_frame(window, cx);
+            })
+            .expect("the window stays open");
+    }
+
+    /// Non-sleeping drain + frame for `wait_within`, which already parks
+    /// between iterations.
+    fn drain_and_frame(&mut self) {
+        for _ in 0..2 {
+            self.runtime.block_on(async {
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
             });
             self.drain();
         }
@@ -346,7 +364,7 @@ impl<'r> App<'r> {
         );
         let until = Instant::now() + deadline;
         loop {
-            self.settle();
+            self.drain_and_frame();
             if done(self) {
                 return;
             }
@@ -355,10 +373,9 @@ impl<'r> App<'r> {
                 let why = self.diagnose();
                 panic!("timed out waiting for {what}\n{why}");
             }
-            // A display draws about every 16 ms whether or not anything
-            // woke us: work waiting for the next frame (a terminal's full
-            // batch) needs one.
-            std::thread::park_timeout(left.min(Duration::from_millis(16)));
+            // A display draws whether or not anything woke us: work waiting
+            // for the next frame (a terminal's full batch) needs one.
+            std::thread::park_timeout(left.min(Duration::from_millis(5)));
         }
     }
 
@@ -525,7 +542,7 @@ fn work_handed_to_the_app_from_another_thread_wakes_a_wait() {
     }
     // Handed over once the wait below has parked, from a tokio worker.
     runtime.spawn(async move {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
         let _ = give.send(());
     });
     app.wait_until("the app to run the work it was handed", |_| ran.get());

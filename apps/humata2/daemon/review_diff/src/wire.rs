@@ -8,8 +8,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humata2_proto::humata::v1 as pb;
-use humata2_proto::timestamp_proto::google::protobuf::Timestamp;
+#[allow(unused_imports, ambiguous_glob_reexports)]
+mod pb {
+    pub use humata2_proto_core::humata::v1::*;
+    pub use humata2_proto_review::humata::v1::*;
+}
+use humata2_proto_core::Timestamp;
 
 use crate::chat::{
     AgentSwitches, Change, ChangeKind, ChangeTool, ChatError, Context, Highlight, Lines, Place,

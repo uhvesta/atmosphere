@@ -2,7 +2,7 @@
 //! already has to its own session. The daemon asks the user first when the
 //! rule for changing the agent's own session says so.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use serde_json::{Map, json};
 

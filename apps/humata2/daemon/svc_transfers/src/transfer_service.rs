@@ -19,7 +19,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Entry};
 use humata2_chunk::Decoder;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_transfers as tr;
 use humata2_transfers::End as _;
 use pb::invalid_field::Problem as Field;
@@ -1585,7 +1585,7 @@ mod tests {
     use std::fs;
 
     use humata2_daemon_ports::UserVia;
-    use humata2_grpc::humata::v1::transfer_service_server::TransferService;
+    use crate::pb::transfer_service_server::TransferService;
     use humata2_store::Store;
 
     use super::*;

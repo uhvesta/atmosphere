@@ -166,16 +166,20 @@ fn opening_a_channels_desk_tab_auto_starts_a_primary_desk_and_reuses_it() {
     let (mut store, fakes) = launch_without_desk();
     assert!(store.state().desk.primary_channel_desk(&payments()).is_none());
 
-    // Navigate to channel and switch to its Desk tab.
+    // Navigating to a channel defaults to Tab::Desk and auto-starts its primary Desk.
     store.send(A::Switch(Route::Channel(payments())), |_| {});
-    store.send(A::Channel(channel::Action::Tab(channel::Tab::Desk)), |_| {});
     receive_primary_started(&mut store);
 
     // Stays on the channel's Desk tab (does not hijack route to Route::Session).
     assert_eq!(store.state().route, Route::Channel(payments()));
     assert_eq!(
-        store.state().channel_pages.get(&payments()).map(|v| v.tab),
-        Some(channel::Tab::Desk)
+        store
+            .state()
+            .channel_pages
+            .get(&payments())
+            .map(|v| v.tab)
+            .unwrap_or_default(),
+        channel::Tab::Desk
     );
     let primary_id = store
         .state()
@@ -210,6 +214,55 @@ fn opening_a_channels_desk_tab_auto_starts_a_primary_desk_and_reuses_it() {
         1,
         "revisiting reuses the existing primary Desk without spawning a duplicate"
     );
+}
+
+#[test]
+fn closing_a_primary_channel_desk_from_full_session_stays_closed_and_does_not_reopen() {
+    let (mut store, fakes) = launch_without_desk();
+
+    // Open channel (defaults to Tab::Desk, auto-starts primary Desk).
+    store.send(A::Switch(Route::Channel(payments())), |_| {});
+    receive_primary_started(&mut store);
+    let primary_id = store
+        .state()
+        .active_channel_desk()
+        .expect("primary Desk started");
+
+    // Open as full session.
+    store.send(A::Desk(D::Open(primary_id.clone())), |_| {});
+    store.receive_matching(
+        "open full session delegated",
+        |a| matches!(a, A::Desk(D::Delegate(humata2_desk::Delegate::OpenSession(_)))),
+        |_| {},
+    );
+    store.settle();
+    assert_eq!(store.state().route, Route::Session(primary_id.clone()));
+
+    // Close from full session view.
+    store.send(A::Desk(D::AskClose(primary_id.clone())), |_| {});
+    assert!(store.state().desk.channel_close.is_some());
+    store.send(A::Desk(D::ConfirmCloseChannel), |_| {});
+    store.receive_matching(
+        "close finished",
+        |a| matches!(a, A::Desk(D::Changed { result: Ok(()), .. })),
+        |_| {},
+    );
+    store.receive_matching(
+        "workspace reloaded",
+        |a| matches!(a, A::Loaded(Ok(_))),
+        |_| {},
+    );
+    store.skip_received();
+
+    // Must return to the channel's Desk tab, stay Closed, and NOT reopen as a
+    // full session or respawn a new primary Desk.
+    assert_eq!(store.state().route, Route::Channel(payments()));
+    assert_eq!(
+        store.state().desk.channel_status.get(&payments()),
+        Some(&humata2_desk::ChannelDeskStatus::Closed)
+    );
+    assert_eq!(store.state().active_channel_desk(), None);
+    assert!(fakes.daemon.workspace().desk.channel_sessions.is_empty());
 }
 
 #[test]

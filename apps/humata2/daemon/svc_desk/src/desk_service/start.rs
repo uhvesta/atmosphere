@@ -3,7 +3,7 @@
 //! another machine before anything is made, and answers the same session
 //! to a retry with the same idempotency key (DK-14).
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{DeskFolder, DeskStart};
 use humata2_store::TabRecord;
 use tonic::{Code, Status};

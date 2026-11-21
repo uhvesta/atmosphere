@@ -12,7 +12,7 @@ use humata2_access::{
 };
 use humata2_daemon_ports::{AgentCaller, Caller};
 use humata2_daemon_runtime::agent_switches::AgentSwitches;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use humata2_sessions_core::Agents;
 use humata2_store::{SessionRecord, Store, StoreError};
@@ -168,17 +168,17 @@ impl HookAskPort for NoopHookAsk {
     async fn resolve_pending_hook_asks(&self, _session: &str) {}
 }
 
-/// Converts a [`SystemTime`] to a [`humata2_grpc::Timestamp`].
-pub fn timestamp(at: SystemTime) -> humata2_grpc::Timestamp {
+/// Converts a [`SystemTime`] to a [`humata2_grpc_core::Timestamp`].
+pub fn timestamp(at: SystemTime) -> humata2_grpc_core::Timestamp {
     let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    humata2_grpc::Timestamp {
+    humata2_grpc_core::Timestamp {
         seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     }
 }
 
-/// Current time as a [`humata2_grpc::Timestamp`].
-pub fn now_timestamp() -> humata2_grpc::Timestamp {
+/// Current time as a [`humata2_grpc_core::Timestamp`].
+pub fn now_timestamp() -> humata2_grpc_core::Timestamp {
     timestamp(SystemTime::now())
 }
 

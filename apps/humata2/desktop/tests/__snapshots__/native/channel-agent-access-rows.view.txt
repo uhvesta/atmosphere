@@ -12,6 +12,8 @@ Navigation "Sidebar"
   Button "New channel"
   TreeItem "payments-rewrite" selected expanded
     Button "Fold"
+  TreeItem "Desk"
+  TreeItem "#payments-rewrite Desk"
   TreeItem "Ledger schema migration" expanded
   TreeItem "Try BRIN index" expanded
   TreeItem "Partial BRIN on posted_at"
@@ -35,8 +37,8 @@ Splitter "Resize the sidebar"
 Button "New session"
 Button "Pin this channel"
 Button "More channel actions"
-Tab "Sessions"
 Tab "Desk"
+Tab "Sessions"
 Tab "Agent inbox"
 Tab "To-do"
 Tab "Repos and machines"

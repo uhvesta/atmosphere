@@ -2,7 +2,7 @@
 //! never outside it, loaded and decoded off the UI thread, and kept until the
 //! view goes. One that can't be shown draws as a placeholder naming why.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -251,9 +251,14 @@ pub struct ImageStats {
     pub hits: u64,
 }
 
+/// Maximum decoded images retained per cache; least recently used goes first.
+const IMAGE_CACHE_CAPACITY: usize = 32;
+
 #[derive(Default)]
 struct Images {
     entries: HashMap<String, ImageEntry>,
+    /// Finished keys, least recently used first.
+    order: VecDeque<String>,
     stats: ImageStats,
 }
 
@@ -274,6 +279,10 @@ impl ImageCache {
         let entry = images.entries.get(url).cloned();
         if matches!(entry, Some(ImageEntry::Ready(_) | ImageEntry::Missing { .. })) {
             images.stats.hits += 1;
+            if let Some(pos) = images.order.iter().position(|k| k == url) {
+                images.order.remove(pos);
+            }
+            images.order.push_back(url.to_owned());
         }
         entry
     }
@@ -293,7 +302,18 @@ impl ImageCache {
         if loaded {
             images.stats.loads += 1;
         }
-        images.entries.insert(url.to_owned(), entry);
+        let key = url.to_owned();
+        if let Some(pos) = images.order.iter().position(|k| k == &key) {
+            images.order.remove(pos);
+        }
+        images.entries.insert(key.clone(), entry);
+        images.order.push_back(key);
+        while images.order.len() > IMAGE_CACHE_CAPACITY {
+            let Some(oldest) = images.order.pop_front() else {
+                break;
+            };
+            images.entries.remove(&oldest);
+        }
     }
 
     pub(crate) fn stats(&self) -> ImageStats {
@@ -309,6 +329,7 @@ impl ImageCache {
     pub(crate) fn clear(&self) {
         let mut images = self.lock();
         images.entries.clear();
+        images.order.clear();
     }
 }
 
@@ -377,5 +398,31 @@ mod tests {
         assert_eq!(sniff(b"\xef\xbb\xbf<?xml version=\"1.0\"?><svg>"), Some(ImageFormat::Svg));
         assert_eq!(sniff(b"  <svg xmlns=\"\"></svg>"), Some(ImageFormat::Svg));
         assert_eq!(sniff(b"plain text"), None);
+    }
+
+    #[test]
+    fn image_cache_evicts_least_recently_used_past_capacity() {
+        let cache = ImageCache::default();
+        let entry = |i: usize| ImageEntry::Missing {
+            placeholder: None,
+            error: Arc::new(ImageError::NoBase {
+                url: format!("img-{i}.png"),
+            }),
+        };
+        for i in 0..IMAGE_CACHE_CAPACITY {
+            let url = format!("img-{i}.png");
+            assert!(cache.begin(&url));
+            cache.finish(&url, entry(i), true);
+        }
+        // Touch img-0 so img-1 becomes the least recently used.
+        assert!(cache.get("img-0.png").is_some());
+        // Insert one more entry to trigger eviction.
+        let extra = format!("img-{IMAGE_CACHE_CAPACITY}.png");
+        assert!(cache.begin(&extra));
+        cache.finish(&extra, entry(IMAGE_CACHE_CAPACITY), true);
+
+        assert!(cache.peek("img-0.png").is_some(), "hot entry must survive");
+        assert!(cache.peek("img-1.png").is_none(), "LRU entry must be evicted");
+        assert!(cache.peek(&extra).is_some(), "newest entry must be kept");
     }
 }

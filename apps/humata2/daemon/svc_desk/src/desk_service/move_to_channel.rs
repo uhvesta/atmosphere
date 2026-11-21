@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use humata2_access::{Call, Capability, ChannelId, Decision, Refusal, Target};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{DESK_CHANNEL, DeskMoveRepo as FoundRepo, Landing, TurnEnd, desk_move_repos, repoint_clone};
 use humata2_revive::{RekeyError, RekeyNote, Started as AgentStart, remove_note, write_note};
 use humata2_store::{

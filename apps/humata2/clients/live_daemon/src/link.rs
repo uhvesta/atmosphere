@@ -483,6 +483,10 @@ impl Pump {
                         }
                         Ok(Outgoing::Close) => {
                             self.gate.close();
+                            let _ = self
+                                .frames
+                                .send(ServerFrame::Detached { id: self.route })
+                                .await;
                             return End::Over;
                         }
                         Ok(Outgoing::Nothing) => {}

@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{CHANNELS_ROOT, CarryError, DESK_CHANNEL, ForkCopy, ForkPack, ForkPackError, Starter};
 use humata2_store::Take;
 use tonic::{Code, Request, Response, Status};

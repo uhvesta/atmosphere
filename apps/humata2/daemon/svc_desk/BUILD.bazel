@@ -3,8 +3,15 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # DeskService (DK-1..DK-19, CD-1..CD-5, MV-17, UP-1): Desk sessions, channel
 # desks, document watching/versions, and moving Desk sessions into channels.
 COMMON_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:desk",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:files",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:peer",
+    "//apps/humata2/api/grpc:review",
+    "//apps/humata2/api/grpc:sessions",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/repo_library",
     "//apps/humata2/daemon/rpc_kit",

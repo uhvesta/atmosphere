@@ -30,7 +30,7 @@ use humata2_access::{
     PresentUser, Principal, Refusal, RequestId, Source, Target, Verdict,
 };
 use humata2_daemon_ports::{AgentCaller, Caller, UserVia};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use humata2_sessions_core::Agents;
 use humata2_store::Store;
@@ -2274,7 +2274,7 @@ mod tests {
         AnswerError, Context, Grant, GrantTarget, Policy, PresentUser, Principal, Refusal,
     };
     use humata2_daemon_ports::{Deferred, UserVia};
-    use humata2_grpc::humata::v1::inbox_service_server::InboxService;
+    use crate::pb::inbox_service_server::InboxService;
     use humata2_store::{SessionRecord, StoreError};
     use humata2_svc_away::HostLink;
     use tokio_stream::StreamExt;

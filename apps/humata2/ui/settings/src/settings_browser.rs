@@ -295,7 +295,7 @@ pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .child(dim(look, "Browser").font_weight(FontWeight::SEMIBOLD))
         .child(dim(
             look,
-            "Claude Code, Codex, Copilot and agy can read tabs in your own browsers and, when you say yes, click, type and open pages in them. No other agent can.",
+            "Claude Code, Codex, Copilot and agy can view open tabs, read page snapshots and take screenshots in your own browsers. Read-only: agents can never click, type, navigate or run scripts. No other agent has access.",
         ));
 
     // Browsers on this Mac + Install all button.
@@ -413,7 +413,7 @@ pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 .gap(px(16.))
                 .border_b_1()
                 .border_color(rgb(look.line))
-                .child(div().flex_1().child("Read a tab or list your tabs"))
+                .child(div().flex_1().child("View tabs, read snapshots or take screenshots"))
                 .child(
                     div()
                         .text_color(rgb(look.secondary))
@@ -425,11 +425,11 @@ pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 .px(px(14.))
                 .py(px(10.))
                 .gap(px(16.))
-                .child(div().flex_1().child("Click, type or open a page"))
+                .child(div().flex_1().child("Click, type, navigate or run scripts"))
                 .child(
                     div()
                         .text_color(rgb(look.secondary))
-                        .child("Asked every time \u{b7} can\u{2019}t be allowed ahead"),
+                        .child("Never allowed \u{b7} extension is strictly read-only"),
                 ),
         );
     div().child(

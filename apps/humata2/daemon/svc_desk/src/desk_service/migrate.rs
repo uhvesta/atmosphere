@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::doc_repo::{self, DocGit, DocRepoError};
 use humata2_store::{DeskFolderKind, SessionRecord, StoreError};
 use tonic::{Code, Status};

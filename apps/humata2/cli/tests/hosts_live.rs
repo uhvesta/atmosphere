@@ -133,7 +133,7 @@ impl Host {
         let deadline = Instant::now() + WAIT;
         while UnixStream::connect(&socket).is_err() {
             assert!(Instant::now() < deadline, "humatad2 never started listening");
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         }
         Self { child: RefCell::new(child), socket, dir }
     }
@@ -509,7 +509,7 @@ fn a_first_skills_sync_prints_its_plan_applies_with_its_token_and_the_next_one_h
     let deadline = Instant::now() + WAIT;
     while std::fs::read(&synced).ok().as_deref() != Some(b"alpha v1".as_slice()) {
         assert!(Instant::now() < deadline, "alpha never reached the machine");
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(2));
     }
 
     let next = host.run(&["skills", "sync", "--dry-run", "box-1"]);
@@ -578,7 +578,7 @@ async fn agent_daemon() -> (Daemon, Attach, String) {
             _ => {}
         }
         assert!(Instant::now() < deadline, "the token was never written");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     };
 
     (daemon, attach, token)

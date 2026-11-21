@@ -274,21 +274,14 @@ operations! {
     RepoSearch => "repo_search", "repo.search";
     /// `RepoService.ListRepoLibrary`.
     RepoLibrary => "repo_library", "repo.library";
-    // BROWSER
+    // BROWSER (read-only)
     /// The Native Browser Co-Pilot's `ListTabs` action, in the user's own
     /// browser.
     BrowserListTabs => "browser_list_tabs", "browser.list_tabs";
     /// The Co-Pilot's `ReadTab` action.
     BrowserReadTab => "browser_read_tab", "browser.read_tab";
-    /// The Co-Pilot's `HighlightGuide` action: draws a callout, changes
-    /// nothing on the page.
-    BrowserGuideHighlight => "browser_guide_highlight", "browser.guide_highlight";
-    /// The Co-Pilot's `Click` action.
-    BrowserClick => "browser_click", "browser.click";
-    /// The Co-Pilot's `Type` action.
-    BrowserType => "browser_type", "browser.type";
-    /// The Co-Pilot's `Navigate` action.
-    BrowserNavigate => "browser_navigate", "browser.navigate";
+    /// The Co-Pilot's `Screenshot` action (read-only PNG capture).
+    BrowserScreenshot => "browser_screenshot", "browser.screenshot";
 }
 
 impl Operation {
@@ -370,10 +363,7 @@ pub(crate) fn category(operation: Operation) -> &'static str {
         | Op::BoardItemDelete => "board",
         Op::BrowserListTabs
         | Op::BrowserReadTab
-        | Op::BrowserGuideHighlight
-        | Op::BrowserClick
-        | Op::BrowserType
-        | Op::BrowserNavigate => "browser",
+        | Op::BrowserScreenshot => "browser",
         Op::ChannelsList
         | Op::ChannelCreate
         | Op::ChannelRename
@@ -1245,27 +1235,6 @@ fn tab_id() -> Schema {
         .describe("A tab id from browser_list_tabs; default: the active tab")
 }
 
-/// The exact address of the page a browser action acts on.
-fn page_url() -> Schema {
-    string()
-        .max_length(2048)
-        .describe("The page's exact address, as its tab shows it")
-}
-
-/// A CSS selector for one element of that page.
-fn css_selector() -> Schema {
-    string()
-        .max_length(500)
-        .describe("A CSS selector for one element of that page")
-}
-
-/// The visible text of the element a browser action acts on, for the card.
-fn element_preview() -> Schema {
-    string()
-        .max_length(200)
-        .describe("The element's visible text, shown on the Inbox card")
-}
-
 fn definition(operation: Operation) -> Definition {
     use Operation as Op;
     match operation {
@@ -1852,12 +1821,12 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::BrowserListTabs => define(
-            "List the tabs open in the user's own browser, with each tab's id, title and address. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            "List the tabs open in the user's own browser, with each tab's id, title and address (read-only). The user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
             Effect::Read,
             asks(vec![]),
         ),
         Op::BrowserReadTab => define(
-            "Read the text of one tab in the user's own browser; the active tab when tab_id is left out. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+            "Read a read-only text and accessibility snapshot of one tab in the user's own browser; the active tab when tab_id is left out. The user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
             Effect::Read,
             asks(vec![
                 opt("tab_id", tab_id()),
@@ -1869,65 +1838,10 @@ fn definition(operation: Operation) -> Definition {
                 ),
             ]),
         ),
-        Op::BrowserGuideHighlight => define(
-            "Draw a callout over one element of a page in the user's own browser, with a title and a short body, to guide the user through steps. Only the overlay is drawn; nothing on the page is clicked or changed. It acts in the user's own browser, so the user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
+        Op::BrowserScreenshot => define(
+            "Capture a read-only PNG screenshot of one tab in the user's own browser; the active tab when tab_id is left out. Never clicks, types, navigates or executes code. The user is asked in the Inbox, and may allow reads for 30 minutes at a time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
             Effect::Read,
-            asks(vec![
-                req("url", page_url()),
-                req("selector", css_selector()),
-                req("title", title()),
-                req(
-                    "body",
-                    string()
-                        .max_length(1000)
-                        .describe("A short explanation of this step"),
-                ),
-                opt("tab_id", tab_id()),
-                opt(
-                    "step_label",
-                    string()
-                        .max_length(40)
-                        .describe("A short label for the step, such as Step 2"),
-                ),
-            ]),
-        ),
-        Op::BrowserClick => define(
-            "Click one element of a page in the user's own browser. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
-            Effect::Create,
-            asks(vec![
-                req("url", page_url()),
-                req("selector", css_selector()),
-                opt("tab_id", tab_id()),
-                opt("element_preview", element_preview()),
-            ]),
-        ),
-        Op::BrowserType => define(
-            "Type text into one input of a page in the user's own browser; clear_first empties the input before typing. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
-            Effect::Create,
-            asks(vec![
-                req("url", page_url()),
-                req("selector", css_selector()),
-                req(
-                    "text",
-                    string()
-                        .max_length(10_000)
-                        .describe("The text to type"),
-                ),
-                opt("tab_id", tab_id()),
-                opt(
-                    "clear_first",
-                    boolean().describe("Clear the input before typing; default: false"),
-                ),
-                opt("element_preview", element_preview()),
-            ]),
-        ),
-        Op::BrowserNavigate => define(
-            "Open an address in a tab of the user's own browser. It acts in the user's own browser, so the user is asked in the Inbox every time. Only Claude Code, Codex, Copilot and agy get this tool, and it needs Settings > Browser set up and the browser extension loaded.",
-            Effect::Change,
-            asks(vec![
-                req("url", page_url().describe("The address to open")),
-                opt("tab_id", tab_id()),
-            ]),
+            asks(vec![opt("tab_id", tab_id())]),
         ),
         Op::InboxAsk => define(
             "Ask the user a question in their Inbox, with up to 4 choices, and wait for the reply.",

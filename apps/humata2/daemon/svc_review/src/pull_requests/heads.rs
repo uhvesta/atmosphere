@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, Target};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_review_diff::bracketed_paste;
 use humata2_rpc_kit::{
     blocking, chain, error_of, failed, invalid_field, log::say, missing, not_found,
@@ -531,9 +531,9 @@ fn record<'a>(
     Ok(())
 }
 
-pub(super) fn now_stamp() -> humata2_grpc::Timestamp {
+pub(super) fn now_stamp() -> humata2_grpc_core::Timestamp {
     let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    humata2_grpc::Timestamp {
+    humata2_grpc_core::Timestamp {
         seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     }

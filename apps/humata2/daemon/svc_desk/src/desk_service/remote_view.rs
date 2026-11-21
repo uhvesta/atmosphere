@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::documents_under;
 use humata2_store::SessionRecord;
 use tonic::Status;

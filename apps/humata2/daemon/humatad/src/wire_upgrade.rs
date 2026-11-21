@@ -8,7 +8,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use humata2_daemon_ports::{PortError, Release};
+use humata2_daemon_ports::PortError;
+use humata2_daemon_runtime::Release;
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{Builds as MachineBuilds, Machines};
 use humata2_sessions::Starter;

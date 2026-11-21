@@ -789,6 +789,7 @@ impl App {
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
                 S::Archived(id, title, frees) => {
+                    Self::evict_session(state, &id);
                     // MV-15: the disk is freed when the undo window closes, not now.
                     let text = match frees {
                         Some(size) => {
@@ -819,6 +820,7 @@ impl App {
                     Effect::merge([notice, leave])
                 }
                 S::EndedForGood(id, text) => {
+                    Self::evict_session(state, &id);
                     // D784: Archive's toast, worded for End for good; its
                     // Undo restores the session as Stopped.
                     let notice = state.toast_for(text.clone(), &clock, toast::UNDO_TOAST);
@@ -866,6 +868,11 @@ impl App {
                     self.leave(state, &gone, back)
                 }
             },
+            AppAction::Session(SessionAction::DeskEnded {
+                session,
+                result: Ok(()),
+                ..
+            }) => self.desk_session_ended(state, session),
             AppAction::Session(
                 SessionAction::ArchivePlanned { result: Err(error), .. }
                 | SessionAction::Archived { result: Err(error), .. }
@@ -1603,6 +1610,16 @@ impl App {
                         state.channel_menu = false;
                         state.channel_pages.remove(&channel);
                         state.desk.channel_status.remove(&channel);
+                        let gone_sessions: Vec<SessionId> = state
+                            .workspace
+                            .sessions
+                            .iter()
+                            .filter(|s| s.channel == channel)
+                            .map(|s| s.id.clone())
+                            .collect();
+                        for session_id in &gone_sessions {
+                            Self::evict_session(state, session_id);
+                        }
                         let workspace = Arc::make_mut(&mut state.workspace);
                         workspace.channels.retain(|c| c.id != channel);
                         workspace.sessions.retain(|s| s.channel != channel);
@@ -1650,10 +1667,9 @@ impl App {
                 let view = state.channel_pages.entry(id.clone()).or_default();
                 view.change(action, &state.workspace, &id);
                 match view.tab {
-                    channel::Tab::Desk => {
-                        if clicked_desk
-                            && state.desk.channel_status.get(&id)
-                                == Some(&humata2_desk::ChannelDeskStatus::Closed)
+                    channel::Tab::Desk if clicked_desk => {
+                        if state.desk.channel_status.get(&id)
+                            == Some(&humata2_desk::ChannelDeskStatus::Closed)
                         {
                             state.desk.channel_status.remove(&id);
                         }
@@ -1904,7 +1920,9 @@ impl App {
                     && state
                         .channel_pages
                         .get(&id)
-                        .is_some_and(|view| view.tab == channel::Tab::Desk)
+                        .map(|view| view.tab)
+                        .unwrap_or_default()
+                        == channel::Tab::Desk
                     && state.desk.channel_status.get(&id)
                         == Some(&humata2_desk::ChannelDeskStatus::NoAgent)
                     && state.default_agent(Some(&id)).is_ok()

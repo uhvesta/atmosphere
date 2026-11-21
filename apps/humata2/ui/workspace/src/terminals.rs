@@ -144,6 +144,10 @@ struct Entry {
     /// The session's status and shell count when the link ended: a push
     /// that changes them (its start ended, a tab appeared) is another try.
     ended_with: Option<(Status, usize)>,
+    /// Cached `grid_text` for accessibility/test support, keyed by
+    /// `(replica_offset, cols, rows, scrollbar_offset)` so idle render frames
+    /// do not re-sync and allocate every row.
+    cached_text: RefCell<Option<(u64, u16, u16, u64, SharedString)>>,
     _events: Subscription,
     _pump: Task<()>,
 }
@@ -594,6 +598,7 @@ impl Terminals {
             reconnected,
             writers,
             ended_with: None,
+            cached_text: RefCell::new(None),
             _events: events,
             _pump: pump,
         })
@@ -612,13 +617,18 @@ impl Terminals {
     ) -> bool {
         self.shell.set(Some(window.current_view()));
         self.look = Some(look);
-        // Closing a tab hides its view, retaining the program and scrollback.
-        self.entries
-            .retain(|(id, _), _| state.workspace.session(id).is_some());
-        // A link that ended after showing a screen is opened again; one that
-        // never did waits until the tab is shown again or a push changes
-        // its session, so a refusal is not retried on every redraw. While
-        // the machine is out of reach the last screen stays.
+        // Drop terminals for removed or archived sessions immediately.
+        self.entries.retain(|(id, _), _| {
+            state
+                .workspace
+                .session(id)
+                .is_some_and(|session| !session.archived)
+        });
+        // A link that ended after showing a screen is opened again when
+        // visible; one that never did waits until the tab is shown again or a
+        // push changes its session, so a refusal is not retried on every
+        // redraw. Intentionally parked hidden tabs are dropped once their link
+        // ends and reopen on demand when next shown (no 30 s thrash loop).
         let mut reopen = Vec::new();
         for (key, entry) in &mut self.entries {
             let (ended, worked) = match &*entry.link.borrow() {
@@ -632,13 +642,21 @@ impl Terminals {
             if !shown {
                 entry.hidden_since_end = true;
             }
+            let parked = entry.replica.read(cx).state().phase == ReplicaPhase::Parked;
+            if parked {
+                // Free the parked replica shell; if `shown` is true, the
+                // visible-tab loop below opens a fresh link immediately.
+                reopen.push(key.clone());
+                continue;
+            }
             let Some(session) = state.workspace.session(&key.0) else {
                 continue;
             };
             let now = (session.status, session.shells.len());
             let changed = *entry.ended_with.get_or_insert(now) != now;
             if is_connected(state, &key.0)
-                && (worked || (shown && (entry.hidden_since_end || changed)))
+                && shown
+                && (worked || entry.hidden_since_end || changed)
             {
                 reopen.push(key.clone());
             }
@@ -674,8 +692,11 @@ impl Terminals {
             _ => None,
         };
         if let Some(id) = active_session.as_ref() {
-            if let Some(session) = state.workspace.session(id) {
+            if let Some(session) = state.workspace.session(id).filter(|s| !s.archived) {
                 for tab in 0..=session.shells.len() {
+                    if !is_visible(state, id, tab) {
+                        continue;
+                    }
                     let key = (id.clone(), tab);
                     if !self.entries.contains_key(&key) && !self.errors.contains_key(&key) {
                         match self.open(key.clone(), ui, look, font, free_hidden, false, window, cx) {
@@ -695,6 +716,9 @@ impl Terminals {
                 continue;
             };
             let visible = is_visible(state, id, *tab);
+            if !visible {
+                entry.cached_text.borrow_mut().take();
+            }
             let connected = is_connected(state, id);
             entry
                 .writable
@@ -948,10 +972,34 @@ impl Terminals {
                 why.trim_end_matches('.')
             ));
         }
-        // Expose the actual rendered grid to accessibility and headless flows.
-        let text = pane
+        // Expose the rendered grid to accessibility and headless flows,
+        // caching by (offset, size, scroll) so idle frames avoid re-syncing
+        // and allocating every row.
+        let text: SharedString = pane
             .as_ref()
-            .map(|pane| grid_text(pane, cx))
+            .map(|pane| {
+                let offset = entry.replica.read(cx).state().offset;
+                let (size, scroll_offset) = {
+                    let view = pane.read(cx).view().read(cx);
+                    let grid = view.grid();
+                    (
+                        grid.size(),
+                        grid.scrollbar().map_or(0, |bar| bar.offset),
+                    )
+                };
+                if let Some((o, c, r, s, ref cached)) = *entry.cached_text.borrow()
+                    && o == offset
+                    && c == size.cols
+                    && r == size.rows
+                    && s == scroll_offset
+                {
+                    return cached.clone();
+                }
+                let computed: SharedString = grid_text(pane, cx).into();
+                *entry.cached_text.borrow_mut() =
+                    Some((offset, size.cols, size.rows, scroll_offset, computed.clone()));
+                computed
+            })
             .unwrap_or_default();
         // Tab 0's program has its own line, with Resume; a shell tab's says
         // its shell ended.

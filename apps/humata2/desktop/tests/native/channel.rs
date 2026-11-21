@@ -28,11 +28,13 @@ fn channel_page_reference_images() {
 /// Frame 35: a channel with nothing in it lists its first steps, and they act.
 #[test]
 fn an_empty_channel_offers_a_session_and_a_machine() {
+    use humata2_app::channel::{Action, Tab};
     let mut app = App::new(fixture::fresh_channel());
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.send(AppAction::Switch(Route::Channel(
         humata2_clients::model::ChannelId::new("web-revamp"),
     )));
+    app.send(AppAction::Channel(Action::Tab(Tab::Sessions)));
     app.snapshot("35-empty-channel");
     app.click("channel-empty-new-session");
     assert!(
@@ -53,6 +55,7 @@ fn channel_sessions_filter_fold_and_open_their_own_inbox() {
     use humata2_app::channel::Action;
     let mut app = App::new(fixture::design());
     app.click("sidebar-channel-payments-rewrite");
+    app.click("channel-tab-Sessions");
     assert!(app.contains("channel-session-partial-brin"));
     app.click("channel-fold-ledger");
     assert!(!app.contains("channel-session-partial-brin"));

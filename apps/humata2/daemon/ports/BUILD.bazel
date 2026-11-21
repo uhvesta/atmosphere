@@ -15,12 +15,7 @@ rust_library(
         "//apps/humata2/api/grpc:review",
         "//apps/humata2/api/grpc:sessions",
         "//apps/humata2/daemon/access",
-        "//apps/humata2/daemon/machines",
-        "@crates//:clap",
-        "@crates//:prost",
-        "@crates//:serde",
         "@crates//:serde_json",
-        "@crates//:sha2",
         "@crates//:thiserror",
         "@crates//:tokio",
         "@crates//:tonic",
@@ -30,7 +25,6 @@ rust_library(
 rust_test(
     name = "ports_unit_test",
     crate = ":ports",
-    deps = ["@crates//:tempfile"],
 )
 
 filegroup(

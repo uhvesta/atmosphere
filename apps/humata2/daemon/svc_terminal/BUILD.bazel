@@ -1,9 +1,11 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 SHARED_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:machines",
+    "//apps/humata2/api/grpc:terminal",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
     "@crates//:prost",

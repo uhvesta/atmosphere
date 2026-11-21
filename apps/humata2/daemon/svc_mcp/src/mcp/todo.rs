@@ -3,7 +3,7 @@
 //! an agent's new item suggested and sends a close through the Edit rule,
 //! so a close may come back as a pending approval.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::transport::Channel;

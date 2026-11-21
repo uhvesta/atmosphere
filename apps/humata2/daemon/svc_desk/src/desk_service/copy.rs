@@ -4,7 +4,7 @@
 
 use std::sync::PoisonError;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::copy_document;
 use tonic::Status;
 

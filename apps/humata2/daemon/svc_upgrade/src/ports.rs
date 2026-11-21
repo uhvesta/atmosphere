@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::Refusal;
 use humata2_daemon_ports::{Caller, PortError};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{Builds, Machines};
 use humata2_rpc_kit::{error, failure};
 use humata2_store::TabRecord;

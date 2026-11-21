@@ -1,8 +1,12 @@
-/* Humata 2 Native Browser Co-Pilot — Shared Background Router
+/* Humata 2 Native Browser Co-Pilot — Shared Background Router (Read-Only)
  *
  * Connects to the native messaging host `app.humata2.browser_host` and routes
- * typed BrowserRequest messages (`list_tabs`, `read_tab`, `click`, `type`,
- * `navigate`, `submit`, `highlight_guide`) to the active or targeted tab.
+ * strictly read-only BrowserRequest messages:
+ *   - `list_tabs`: view open tabs
+ *   - `read_tab`: read-only DOM/text snapshot via declarative content script
+ *   - `screenshot`: read-only visible tab PNG screenshot
+ *
+ * Never clicks, types, navigates, mutates the DOM, or executes scripts.
  */
 
 const NATIVE_HOST_NAME = "app.humata2.browser_host";
@@ -90,26 +94,11 @@ async function resolveTargetTab(tabId) {
   throw new Error("No open browser tabs available");
 }
 
-async function sendToContentScript(tabId, action) {
-  try {
-    return await api.tabs.sendMessage(tabId, {
-      source: "humata2-browser-copilot",
-      action,
-    });
-  } catch (_initialErr) {
-    // Inject shared/content.js on demand if the tab was opened prior to extension load.
-    if (api.scripting && typeof api.scripting.executeScript === "function") {
-      await api.scripting.executeScript({
-        target: { tabId },
-        files: ["shared/content.js"],
-      });
-      return api.tabs.sendMessage(tabId, {
-        source: "humata2-browser-copilot",
-        action,
-      });
-    }
-    throw _initialErr;
-  }
+async function readSnapshotFromContentScript(tabId, action) {
+  return api.tabs.sendMessage(tabId, {
+    source: "humata2-browser-copilot",
+    action,
+  });
 }
 
 async function handleNativeRequest(request) {
@@ -139,37 +128,18 @@ async function handleNativeRequest(request) {
       return;
     }
 
-    case "navigate": {
-      if (typeof action.url !== "string" || action.url.trim() === "") {
-        throw new Error("Navigate action requires a non-empty url");
-      }
+    case "read_tab": {
       const tab = await resolveTargetTab(action.tab_id);
-      const updated = await api.tabs.update(tab.id, { url: action.url });
-      postReply({
-        request_id: requestId,
-        ok: true,
-        payload: {
-          type: "action_ack",
-          tab_id: updated && typeof updated.id === "number" ? updated.id : tab.id,
-          url: action.url,
-          detail: `Navigated tab ${tab.id} to ${action.url}`,
-        },
+      const result = await readSnapshotFromContentScript(tab.id, {
+        type: "read_tab",
+        tab_id: action.tab_id,
+        max_chars: action.max_chars,
       });
-      return;
-    }
-
-    case "read_tab":
-    case "click":
-    case "type":
-    case "submit":
-    case "highlight_guide": {
-      const tab = await resolveTargetTab(action.tab_id);
-      const result = await sendToContentScript(tab.id, action);
       if (!result || !result.ok) {
         postReply({
           request_id: requestId,
           ok: false,
-          error: (result && result.error) || `Content script failed for ${action.type}`,
+          error: (result && result.error) || "Content script failed for read_tab",
         });
         return;
       }
@@ -181,8 +151,33 @@ async function handleNativeRequest(request) {
       return;
     }
 
+    case "screenshot": {
+      const tab = await resolveTargetTab(action.tab_id);
+      const dataUrl = await api.tabs.captureVisibleTab(tab.windowId, {
+        format: "png",
+      });
+      postReply({
+        request_id: requestId,
+        ok: true,
+        payload: {
+          type: "screenshot",
+          screenshot: {
+            tab_id: tab.id,
+            window_id: tab.windowId,
+            url: tab.url || "",
+            title: tab.title || "",
+            format: "png",
+            data_url: dataUrl,
+          },
+        },
+      });
+      return;
+    }
+
     default:
-      throw new Error(`Unsupported browser action type: ${String(action.type)}`);
+      throw new Error(
+        `Unsupported or disallowed browser action type (read-only extension): ${String(action.type)}`
+      );
   }
 }
 
@@ -195,15 +190,6 @@ function enrichPayloadWithTabId(payload, tabId) {
       type: "snapshot",
       snapshot: { ...payload.snapshot, tab_id: tabId },
     };
-  }
-  if (payload.type === "highlight" && payload.highlight) {
-    return {
-      type: "highlight",
-      highlight: { ...payload.highlight, tab_id: tabId },
-    };
-  }
-  if (payload.type === "action_ack") {
-    return { ...payload, tab_id: tabId };
   }
   return payload;
 }

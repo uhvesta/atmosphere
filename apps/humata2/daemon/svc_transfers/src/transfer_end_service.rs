@@ -20,7 +20,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use humata2_access::{Call, Entry, Refusal};
 use humata2_chunk::{ChunkError, Decoder};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_transfers::{Disk, End, EndError, Entry as Planned, Kind, Sink};
 use pb::invalid_field::Problem;
 use tokio_stream::Stream;
@@ -256,7 +256,7 @@ impl Writer {
 }
 
 /// Milliseconds since the epoch of `at`.
-fn millis(at: &humata2_grpc::Timestamp) -> i64 {
+fn millis(at: &humata2_grpc_core::Timestamp) -> i64 {
     at.seconds
         .saturating_mul(1000)
         .saturating_add(i64::from(at.nanos) / 1_000_000)

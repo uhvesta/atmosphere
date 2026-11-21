@@ -9,7 +9,11 @@
 //! Peers are on the same version (D271): a peer whose snapshot carries no
 //! checkpoint is refused, never replayed as raw bytes.
 
-use humata2_proto::humata::v1 as pb;
+#[allow(unused_imports, ambiguous_glob_reexports)]
+mod pb {
+    pub use humata2_proto_core::humata::v1::*;
+    pub use humata2_proto_terminal::humata::v1::*;
+}
 use pb::attach_client_message::Message as ClientMessage;
 use pb::attach_server_message::Message as ServerMessage;
 use pb::terminal_state::Writable;

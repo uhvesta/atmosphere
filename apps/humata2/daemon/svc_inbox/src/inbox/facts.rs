@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use humata2_access::{AccessRequest, Call, Capability, Entry, GrantTarget, Place, Root, Target};
 use humata2_daemon_ports::Names;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::{BoardItemRecord, Store};
 
 /// The rows a card shows under its title.

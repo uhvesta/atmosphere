@@ -11,9 +11,11 @@ use fusefs_vfs::{
     InMemoryVolume, LeaseTable, NodeId, OpenFlags, SetAttr, StatFs, SyntheticStub, TreeBuilder,
     VfsError, VfsResult, VfsTarget, VirtualPath, Volume,
 };
+pub use humata2_fusefs_control::{
+    DaemonLinkState, DeskProjection, HostUpdate, MachineProjection, SessionWire, TopologyWire,
+    probe_mount_mode,
+};
 use serde::{Deserialize, Serialize};
-
-use crate::materialize::FsMountMode;
 
 /// Filename used for Humata build-cache omission stubs inside projected repos.
 pub const HUMATA_OMITTED_STUB_FILENAME: &str = ".humata-omitted.json";
@@ -223,22 +225,6 @@ impl SessionProjection {
     pub fn native_path(&self) -> PathBuf {
         stable_session_native_path(&self.machine_root, &self.session_id)
     }
-}
-
-/// Machine entry projected under `/m/<machine_id>` and `/machines/<machine_id>`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineProjection {
-    pub machine_id: String,
-    pub display_name: String,
-    pub online: bool,
-    pub machine_root: PathBuf,
-}
-
-/// Desk entry projected under `/desks/<desk_id>`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeskProjection {
-    pub desk_id: String,
-    pub session_ids: Vec<String>,
 }
 
 /// Complete snapshot of Humata topology projected into FUSEFS.
@@ -482,26 +468,6 @@ fn relative_session_target(alias_path: &str, session_id: &str) -> String {
     target
 }
 
-/// Live connection status between `humata2_fusefs` and `humatad2`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum DaemonLinkState {
-    Connected { daemon_pid: u32, epoch: u64 },
-    Disconnected { last_daemon_pid: Option<u32>, epoch: u64 },
-}
-
-impl DaemonLinkState {
-    pub fn is_connected(&self) -> bool {
-        matches!(self, Self::Connected { .. })
-    }
-
-    pub fn epoch(&self) -> u64 {
-        match self {
-            Self::Connected { epoch, .. } | Self::Disconnected { epoch, .. } => *epoch,
-        }
-    }
-}
-
 /// Stable runtime record for a live session holder, preserved across `humatad2`
 /// kill/restart cycles and same-machine channel renames.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,6 +642,17 @@ impl HumataVolumeHost {
     /// Records the daemon link state `humatad2` reports, as given.
     pub fn set_daemon_link(&self, state: DaemonLinkState) {
         *self.daemon_link.write().expect("daemon link lock poisoned") = state;
+    }
+
+    /// Applies a [`HostUpdate`] pushed by `humatad2`.
+    pub fn apply_update(&self, update: HostUpdate) -> VfsResult<()> {
+        match update {
+            HostUpdate::LinkState { state } => {
+                self.set_daemon_link(state);
+                Ok(())
+            }
+            HostUpdate::Topology { topology } => self.update_topology(topology.into()),
+        }
     }
 
     /// Performs a same-machine channel rename (`old_channel` -> `new_channel`).
@@ -897,37 +874,9 @@ impl Volume for HumataVolumeHost {
     }
 }
 
-/// A session as `humatad2` describes it to the helper: the plain facts of
-/// [`SessionProjection`], without files or loaders.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionWire {
-    pub session_id: String,
-    pub machine_id: String,
-    #[serde(default)]
-    pub channel: Option<String>,
-    #[serde(default)]
-    pub desk: Option<String>,
-    pub holder_pid: u32,
-    pub machine_root: PathBuf,
-}
-
-/// The wire form of a [`HumataTopology`] snapshot.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TopologyWire {
-    pub local_machine_id: String,
-    pub local_machine_root: PathBuf,
-    #[serde(default)]
-    pub machines: Vec<MachineProjection>,
-    #[serde(default)]
-    pub sessions: Vec<SessionWire>,
-    #[serde(default)]
-    pub desks: Vec<DeskProjection>,
-}
-
-impl TopologyWire {
-    /// The snapshot the volume host projects.
-    pub fn into_topology(self) -> HumataTopology {
-        let sessions = self
+impl From<TopologyWire> for HumataTopology {
+    fn from(wire: TopologyWire) -> Self {
+        let sessions = wire
             .sessions
             .into_iter()
             .map(|wire| {
@@ -943,75 +892,15 @@ impl TopologyWire {
             })
             .collect();
         HumataTopology {
-            local_machine_id: self.local_machine_id,
-            local_machine_root: self.local_machine_root,
-            machines: self.machines,
+            local_machine_id: wire.local_machine_id,
+            local_machine_root: wire.local_machine_root,
+            machines: wire.machines,
             sessions,
-            desks: self.desks,
+            desks: wire.desks,
             local_context_files: Vec::new(),
             control_status_json: None,
         }
     }
-}
-
-/// What `humatad2` pushes to the helper through the control socket's
-/// `Extension` request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "update", rename_all = "snake_case")]
-pub enum HostUpdate {
-    /// The link between the daemon and the helper changed.
-    LinkState { state: DaemonLinkState },
-    /// The daemon's machines and sessions, as they are now.
-    Topology { topology: TopologyWire },
-}
-
-impl HostUpdate {
-    /// Applies the update to `host`. The error says what the host refused.
-    pub fn apply(self, host: &HumataVolumeHost) -> VfsResult<()> {
-        match self {
-            Self::LinkState { state } => {
-                host.set_daemon_link(state);
-                Ok(())
-            }
-            Self::Topology { topology } => host.update_topology(topology.into_topology()),
-        }
-    }
-}
-
-/// The mount mode this machine can run: FSKit on a macOS that has it, the
-/// kernel FUSE device on Linux when it opens, else the degraded skeleton.
-pub fn probe_mount_mode() -> FsMountMode {
-    #[cfg(target_os = "macos")]
-    {
-        let version = std::process::Command::new("/usr/bin/sw_vers")
-            .arg("-productVersion")
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
-        match version {
-            Some(version) if fskit_supported(&version) => FsMountMode::FsKit,
-            _ => FsMountMode::Degraded,
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        fusefs_linux::probe_mount_mode().mode.into()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        FsMountMode::Degraded
-    }
-}
-
-/// FSKit file systems need macOS 15.4 or later.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn fskit_supported(product_version: &str) -> bool {
-    let mut parts = product_version.split('.').map(|part| part.parse::<u32>().ok());
-    let (Some(Some(major)), minor) = (parts.next(), parts.next().flatten().unwrap_or(0)) else {
-        return false;
-    };
-    (major, minor) >= (15, 4)
 }
 
 /// Helper to read a regular file's full bytes via [`Volume`].
@@ -1074,17 +963,15 @@ mod wire_tests {
     #[test]
     fn a_topology_update_adds_sessions_and_keeps_their_first_holder_pid() {
         let host = empty_host();
-        HostUpdate::Topology {
+        host.apply_update(HostUpdate::Topology {
             topology: wire_with("s1", Some("main"), 40),
-        }
-        .apply(&host)
+        })
         .unwrap();
         assert_eq!(host.holder_record("s1").unwrap().holder_pid, 40);
 
-        HostUpdate::Topology {
+        host.apply_update(HostUpdate::Topology {
             topology: wire_with("s1", Some("renamed"), 99),
-        }
-        .apply(&host)
+        })
         .unwrap();
         let record = host.holder_record("s1").unwrap();
         assert_eq!(record.holder_pid, 40);
@@ -1099,21 +986,10 @@ mod wire_tests {
             daemon_pid: 321,
             epoch: 5,
         };
-        HostUpdate::LinkState {
+        host.apply_update(HostUpdate::LinkState {
             state: state.clone(),
-        }
-        .apply(&host)
+        })
         .unwrap();
         assert_eq!(host.daemon_link_state(), state);
-    }
-
-    #[test]
-    fn fskit_needs_macos_15_4_or_later() {
-        assert!(fskit_supported("15.4"));
-        assert!(fskit_supported("15.6.1"));
-        assert!(fskit_supported("26.0"));
-        assert!(!fskit_supported("15.3"));
-        assert!(!fskit_supported("14.7"));
-        assert!(!fskit_supported("garbage"));
     }
 }

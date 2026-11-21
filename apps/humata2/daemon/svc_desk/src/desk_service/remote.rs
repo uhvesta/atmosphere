@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_access::ChannelDeskSwitches;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::DESK_CHANNEL;
 use humata2_store::{
     ChannelDeskRow, ChannelRecord, DeskFolderKind, DeskRow, SessionDetail, SessionRecord, StartStep, StoreError,

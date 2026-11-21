@@ -1,6 +1,6 @@
-//! BROWSER (B2): MCP tool handlers for the 6 Native Browser Co-Pilot tools
-//! (`browser_list_tabs`, `browser_read_tab`, `browser_guide_highlight`,
-//! `browser_click`, `browser_type`, `browser_navigate`).
+//! BROWSER (B2): MCP tool handlers for the 3 strictly read-only Native
+//! Browser Co-Pilot tools (`browser_list_tabs`, `browser_read_tab`,
+//! `browser_screenshot`).
 //!
 //! Strictly gated on `SupportedAgent::parse(agent_id)` (`claude`, `codex`,
 //! `copilot`, `agy` only). Every call checks `GetBrowserBridgeStatus`,
@@ -10,7 +10,7 @@
 use std::sync::atomic::Ordering;
 
 use humata2_browser_copilot::{BrowserAction, SupportedAgent};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Operation, Reply, RequestId, SessionToken, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::Request;
@@ -25,16 +25,11 @@ use super::{GrpcDaemon, applied, key, lock, outcome, text};
 const DEFAULT_WAIT_SECONDS: u32 = 45;
 const MAX_WAIT_SECONDS: u32 = 600;
 
-/// Returns `true` for the 6 browser MCP operations.
+/// Returns `true` for the 3 read-only browser MCP operations.
 pub(super) const fn is_browser_op(operation: Operation) -> bool {
     matches!(
         operation,
-        Operation::BrowserListTabs
-            | Operation::BrowserReadTab
-            | Operation::BrowserGuideHighlight
-            | Operation::BrowserClick
-            | Operation::BrowserType
-            | Operation::BrowserNavigate
+        Operation::BrowserListTabs | Operation::BrowserReadTab | Operation::BrowserScreenshot
     )
 }
 
@@ -46,7 +41,7 @@ impl GrpcDaemon {
         self.browser_offered.store(supported, Ordering::Relaxed);
     }
 
-    /// Whether `tools/list` and `call()` offer the 6 `browser_*` tools.
+    /// Whether `tools/list` and `call()` offer the 3 read-only `browser_*` tools.
     pub(super) fn browser_offered(&self) -> bool {
         self.browser_offered.load(Ordering::Relaxed)
     }
@@ -242,7 +237,7 @@ impl Drop for WithdrawOnDrop {
             }
             if let Some(bundle) = bundle {
                 req.metadata_mut()
-                    .insert(humata2_daemon_ports::release::BUNDLE_HEADER, bundle);
+                    .insert(humata2_daemon_ports::BUNDLE_HEADER, bundle);
             }
             let _ = pb::inbox_service_client::InboxServiceClient::new(channel)
                 .withdraw_request(req)
@@ -265,14 +260,6 @@ fn opt_u64(arguments: &Map<String, Value>, field: &str) -> Option<u64> {
     arguments.get(field).and_then(Value::as_u64)
 }
 
-fn opt_string(arguments: &Map<String, Value>, field: &str) -> Option<String> {
-    arguments
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
 fn browser_action(
     operation: Operation,
     arguments: &Map<String, Value>,
@@ -283,34 +270,8 @@ fn browser_action(
             tab_id: opt_u64(arguments, "tab_id"),
             max_chars: opt_u64(arguments, "max_chars").and_then(|v| usize::try_from(v).ok()),
         }),
-        Operation::BrowserGuideHighlight => Ok(BrowserAction::HighlightGuide {
+        Operation::BrowserScreenshot => Ok(BrowserAction::Screenshot {
             tab_id: opt_u64(arguments, "tab_id"),
-            url: text(arguments, "url"),
-            selector: text(arguments, "selector"),
-            title: text(arguments, "title"),
-            body: text(arguments, "body"),
-            step_label: opt_string(arguments, "step_label"),
-        }),
-        Operation::BrowserClick => Ok(BrowserAction::Click {
-            tab_id: opt_u64(arguments, "tab_id"),
-            url: text(arguments, "url"),
-            selector: text(arguments, "selector"),
-            element_preview: opt_string(arguments, "element_preview"),
-        }),
-        Operation::BrowserType => Ok(BrowserAction::Type {
-            tab_id: opt_u64(arguments, "tab_id"),
-            url: text(arguments, "url"),
-            selector: text(arguments, "selector"),
-            text: text(arguments, "text"),
-            clear_first: arguments
-                .get("clear_first")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            element_preview: opt_string(arguments, "element_preview"),
-        }),
-        Operation::BrowserNavigate => Ok(BrowserAction::Navigate {
-            tab_id: opt_u64(arguments, "tab_id"),
-            url: text(arguments, "url"),
         }),
         other => Err(ToolError {
             kind: ErrorKind::Internal,
@@ -343,21 +304,18 @@ mod tests {
             d.learn_browser_agent(supported);
             assert!(d.serves(Operation::BrowserListTabs), "{supported}");
             assert!(d.serves(Operation::BrowserReadTab), "{supported}");
-            assert!(d.serves(Operation::BrowserGuideHighlight), "{supported}");
-            assert!(d.serves(Operation::BrowserClick), "{supported}");
-            assert!(d.serves(Operation::BrowserType), "{supported}");
-            assert!(d.serves(Operation::BrowserNavigate), "{supported}");
+            assert!(d.serves(Operation::BrowserScreenshot), "{supported}");
         }
 
         for unsupported in ["opencode", "zsh", "custom", ""] {
             d.learn_browser_agent(unsupported);
             assert!(!d.serves(Operation::BrowserListTabs), "{unsupported}");
-            assert!(!d.serves(Operation::BrowserClick), "{unsupported}");
+            assert!(!d.serves(Operation::BrowserScreenshot), "{unsupported}");
         }
     }
 
     #[test]
-    fn maps_all_six_browser_operations_to_typed_actions() {
+    fn maps_all_three_read_only_browser_operations_to_typed_actions() {
         let empty = Map::new();
         assert_eq!(
             browser_action(Operation::BrowserListTabs, &empty).unwrap(),
@@ -376,35 +334,10 @@ mod tests {
             }
         );
 
-        let click_args = json!({
-            "tab_id": 2,
-            "url": "https://example.com",
-            "selector": "button#go",
-            "element_preview": "Go"
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
+        let shot_args = json!({ "tab_id": 2 }).as_object().cloned().unwrap();
         assert_eq!(
-            browser_action(Operation::BrowserClick, &click_args).unwrap(),
-            BrowserAction::Click {
-                tab_id: Some(2),
-                url: "https://example.com".to_owned(),
-                selector: "button#go".to_owned(),
-                element_preview: Some("Go".to_owned()),
-            }
-        );
-
-        let nav_args = json!({ "url": "https://example.com/next" })
-            .as_object()
-            .cloned()
-            .unwrap();
-        assert_eq!(
-            browser_action(Operation::BrowserNavigate, &nav_args).unwrap(),
-            BrowserAction::Navigate {
-                tab_id: None,
-                url: "https://example.com/next".to_owned(),
-            }
+            browser_action(Operation::BrowserScreenshot, &shot_args).unwrap(),
+            BrowserAction::Screenshot { tab_id: Some(2) }
         );
     }
 }

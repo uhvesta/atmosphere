@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_holder::process::{Snapshot, holder_names};
 use humata2_rpc_kit as status;
 use humata2_sessions::DESK_CHANNEL;

@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, ChannelId, MachineId, Refusal, SessionId, SessionRef};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_store::{ChannelRecord, SessionRecord, StoreError};
 use tonic::{Code, Request, Status};
 
@@ -224,9 +224,9 @@ pub fn call_failed(machine: &str, status: Status) -> Status {
 }
 
 /// Converts a `SystemTime` to a protobuf `Timestamp`.
-pub fn timestamp(at: SystemTime) -> humata2_grpc::Timestamp {
+pub fn timestamp(at: SystemTime) -> humata2_grpc_core::Timestamp {
     let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    humata2_grpc::Timestamp {
+    humata2_grpc_core::Timestamp {
         seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     }

@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use serde_json::Value;
 use tonic::Status;
 

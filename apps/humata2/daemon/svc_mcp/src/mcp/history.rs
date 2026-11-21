@@ -3,7 +3,7 @@
 //! decides what its session may see, so the tool and the CLI give the same
 //! results for the same query (LD-25).
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::transport::Channel;
@@ -87,7 +87,7 @@ fn turn(arguments: &Map<String, Value>, field: &str) -> Option<u32> {
 fn time(
     arguments: &Map<String, Value>,
     field: &str,
-) -> Result<Option<humata2_grpc::Timestamp>, ToolError> {
+) -> Result<Option<humata2_grpc_core::Timestamp>, ToolError> {
     let Some(written) = named(arguments, field) else {
         return Ok(None);
     };

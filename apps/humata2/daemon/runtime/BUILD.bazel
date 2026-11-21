@@ -6,10 +6,13 @@ RUNTIME_DEPS = [
     "//apps/humata2/api/grpc:core",
     "//apps/humata2/api/grpc:terminal",
     "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
     "@crates//:rustix",
     "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:sha2",
     "@crates//:thiserror",
     "@crates//:tokio",
     "@crates//:toml",
@@ -23,7 +26,9 @@ rust_library(
     aliases = {"//apps/humata2/api/grpc:terminal": "humata2_grpc"},
     crate_name = "humata2_daemon_runtime",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = RUNTIME_DEPS,
+    deps = RUNTIME_DEPS + [
+        "//apps/humata2/daemon/sessions_core",
+    ],
 )
 
 # The runtime crate with fault points active (`feature = "faults"`).
@@ -35,7 +40,9 @@ rust_library(
     crate_features = ["faults"],
     crate_name = "humata2_daemon_runtime",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = RUNTIME_DEPS,
+    deps = RUNTIME_DEPS + [
+        "//apps/humata2/daemon/sessions_core:sessions_core_faults",
+    ],
 )
 
 rust_test(

@@ -226,17 +226,17 @@ impl App {
             }
             Route::Channel(id) => {
                 state.session.open = None;
-                match state.channel_pages.get(&id).map(|v| v.tab) {
-                    Some(channel::Tab::Desk) => {
+                match state.channel_pages.get(&id).map(|v| v.tab).unwrap_or_default() {
+                    channel::Tab::Desk => {
                         effects.push(self.ensure_channel_desk(state, &id, false));
                     }
-                    Some(channel::Tab::Inbox) => effects.push(self.child(
+                    channel::Tab::Inbox => effects.push(self.child(
                         state,
                         AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
                             id,
                         ))),
                     )),
-                    Some(channel::Tab::Board) => effects.extend(self.channel_todo(state, id)),
+                    channel::Tab::Board => effects.extend(self.channel_todo(state, id)),
                     _ => {}
                 }
             }

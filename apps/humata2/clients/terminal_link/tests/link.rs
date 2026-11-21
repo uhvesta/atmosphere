@@ -1,7 +1,11 @@
 //! A tab's attach read as the terminal component's frames, and the
 //! component's frames sent back over the attach.
 
-use humata2_proto::humata::v1 as pb;
+#[allow(unused_imports, ambiguous_glob_reexports)]
+mod pb {
+    pub use humata2_proto_core::humata::v1::*;
+    pub use humata2_proto_terminal::humata::v1::*;
+}
 use humata2_terminal_link::{Inbound, LinkError, Outgoing, open, outbound};
 use pb::attach_client_message::Message as ClientMessage;
 use pb::attach_server_message::Message as ServerMessage;

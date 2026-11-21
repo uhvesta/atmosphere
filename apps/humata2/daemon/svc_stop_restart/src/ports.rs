@@ -20,7 +20,8 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::pb;
 
-pub use humata2_daemon_ports::{Release, UserVia, actor, user_via};
+pub use humata2_daemon_ports::{UserVia, actor, user_via};
+pub use humata2_daemon_runtime::Release;
 pub use humata2_rpc_kit::compression::Compression;
 pub use humata2_rpc_kit::{
     API_MAJOR, API_MINOR, chain, error, error_of, failed, failure, internal, lock, missing,

@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision, Place, Root};
 use humata2_daemon_ports::{AgentCaller, Caller, Names};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use humata2_store::Store;
 use tonic::{Code, Status};

@@ -3,8 +3,12 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # MachineService (host + box storage/root/forget/scripts) and the machine
 # scripts run engine (`humata2_svc_machines`).
 SHARED_DEPS = [
+    "//apps/humata2/api/grpc:core",
+    "//apps/humata2/api/grpc:events",
+    "//apps/humata2/api/grpc:inbox",
+    "//apps/humata2/api/grpc:machines",
+    "//apps/humata2/api/grpc:peer",
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",

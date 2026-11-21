@@ -12,14 +12,16 @@ Navigation "Sidebar"
   Button "New channel"
   TreeItem "web-revamp" selected
     Button "Fold"
+  TreeItem "Desk"
+  TreeItem "#web-revamp Desk"
   Link "This Mac"
   Button "Add a machine…"
   Link "Settings"
 Splitter "Resize the sidebar"
 Button "New session"
 Button "More channel actions"
-Tab "Sessions" selected
 Tab "Desk"
+Tab "Sessions" selected
 Tab "Agent inbox"
 Tab "To-do"
 Tab "Repos and machines"

@@ -23,7 +23,10 @@ mod terminal;
 
 pub use clipboard::{ClipboardTarget, clipboard_read_reply};
 pub use error::{Error, Status};
-pub use terminal::{DecMode, Event, Match, Point, Scroll, Terminal};
+pub use terminal::{
+    CLIENT_SCROLLBACK_MAX_BYTES, CLIENT_SCROLLBACK_MAX_LINES, DecMode, Event, Match, Point, Scroll,
+    Terminal,
+};
 pub use terminal_grid::{
     Cell, CellWidth, Color, Colors, Cursor, CursorShape, CursorStyle, Dirty, Grid, Key, KeyAction,
     KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt, Rgb, Row, Scrollbar, Size,

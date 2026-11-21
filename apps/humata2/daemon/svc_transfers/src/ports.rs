@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use humata2_access::{AccessRequest, Call};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tokio::sync::broadcast;
 use tonic::transport::Channel;
 use tonic::{Code, Status};

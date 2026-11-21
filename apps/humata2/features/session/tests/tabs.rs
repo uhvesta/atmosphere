@@ -79,6 +79,8 @@ fn a_file_opens_once_and_closing_it_returns_to_the_terminal() {
         g.tabs.pop();
         g.selected = 1;
         s.views.get_mut(&id).unwrap().tab = 1;
+        s.file_contents
+            .remove(&(id.clone(), "api".into(), "src/client.rs".into()));
     });
     assert_eq!(
         store.state().view().unwrap().selected(0),

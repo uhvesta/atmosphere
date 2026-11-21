@@ -295,8 +295,7 @@ fn extension_callback(host: Arc<HumataVolumeHost>) -> ExtensionCallback {
         let update: HostUpdate = serde_json::from_value(body).map_err(|err| {
             format!("unrecognised update from humatad2 (is it the same release as this helper?): {err}")
         })?;
-        update
-            .apply(&host)
+        host.apply_update(update)
             .map_err(|err| format!("couldn't apply the update to the Humata volume: {err}"))?;
         Ok(serde_json::json!({ "applied": true }))
     })

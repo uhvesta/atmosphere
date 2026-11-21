@@ -25,7 +25,7 @@ use humata2_access::{
     AccessRequest, Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target,
 };
 use humata2_daemon_ports::{Caller, Gated};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{
     Action, AddSsh, Builds, ConfigError, Drive, EntryState, HostEntry, IdentityError, Machines,
     ManageError, OpStep, Provider, SetupError, StepEvent, SystemRunner,
@@ -722,9 +722,9 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent) {
     work.link_changed(machine, &event);
 }
 
-fn timestamp(at: SystemTime) -> humata2_grpc::Timestamp {
+fn timestamp(at: SystemTime) -> humata2_grpc_core::Timestamp {
     let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    humata2_grpc::Timestamp {
+    humata2_grpc_core::Timestamp {
         seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     }

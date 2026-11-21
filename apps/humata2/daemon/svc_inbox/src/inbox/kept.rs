@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use humata2_access::{
     AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId, Verdict,
 };
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{helpers as status, log};
 use humata2_store::{InboxRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;

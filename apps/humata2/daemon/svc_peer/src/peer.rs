@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use humata2_chunk::Link;
-use humata2_grpc::Timestamp;
-use humata2_grpc::humata::v1 as pb;
+use humata2_grpc_core::Timestamp;
+use crate::pb;
 use tokio::sync::Notify;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::body::Body;
@@ -32,7 +32,7 @@ use humata2_rpc_kit::link_proof::{
 };
 use crate::relay::Relay;
 use crate::ports as status;
-use humata2_daemon_ports::release::Release;
+use humata2_daemon_runtime::release::Release;
 
 use pb::peer_unproven::Reason;
 
@@ -591,7 +591,7 @@ pub mod host_probe {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use humata2_grpc::humata::v1 as pb;
+    use crate::pb;
 
     /// How long one external command may run. The commands and the folder
     /// sizes run side by side, so this is about how long a probe takes; it

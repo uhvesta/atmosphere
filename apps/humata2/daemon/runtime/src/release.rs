@@ -9,15 +9,14 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
+pub use humata2_daemon_ports::BUNDLE_HEADER;
 use humata2_grpc_core::humata::v1 as pb;
 use humata2_machines::{InstalledFile, Platform};
+use humata2_rpc_kit::{chain, log};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-
-/// The metadata a CLI names its release in.
-pub const BUNDLE_HEADER: &str = "humata-bundle";
 
 /// The bundle manifest's name in `bin`, as the app installs it.
 const MANIFEST: &str = "bundle.json";
@@ -33,36 +32,6 @@ const TOOLS: [InstalledFile; 4] = [
     InstalledFile::FuseFs,
 ];
 
-static LOG_SINK: OnceLock<fn(&str)> = OnceLock::new();
-
-/// Sets the log sink `Release` uses to report unreadable bundle or tool files.
-pub fn set_log_sink(sink: fn(&str)) {
-    let _ = LOG_SINK.set(sink);
-}
-
-fn log_line(line: &str) {
-    if let Some(sink) = LOG_SINK.get() {
-        sink(line);
-    } else {
-        eprintln!("{line}");
-    }
-}
-
-/// An error and its causes, on one line.
-fn chain(error: &dyn std::error::Error) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        let said = cause.to_string();
-        if !text.contains(&said) {
-            text.push_str(": ");
-            text.push_str(&said);
-        }
-        source = cause.source();
-    }
-    text
-}
-
 /// The sha256 of each tool found in `bin`. A file that isn't there is left
 /// out; one that can't be read is left out too, with a log line.
 pub fn installed_tools(bin: &Path) -> Vec<pb::BuildFile> {
@@ -77,7 +46,7 @@ pub fn installed_tools(bin: &Path) -> Vec<pb::BuildFile> {
                 }),
                 Err(source) if source.kind() == ErrorKind::NotFound => None,
                 Err(source) => {
-                    log_line(&format!(
+                    log::line(&format!(
                         "humatad2: couldn't read {} to compare it with the release, so it isn't checked ({source}); make the file readable by your user, or install Humata again",
                         path.display()
                     ));
@@ -325,7 +294,7 @@ struct Entry {
 }
 
 fn report(error: &ReadError) {
-    log_line(&format!("humatad2: {}", chain(error)));
+    log::line(&format!("humatad2: {}", chain(error)));
 }
 
 fn own_error(path: &Path, source: std::io::Error) -> ReadError {

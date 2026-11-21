@@ -14,7 +14,7 @@ use std::time::SystemTime;
 
 use humata2_access::{Answer, GrantId};
 use humata2_daemon_ports::{Caller, UserVia};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{helpers as status, log};
 use humata2_store::{SessionRecord, Store, StoreError};
 use humata2_store_proto::humata::store::v1 as stored;
@@ -114,7 +114,7 @@ struct Arrival<'a> {
     machine: &'a str,
     seq: u64,
     operation: &'a str,
-    at: Option<humata2_grpc::Timestamp>,
+    at: Option<humata2_grpc_core::Timestamp>,
     /// The session the entry says made the call.
     session: &'a str,
     /// The host's own machine.

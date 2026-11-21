@@ -56,6 +56,15 @@ fn resume_failure_reason(failure: ResumeFailure) -> String {
 }
 
 impl App {
+    /// Prunes heavy cached per-session state when a session is archived or removed.
+    pub(super) fn evict_session(state: &mut AppState, id: &SessionId) {
+        state.session.evict_session(id);
+        state.review.evict_session(id);
+        let workspace = Arc::make_mut(&mut state.workspace);
+        workspace.session_files.remove(id);
+        workspace.diffs.retain(|diff| &diff.session != id);
+    }
+
     pub(super) fn frontmost_context(state: &AppState) -> FrontmostContext {
         let viewing_session = match &state.route {
             Route::Session(id) => Some(id.clone()),
@@ -184,10 +193,19 @@ impl App {
                     .session(&session.id)
                     .map_or((None, None), |prev| (Some(prev.status), prev.resume_failed));
                 if session.archived {
+                    if let Some(record) = state.workspace.desk.channel_sessions.get(&session.id)
+                        && record.target.is_none()
+                    {
+                        state.desk.channel_status.insert(
+                            record.channel.clone(),
+                            humata2_desk::ChannelDeskStatus::Closed,
+                        );
+                    }
                     withdraw_ids.extend(humata2_notify::clear_session(
                         &mut state.notify_burst,
                         &session.id,
                     ));
+                    Self::evict_session(state, &session.id);
                 } else if live {
                     let (session_title, channel_id, channel_name) =
                         session_channel_meta(&state.workspace, &session);

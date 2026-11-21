@@ -28,12 +28,8 @@ mod pb {
 use tokio::sync::watch;
 use tonic::Status;
 
-pub mod release;
-
-pub use release::{
-    BUNDLE_HEADER, Release, host_files, installed_tools, names_file, names_whole_entry,
-    set_log_sink, short,
-};
+/// The metadata a CLI names its release in.
+pub const BUNDLE_HEADER: &str = "humata-bundle";
 
 /// What Unix sockets allow in a path, without its terminating NUL.
 #[cfg(target_os = "linux")]
@@ -47,7 +43,7 @@ pub const API_MAJOR: u32 = 1;
 pub const API_MINOR: u32 = 0;
 
 /// Whether a daemon runs as the host (the Mac) or a managed machine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// The Mac: the source of truth.
     Host,
@@ -628,7 +624,7 @@ pub trait LifecyclePort: Send + Sync {
 
 /// Narrow gate for checking the current release and upgrade state (SPLIT §3.1, §6.2).
 pub trait UpgradeGate: Send + Sync {
-    fn current_release(&self) -> &Release;
+    fn current_release(&self) -> pb::BuildInfo;
     fn check_not_upgrading(&self) -> Result<(), PortError>;
 }
 

@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use humata2_grpc::Timestamp;
-use humata2_grpc::humata::v1 as pb;
+use humata2_grpc_core::Timestamp;
+use crate::pb;
 use humata2_store::{SessionRecord, Store, StoreError, ViewRecord};
 use prost::Message;
 use tokio::task::JoinError;

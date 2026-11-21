@@ -4,7 +4,7 @@
 //! `svc_mcp`) and admin policy.
 
 mod access_service;
-mod agent_gate;
+pub(crate) use humata2_daemon_runtime::agent_gate;
 pub(crate) use humata2_daemon_runtime::agent_switches;
 mod attach;
 mod wire_away;

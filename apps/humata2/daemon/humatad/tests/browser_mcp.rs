@@ -1,8 +1,10 @@
 //! Loopback integration tests for BROWSER MCP + Inbox wiring (B2 & B3):
 //! - 4-agent scope (`claude`, `codex`, `copilot`, `agy` offered; `opencode` and `zsh` refused)
+//! - Strictly read-only tools (`browser_list_tabs`, `browser_read_tab`, `browser_screenshot`);
+//!   all execute/mutate tools (`browser_click`, `browser_type`, `browser_navigate`,
+//!   `browser_guide_highlight`, `browser_submit`) are never exposed
 //! - 30-minute per-session Read grant reused without raising a second card
-//! - Write card rejects `AllowFor30Min` and `AlwaysLet`, is skipped by `Approve all`,
-//!   and executes once approved with `Approve`.
+//! - `AlwaysLet` rejected on `BrowserRead` cards.
 
 use humatad_test_common as common;
 
@@ -15,8 +17,8 @@ use common::mcp_client::Mcp;
 use common::remote_rig::{CODEX_AGENT, LONG, Rig, is_live};
 use common::{Attach, Daemon, WAIT, folder, open, state_folder};
 use humata2_browser_copilot::{
-    BrowserAction, BrowserReply, BrowserReplyPayload, BrowserRequest, PageSnapshot, TabInfo,
-    read_frame, write_frame,
+    BrowserAction, BrowserReply, BrowserReplyPayload, BrowserRequest, PageScreenshot, PageSnapshot,
+    TabInfo, read_frame, write_frame,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{ChannelRecord, SessionRecord, Store};
@@ -143,17 +145,22 @@ async fn four_agent_scope_offers_browser_tools_only_to_supported_agents() {
             .iter()
             .filter_map(|t| t.as_str()?.split_whitespace().next())
             .collect();
-        assert!(
-            !names.contains(&"browser_submit"),
-            "browser_submit must never be exposed"
-        );
-        for tool in [
-            "browser_list_tabs",
-            "browser_read_tab",
-            "browser_guide_highlight",
+        for forbidden in [
+            "browser_submit",
             "browser_click",
             "browser_type",
             "browser_navigate",
+            "browser_guide_highlight",
+        ] {
+            assert!(
+                !names.contains(&forbidden),
+                "{forbidden} must never be exposed"
+            );
+        }
+        for tool in [
+            "browser_list_tabs",
+            "browser_read_tab",
+            "browser_screenshot",
         ] {
             assert_eq!(
                 names.contains(&tool),
@@ -169,7 +176,7 @@ async fn four_agent_scope_offers_browser_tools_only_to_supported_agents() {
 }
 
 #[tokio::test]
-async fn read_grant_reused_and_write_rejects_30m_and_approve_all() {
+async fn read_grant_reused_for_list_read_and_screenshot_and_always_rejected() {
     let dir = folder();
     let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
     store
@@ -243,15 +250,15 @@ async fn read_grant_reused_and_write_rejects_30m_and_approve_all() {
                         interactive_elements: Vec::new(),
                     },
                 },
-                BrowserAction::Click { url, selector, .. } => BrowserReplyPayload::ActionAck {
-                    tab_id: 1,
-                    url,
-                    detail: format!("clicked {selector}"),
-                },
-                _ => BrowserReplyPayload::ActionAck {
-                    tab_id: 1,
-                    url: String::new(),
-                    detail: "ok".to_owned(),
+                BrowserAction::Screenshot { .. } => BrowserReplyPayload::Screenshot {
+                    screenshot: PageScreenshot {
+                        tab_id: 1,
+                        window_id: 1,
+                        url: "https://example.com".to_owned(),
+                        title: "Example".to_owned(),
+                        format: "png".to_owned(),
+                        data_url: "data:image/png;base64,iVBORw0KGgo=".to_owned(),
+                    },
                 },
             };
             let reply = BrowserReply::ok(req.request_id, payload);
@@ -288,6 +295,22 @@ async fn read_grant_reused_and_write_rejects_30m_and_approve_all() {
     });
     let read_card = wait_for_pending_request(&mut inbox, pb::RequestKind::BrowserRead).await;
     let read_id = read_card.id.clone().unwrap();
+
+    // AlwaysLet is rejected on BrowserRead.
+    let err_always = inbox
+        .answer_request(pb::AnswerRequestRequest {
+            idempotency_key: None,
+            id: Some(read_id.clone()),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Always(pb::AlwaysLet::default())),
+            }),
+            expected_revision: None,
+            presence: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err_always.code(), Code::InvalidArgument);
+
     inbox
         .answer_request(pb::AnswerRequestRequest {
             idempotency_key: None,
@@ -306,103 +329,33 @@ async fn read_grant_reused_and_write_rejects_30m_and_approve_all() {
     let (mut mcp, first_read) = read_call.await.unwrap();
     assert_ne!(first_read["isError"], Value::Bool(true), "{first_read}");
 
-    // 2. Second Read executes immediately under the 30-min grant (no new card).
+    // 2. Second Read (read_tab) executes immediately under the 30-min grant (no new card).
     let second_read = mcp
         .call(11, "browser_read_tab", json!({ "reason": "read tab" }))
         .await;
     assert_ne!(second_read["isError"], Value::Bool(true), "{second_read}");
 
-    // 3. Write raises a BrowserWrite card; rejects AllowFor30Min & Always; skipped by Approve all.
-    let write_call = tokio::spawn(async move {
-        let res = mcp
-            .call(
-                12,
-                "browser_click",
-                json!({
-                    "url": "https://example.com/settings",
-                    "selector": "button#confirm",
-                    "element_preview": "Confirm",
-                    "reason": "confirm setting"
-                }),
-            )
-            .await;
-        (mcp, res)
-    });
-    let write_card = wait_for_pending_request(&mut inbox, pb::RequestKind::BrowserWrite).await;
-    let write_id = write_card.id.clone().unwrap();
-
-    let err_30m = inbox
-        .answer_request(pb::AnswerRequestRequest {
-            idempotency_key: None,
-            id: Some(write_id.clone()),
-            answer: Some(pb::RequestAnswer {
-                answer: Some(pb::request_answer::Answer::AllowFor30Min(
-                    pb::AllowFor30Min {},
-                )),
-            }),
-            expected_revision: None,
-            presence: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err_30m.code(), Code::InvalidArgument);
-
-    let err_always = inbox
-        .answer_request(pb::AnswerRequestRequest {
-            idempotency_key: None,
-            id: Some(write_id.clone()),
-            answer: Some(pb::RequestAnswer {
-                answer: Some(pb::request_answer::Answer::Always(pb::AlwaysLet::default())),
-            }),
-            expected_revision: None,
-            presence: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err_always.code(), Code::InvalidArgument);
-
-    let bulk = inbox
-        .answer_all(pb::AnswerAllRequest {
-            idempotency_key: None,
-            scope: None,
-            ids: vec![write_id.clone()],
-            approve: true,
-            presence: None,
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(bulk.answered.is_empty());
-    assert_eq!(bulk.skipped.len(), 1);
-
-    // Approve once lets the write execute.
-    inbox
-        .answer_request(pb::AnswerRequestRequest {
-            idempotency_key: None,
-            id: Some(write_id),
-            answer: Some(pb::RequestAnswer {
-                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
-            }),
-            expected_revision: None,
-            presence: None,
-        })
-        .await
-        .unwrap();
-
-    let (_mcp, write_res) = write_call.await.unwrap();
-    assert_ne!(write_res["isError"], Value::Bool(true), "{write_res}");
+    // 3. Third Read (screenshot) also executes immediately under the 30-min grant.
+    let shot = mcp
+        .call(12, "browser_screenshot", json!({ "reason": "capture screenshot" }))
+        .await;
+    assert_ne!(shot["isError"], Value::Bool(true), "{shot}");
+    assert!(
+        shot.to_string().contains("data:image/png;base64,iVBORw0KGgo="),
+        "screenshot should return PNG data_url: {shot}"
+    );
 
     let _ = host.kill();
     let _ = host.wait();
     responder.abort();
 }
 
-/// D891: an agent on a remote machine gets the same browser access to the host
-/// Mac as a local session — same 4-agent scope, same 30-min read grants and
-/// per-action write approvals, with the Inbox card on the host naming the
-/// remote machine, while host setup RPCs stay host-only.
+/// D891: an agent on a remote machine gets the same read-only browser access to
+/// the host Mac as a local session — same 4-agent scope, same 30-min read grants
+/// for `list_tabs`, `read_tab`, and `screenshot`, with the Inbox card on the host
+/// naming the remote machine, while host setup RPCs stay host-only.
 #[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_session_reads_and_clicks_through_hosts_browser_with_inbox_attribution() {
+async fn remote_machine_session_reads_and_screenshots_through_hosts_browser_with_inbox_attribution() {
     const BOX: &str = "box-1";
     const REPO: (&str, &str) = ("acme", "api");
 
@@ -499,15 +452,15 @@ async fn remote_machine_session_reads_and_clicks_through_hosts_browser_with_inbo
                         interactive_elements: Vec::new(),
                     },
                 },
-                BrowserAction::Click { url, selector, .. } => BrowserReplyPayload::ActionAck {
-                    tab_id: 7,
-                    url,
-                    detail: format!("clicked {selector} on host"),
-                },
-                _ => BrowserReplyPayload::ActionAck {
-                    tab_id: 7,
-                    url: String::new(),
-                    detail: "ok".to_owned(),
+                BrowserAction::Screenshot { .. } => BrowserReplyPayload::Screenshot {
+                    screenshot: PageScreenshot {
+                        tab_id: 7,
+                        window_id: 1,
+                        url: "https://host.example.com".to_owned(),
+                        title: "Host Mac Tab".to_owned(),
+                        format: "png".to_owned(),
+                        data_url: "data:image/png;base64,HOSTSHOT==".to_owned(),
+                    },
                 },
             };
             let reply = BrowserReply::ok(req.request_id, payload);
@@ -584,79 +537,18 @@ async fn remote_machine_session_reads_and_clicks_through_hosts_browser_with_inbo
         "remote agent should read host Mac's tab under 30m grant: {second_read}"
     );
 
-    // 3. Remote write raises a BrowserWrite card naming `box-1`, rejects AllowFor30Min
-    //    and Approve all, and executes on the host Mac once approved with Approve.
-    let write_call = tokio::spawn(async move {
-        let res = mcp
-            .call(
-                103,
-                "browser_click",
-                json!({
-                    "url": "https://host.example.com/settings",
-                    "selector": "button#confirm",
-                    "element_preview": "Confirm",
-                    "reason": "remote confirm"
-                }),
-            )
-            .await;
-        (mcp, res)
-    });
-    let write_card = wait_for_pending_request(&mut host_inbox, pb::RequestKind::BrowserWrite).await;
-    assert_eq!(
-        write_card.journal.as_ref().and_then(|j| j.machine.as_ref()),
-        Some(&box_id),
-        "remote BrowserWrite card must name the remote machine"
-    );
-    let write_id = write_card.id.clone().unwrap();
-
-    let err_30m = host_inbox
-        .answer_request(pb::AnswerRequestRequest {
-            idempotency_key: None,
-            id: Some(write_id.clone()),
-            answer: Some(pb::RequestAnswer {
-                answer: Some(pb::request_answer::Answer::AllowFor30Min(
-                    pb::AllowFor30Min {},
-                )),
-            }),
-            expected_revision: None,
-            presence: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err_30m.code(), Code::InvalidArgument);
-
-    let bulk = host_inbox
-        .answer_all(pb::AnswerAllRequest {
-            idempotency_key: None,
-            scope: None,
-            ids: vec![write_id.clone()],
-            approve: true,
-            presence: None,
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(bulk.answered.is_empty());
-    assert_eq!(bulk.skipped.len(), 1);
-
-    host_inbox
-        .answer_request(pb::AnswerRequestRequest {
-            idempotency_key: None,
-            id: Some(write_id),
-            answer: Some(pb::RequestAnswer {
-                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
-            }),
-            expected_revision: None,
-            presence: None,
-        })
-        .await
-        .unwrap();
-
-    let (_mcp, write_res) = write_call.await.unwrap();
-    assert_ne!(write_res["isError"], Value::Bool(true), "{write_res}");
+    // 3. Remote screenshot reuses the 30-min read grant and captures from the host browser.
+    let shot_res = mcp
+        .call(
+            103,
+            "browser_screenshot",
+            json!({ "tab_id": 7, "reason": "remote screenshot" }),
+        )
+        .await;
+    assert_ne!(shot_res["isError"], Value::Bool(true), "{shot_res}");
     assert!(
-        write_res.to_string().contains("clicked button#confirm on host"),
-        "remote click should execute on host browser: {write_res}"
+        shot_res.to_string().contains("data:image/png;base64,HOSTSHOT=="),
+        "remote screenshot should capture host browser: {shot_res}"
     );
 
     let _ = browser_host.kill();

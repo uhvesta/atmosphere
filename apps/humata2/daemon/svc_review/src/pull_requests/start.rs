@@ -12,7 +12,7 @@
 //! reviews on its own (D59).
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{blocking, chain, internal, invalid_field, missing, timestamp_ms};
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, ReviewPr, Store, StoreError};
 use tonic::Status;

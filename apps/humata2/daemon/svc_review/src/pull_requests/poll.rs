@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{blocking, chain, lock, log::say};
 use humata2_store::ReviewPr;
 use tokio::sync::Notify;

@@ -3,7 +3,7 @@
 //! session's lock, and neither touches a clone it didn't make or a folder it
 //! doesn't own.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::doc_repo::{self, DocGit};
 use humata2_sessions::{clone_repo, clone_work, repo_clone};
 use humata2_transfers::NewItem;

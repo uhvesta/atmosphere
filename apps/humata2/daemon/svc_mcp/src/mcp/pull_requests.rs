@@ -3,7 +3,7 @@
 //! starts a review and reads which commits the user reviewed (D299). Each is a call on the daemon, which decides what the
 //! session may do; nothing here reaches GitHub.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, ErrorKind, Reply, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::transport::Channel;

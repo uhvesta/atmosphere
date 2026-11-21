@@ -6,12 +6,9 @@ board_item_history
 board_item_move
 board_item_update
 board_items_list
-browser_click
-browser_guide_highlight
 browser_list_tabs
-browser_navigate
 browser_read_tab
-browser_type
+browser_screenshot
 channel_add_machine
 channel_add_repo
 channel_create

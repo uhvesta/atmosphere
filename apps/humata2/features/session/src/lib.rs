@@ -338,6 +338,22 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    /// Releases cached per-session state (loaded files, histories,
+    /// conversations, live output, and cursor state) when a session is
+    /// archived or removed.
+    pub fn evict_session(&mut self, session: &SessionId) {
+        self.file_contents.retain(|(id, _, _), _| id != session);
+        self.histories.retain(|(id, _), _| id != session);
+        self.conversations.remove(session);
+        self.live.retain(|(id, _), _| id != session);
+        self.changes_at.retain(|(id, _, _), _| id != session);
+        self.agent_tabs.retain(|(id, _), _| id != session);
+        self.failed_queues.remove(session);
+        if self.compare.as_ref().is_some_and(|c| &c.session == session) {
+            self.compare = None;
+        }
+    }
+
     /// Marks the tabs opened as agents in `workspace`'s sessions, which the
     /// daemon's own copy of a session lacks. Call after a session from the
     /// daemon replaces the one held.
@@ -1479,11 +1495,12 @@ impl Reducer for Sessions {
             }
             SessionAction::CloseTab { group, index } => {
                 let split = state.view().is_some_and(|v| v.groups.len() == 2);
-                let closing_conversation = state
+                let closed_tab = state
                     .view()
                     .and_then(|v| v.groups.get(group))
                     .and_then(|g| g.tabs.get(index))
-                    == Some(&Tab::Conversation);
+                    .cloned();
+                let closing_conversation = closed_tab == Some(Tab::Conversation);
                 if let Some(view) = state.view_mut()
                     && let Some(g) = view.groups.get_mut(group)
                     && index < g.tabs.len()
@@ -1515,6 +1532,32 @@ impl Reducer for Sessions {
                     }
                     if let Some(id) = state.open.clone() {
                         state.conversations.remove(&id);
+                    }
+                }
+                if let Some(Tab::File { repo, path }) = closed_tab
+                    && let Some(id) = state.open.clone()
+                {
+                    let still_open = state.view().is_some_and(|view| {
+                        view.groups.iter().any(|g| {
+                            g.tabs
+                                .iter()
+                                .any(|t| matches!(t, Tab::File { repo: r, path: p } if r == &repo && p == &path))
+                        })
+                    });
+                    if !still_open {
+                        let key = (id.clone(), repo.clone(), path.clone());
+                        state.file_contents.remove(&key);
+                        state.changes_at.remove(&key);
+                        if repo.is_empty() {
+                            state.histories.remove(&(id.clone(), path.clone()));
+                        }
+                        if state
+                            .compare
+                            .as_ref()
+                            .is_some_and(|c| c.session == id && c.path == path)
+                        {
+                            state.compare = None;
+                        }
                     }
                 }
             }
@@ -2151,6 +2194,49 @@ fn open_session(state: &SessionState) -> Option<&humata2_clients::model::Session
         .open
         .as_ref()
         .and_then(|id| state.workspace.session(id))
+}
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+
+    #[test]
+    fn evict_session_clears_cached_files_histories_and_conversations() {
+        let s1 = SessionId::new("se_1");
+        let s2 = SessionId::new("se_2");
+        let mut state = SessionState::default();
+        state
+            .file_contents
+            .insert((s1.clone(), String::new(), "a.md".into()), Ok("hello".into()));
+        state
+            .file_contents
+            .insert((s2.clone(), String::new(), "b.md".into()), Ok("keep".into()));
+        state
+            .histories
+            .insert((s1.clone(), "a.md".into()), DocHistory::default());
+        state
+            .histories
+            .insert((s2.clone(), "b.md".into()), DocHistory::default());
+        state
+            .conversations
+            .insert(s1.clone(), Conversation::default());
+        state
+            .conversations
+            .insert(s2.clone(), Conversation::default());
+        state.live.insert((s1.clone(), 0), Arc::new(Vec::new()));
+        state.live.insert((s2.clone(), 0), Arc::new(Vec::new()));
+
+        state.evict_session(&s1);
+
+        assert!(!state.file_contents.contains_key(&(s1.clone(), String::new(), "a.md".into())));
+        assert!(state.file_contents.contains_key(&(s2.clone(), String::new(), "b.md".into())));
+        assert!(!state.histories.contains_key(&(s1.clone(), "a.md".into())));
+        assert!(state.histories.contains_key(&(s2.clone(), "b.md".into())));
+        assert!(!state.conversations.contains_key(&s1));
+        assert!(state.conversations.contains_key(&s2));
+        assert!(!state.live.contains_key(&(s1, 0)));
+        assert!(state.live.contains_key(&(s2, 0)));
+    }
 }
 
 /// The lines a terminal tab shows: for the agent's tab the last snapshot's

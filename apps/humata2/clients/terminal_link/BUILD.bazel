@@ -9,7 +9,8 @@ rust_library(
     crate_name = "humata2_terminal_link",
     visibility = ["//apps/humata2/clients/live:__pkg__"],
     deps = [
-        "//apps/humata2/api/proto:humata2_rust",
+        "//apps/humata2/api/proto:core_rust",
+        "//apps/humata2/api/proto:terminal_rust",
         "//apps/humata2/terminal/wire",
         "@crates//:thiserror",
     ],
@@ -21,7 +22,8 @@ rust_library(
         srcs = [src],
         deps = [
             ":terminal_link",
-            "//apps/humata2/api/proto:humata2_rust",
+            "//apps/humata2/api/proto:core_rust",
+            "//apps/humata2/api/proto:terminal_rust",
             "//apps/humata2/terminal/wire",
         ],
     )

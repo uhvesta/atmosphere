@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_review_diff::{
     CheckedStack, Clones, DiffSpec, FromStack, FromStackError, Note, ReviewPlan, Stack,
     StackError, StackStatus, wire,

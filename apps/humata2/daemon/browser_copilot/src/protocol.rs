@@ -2,7 +2,8 @@
 //!
 //! Implements the standard 4-byte native-endian length-prefixed JSON framing
 //! specified by Chrome and Firefox Native Messaging, with a strict 1 MiB
-//! payload bound.
+//! payload bound. Strictly read-only: only `list_tabs`, `read_tab`, and
+//! `screenshot` actions exist.
 
 use std::io::{Read, Write};
 
@@ -28,7 +29,7 @@ pub enum ProtocolError {
     #[error("JSON codec error: {0}")]
     Json(#[from] serde_json::Error),
     #[error(
-        "browser action JSON is malformed or names an unknown action type; expected a JSON object with \"type\" set to one of list_tabs, read_tab, click, type, navigate, submit, highlight_guide: {0}"
+        "browser action JSON is malformed or names an unknown or disallowed action type; expected a JSON object with \"type\" set to one of list_tabs, read_tab, screenshot: {0}"
     )]
     InvalidAction(#[source] serde_json::Error),
 }
@@ -96,7 +97,7 @@ pub struct BrowserRequest {
     pub action: BrowserAction,
 }
 
-/// Typed browser actions supported by the Native Browser Co-Pilot.
+/// Typed read-only browser actions supported by the Native Browser Co-Pilot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserAction {
@@ -107,47 +108,9 @@ pub enum BrowserAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_chars: Option<usize>,
     },
-    Click {
+    Screenshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tab_id: Option<u64>,
-        url: String,
-        selector: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        element_preview: Option<String>,
-    },
-    Type {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<u64>,
-        url: String,
-        selector: String,
-        text: String,
-        #[serde(default)]
-        clear_first: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        element_preview: Option<String>,
-    },
-    Navigate {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<u64>,
-        url: String,
-    },
-    Submit {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<u64>,
-        url: String,
-        selector: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        element_preview: Option<String>,
-    },
-    HighlightGuide {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<u64>,
-        url: String,
-        selector: String,
-        title: String,
-        body: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        step_label: Option<String>,
     },
 }
 
@@ -155,46 +118,19 @@ impl BrowserAction {
     /// Exact target URL associated with this action, when applicable.
     pub fn target_url(&self) -> Option<&str> {
         match self {
-            BrowserAction::ListTabs | BrowserAction::ReadTab { .. } => None,
-            BrowserAction::Click { url, .. }
-            | BrowserAction::Type { url, .. }
-            | BrowserAction::Navigate { url, .. }
-            | BrowserAction::Submit { url, .. }
-            | BrowserAction::HighlightGuide { url, .. } => Some(url.as_str()),
+            BrowserAction::ListTabs
+            | BrowserAction::ReadTab { .. }
+            | BrowserAction::Screenshot { .. } => None,
         }
     }
 
-    /// Human-readable selector / element preview for Agent Inbox approval prompts.
+    /// Human-readable target preview for Agent Inbox approval prompts.
     pub fn target_preview(&self) -> Option<String> {
         match self {
             BrowserAction::ListTabs => None,
-            BrowserAction::ReadTab { tab_id, .. } => {
-                tab_id.map(|id| format!("tab #{id}")).or_else(|| Some("active tab".to_string()))
-            }
-            BrowserAction::Click {
-                selector,
-                element_preview,
-                ..
-            }
-            | BrowserAction::Submit {
-                selector,
-                element_preview,
-                ..
-            } => Some(format_selector_preview(selector, element_preview.as_deref())),
-            BrowserAction::Type {
-                selector,
-                element_preview,
-                text,
-                ..
-            } => {
-                let base = format_selector_preview(selector, element_preview.as_deref());
-                let snippet: String = text.chars().take(48).collect();
-                Some(format!("{base} <- \"{snippet}\""))
-            }
-            BrowserAction::Navigate { url, .. } => Some(url.clone()),
-            BrowserAction::HighlightGuide {
-                selector, title, ..
-            } => Some(format!("{selector} (\"{title}\")")),
+            BrowserAction::ReadTab { tab_id, .. } | BrowserAction::Screenshot { tab_id } => tab_id
+                .map(|id| format!("tab #{id}"))
+                .or_else(|| Some("active tab".to_string())),
         }
     }
 
@@ -202,40 +138,25 @@ impl BrowserAction {
     pub fn action_summary(&self) -> String {
         match self {
             BrowserAction::ListTabs => "List open browser tabs".to_string(),
-            BrowserAction::ReadTab { tab_id: Some(id), .. } => {
-                format!("Read page snapshot from tab #{id}")
-            }
+            BrowserAction::ReadTab {
+                tab_id: Some(id), ..
+            } => format!("Read page snapshot from tab #{id}"),
             BrowserAction::ReadTab { tab_id: None, .. } => {
                 "Read page snapshot from active browser tab".to_string()
             }
-            BrowserAction::Click { url, selector, .. } => {
-                format!("Click `{selector}` on {url}")
+            BrowserAction::Screenshot { tab_id: Some(id) } => {
+                format!("Capture screenshot of tab #{id}")
             }
-            BrowserAction::Type { url, selector, .. } => {
-                format!("Type text into `{selector}` on {url}")
-            }
-            BrowserAction::Navigate { url, .. } => {
-                format!("Navigate browser tab to {url}")
-            }
-            BrowserAction::Submit { url, selector, .. } => {
-                format!("Submit form `{selector}` on {url}")
-            }
-            BrowserAction::HighlightGuide {
-                url,
-                selector,
-                title,
-                ..
-            } => {
-                format!("Highlight `{selector}` on {url} with guide \"{title}\"")
+            BrowserAction::Screenshot { tab_id: None } => {
+                "Capture screenshot of active browser tab".to_string()
             }
         }
     }
-}
 
-impl BrowserAction {
-    /// Parses one browser action from its wire JSON.
+    /// Parses one read-only browser action from its wire JSON.
     ///
-    /// Malformed JSON and unknown `"type"` tags both return
+    /// Malformed JSON and any unknown or disallowed `"type"` tag (including
+    /// `click`, `type`, `navigate`, `submit`, `highlight_guide`) return
     /// `ProtocolError::InvalidAction`.
     pub fn from_json(json: &str) -> Result<BrowserAction, ProtocolError> {
         serde_json::from_str(json).map_err(ProtocolError::InvalidAction)
@@ -246,11 +167,7 @@ impl BrowserAction {
         match self {
             BrowserAction::ListTabs => "list_tabs",
             BrowserAction::ReadTab { .. } => "read_tab",
-            BrowserAction::Click { .. } => "click",
-            BrowserAction::Type { .. } => "type",
-            BrowserAction::Navigate { .. } => "navigate",
-            BrowserAction::Submit { .. } => "submit",
-            BrowserAction::HighlightGuide { .. } => "highlight_guide",
+            BrowserAction::Screenshot { .. } => "screenshot",
         }
     }
 
@@ -270,13 +187,6 @@ impl BrowserAction {
     }
 }
 
-fn format_selector_preview(selector: &str, preview: Option<&str>) -> String {
-    match preview {
-        Some(p) if !p.trim().is_empty() => format!("{selector} ({})", p.trim()),
-        _ => selector.to_string(),
-    }
-}
-
 /// Metadata describing an open browser tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabInfo {
@@ -288,7 +198,7 @@ pub struct TabInfo {
     pub pinned: bool,
 }
 
-/// Interactive element entry extracted by the content script.
+/// Interactive element entry extracted by the read-only content script.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractiveElement {
     pub selector: String,
@@ -302,7 +212,7 @@ pub struct InteractiveElement {
     pub disabled: bool,
 }
 
-/// Accessibility-oriented snapshot of a browser page.
+/// Accessibility-oriented read-only snapshot of a browser page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageSnapshot {
     pub tab_id: u64,
@@ -312,26 +222,24 @@ pub struct PageSnapshot {
     pub interactive_elements: Vec<InteractiveElement>,
 }
 
-/// Visual guide highlight rendered on the page to steer the user.
+/// Read-only screenshot of the visible area of a browser tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuideHighlight {
+pub struct PageScreenshot {
     pub tab_id: u64,
-    pub selector: String,
+    pub window_id: u64,
+    pub url: String,
     pub title: String,
-    pub body: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_label: Option<String>,
-    pub displayed: bool,
+    pub format: String,
+    pub data_url: String,
 }
 
-/// Reply payload variants returned by the browser extension.
+/// Reply payload variants returned by the read-only browser extension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserReplyPayload {
     Tabs { tabs: Vec<TabInfo> },
     Snapshot { snapshot: PageSnapshot },
-    ActionAck { tab_id: u64, url: String, detail: String },
-    Highlight { highlight: GuideHighlight },
+    Screenshot { screenshot: PageScreenshot },
 }
 
 /// Reply envelope sent from the browser extension back to the native host.
@@ -375,14 +283,7 @@ mod tests {
     fn native_endian_framing_round_trips_request_and_reply() {
         let req = BrowserRequest {
             request_id: "req-42".to_string(),
-            action: BrowserAction::HighlightGuide {
-                tab_id: Some(7),
-                url: "https://console.example.com/billing".to_string(),
-                selector: "button#confirm-plan".to_string(),
-                title: "Confirm your plan".to_string(),
-                body: "Click here to switch to the annual tier.".to_string(),
-                step_label: Some("Step 2 of 3".to_string()),
-            },
+            action: BrowserAction::Screenshot { tab_id: Some(7) },
         };
 
         let mut wire = Vec::new();
@@ -398,14 +299,14 @@ mod tests {
 
         let reply = BrowserReply::ok(
             "req-42",
-            BrowserReplyPayload::Highlight {
-                highlight: GuideHighlight {
+            BrowserReplyPayload::Screenshot {
+                screenshot: PageScreenshot {
                     tab_id: 7,
-                    selector: "button#confirm-plan".to_string(),
-                    title: "Confirm your plan".to_string(),
-                    body: "Click here to switch to the annual tier.".to_string(),
-                    step_label: Some("Step 2 of 3".to_string()),
-                    displayed: true,
+                    window_id: 100,
+                    url: "https://console.example.com/billing".to_string(),
+                    title: "Billing".to_string(),
+                    format: "png".to_string(),
+                    data_url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
                 },
             },
         );
@@ -418,17 +319,19 @@ mod tests {
 
     #[test]
     fn rejects_oversize_frame_on_write_and_read() {
-        let huge = BrowserRequest {
-            request_id: "req-big".to_string(),
-            action: BrowserAction::Type {
-                tab_id: None,
-                url: "https://example.com".to_string(),
-                selector: "textarea".to_string(),
-                text: "x".repeat(MAX_NATIVE_MESSAGE_BYTES + 64),
-                clear_first: false,
-                element_preview: None,
+        let huge = BrowserReply::ok(
+            "req-big",
+            BrowserReplyPayload::Screenshot {
+                screenshot: PageScreenshot {
+                    tab_id: 1,
+                    window_id: 1,
+                    url: "https://example.com".to_string(),
+                    title: "Huge".to_string(),
+                    format: "png".to_string(),
+                    data_url: "x".repeat(MAX_NATIVE_MESSAGE_BYTES + 64),
+                },
             },
-        };
+        );
         let mut out = Vec::new();
         assert!(matches!(
             write_frame(&mut out, &huge),
@@ -472,69 +375,42 @@ mod tests {
                 tab_id: Some(3),
                 max_chars: Some(200),
             },
-            BrowserAction::Click {
-                tab_id: Some(3),
-                url: "https://app.example.com/billing".to_string(),
-                selector: "button#upgrade".to_string(),
-                element_preview: Some("Upgrade".to_string()),
-            },
-            BrowserAction::Type {
-                tab_id: None,
-                url: "https://app.example.com/search".to_string(),
-                selector: "input[name=q]".to_string(),
-                text: "quarterly report".to_string(),
-                clear_first: true,
-                element_preview: None,
-            },
-            BrowserAction::Navigate {
-                tab_id: Some(3),
-                url: "https://app.example.com/home".to_string(),
-            },
-            BrowserAction::Submit {
-                tab_id: None,
-                url: "https://app.example.com/form".to_string(),
-                selector: "form#signup".to_string(),
-                element_preview: None,
-            },
-            BrowserAction::HighlightGuide {
-                tab_id: Some(3),
-                url: "https://app.example.com/projects".to_string(),
-                selector: "button#new-project".to_string(),
-                title: "Create your project".to_string(),
-                body: "Start here.".to_string(),
-                step_label: Some("Step 1".to_string()),
-            },
+            BrowserAction::Screenshot { tab_id: Some(3) },
         ]
-    }
-
-    fn type_action(url: &str, selector: &str, text: &str) -> BrowserAction {
-        BrowserAction::Type {
-            tab_id: Some(1),
-            url: url.to_string(),
-            selector: selector.to_string(),
-            text: text.to_string(),
-            clear_first: false,
-            element_preview: None,
-        }
     }
 
     #[test]
     fn equal_actions_have_equal_action_keys() {
-        let a = type_action("https://example.com/a", "input#q", "hello");
-        let b = type_action("https://example.com/a", "input#q", "hello");
+        let a = BrowserAction::ReadTab {
+            tab_id: Some(1),
+            max_chars: Some(500),
+        };
+        let b = BrowserAction::ReadTab {
+            tab_id: Some(1),
+            max_chars: Some(500),
+        };
         assert_eq!(a.action_key(), b.action_key());
     }
 
     #[test]
-    fn changing_url_selector_or_text_changes_action_key() {
-        let base = type_action("https://example.com/a", "input#q", "hello");
-        let new_url = type_action("https://example.com/b", "input#q", "hello");
-        let new_selector = type_action("https://example.com/a", "input#r", "hello");
-        let new_text = type_action("https://example.com/a", "input#q", "goodbye");
+    fn changing_tab_or_max_chars_changes_action_key() {
+        let base = BrowserAction::ReadTab {
+            tab_id: Some(1),
+            max_chars: Some(500),
+        };
+        let diff_tab = BrowserAction::ReadTab {
+            tab_id: Some(2),
+            max_chars: Some(500),
+        };
+        let diff_chars = BrowserAction::ReadTab {
+            tab_id: Some(1),
+            max_chars: Some(1000),
+        };
+        let screenshot = BrowserAction::Screenshot { tab_id: Some(1) };
 
-        assert_ne!(base.action_key(), new_url.action_key());
-        assert_ne!(base.action_key(), new_selector.action_key());
-        assert_ne!(base.action_key(), new_text.action_key());
+        assert_ne!(base.action_key(), diff_tab.action_key());
+        assert_ne!(base.action_key(), diff_chars.action_key());
+        assert_ne!(base.action_key(), screenshot.action_key());
     }
 
     #[test]
@@ -550,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn from_json_round_trips_every_action() {
+    fn from_json_round_trips_every_read_only_action() {
         for action in one_of_each_action() {
             let wire = serde_json::to_string(&action).expect("serialize action");
             let parsed = BrowserAction::from_json(&wire).expect("parse action");
@@ -559,8 +435,8 @@ mod tests {
     }
 
     #[test]
-    fn from_json_rejects_malformed_json_and_unknown_types() {
-        let malformed = [r#"{"type":"click","url":"#, "not json", ""];
+    fn from_json_rejects_malformed_unknown_and_execute_actions() {
+        let malformed = [r#"{"type":"read_tab","tab_id":"#, "not json", ""];
         for input in malformed {
             assert!(matches!(
                 BrowserAction::from_json(input),
@@ -568,16 +444,24 @@ mod tests {
             ));
         }
 
-        let unknown = [
+        let disallowed = [
+            r#"{"type":"click","url":"https://example.com","selector":"button"}"#,
+            r#"{"type":"type","url":"https://example.com","selector":"input","text":"hi"}"#,
+            r#"{"type":"navigate","url":"https://example.com"}"#,
+            r#"{"type":"submit","url":"https://example.com","selector":"form"}"#,
+            r#"{"type":"highlight_guide","url":"https://example.com","selector":"a","title":"t","body":"b"}"#,
+            r#"{"type":"execute_script","code":"alert(1)"}"#,
             r#"{"type":"explode"}"#,
-            r#"{"type":"CLICK","url":"https://example.com","selector":"a"}"#,
             r#"{"url":"https://example.com"}"#,
         ];
-        for input in unknown {
-            assert!(matches!(
-                BrowserAction::from_json(input),
-                Err(ProtocolError::InvalidAction(_))
-            ));
+        for input in disallowed {
+            assert!(
+                matches!(
+                    BrowserAction::from_json(input),
+                    Err(ProtocolError::InvalidAction(_))
+                ),
+                "disallowed payload must fail deserialization: {input}"
+            );
         }
     }
 

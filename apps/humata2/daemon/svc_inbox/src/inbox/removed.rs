@@ -5,7 +5,7 @@
 //! machine removed. The requests of its sessions are withdrawn with the
 //! sessions (`session_service/forget.rs`); this catches the rest.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use tonic::Status;
 
 use super::Inbox;

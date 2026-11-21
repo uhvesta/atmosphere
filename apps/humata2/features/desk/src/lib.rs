@@ -426,6 +426,23 @@ impl Desk {
         result: Result<(), DaemonError>,
     ) -> Effect<DeskAction> {
         state.pending.remove(&session);
+        let close_channel = if change == Change::Close {
+            state
+                .workspace
+                .desk
+                .channel_sessions
+                .get(&session)
+                .map(|record| (record.channel.clone(), record.target.is_none()))
+                .or_else(|| {
+                    state
+                        .channel_close
+                        .as_ref()
+                        .filter(|sheet| sheet.session == session)
+                        .and_then(|sheet| sheet.channel.clone())
+                })
+        } else {
+            None
+        };
         if change == Change::Close {
             Self::close_sheet_answered(state, &session, &result);
         }
@@ -436,13 +453,11 @@ impl Desk {
         let toast = |text: String| Effect::send(DeskAction::Delegate(Delegate::Toast(text)));
         match change {
             Change::Reopen => Effect::send(DeskAction::Delegate(Delegate::OpenSession(session))),
-            Change::Close if state.workspace.desk.channel_sessions.contains_key(&session) => {
-                if let Some(record) = state.workspace.desk.channel_sessions.get(&session)
-                    && record.target.is_none()
-                {
+            Change::Close if close_channel.is_some() => {
+                if let Some((channel, true)) = close_channel {
                     state
                         .channel_status
-                        .insert(record.channel.clone(), ChannelDeskStatus::Closed);
+                        .insert(channel, ChannelDeskStatus::Closed);
                 }
                 let title = state
                     .workspace

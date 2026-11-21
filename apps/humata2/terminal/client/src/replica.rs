@@ -739,17 +739,23 @@ impl TerminalReplica {
             if !self.fresh {
                 self.open()?;
             }
-        } else if let Some(delay) = self.config.memory_saver {
-            let generation = self.idle_generation;
-            self.idle_timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(delay).await;
-                let _ = this.update(cx, |this, cx| {
-                    if this.idle_generation == generation && !this.visible {
-                        this.idle_ready = true;
-                        this.try_park(cx);
-                    }
-                });
-            }));
+        } else {
+            if let Some(pane) = &self.pane {
+                let view = pane.read(cx).view().clone();
+                view.update(cx, |view, _| view.clear_frame());
+            }
+            if let Some(delay) = self.config.memory_saver {
+                let generation = self.idle_generation;
+                self.idle_timer = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.idle_generation == generation && !this.visible {
+                            this.idle_ready = true;
+                            this.try_park(cx);
+                        }
+                    });
+                }));
+            }
         }
         self.changed(cx);
         Ok(())
@@ -789,8 +795,6 @@ impl TerminalReplica {
                 || view.preedit().is_some()
                 || view.has_pending_clipboard()
                 || grid.has_selection().unwrap_or(true)
-                || grid.scrollbar().is_some_and(|bar| !bar.at_bottom())
-                || self.scroll.offset() != gpui_kit::point(px(0.), px(0.))
         })
     }
     fn try_park(&mut self, cx: &mut Context<Self>) {
@@ -878,8 +882,12 @@ impl TerminalReplica {
                 maximum: MAX_RAW_CHECKPOINT_BYTES,
             });
         }
-        let mut terminal = Terminal::from_checkpoint(&checkpoint.bytes)
-            .map_err(|source| ReplicaError::Snapshot { source })?;
+        let mut terminal = Terminal::from_checkpoint_bounded(
+            &checkpoint.bytes,
+            ghostty_vt::CLIENT_SCROLLBACK_MAX_LINES,
+            ghostty_vt::CLIENT_SCROLLBACK_MAX_BYTES,
+        )
+        .map_err(|source| ReplicaError::Snapshot { source })?;
         if terminal.size()
             != (ghostty_vt::Size {
                 cols: checkpoint.cols,
@@ -1222,7 +1230,10 @@ impl TerminalReplica {
                     self.controller = false;
                     self.fresh = false;
                     self.subscriptions.clear();
-                    self.pane.take();
+                    if let Some(pane) = self.pane.take() {
+                        let view = pane.read(cx).view().clone();
+                        view.update(cx, |view, _| view.clear_frame());
+                    }
                     if self.visible {
                         self.open()?;
                     }

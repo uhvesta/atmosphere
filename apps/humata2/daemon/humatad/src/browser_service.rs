@@ -73,7 +73,14 @@ impl BrowserHostLayout {
         };
         let extension_root = own_exe
             .parent()
-            .map(|p| p.join("browser_extension"))
+            .and_then(|p| p.parent())
+            .map(|p| p.join("Resources/browser_extension"))
+            .filter(|p| p.is_dir())
+            .or_else(|| {
+                let installed = PathBuf::from("/Applications/Humata 2.app/Contents/Resources/browser_extension");
+                installed.is_dir().then_some(installed)
+            })
+            .or_else(|| own_exe.parent().map(|p| p.join("browser_extension")))
             .unwrap_or_else(|| PathBuf::from("apps/humata2/browser_extension"));
         let chromium_origins = std::env::var("HUMATA2_BROWSER_CHROMIUM_ORIGINS")
             .ok()

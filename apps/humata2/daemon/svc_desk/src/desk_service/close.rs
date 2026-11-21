@@ -6,7 +6,7 @@
 use std::time::SystemTime;
 
 use humata2_access::SessionId as AccessSessionId;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::doc_repo::{self, DocGit};
 use humata2_store::{AgentState, DeskFolderKind, TabKind};
 use tonic::Status;

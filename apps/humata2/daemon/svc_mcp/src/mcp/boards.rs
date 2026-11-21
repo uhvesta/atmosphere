@@ -4,7 +4,7 @@
 //! comes back from the daemon as a pending approval, which `call` turns into
 //! a pending reply.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, Reply, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::transport::Channel;

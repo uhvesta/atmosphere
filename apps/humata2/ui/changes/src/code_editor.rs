@@ -72,7 +72,7 @@ pub fn body(
     documents: &Documents,
     look: Look,
 ) -> AnyElement {
-    let view = documents.editor_view(repo, path);
+    let view = documents.editor_view(&session.id, repo, path);
     let code = state
         .session
         .views
@@ -125,8 +125,8 @@ pub fn body(
                 .enumerate()
                 .map(|(index, row)| match row {
                     SideRow::Pair { old, new } => {
-                        let old_spans = old_syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
-                        let new_spans = new_syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        let old_spans = old_syntax.line(index);
+                        let new_spans = new_syntax.line(index);
                         vec![side_pair(
                             index,
                             old.as_ref(),
@@ -167,7 +167,7 @@ pub fn body(
                 .enumerate()
                 .map(|(index, row)| match row {
                     Row::Line(line) => {
-                        let spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        let spans = syntax.line(index);
                         vec![line_row(index, line, spans, &commenting, &highlights, look)]
                     }
                     Row::Fold { start, count } => vec![fold(ui, repo, path, *start, *count, look)],
@@ -307,7 +307,7 @@ pub fn plain_body(
         .enumerate()
         .zip(under)
         .flat_map(|((index, line), cards)| {
-            let spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+            let spans = syntax.line(index);
             let mut elements = vec![plain_line_row(index, line, spans, &commenting, &highlights, look)];
             elements.extend(cards);
             elements

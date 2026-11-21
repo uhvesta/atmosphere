@@ -499,41 +499,60 @@ async fn a_session_folder_location_takes_no_repo() {
     assert!(daemon.calls().is_empty());
 }
 
-/// MCP.md §3, §6: a browser action that acts on a page needs that page's
-/// address, while listing the user's tabs needs no arguments at all.
+/// MCP.md §3, §6: browser tools are strictly read-only (`browser_list_tabs`,
+/// `browser_read_tab`, `browser_screenshot`); execute/mutate tools are unavailable.
 #[tokio::test]
-async fn a_browser_write_without_its_page_address_is_refused_and_listing_tabs_needs_nothing() {
+async fn browser_tools_are_strictly_read_only_and_reject_execute_tools() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
     let described = client
-        .humata_describe(&["browser_click", "browser_type", "browser_navigate"])
+        .humata_describe(&[
+            "browser_list_tabs",
+            "browser_read_tab",
+            "browser_screenshot",
+            "browser_click",
+            "browser_type",
+            "browser_navigate",
+            "browser_guide_highlight",
+        ])
         .await;
     let tools = described["tools"].as_array().expect("described tools");
+    let described_names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(
+        described_names,
+        vec!["browser_list_tabs", "browser_read_tab", "browser_screenshot"]
+    );
 
-    for name in ["browser_click", "browser_type", "browser_navigate"] {
-        let tool = tools
-            .iter()
-            .find(|tool| tool["name"] == name)
-            .expect("the browser tool is described");
-        let mut arguments = minimal(&tool["inputSchema"]);
-        arguments
-            .as_object_mut()
-            .expect("the browser tool takes an object")
-            .remove("url");
-
-        let reply = client.call_raw(json!(1), name, arguments).await;
-
-        assert_eq!(reply["error"]["code"], -32602, "{name}: {reply}");
-        assert_eq!(reply["error"]["data"]["field"], "/url", "{name}");
-        assert_eq!(reply["error"]["data"]["problem"], "missing", "{name}");
+    let unavailable = described["unavailable"]
+        .as_array()
+        .expect("unavailable array");
+    let unavailable_names: Vec<&str> = unavailable
+        .iter()
+        .filter_map(|u| u["name"].as_str())
+        .collect();
+    for removed in [
+        "browser_click",
+        "browser_type",
+        "browser_navigate",
+        "browser_guide_highlight",
+    ] {
+        assert!(
+            unavailable_names.contains(&removed),
+            "{removed} must be unavailable: {described}"
+        );
     }
-    assert!(daemon.calls().is_empty());
 
     let reply = client.call_raw(json!(2), "browser_list_tabs", json!({})).await;
-
+    assert!(reply["result"].is_object(), "{reply}");
+    let reply = client.call_raw(json!(3), "browser_screenshot", json!({})).await;
     assert!(reply["result"].is_object(), "{reply}");
     let calls = daemon.calls();
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].operation, Operation::BrowserListTabs);
     assert!(calls[0].arguments.is_empty());
+    assert_eq!(calls[1].operation, Operation::BrowserScreenshot);
+    assert!(calls[1].arguments.is_empty());
 }

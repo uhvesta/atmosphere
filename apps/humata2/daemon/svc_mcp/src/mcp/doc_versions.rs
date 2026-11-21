@@ -5,7 +5,7 @@
 //! FILES_READ_OTHER_MACHINE), so the tool and the app answer the same way.
 //! There is no tool that saves or restores: the agent commits with git.
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_mcp::{Call, Reply, ToolError};
 use serde_json::{Map, Value, json};
 use tonic::transport::Channel;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use humata2_access::{AccessRequest, Call, Capability, Refusal, Target};
 use humata2_daemon_ports::{Caller, Gated, Run};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{
     MachineScriptsError, Scope, ScriptRule, ScriptStep as Step, ScriptWarning, Trigger, scripts_dir,
 };
@@ -195,7 +195,7 @@ fn run_pb(run: &RunRecord) -> pb::MachineScriptRun {
             .map(|session| pb::SessionId {
                 value: session.clone(),
             }),
-        started_at: Some(humata2_grpc::Timestamp {
+        started_at: Some(humata2_grpc_core::Timestamp {
             seconds: run.started_at_ms.div_euclid(1000),
             nanos: i32::try_from(run.started_at_ms.rem_euclid(1000) * 1_000_000).unwrap_or(0),
         }),

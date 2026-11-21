@@ -1,0 +1,27 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":bundle.bzl", "browser_extension_bundle")
+
+browser_extension_bundle(
+    name = "bundle",
+    background_js = "shared/background.js",
+    chromium_manifest = "chromium/manifest.json",
+    content_js = "shared/content.js",
+    firefox_manifest = "firefox/manifest.json",
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+sh_test(
+    name = "verify_extension_test",
+    srcs = ["verify_extension_test.sh"],
+    args = ["$(rootpath :bundle)"],
+    data = [":bundle"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "bundle.bzl",
+    ],
+    tags = ["starlark"],
+)

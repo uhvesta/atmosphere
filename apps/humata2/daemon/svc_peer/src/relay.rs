@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UnixStream;
@@ -59,7 +59,7 @@ const STRIPPED: [&str; 4] = [
     identity::SCRIPT_HEADER,
     // UP-1: the host's caller's release is the host's business; the
     // machine's daemon would take it for a CLI's.
-    humata2_daemon_ports::release::BUNDLE_HEADER,
+    humata2_daemon_ports::BUNDLE_HEADER,
 ];
 
 /// The services the host may call whole.

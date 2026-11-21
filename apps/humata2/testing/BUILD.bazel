@@ -3,7 +3,10 @@
 # snapshots. See TESTING.md one directory up.
 
 exports_files(
-    ["defs.bzl"],
+    [
+        "defs.bzl",
+        "rust_test_shard.sh",
+    ],
     visibility = ["//apps/humata2:__subpackages__"],
 )
 

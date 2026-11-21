@@ -6,5 +6,5 @@ pub(crate) mod pb {
     pub use humata2_grpc_core::humata::v1::*;
 }
 
-pub mod agent_gate;
+pub use humata2_daemon_runtime::agent_gate;
 pub mod agent_service;

@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::{ExitStatus, Output};
 use std::sync::{Arc, OnceLock};
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_review_diff::bracketed_paste;
 use humata2_store::Store;
 use tokio::runtime::Handle;

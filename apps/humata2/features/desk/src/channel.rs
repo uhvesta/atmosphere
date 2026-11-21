@@ -112,6 +112,10 @@ pub enum ChannelNewAction {
 pub struct ChannelCloseSheet {
     /// The session to close.
     pub session: SessionId,
+    /// The channel it belongs to and whether it is the channel's primary Desk
+    /// (`target: None`), captured when the sheet opened so a close still knows
+    /// its channel even if a daemon event removes the record before the RPC returns.
+    pub channel: Option<(ChannelId, bool)>,
     /// Markdown files already copied to `shared/` from this sheet.
     pub copied: BTreeSet<String>,
     /// The close is in flight.
@@ -480,8 +484,15 @@ impl Desk {
         if state.sheet_open() {
             return;
         }
+        let channel = state
+            .workspace
+            .desk
+            .channel_sessions
+            .get(&session)
+            .map(|found| (found.channel.clone(), found.target.is_none()));
         state.channel_close = Some(ChannelCloseSheet {
             session,
+            channel,
             copied: BTreeSet::new(),
             closing: false,
             error: None,

@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use humata2_access::{Call, Capability, Refusal, Target};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_rpc_kit::{blocking, chain, failed, invalid_field, missing, not_found};
 use humata2_store::{ReviewSessionRecord, Store};
 use tonic::{Request, Response, Status};

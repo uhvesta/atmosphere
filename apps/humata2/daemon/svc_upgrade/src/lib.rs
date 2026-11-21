@@ -10,6 +10,14 @@
 //! each session's holder was spawned from, and the item for the agents still
 //! on an old one (`holders`).
 
+#[allow(unused_imports, ambiguous_glob_reexports)]
+pub(crate) mod pb {
+    pub use humata2_grpc_core::humata::v1::*;
+    pub use humata2_grpc_events::humata::v1::*;
+    pub use humata2_grpc_inbox::humata::v1::*;
+    pub use humata2_grpc_peer::humata::v1::*;
+}
+
 pub mod breaker;
 pub mod build;
 pub mod gate;

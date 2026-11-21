@@ -14,8 +14,8 @@ use std::path::Path;
 use humata2_access::{Call, Capability, Refusal, Target};
 use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::fault;
-use humata2_grpc::Timestamp;
-use humata2_grpc::humata::v1 as pb;
+use humata2_grpc_core::Timestamp;
+use crate::pb;
 use humata2_review_diff::{
     Addressed, CommentAnchor, CommentAuthor, CommentError, CommentFilter, CommentLedger, CommentReply, CommentStamp,
     CommentStatus, Delivery, DeliveryState, DiffContext, FileRef, LedgerParts, MessagePart, NoteTarget, Placement,

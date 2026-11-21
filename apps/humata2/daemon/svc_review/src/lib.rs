@@ -21,7 +21,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, Entry, Place, RepoPath, Root, SessionRef, Target};
 use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
+#[allow(unused_imports, ambiguous_glob_reexports)]
+pub(crate) mod pb {
+    pub use humata2_grpc_core::humata::v1::*;
+    pub use humata2_grpc_events::humata::v1::*;
+    pub use humata2_grpc_peer::humata::v1::*;
+    pub use humata2_grpc_review::humata::v1::*;
+    pub use humata2_grpc_sessions::humata::v1::*;
+    pub use humata2_grpc_terminal::humata::v1::*;
+}
 use humata2_review_diff::{
     AnchorError, Base, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, CommentLedger, Compare,
     DiffError, DiffSpec, FileRef, FileSummary, Matching, PlanError, Replaced, RepoDiff, RepoSpec,

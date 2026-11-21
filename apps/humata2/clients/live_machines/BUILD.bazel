@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # The app's real Machines client over MachineService, ProviderService,
 # SkillsService, OperationService, DaemonService, SessionService, and
@@ -31,23 +32,28 @@ rust_test(
     visibility = ["//apps/humata2/clients:__subpackages__"],
 )
 
+MACHINES_TEST_DATA = [
+    "//apps/humata2/clients/live:holder_for_clients",
+    "//apps/humata2/daemon/humatad:humatad2_test_away_board",
+    "//apps/humata2/daemon/humatad:humatad2_test_away_board_release",
+]
+
+MACHINES_TEST_ENV = {
+    "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
+    "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
+    "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board_release)",
+}
+
 # The machines client against a real humatad2 and a fake machine: no network,
 # never the real ~/.ssh.
 rust_test(
-    name = "machines_test",
+    name = "machines_cases",
     srcs = ["tests/machines.rs"],
     crate_root = "tests/machines.rs",
-    data = [
-        "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
-        "//apps/humata2/daemon/humatad:humatad2_test_away_board_release",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board_release)",
-    },
-    visibility = ["//apps/humata2/clients:__subpackages__"],
+    data = MACHINES_TEST_DATA,
+    env = MACHINES_TEST_ENV,
+    # Run through machines_test (sharded).
+    tags = ["manual"],
     deps = [
         ":live_machines",
         "//apps/humata2/clients/live:clients",
@@ -63,6 +69,18 @@ rust_test(
         "@crates//:tonic",
         "@crates//:tower",
     ],
+)
+
+sh_test(
+    name = "machines_test",
+    srcs = ["//apps/humata2/testing:rust_test_shard.sh"],
+    data = [":machines_cases"] + MACHINES_TEST_DATA,
+    env = dict(
+        MACHINES_TEST_ENV,
+        RUST_TEST_BIN = "$(rootpath :machines_cases)",
+    ),
+    shard_count = 2,
+    visibility = ["//apps/humata2/clients:__subpackages__"],
 )
 
 filegroup(

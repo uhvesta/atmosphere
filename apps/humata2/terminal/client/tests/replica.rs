@@ -237,8 +237,8 @@ fn memory_saver_releases_only_idle_tabs_after_written_input_and_restores_fresh_s
         let pane = app.read(cx).pane(1).unwrap();
         let retained = pane.read(cx).view().read(cx).grid().scrollback_rows();
         assert!(
-            retained >= 9_500,
-            "restored dense replica retained only {retained} history rows"
+            retained >= 4_500 && retained <= ghostty_vt::CLIENT_SCROLLBACK_MAX_LINES + 512,
+            "restored dense replica should be bounded near the client cap (got {retained} rows)"
         );
         let weak = (pane.downgrade(), pane.read(cx).view().downgrade());
         pane.update(cx, |pane, cx| pane.paste_text("first".into(), cx));
@@ -430,24 +430,28 @@ fn memory_saver_pins_search_selection_and_history_bookmarks_and_can_be_disabled(
     draw(&mut cx, window, &app);
     cx.update(|cx| app.update(cx, |app, cx| app.poll(cx)));
     assert!(
-        cx.update(|cx| app.read(cx).pane(1).is_some()),
-        "a scrolled history bookmark must remain pinned"
+        frames(&socket)
+            .iter()
+            .any(|frame| matches!(frame, ClientFrame::Detach { id: 1 })),
+        "a scrolled-up hidden terminal must not permanently block parking"
     );
+    receive(&mut cx, &app, ServerFrame::Detached { id: 1 });
+    assert!(
+        cx.update(|cx| app.read(cx).pane(1).is_none()),
+        "parking must free the pane once Detached arrives"
+    );
+    // Disabling memory saver prevents hidden tabs from detaching.
     cx.update(|cx| {
         app.update(cx, |app, cx| {
             app.set_memory_saver(false, std::time::Duration::ZERO, cx)
         })
     });
-    cx.update(|cx| {
-        let pane = app.read(cx).pane(1).unwrap();
-        pane.update(cx, |pane, cx| {
-            pane.view().clone().update(cx, |view, _| {
-                view.grid_mut()
-                    .scroll_viewport(ghostty_vt::Scroll::Bottom)
-                    .unwrap()
-            })
-        });
-    });
+    click_tab(&mut cx, window, &app, 1);
+    let mut back = Terminal::new(60, 24, 1000).unwrap();
+    back.feed(b"back\r\n");
+    receive(&mut cx, &app, snapshot(&back, 20));
+    frames(&socket);
+    click_tab(&mut cx, window, &app, 3);
     draw(&mut cx, window, &app);
     cx.update(|cx| app.update(cx, |app, cx| app.poll(cx)));
     assert!(cx.update(|cx| app.read(cx).pane(1).is_some()));

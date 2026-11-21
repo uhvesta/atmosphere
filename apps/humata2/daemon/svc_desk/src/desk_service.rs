@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata2_access::Refusal;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{DESK_CHANNEL, DeskError, Starter};
 use humata2_store::{DeskRow, SessionRecord, Store, StoreError};
 use tokio::sync::{Notify, OwnedMutexGuard};

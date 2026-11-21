@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use humata2_access::{MachineActionKind, Refusal};
 use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::fault;
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::ManageError;
 use humata2_rpc_kit::{chain, error, failure, internal, log::say, missing};
 use tonic::{Code, Request, Response, Status};

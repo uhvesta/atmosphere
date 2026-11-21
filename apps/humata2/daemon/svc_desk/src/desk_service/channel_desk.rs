@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use humata2_access::{ChannelDeskAccess, ChannelDeskSwitch, ChannelDeskSwitches, ChannelId, SessionId};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::{ChannelDeskStart, DESK_CHANNEL};
 use humata2_store::{ChannelDeskRow, ChannelRecord, SessionRecord, Store, StoreError, TabRecord};
 use tonic::{Code, Status};

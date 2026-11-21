@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_sessions::doc_repo::{self, DocGit, DocRepoError};
 use humata2_store::{SessionRecord, Store, StoreError};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};

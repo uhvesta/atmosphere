@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use humata2_access::{AccessRequest, Call, Capability, Refusal};
 use humata2_daemon_ports::{Caller, Deferred, Gated, Run};
-use humata2_grpc::humata::v1 as pb;
+use crate::pb;
 use humata2_machines::{HostEntry, OpStep, StepEvent};
 use humata2_store::{Store, StoreError};
 use tokio::sync::{broadcast, watch};

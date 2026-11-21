@@ -243,6 +243,18 @@ impl Terminal {
         Ok(terminal)
     }
 
+    /// Restore an opaque checkpoint and immediately apply scrollback limits so
+    /// client-side replicas stay bounded in memory.
+    pub fn from_checkpoint_bounded(
+        bytes: &[u8],
+        max_lines: usize,
+        max_bytes: usize,
+    ) -> Result<Self, Error> {
+        let mut terminal = Self::from_checkpoint(bytes)?;
+        terminal.set_scrollback_limits(max_lines, max_bytes)?;
+        Ok(terminal)
+    }
+
     /// Atomically replace the display/state only after the whole checkpoint
     /// validates. Preserve this frontend's Option-as-Alt preference.
     pub fn restore_checkpoint(&mut self, bytes: &[u8]) -> Result<(), Error> {
