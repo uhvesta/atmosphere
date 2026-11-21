@@ -25,8 +25,8 @@ use gpui_kit::{
 use humata2_app::{AppAction, Overlay, Route};
 use humata2_clients::machines::Machines;
 use humata2_clients::machines::{StepKind, StepStatus};
-use humata2_clients::model::{Agent, ChannelId, MachineId, Status};
-use humata2_clients::{Clients, Daemon};
+use humata2_clients::model::{Agent, ChannelId, MachineId, SetupState, Status};
+use humata2_clients::{Clients, Daemon, Event};
 use humata2_clients_live::{LiveComments, LiveDaemon, LiveMachines, LiveOptions};
 use humata2_engine::Resources;
 use humata2_fake_machine::{FakeMachine, HOST_KEY};
@@ -1190,12 +1190,42 @@ fn a_session_started_on_box_1_from_the_sheet_runs_there() {
                 .map(|m| m.id.clone())
         })
         .expect("This Mac is listed");
-    // The channel clones the repository on both machines before it answers.
+    // Wait for the channel's repository clones on both machines to finish.
     let daemon = app.daemon.clone();
-    let channel: ChannelId = app
-        .runtime
-        .block_on(daemon.create_channel("oncall", vec![repo], vec![mac, box_1.clone()]))
-        .expect("make the channel");
+    let channel: ChannelId = app.runtime.block_on(async {
+        let mut events = daemon.events().await.expect("subscribe to daemon events");
+        let channel = daemon
+            .create_channel("oncall", vec![repo], vec![mac, box_1.clone()])
+            .await
+            .expect("make the channel");
+        let until = tokio::time::Instant::now() + DEADLINE;
+        loop {
+            match tokio::time::timeout_at(until, events.recv()).await {
+                Ok(Some(Ok(Event::ChannelSetup(setup)))) if setup.name == "oncall" => {
+                    for step in &setup.steps {
+                        if let SetupState::Failed { reason } = &step.state {
+                            panic!("channel setup for \"oncall\" failed: {reason}");
+                        }
+                    }
+                    if !setup.steps.is_empty()
+                        && setup.steps.iter().all(|s| s.state == SetupState::Done)
+                    {
+                        break channel;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(err))) => {
+                    panic!("daemon event stream error while waiting for channel setup: {err}");
+                }
+                Ok(None) => {
+                    panic!("daemon event stream closed before channel setup finished");
+                }
+                Err(_) => {
+                    panic!("timed out waiting for channel setup to finish");
+                }
+            }
+        }
+    });
     app.wait_until("the channel to reach the app", |app| {
         app.ui.read(|state| state.workspace.channel(&channel).is_some())
     });

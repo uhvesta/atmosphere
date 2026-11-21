@@ -128,17 +128,21 @@ fn a_channel_made_from_the_new_channel_sheet_clones_its_repos_and_opens_empty() 
     app.click(Role::Button, "Create channel and clone 2 repos");
     app.wait_until("the channel page to open", |app| {
         app.ui.read(|state| {
-            matches!(state.route, Route::Channel(_))
+            matches!(&state.route, Route::Channel(id) if state.workspace.channel(id).is_some())
                 && !state
                     .overlays
                     .iter()
                     .any(|overlay| matches!(overlay, Overlay::NewChannel(_)))
         })
     });
+    app.click(Role::Tab, "Sessions");
     app.wait_until("the empty Sessions state", |app| {
         app.view().contains("Nothing in # billing-exports yet")
     });
     assert!(app.view().contains("New session"), "it offers New session");
+    app.wait_until("the channel's clones to finish", |app| {
+        app.ui.read(|state| state.workspace.setups.is_empty())
+    });
 
     // The daemon holds the channel with the two repos, and the disk has
     // main clones of those two and not the third.

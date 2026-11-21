@@ -115,22 +115,17 @@ impl Fixture {
         Attach::start(&self.daemon, open(&tab, 0)).await
     }
 
-    /// The blocking permission hook in the Claude settings the daemon wrote.
-    fn claude_permission_hook(&self) -> Value {
-        let file = self.daemon.state.join("claude-hooks.json");
-        let text = std::fs::read_to_string(file).expect("read claude-hooks.json");
-        let json: Value = serde_json::from_str(&text).expect("claude-hooks.json is JSON");
-        json["hooks"]["PermissionRequest"]
-            .as_array()
-            .expect("PermissionRequest is an array")
-            .iter()
-            .flat_map(|group| group["hooks"].as_array().expect("JSON array").clone())
-            .find(|hook| {
-                hook["command"]
-                    .as_str()
-                    .is_some_and(|command| command.contains("hook claude permission"))
-            })
-            .expect("no blocking permission hook in claude-hooks.json")
+    /// The Claude permission hook command for this daemon.
+    ///
+    /// ATM-62 removed `PermissionRequest` from the packaged `claude-hooks.json`,
+    /// so tests that exercise the `humata hook claude permission` CLI directly
+    /// invoke it with this daemon's socket.
+    fn claude_permission_command(&self) -> String {
+        format!(
+            "HUMATA_SOCKET='{}' '{}' hook claude permission || true",
+            self.daemon.socket.display(),
+            binary("HUMATA").display()
+        )
     }
 
     /// The agent runs Claude's permission hook with `payload` on stdin; its
@@ -140,10 +135,7 @@ impl Fixture {
         let input = self.daemon.dir.path().join(format!("{name}.in"));
         std::fs::write(&input, payload).expect("write a test file");
         let out = self.daemon.dir.path().join(format!("{name}.out"));
-        let command = self.claude_permission_hook()["command"]
-            .as_str()
-            .expect("hook command is a string")
-            .to_owned();
+        let command = self.claude_permission_command();
         attach
             .type_text(&format!(
                 "run:{{ {command}; }} < '{}' > '{}'; echo $? > '{}.done'\r",
@@ -375,11 +367,15 @@ fn command_of(request: &pb::InboxRequest) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_daemon_writes_a_blocking_claude_hook_that_holds_for_an_hour() {
+async fn the_daemon_does_not_write_a_permission_request_claude_hook() {
     let fix = Fixture::new().await;
-    let hook = fix.claude_permission_hook();
-    assert_eq!(hook["timeout"], 3600);
-    assert_ne!(hook.get("async"), Some(&Value::Bool(true)));
+    let file = fix.daemon.state.join("claude-hooks.json");
+    let text = std::fs::read_to_string(file).expect("read claude-hooks.json");
+    let json: Value = serde_json::from_str(&text).expect("claude-hooks.json is JSON");
+    assert!(
+        json["hooks"].get("PermissionRequest").is_none(),
+        "ATM-62: packaged claude-hooks.json must not register PermissionRequest"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -533,10 +529,7 @@ async fn answer_all_leaves_permission_cards_alone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_daemon_gone_the_hook_prints_nothing_and_exits_0() {
     let mut fix = Fixture::new().await;
-    let command = fix.claude_permission_hook()["command"]
-        .as_str()
-        .expect("hook command is a string")
-        .to_owned();
+    let command = fix.claude_permission_command();
     fix.daemon.kill();
     let mut child = Command::new("/bin/sh")
         .arg("-c")

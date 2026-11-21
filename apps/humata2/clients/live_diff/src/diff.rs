@@ -238,8 +238,117 @@ fn push_repo(repo: &pb::push_plan::Repo) -> PushRepo {
     }
 }
 
-/// A file in the session's clone of `repo` (`owner/name`), whole, as
-/// the editor and document tabs show it. Refuses a file that isn't text.
+const AGENT_STATE_REPO: &str = "@agent-state";
+const AGENT_STATE_PREV_PREFIX: &str = "@agent-state:prev:";
+
+#[derive(Debug, PartialEq)]
+enum SessionFileRootTarget {
+    Direct(pb::file_location::Root),
+    ChannelShared,
+    MainClone(String),
+}
+
+fn classify_session_file_repo(session: &SessionId, repo: &str) -> SessionFileRootTarget {
+    let session_id = Some(pb::SessionId {
+        value: session.as_str().to_owned(),
+    });
+    if repo.is_empty() {
+        // D382: a Desk session has no repository; its document sits in the
+        // session's own folder.
+        return SessionFileRootTarget::Direct(pb::file_location::Root::SessionFolder(
+            pb::SessionFolder {
+                session: session_id,
+            },
+        ));
+    }
+    if repo == AGENT_STATE_REPO {
+        return SessionFileRootTarget::Direct(pb::file_location::Root::SessionAgentState(
+            pb::SessionAgentState {
+                session: session_id,
+                conversation_id: String::new(),
+            },
+        ));
+    }
+    if let Some(conversation_id) = repo.strip_prefix(AGENT_STATE_PREV_PREFIX) {
+        return SessionFileRootTarget::Direct(pb::file_location::Root::SessionAgentState(
+            pb::SessionAgentState {
+                session: session_id,
+                conversation_id: conversation_id.to_owned(),
+            },
+        ));
+    }
+    if repo == "shared" {
+        return SessionFileRootTarget::ChannelShared;
+    }
+    if let Some(main_repo) = repo.strip_prefix("main/").filter(|rest| !rest.is_empty()) {
+        return SessionFileRootTarget::MainClone(main_repo.to_owned());
+    }
+    let (owner, name) = repo.split_once('/').unwrap_or(("", repo));
+    SessionFileRootTarget::Direct(pb::file_location::Root::SessionClone(pb::SessionClone {
+        session: session_id,
+        repo: Some(pb::RepoRef {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+        }),
+    }))
+}
+
+fn resolve_main_clone_repo(spec: &str, session_repos: &[pb::SessionRepo]) -> pb::RepoRef {
+    if let Some(repo_ref) = map::parse_repo(spec) {
+        return repo_ref;
+    }
+    if let Some(found) = session_repos
+        .iter()
+        .filter_map(|sr| sr.repo.as_ref())
+        .find(|repo_ref| repo_ref.name == spec)
+    {
+        return found.clone();
+    }
+    pb::RepoRef {
+        owner: String::new(),
+        name: spec.to_owned(),
+    }
+}
+
+fn resolve_channel_root(
+    target: SessionFileRootTarget,
+    channel: Option<pb::ChannelId>,
+    session_repos: &[pb::SessionRepo],
+    what: &str,
+) -> Result<pb::file_location::Root, DaemonError> {
+    match target {
+        SessionFileRootTarget::Direct(root) => Ok(root),
+        SessionFileRootTarget::ChannelShared => {
+            let channel = channel
+                .filter(|ch| !ch.value.is_empty())
+                .ok_or_else(|| DaemonError::Refused {
+                    what: what.to_owned(),
+                    reason: "this session has no channel, so there is no shared folder to read from".to_owned(),
+                })?;
+            Ok(pb::file_location::Root::ChannelShared(pb::ChannelShared {
+                channel: Some(channel),
+            }))
+        }
+        SessionFileRootTarget::MainClone(spec) => {
+            let channel = channel
+                .filter(|ch| !ch.value.is_empty())
+                .ok_or_else(|| DaemonError::Refused {
+                    what: what.to_owned(),
+                    reason: "this session has no channel, so there is no main clone to read from".to_owned(),
+                })?;
+            let repo = resolve_main_clone_repo(&spec, session_repos);
+            Ok(pb::file_location::Root::MainClone(pb::MainClone {
+                channel: Some(channel),
+                repo: Some(repo),
+            }))
+        }
+    }
+}
+
+/// A file in the session's clone of `repo` (`owner/name`), session folder
+/// (`""`), agent state (`@agent-state` / `@agent-state:prev:<id>`), or
+/// channel-level read-only root (`shared`, `main/<repo>`), whole, as the
+/// editor and document tabs show it. Refuses a file that isn't text.
 pub async fn read_session_file(
     conn: &LiveConnection,
     session: &SessionId,
@@ -247,23 +356,20 @@ pub async fn read_session_file(
     path: &str,
 ) -> Result<String, DaemonError> {
     const WHAT: &str = "Reading the file";
-    let (owner, name) = repo.split_once('/').unwrap_or(("", repo));
-    let session_id = Some(pb::SessionId {
-        value: session.as_str().to_owned(),
-    });
-    // D382: a Desk session has no repository; its document sits in the
-    // session's own folder.
-    let root = match repo.is_empty() {
-        true => pb::file_location::Root::SessionFolder(pb::SessionFolder {
-            session: session_id,
-        }),
-        false => pb::file_location::Root::SessionClone(pb::SessionClone {
-            session: session_id,
-            repo: Some(pb::RepoRef {
-                owner: owner.to_owned(),
-                name: name.to_owned(),
-            }),
-        }),
+    let root = match classify_session_file_repo(session, repo) {
+        SessionFileRootTarget::Direct(root) => root,
+        target => {
+            let fetched = sessions(conn)
+                .get_session(pb::GetSessionRequest {
+                    id: Some(pb::SessionId {
+                        value: session.as_str().to_owned(),
+                    }),
+                })
+                .await
+                .map_err(|status| conn.error(&status, WHAT))?
+                .into_inner();
+            resolve_channel_root(target, fetched.channel, &fetched.repos, WHAT)?
+        }
     };
     let location = pb::FileLocation {
         machine: None,
@@ -753,6 +859,13 @@ fn session_file(entry: &pb::FileEntry) -> Option<SessionFile> {
     let repo = match &location.root {
         Some(pb::file_location::Root::SessionClone(clone)) => map::repo_text(clone.repo.as_ref()?),
         Some(pb::file_location::Root::SessionFolder(_)) => String::new(),
+        Some(pb::file_location::Root::SessionAgentState(state)) => {
+            if state.conversation_id.is_empty() {
+                AGENT_STATE_REPO.to_owned()
+            } else {
+                format!("{AGENT_STATE_PREV_PREFIX}{}", state.conversation_id)
+            }
+        }
         _ => return None,
     };
     Some(SessionFile {
@@ -1057,5 +1170,199 @@ mod tests {
                 "expected fatal error to abort read_diffs: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn session_file_decodes_agent_state_current_and_previous_conversations() {
+        let entry = |root: pb::file_location::Root, path: &str, folder: bool| pb::FileEntry {
+            location: Some(pb::FileLocation {
+                machine: None,
+                root: Some(root),
+                path: path.to_owned(),
+            }),
+            kind: if folder {
+                pb::file_entry::Kind::Folder as i32
+            } else {
+                pb::file_entry::Kind::File as i32
+            },
+            ..pb::FileEntry::default()
+        };
+
+        let current = session_file(&entry(
+            pb::file_location::Root::SessionAgentState(pb::SessionAgentState {
+                session: Some(pb::SessionId { value: "s1".to_owned() }),
+                conversation_id: String::new(),
+            }),
+            "plans/plan.md",
+            false,
+        ));
+        assert_eq!(
+            current,
+            Some(SessionFile {
+                repo: "@agent-state".to_owned(),
+                path: "plans/plan.md".to_owned(),
+                folder: false,
+            })
+        );
+
+        let previous = session_file(&entry(
+            pb::file_location::Root::SessionAgentState(pb::SessionAgentState {
+                session: Some(pb::SessionId { value: "s1".to_owned() }),
+                conversation_id: "conv-42".to_owned(),
+            }),
+            "subagents",
+            true,
+        ));
+        assert_eq!(
+            previous,
+            Some(SessionFile {
+                repo: "@agent-state:prev:conv-42".to_owned(),
+                path: "subagents".to_owned(),
+                folder: true,
+            })
+        );
+
+        let folder = session_file(&entry(
+            pb::file_location::Root::SessionFolder(pb::SessionFolder {
+                session: Some(pb::SessionId { value: "s1".to_owned() }),
+            }),
+            "notes.md",
+            false,
+        ));
+        assert_eq!(
+            folder,
+            Some(SessionFile {
+                repo: String::new(),
+                path: "notes.md".to_owned(),
+                folder: false,
+            })
+        );
+
+        let clone = session_file(&entry(
+            pb::file_location::Root::SessionClone(pb::SessionClone {
+                session: Some(pb::SessionId { value: "s1".to_owned() }),
+                repo: repo_ref("acme", "api"),
+            }),
+            "src/lib.rs",
+            false,
+        ));
+        assert_eq!(
+            clone,
+            Some(SessionFile {
+                repo: "acme/api".to_owned(),
+                path: "src/lib.rs".to_owned(),
+                folder: false,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_and_resolve_session_file_roots_cover_all_conventions() {
+        let session = SessionId::new("s1");
+        let pb_session = Some(pb::SessionId {
+            value: "s1".to_owned(),
+        });
+        let channel = Some(pb::ChannelId {
+            value: "ch1".to_owned(),
+        });
+        let session_repos = vec![pb::SessionRepo {
+            repo: repo_ref("acme", "api"),
+            ..pb::SessionRepo::default()
+        }];
+
+        // Empty repo -> SessionFolder
+        assert_eq!(
+            classify_session_file_repo(&session, ""),
+            SessionFileRootTarget::Direct(pb::file_location::Root::SessionFolder(
+                pb::SessionFolder {
+                    session: pb_session.clone(),
+                }
+            ))
+        );
+
+        // @agent-state -> SessionAgentState (empty conversation_id)
+        assert_eq!(
+            classify_session_file_repo(&session, "@agent-state"),
+            SessionFileRootTarget::Direct(pb::file_location::Root::SessionAgentState(
+                pb::SessionAgentState {
+                    session: pb_session.clone(),
+                    conversation_id: String::new(),
+                }
+            ))
+        );
+
+        // @agent-state:prev:<id> -> SessionAgentState (with conversation_id)
+        assert_eq!(
+            classify_session_file_repo(&session, "@agent-state:prev:conv-99"),
+            SessionFileRootTarget::Direct(pb::file_location::Root::SessionAgentState(
+                pb::SessionAgentState {
+                    session: pb_session.clone(),
+                    conversation_id: "conv-99".to_owned(),
+                }
+            ))
+        );
+
+        // owner/name -> SessionClone
+        assert_eq!(
+            classify_session_file_repo(&session, "acme/api"),
+            SessionFileRootTarget::Direct(pb::file_location::Root::SessionClone(
+                pb::SessionClone {
+                    session: pb_session,
+                    repo: repo_ref("acme", "api"),
+                }
+            ))
+        );
+
+        // shared -> ChannelShared
+        let shared_target = classify_session_file_repo(&session, "shared");
+        assert_eq!(shared_target, SessionFileRootTarget::ChannelShared);
+        assert_eq!(
+            resolve_channel_root(shared_target, channel.clone(), &session_repos, "read"),
+            Ok(pb::file_location::Root::ChannelShared(pb::ChannelShared {
+                channel: channel.clone(),
+            }))
+        );
+
+        // main/<repo_name> -> MainClone with owner resolved from session_repos
+        let main_short = classify_session_file_repo(&session, "main/api");
+        assert_eq!(main_short, SessionFileRootTarget::MainClone("api".to_owned()));
+        assert_eq!(
+            resolve_channel_root(main_short, channel.clone(), &session_repos, "read"),
+            Ok(pb::file_location::Root::MainClone(pb::MainClone {
+                channel: channel.clone(),
+                repo: repo_ref("acme", "api"),
+            }))
+        );
+
+        // main/<owner>/<name> -> MainClone with explicit owner/name
+        let main_full = classify_session_file_repo(&session, "main/other/web");
+        assert_eq!(
+            main_full,
+            SessionFileRootTarget::MainClone("other/web".to_owned())
+        );
+        assert_eq!(
+            resolve_channel_root(main_full, channel, &session_repos, "read"),
+            Ok(pb::file_location::Root::MainClone(pb::MainClone {
+                channel: Some(pb::ChannelId {
+                    value: "ch1".to_owned(),
+                }),
+                repo: repo_ref("other", "web"),
+            }))
+        );
+
+        // Missing channel returns Refused
+        assert!(matches!(
+            resolve_channel_root(SessionFileRootTarget::ChannelShared, None, &session_repos, "read"),
+            Err(DaemonError::Refused { .. })
+        ));
+        assert!(matches!(
+            resolve_channel_root(
+                SessionFileRootTarget::MainClone("api".to_owned()),
+                None,
+                &session_repos,
+                "read"
+            ),
+            Err(DaemonError::Refused { .. })
+        ));
     }
 }

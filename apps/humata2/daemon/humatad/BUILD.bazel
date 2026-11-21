@@ -924,10 +924,6 @@ TEST_NEEDS = {
         "HUMATA",
         "RELEASE",
     ],
-    "browser_mcp": [
-        "RELEASE",
-        "SETSID",
-    ],
     "away_policy_copy": [
         "HUMATA",
         "RELEASE",
@@ -943,6 +939,10 @@ TEST_NEEDS = {
     "bridge": [
         "HUMATA",
         "RELEASE",
+    ],
+    "browser_mcp": [
+        "RELEASE",
+        "SETSID",
     ],
     "change_root": [
         "HUMATA",
@@ -1081,6 +1081,7 @@ TEST_NEEDS = {
     "doc_version_diff": ["HUMATA"],
     "faults": ["FAULTS"],
     "file_ops": ["HUMATA"],
+    "files_without_mount": ["HUMATA"],
     "find_files": ["HUMATA"],
     "flow_26_10": [
         "HUMATA",
@@ -1097,17 +1098,16 @@ TEST_NEEDS = {
         "FAULTS",
         "HUMATA",
     ],
-    "files_without_mount": ["HUMATA"],
     "fork_channel": ["HUMATA"],
-    "fusefs_restart": [
-        "FUSEFS",
-        "HUMATA",
-        "STACK",
-    ],
     "fork_remote": [
         "FAULTS",
         "RELEASE",
         "SETSID",
+    ],
+    "fusefs_restart": [
+        "FUSEFS",
+        "HUMATA",
+        "STACK",
     ],
     "history": ["HUMATA"],
     "history_tools": ["HUMATA"],
@@ -1918,7 +1918,10 @@ NEED_ENV = {
             ] else []
         ),
     )
-    for src in glob(["tests/*.rs"], exclude = ["tests/daemonize.rs"])
+    for src in glob(
+        ["tests/*.rs"],
+        exclude = ["tests/daemonize.rs"],
+    )
 ]
 
 rust_test(

@@ -104,6 +104,10 @@ service PullRequestReviewService {
   rpc ListPullRequestCommits(ListPullRequestCommitsRequest) returns (PullRequestCommits);
   // A9. User-only.
   rpc MarkCommitsReviewed(MarkCommitsReviewedRequest) returns (PullRequestCommits);
+  // ATM-76: watch / unwatch / list remote PR URLs in the Reviews inbox.
+  rpc WatchPullRequest(WatchPullRequestRequest) returns (WatchPullRequestResponse);
+  rpc UnwatchPullRequest(UnwatchPullRequestRequest) returns (UnwatchPullRequestResponse);
+  rpc ListWatchedPullRequests(ListWatchedPullRequestsRequest) returns (ListWatchedPullRequestsResponse);
 }
 
 service ViewService {
@@ -643,6 +647,13 @@ message ResolvePullRequestRequest {
   }
 }
 
+enum StackSource {
+  STACK_SOURCE_UNSPECIFIED = 0;
+  STACK_SOURCE_NATIVE_GH_STACK = 1;
+  STACK_SOURCE_BASE_CHAIN = 2;
+  STACK_SOURCE_SINGLE = 3;
+}
+
 message PullRequestInfo {
   PullRequestRef pr = 1;
   string title = 2;
@@ -656,6 +667,80 @@ message PullRequestInfo {
   PullRequestState state = 10;
   // "3 passed, 1 failing".
   string checks = 11;
+  // ATM-23: resolved stack layers ordered bottom-to-top, when part of a stack.
+  repeated PullRequestInfo stack_layers = 12;
+  StackSource stack_source = 13;
+}
+
+message WatchPullRequestRequest {
+  string url = 1;
+}
+
+message WatchPullRequestResponse {
+  PullRequestRef pr = 1;
+  string url = 2;
+}
+
+message UnwatchPullRequestRequest {
+  PullRequestRef pr = 1;
+}
+
+message UnwatchPullRequestResponse {
+  bool removed = 1;
+}
+
+message ListWatchedPullRequestsRequest {}
+
+message ListWatchedPullRequestsResponse {
+  repeated PullRequestRef prs = 1;
+}
+
+message ThreadComment {
+  string id = 1;
+  optional uint64 database_id = 2;
+  string author = 3;
+  string body = 4;
+  string url = 5;
+  string created_at = 6;
+}
+
+message FeedbackThread {
+  string pr_key = 1;
+  string thread_id = 2;
+  bool is_resolved = 3;
+  bool is_outdated = 4;
+  string path = 5;
+  optional uint32 line = 6;
+  optional uint32 original_line = 7;
+  string reviewer = 8;
+  string body = 9;
+  string url = 10;
+  string created_at = 11;
+  repeated ThreadComment comments = 12;
+}
+
+message TopLevelReview {
+  string pr_key = 1;
+  string review_id = 2;
+  string state = 3;
+  string reviewer = 4;
+  string body = 5;
+  string url = 6;
+  string submitted_at = 7;
+}
+
+message CollapsedBots {
+  uint32 count = 1;
+  repeated string authors = 2;
+  string label = 3;
+}
+
+message PrFeedback {
+  PullRequestRef pr = 1;
+  repeated FeedbackThread threads = 2;
+  repeated TopLevelReview reviews = 3;
+  CollapsedBots collapsed_bots = 4;
+  string etag = 5;
 }
 
 message StartReviewRequest {
@@ -982,6 +1067,7 @@ message ReviewLayerResolved {
     DRIFT_MOVED = 2;        // a rev moved and the chain or ancestry broke
     DRIFT_MISSING = 3;      // a rev no longer resolves in this clone
     DRIFT_HEAD_MOVED = 4;   // HEAD left the top head under a worktree layer
+    DRIFT_REBASED_UNCHANGED = 5;  // commits moved by rebase, layer diff unchanged; keep Looked at
   }
   string base_commit = 1;
   string head_commit = 2;

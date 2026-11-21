@@ -117,11 +117,13 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
             .iter()
             .map(|name| world.repo("owner", name).expect("make a repo"))
             .collect();
-        let channel = clients
-            .daemon
-            .create_channel("payments", repos.clone(), vec![mac.clone()])
-            .await
-            .expect("create the channel");
+        let channel = super::create_channel_ready(
+            &clients.daemon,
+            "payments",
+            repos.clone(),
+            vec![mac.clone()],
+        )
+        .await;
         let session = clients
             .daemon
             .create_session(
@@ -254,7 +256,7 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
         .all(|part| text.contains(part))
     });
     assert_eq!(
-        world.conversation_text().matches("[comment on ").count(),
+        world.conversation_text().matches("[comment c-").count(),
         4,
         "each comment is typed once"
     );
@@ -524,7 +526,7 @@ fn a_document_is_commented_on_rewritten_and_its_comments_followed() {
     app.wait_until("the agent to get the comment on line 7", |_| {
         world
             .conversation_text()
-            .contains(&format!("[comment on {RFC}:7]"))
+            .contains(&format!(" on {RFC}:7]"))
     });
     app.wait_until("the comment to show as sent", |app| {
         comments_of(app, &session)
@@ -543,6 +545,11 @@ fn a_document_is_commented_on_rewritten_and_its_comments_followed() {
             AppAction::Comments(CommentsAction::Typed(session.clone(), text.to_owned())),
         );
         send(&mut app, AppAction::Comments(CommentsAction::Close(session.clone())));
+        app.wait_until("the draft to be saved", |app| {
+            comments_of(app, &session)
+                .iter()
+                .any(|c| c.text == text && c.status == Status::Draft)
+        });
     }
     app.wait_until("two drafts", |app| {
         comments_of(app, &session)
@@ -554,10 +561,10 @@ fn a_document_is_commented_on_rewritten_and_its_comments_followed() {
     send(&mut app, AppAction::Comments(CommentsAction::SendAll(session.clone())));
     app.wait_until("the agent to get both drafts", |_| {
         let text = world.conversation_text();
-        text.contains(&format!("[comment on {RFC}:3]")) && text.contains(&format!("[comment on {RFC}:12]"))
+        text.contains(&format!(" on {RFC}:3]")) && text.contains(&format!(" on {RFC}:12]"))
     });
     assert_eq!(
-        world.conversation_text().matches("[comment on ").count(),
+        world.conversation_text().matches("[comment c-").count(),
         3,
         "each comment is typed once"
     );
@@ -620,9 +627,9 @@ fn a_document_is_commented_on_rewritten_and_its_comments_followed() {
     app.wait_until("the agent to get it on line 10", |_| {
         world
             .conversation_text()
-            .contains(&format!("[comment on {RFC}:10]"))
+            .contains(&format!(" on {RFC}:10]"))
     });
-    assert_eq!(world.conversation_text().matches("[comment on ").count(), 4);
+    assert_eq!(world.conversation_text().matches("[comment c-").count(), 4);
 }
 
 // ---------------------------------------------------------------------
@@ -811,8 +818,8 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         let text = world.conversation_text();
         // One repo: the paste names files without it (several_clones).
         [
-            "[comment on src/client.rs:2 ",
-            "[comment on src/client.rs:4 ",
+            " on src/client.rs:2 ",
+            " on src/client.rs:4 ",
             "Name this error.",
             "Retry once here.",
         ]
@@ -820,7 +827,7 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         .all(|part| text.contains(part))
     });
     assert_eq!(
-        world.conversation_text().matches("[comment on ").count(),
+        world.conversation_text().matches("[comment c-").count(),
         2,
         "each comment is typed once"
     );
@@ -1026,11 +1033,13 @@ fn each_repo_group_pushes_its_own_branch_by_clicking_its_button() {
             .iter()
             .map(|name| world.repo("owner", name).expect("make a repo"))
             .collect();
-        let channel = clients
-            .daemon
-            .create_channel("payments", repos.clone(), vec![mac.clone()])
-            .await
-            .expect("create the channel");
+        let channel = super::create_channel_ready(
+            &clients.daemon,
+            "payments",
+            repos.clone(),
+            vec![mac.clone()],
+        )
+        .await;
         let session = clients
             .daemon
             .create_session(

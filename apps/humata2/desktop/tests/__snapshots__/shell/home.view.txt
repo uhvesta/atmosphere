@@ -10,6 +10,7 @@ Navigation "Sidebar"
     ListItem "Token refresh retry"
   Link "Home" selected
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"

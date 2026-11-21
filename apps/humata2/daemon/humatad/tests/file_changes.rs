@@ -11,7 +11,7 @@ use std::time::Duration;
 use common::{Daemon, folder, state_folder};
 use humata2_chunk::{Codec, Encoder};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{SessionRecord, Store};
+use humata2_store::{SessionRecord, Store, TabKind, TabRecord};
 use sha2::{Digest, Sha256};
 use tonic::Streaming;
 use tonic::transport::Channel;
@@ -256,4 +256,62 @@ async fn a_file_written_to_the_session_folder_is_told_without_a_repo() {
     assert_eq!(changed.path, "notes.md");
     assert_eq!(changed.session.as_ref().map(|id| id.value.as_str()), Some(SESSION));
     assert!(changed.repo.is_none(), "session-folder changes have no repo: {changed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_files_primes_empty_session_folder_and_shell_write_emits_created() {
+    let dir = folder();
+    let session_dir = dir.path().join("session_root");
+    std::fs::create_dir(&session_dir).unwrap();
+    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: SESSION.to_owned(),
+            channel: "ch_test".to_owned(),
+            machine: String::new(),
+            title: "changes".to_owned(),
+            agent: "zsh".to_owned(),
+            folder: session_dir.clone(),
+            created_unix_ms: 0,
+        })
+        .unwrap();
+    // Live shell holder (no agent record) so the session folder watcher is active.
+    store
+        .put_tab(&TabRecord {
+            id: "tb_shell".to_owned(),
+            session: Some(SESSION.to_owned()),
+            kind: TabKind::Shell,
+            title: "zsh".to_owned(),
+            holder_socket: dir.path().join("tb_shell.sock"),
+            holder_pid: std::process::id(),
+            created_unix_ms: 0,
+            holder_generation: 0,
+        })
+        .unwrap();
+    drop(store);
+
+    let daemon = Daemon::start_in(dir).await;
+    let mut events = session_events(&daemon).await;
+
+    let listed = files(&daemon)
+        .await
+        .find_files(pb::FindFilesRequest {
+            session: Some(pb::SessionId {
+                value: SESSION.to_owned(),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.entries.is_empty(), "fresh session root starts empty");
+
+    // Write directly to disk as a shell tab or external tool would.
+    std::fs::write(session_dir.join("CHANNEL_HOME_SPEC.md"), b"# Spec\n").unwrap();
+
+    let changed = next_change(&mut events).await;
+    assert_eq!(kind(&changed), pb::file_changed::Kind::Created);
+    assert_eq!(changed.path, "CHANNEL_HOME_SPEC.md");
+    assert_eq!(changed.session.as_ref().map(|id| id.value.as_str()), Some(SESSION));
+    assert!(changed.repo.is_none(), "session-root files have no repo: {changed:?}");
 }

@@ -370,3 +370,132 @@ fn a_failed_diff_is_kept_to_show_and_a_stale_answer_is_dropped() {
         Some(CompareDiff::Failed(message)) if !message.is_empty()
     ));
 }
+
+#[test]
+fn intent_yaml_supports_full_save_view_compare_and_restore_history() {
+    const INTENT_PATH: &str = "intent.yaml";
+    const INTENT_V1: &str = "schema: humata.intent/v1\nmetadata:\n  id: PAY-14\n  status: draft\n";
+    const INTENT_V2: &str = "schema: humata.intent/v1\nmetadata:\n  id: PAY-14\n  status: review\n";
+    const INTENT_V3: &str =
+        "schema: humata.intent/v1\nmetadata:\n  id: PAY-14\n  status: approved\n";
+
+    let (mut store, daemon) = store();
+    daemon.commit_as_agent(&desk(), INTENT_PATH, INTENT_V1, "Initial intent");
+    daemon.commit_as_agent(&desk(), INTENT_PATH, INTENT_V2, "Ready for review");
+
+    // Loading the file triggers history load automatically via `is_versioned_doc`.
+    store.send(
+        A::FileLoaded {
+            session: desk(),
+            repo: String::new(),
+            path: INTENT_PATH.to_owned(),
+            result: Ok(INTENT_V2.to_owned()),
+        },
+        |_| {},
+    );
+    drain(&mut store);
+    let history = store
+        .state()
+        .history(&desk(), INTENT_PATH)
+        .expect("intent.yaml gets a history");
+    assert!(history.loaded);
+    assert_eq!(history.versions.len(), 2);
+    assert_eq!(history.newest(), Some(2));
+
+    // Edit & save a new version.
+    daemon.edit_document(&desk(), INTENT_PATH, INTENT_V3);
+    act(
+        &mut store,
+        H::Load {
+            session: desk(),
+            path: INTENT_PATH.to_owned(),
+        },
+    );
+    assert!(
+        store
+            .state()
+            .history(&desk(), INTENT_PATH)
+            .expect("history")
+            .can_save()
+    );
+    act(
+        &mut store,
+        H::Message {
+            path: INTENT_PATH.to_owned(),
+            text: "Approve spec".into(),
+        },
+    );
+    act(
+        &mut store,
+        H::SaveVersion {
+            path: INTENT_PATH.to_owned(),
+        },
+    );
+    let history = store.state().history(&desk(), INTENT_PATH).expect("history");
+    assert_eq!(history.versions.len(), 3);
+    assert_eq!(history.versions[0].by, VersionBy::You);
+    assert_eq!(history.versions[0].message, "Approve spec");
+
+    // Step back to v1 and view its read-only text.
+    act(&mut store, H::Back { path: INTENT_PATH.to_owned() });
+    act(&mut store, H::Back { path: INTENT_PATH.to_owned() });
+    act(&mut store, H::Back { path: INTENT_PATH.to_owned() });
+    let history = store.state().history(&desk(), INTENT_PATH).expect("history");
+    assert!(history.read_only());
+    assert_eq!(history.viewing().map(|v| v.number), Some(1));
+    assert_eq!(
+        history.viewed.as_ref().map(|v| v.text.as_str()),
+        Some(INTENT_V1)
+    );
+
+    // Compare v1 against current (v3).
+    act(
+        &mut store,
+        H::CompareWithCurrent {
+            path: INTENT_PATH.to_owned(),
+        },
+    );
+    let compare = store.state().compare.clone().expect("intent compare");
+    assert_eq!(compare.path, INTENT_PATH);
+    assert!(matches!(compare.diff, CompareDiff::Loaded(ref lines) if !lines.is_empty()));
+
+    // Restore v1 as a new version (v4) and land back on Current.
+    act(
+        &mut store,
+        H::Restore {
+            path: INTENT_PATH.to_owned(),
+        },
+    );
+    let history = store.state().history(&desk(), INTENT_PATH).expect("history");
+    assert_eq!(history.position, Position::Current);
+    assert_eq!(history.versions.len(), 4);
+    assert_eq!(
+        store
+            .state()
+            .file_contents
+            .get(&(desk(), String::new(), INTENT_PATH.to_owned()))
+            .cloned(),
+        Some(Ok(INTENT_V1.to_owned()))
+    );
+}
+
+#[test]
+fn named_intent_yaml_is_versioned_while_plain_yaml_is_not() {
+    let (mut store, _) = store();
+    let loaded = |path: &str| A::FileLoaded {
+        session: desk(),
+        repo: String::new(),
+        path: path.to_owned(),
+        result: Ok("schema: humata.intent/v1\n".to_owned()),
+    };
+    store.send(loaded("auth.intent.yaml"), |_| {});
+    store.send(loaded("config.yaml"), |_| {});
+    drain(&mut store);
+    assert!(
+        store
+            .state()
+            .history(&desk(), "auth.intent.yaml")
+            .is_some_and(|h| h.loaded)
+    );
+    assert!(store.state().history(&desk(), "config.yaml").is_none());
+}

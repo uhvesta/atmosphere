@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -51,23 +52,12 @@ Complementary "Diff"
     text "·"
     text "src/"
   text "client.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "api"
   text "·"
   text "src/"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/client.rs"
-    #change-line-39967
-      Button "Comment on line 19967"
-        text "19967"
-      text "+"
-      #change-code-39967-0
-        text "let new_19967 = 19967;"
-    #change-line-39968
-      Button "Comment on line 19968"
-        text "19968"
-      text "+"
-      #change-code-39968-0
-        text "let new_19968 = 19968;"
     #change-line-39969
       Button "Comment on line 19969"
         text "19969"
@@ -263,6 +253,9 @@ Complementary "Diff"
   #diff-looks-bar
     Button "Looks good"
     Label "0 of 3 files looked at"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"

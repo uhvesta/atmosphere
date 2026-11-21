@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -45,41 +46,40 @@ Tab "Repos and machines"
 Tab "Agent access" selected
 Tab "Activity"
 Tab "Settings"
-RadioButton "Tick steps and edit items it made: Allow" selected
-RadioButton "Tick steps and edit items it made: Ask"
-RadioButton "Tick steps and edit items it made: Never"
-RadioButton "Add an item: Allow" selected
-RadioButton "Add an item: Ask"
-RadioButton "Add an item: Never"
-RadioButton "Close or edit an item it didn’t make: Allow"
-RadioButton "Close or edit an item it didn’t make: Ask" selected
-RadioButton "Close or edit an item it didn’t make: Never"
-RadioButton "Delete an item: Allow"
-RadioButton "Delete an item: Ask" selected
-RadioButton "Delete an item: Never"
-RadioButton "Move or copy files inside its own session: Allow" selected
-RadioButton "Move or copy files inside its own session: Ask"
-RadioButton "Move or copy files inside its own session: Never"
-RadioButton "Copy files from another session: Allow"
-RadioButton "Copy files from another session: Ask" selected
-RadioButton "Copy files from another session: Never"
+RadioButton "Read or copy files from another session: Allow" selected
+RadioButton "Read or copy files from another session: Ask"
+RadioButton "Read or copy files from another session: Never"
 Link "Remove"
-RadioButton "Move files or its session to another machine: Allow"
-RadioButton "Move files or its session to another machine: Ask" selected
-RadioButton "Move files or its session to another machine: Never"
-RadioButton "Start or fork a session: Allow"
-RadioButton "Start or fork a session: Ask" selected
+RadioButton "Start or fork a session: Allow" selected
+RadioButton "Start or fork a session: Ask"
 RadioButton "Start or fork a session: Never"
-RadioButton "End a session or a terminal: Allow"
-RadioButton "End a session or a terminal: Ask"
-RadioButton "End a session or a terminal: Never"
-RadioButton "Delete many sessions at once: Allow"
-RadioButton "Delete many sessions at once: Ask"
-RadioButton "Delete many sessions at once: Never" selected
-RadioButton "Read other channels’ to-dos and files: Allow" selected
-RadioButton "Read other channels’ to-dos and files: Ask"
-RadioButton "Read other channels’ to-dos and files: Never"
-RadioButton "Ask for access it doesn’t have: Ask"
-RadioButton "Ask for access it doesn’t have: Never"
-RadioButton "Ask you a question: Ask" selected
-Button "Other rules"
+RadioButton "Send a note to another session: Allow" selected
+RadioButton "Send a note to another session: Ask"
+RadioButton "Send a note to another session: Never"
+RadioButton "Stop or archive its own session: Allow" selected
+RadioButton "Stop or archive its own session: Ask"
+RadioButton "Stop or archive its own session: Never"
+RadioButton "Push its own branch: Allow" selected
+RadioButton "Push its own branch: Ask"
+RadioButton "Push its own branch: Never"
+RadioButton "Start a local PR review: Allow" selected
+RadioButton "Start a local PR review: Ask"
+RadioButton "Start a local PR review: Never"
+RadioButton "Edit or close agent-created To-dos: Allow" selected
+RadioButton "Edit or close agent-created To-dos: Ask"
+RadioButton "Edit or close agent-created To-dos: Never"
+RadioButton "Open a PR or push to a branch with an open PR: Allow"
+RadioButton "Open a PR or push to a branch with an open PR: Ask" selected
+RadioButton "Open a PR or push to a branch with an open PR: Never"
+RadioButton "Start, fork, or move a session on another machine: Allow"
+RadioButton "Start, fork, or move a session on another machine: Ask" selected
+RadioButton "Start, fork, or move a session on another machine: Never"
+RadioButton "Open a network connection through this Mac: Ask" selected
+RadioButton "Open a network connection through this Mac: Never"
+RadioButton "Stop or delete another session: Allow"
+RadioButton "Stop or delete another session: Ask"
+RadioButton "Stop or delete another session: Never"
+RadioButton "Delete multiple sessions or destroy a machine: Allow"
+RadioButton "Delete multiple sessions or destroy a machine: Ask"
+RadioButton "Delete multiple sessions or destroy a machine: Never" selected
+Button "Advanced rules"

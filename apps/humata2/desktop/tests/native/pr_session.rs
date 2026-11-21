@@ -329,18 +329,18 @@ fn a_draft_for_github_has_edit_and_drop_and_the_footer_counts_the_drafts() {
     assert!(app.contains("review-drafts-3-1"));
 }
 
-/// Submit review… in the Diff footer opens the submit sheet over the review.
+/// Submit review / Post replies in the Diff footer opens the submit sheet over the review.
 #[test]
 fn submit_review_in_the_footer_opens_the_sheet() {
     let mut app = review();
     drafts(&app);
     shown(&mut app);
-    app.click("diff-submit-review");
+    app.click("diff-post-github-replies");
     assert!(app.contains("submit-review-dialog"));
 }
 
 /// UXSIMPLE: a review with only drafts for GitHub has nothing to send to the
-/// agent, so its footer has no Send button.
+/// agent, so its footer has no Send button and shows the single Post replies CTA.
 #[test]
 fn a_review_footer_has_no_send_button_when_nothing_is_sendable() {
     let mut app = review();
@@ -348,7 +348,7 @@ fn a_review_footer_has_no_send_button_when_nothing_is_sendable() {
     shown(&mut app);
     app.draw();
     assert!(!app.contains("send-comments"));
-    assert!(app.contains("diff-submit-review"));
+    assert!(app.contains("diff-post-github-replies"));
 }
 
 /// UXSIMPLE: with a comment waiting for the agent, a review's Send is a
@@ -489,7 +489,7 @@ fn pr_review_session_frame_68() {
     app.cx
         .update_window(app.window, |_, window, _| {
             let panel = window.find("side-panel").bounds();
-            let submit = window.find("diff-submit-review").bounds();
+            let submit = window.find("diff-post-github-replies").bounds();
             let right = panel.origin.x + panel.size.width;
             assert!(
                 submit.origin.x + submit.size.width <= right - gpui_kit::px(8.),

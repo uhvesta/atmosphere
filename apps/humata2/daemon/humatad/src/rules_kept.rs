@@ -7,7 +7,7 @@
 //! save made. A restart puts them back in the policy before anything else
 //! uses it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use humata2_access::{
     AwayRule, Capability, ChannelId, ChannelRules, Decision, Policy, PolicyError, RulesState,
@@ -18,6 +18,11 @@ use prost::Message;
 
 use crate::grant_target;
 use crate::guard::{self, Guard};
+
+/// Store setting key marking that the one-time PERMAUDIT migration (ATM-33)
+/// has already run on this store, so subsequent restarts never overwrite an
+/// owner's explicit `Ask` or `Never` setting on a promoted capability.
+const PERMAUDIT_MIGRATED_KEY: &str = "permaudit_migrated";
 
 /// Why saved rules couldn't be read back, or a change couldn't be saved.
 #[derive(Debug, thiserror::Error)]
@@ -92,7 +97,17 @@ pub(crate) fn restore(store: &Store, guard: &Guard) -> Result<(), RulesKeptError
     let defaults = store
         .default_rules()
         .map_err(|source| RulesKeptError::Read { source })?;
-    guard.with_policy(|policy, _| {
+    let already_migrated = store
+        .setting(PERMAUDIT_MIGRATED_KEY)
+        .map_err(|source| RulesKeptError::Read { source })?
+        .is_some();
+    let default_revision = defaults.as_ref().map_or(0, |saved| saved.revision);
+    let channel_revisions: BTreeMap<String, u64> = channels
+        .iter()
+        .map(|(id, saved)| (id.clone(), saved.revision))
+        .collect();
+
+    let migrated_to_save = guard.with_policy(|policy, _| {
         let mut state = policy.to_state();
         if let Some(saved) = defaults {
             let rules = pb::DefaultRules::decode(saved.rules.as_slice()).map_err(|source| {
@@ -124,16 +139,70 @@ pub(crate) fn restore(store: &Store, guard: &Guard) -> Result<(), RulesKeptError
             })?;
             state.channels.insert(ChannelId::new(id), rules);
         }
-        Policy::from_state(state)
-            .map(|mut restored| {
-                let _ = restored.apply_permaudit_migration(
-                    &std::collections::BTreeMap::new(),
-                    &std::collections::BTreeSet::new(),
-                );
-                *policy = restored;
-            })
-            .map_err(|source| RulesKeptError::Install { source })
-    })
+        let mut restored =
+            Policy::from_state(state).map_err(|source| RulesKeptError::Install { source })?;
+        let to_save = if !already_migrated {
+            let applied = restored.apply_permaudit_migration(&BTreeMap::new(), &BTreeSet::new());
+            let mut defaults_changed = false;
+            let mut changed_channels = BTreeSet::new();
+            for (scope, _, _, _) in applied {
+                match scope {
+                    None => defaults_changed = true,
+                    Some(channel_id) => {
+                        changed_channels.insert(channel_id);
+                    }
+                }
+            }
+            let updated_defaults = defaults_changed.then(|| {
+                let rules = restored.new_channel_rules();
+                pb::DefaultRules {
+                    rules: rules_pb(rules, &[]),
+                    away: Some(away_pb(rules.away())),
+                    revision: Some(pb::Revision {
+                        value: default_revision,
+                    }),
+                    copy: None,
+                }
+            });
+            let updated_channels: Vec<pb::ChannelRules> = changed_channels
+                .into_iter()
+                .filter_map(|channel_id| {
+                    let rules = restored.channel_rules(&channel_id)?;
+                    let revision = channel_revisions
+                        .get(channel_id.as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    Some(pb::ChannelRules {
+                        channel: Some(pb::ChannelId {
+                            value: channel_id.as_str().to_owned(),
+                        }),
+                        rules: rules_pb(rules, &[]),
+                        away: Some(away_pb(rules.away())),
+                        revision: Some(pb::Revision { value: revision }),
+                        copy: None,
+                    })
+                })
+                .collect();
+            Some((updated_defaults, updated_channels))
+        } else {
+            None
+        };
+        *policy = restored;
+        Ok(to_save)
+    })?;
+
+    if let Some((updated_defaults, updated_channels)) = migrated_to_save {
+        if let Some(defaults_pb) = updated_defaults {
+            record_default(store, &defaults_pb)?;
+        }
+        for channel_pb in updated_channels {
+            record_channel(store, &channel_pb)?;
+        }
+        store
+            .put_setting(PERMAUDIT_MIGRATED_KEY, "1", 1)
+            .map_err(|source| RulesKeptError::Save { source })?;
+    }
+    Ok(())
 }
 
 /// Saves a channel's rules, as `rules` says them, at `rules.revision`.
@@ -320,5 +389,121 @@ mod tests {
         let listed = rules_pb(&ChannelRules::defaults(), &[]);
         let access_change = guard::capability(Capability::AccessChange) as i32;
         assert!(listed.iter().all(|rule| rule.capability != access_change));
+    }
+
+    fn rules_with_overrides(overrides: &[(Capability, Decision)]) -> Vec<pb::Rule> {
+        let mut listed = rules_pb(&ChannelRules::defaults(), &[]);
+        for &(capability, decision) in overrides {
+            let cap_pb = guard::capability(capability) as i32;
+            let dec_pb = decision_pb(decision) as i32;
+            if let Some(rule) = listed.iter_mut().find(|rule| rule.capability == cap_pb) {
+                rule.decision = dec_pb;
+            }
+        }
+        listed
+    }
+
+    fn channel_rules_pb(
+        channel: &str,
+        overrides: &[(Capability, Decision)],
+        revision: u64,
+    ) -> pb::ChannelRules {
+        pb::ChannelRules {
+            channel: Some(pb::ChannelId {
+                value: channel.to_owned(),
+            }),
+            rules: rules_with_overrides(overrides),
+            away: Some(away_pb(&AwayRule::Wait)),
+            revision: Some(pb::Revision { value: revision }),
+            copy: None,
+        }
+    }
+
+    fn default_rules_pb(overrides: &[(Capability, Decision)], revision: u64) -> pb::DefaultRules {
+        pb::DefaultRules {
+            rules: rules_with_overrides(overrides),
+            away: Some(away_pb(&AwayRule::Wait)),
+            revision: Some(pb::Revision { value: revision }),
+            copy: None,
+        }
+    }
+
+    #[test]
+    fn owner_ask_on_promoted_capability_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        // First startup on a fresh store marks PERMAUDIT migration done.
+        let guard = Guard::new("host", pb::DaemonRole::Host);
+        restore(&store, &guard).unwrap();
+
+        // Owner explicitly tightens SessionNote back to Ask on a channel and in defaults.
+        let overrides = &[(Capability::SessionNote, Decision::Ask)];
+        record_channel(&store, &channel_rules_pb("ch-1", overrides, 1)).unwrap();
+        record_default(&store, &default_rules_pb(overrides, 1)).unwrap();
+
+        // Daemon restarts and restores rules from the store.
+        let restarted = Guard::new("host", pb::DaemonRole::Host);
+        restore(&store, &restarted).unwrap();
+
+        restarted.with_policy(|policy, _| {
+            assert_eq!(
+                policy
+                    .channel_rules(&ChannelId::new("ch-1"))
+                    .and_then(|rules| rules.decision(Capability::SessionNote)),
+                Some(Decision::Ask),
+                "owner's explicit Ask on channel SessionNote must survive restart"
+            );
+            assert_eq!(
+                policy
+                    .new_channel_rules()
+                    .decision(Capability::SessionNote),
+                Some(Decision::Ask),
+                "owner's explicit Ask on default SessionNote must survive restart"
+            );
+        });
+    }
+
+    #[test]
+    fn pre_permaudit_channel_migrates_once_and_persists_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        // Simulate a pre-PERMAUDIT store (no permaudit_migrated marker yet)
+        // where SessionNote was at the old Ask default and TrashRestore was Never.
+        let legacy = &[
+            (Capability::SessionNote, Decision::Ask),
+            (Capability::TrashRestore, Decision::Never),
+        ];
+        record_channel(&store, &channel_rules_pb("ch-legacy", legacy, 1)).unwrap();
+
+        // Startup 1: migration promotes Ask -> Allow and leaves Never alone.
+        let guard1 = Guard::new("host", pb::DaemonRole::Host);
+        restore(&store, &guard1).unwrap();
+        guard1.with_policy(|policy, _| {
+            let rules = policy.channel_rules(&ChannelId::new("ch-legacy")).unwrap();
+            assert_eq!(rules.decision(Capability::SessionNote), Some(Decision::Allow));
+            assert_eq!(rules.decision(Capability::TrashRestore), Some(Decision::Never));
+        });
+
+        // Startup 2 without edits: migrated Allow stays Allow.
+        let guard2 = Guard::new("host", pb::DaemonRole::Host);
+        restore(&store, &guard2).unwrap();
+        guard2.with_policy(|policy, _| {
+            let rules = policy.channel_rules(&ChannelId::new("ch-legacy")).unwrap();
+            assert_eq!(rules.decision(Capability::SessionNote), Some(Decision::Allow));
+            assert_eq!(rules.decision(Capability::TrashRestore), Some(Decision::Never));
+        });
+
+        // Owner later tightens SessionNote back to Ask; startup 3 must keep Ask.
+        record_channel(&store, &channel_rules_pb("ch-legacy", legacy, 2)).unwrap();
+
+        let guard3 = Guard::new("host", pb::DaemonRole::Host);
+        restore(&store, &guard3).unwrap();
+        guard3.with_policy(|policy, _| {
+            let rules = policy.channel_rules(&ChannelId::new("ch-legacy")).unwrap();
+            assert_eq!(rules.decision(Capability::SessionNote), Some(Decision::Ask));
+            assert_eq!(rules.decision(Capability::TrashRestore), Some(Decision::Never));
+        });
     }
 }

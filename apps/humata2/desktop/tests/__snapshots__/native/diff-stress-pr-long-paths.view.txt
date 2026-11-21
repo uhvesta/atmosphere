@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -40,6 +41,11 @@ Complementary "Diff"
       text "PR #482 against main · 2 repos"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
+  #github-feedback-checked-rail
+    text "Checked 2m ago"
+    text "·"
+    Button
+      text "Refresh"
   #diff-file-bar
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
@@ -66,6 +72,9 @@ Complementary "Diff"
         text "+"
         #change-code-1-0
           text "fn main() {}"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Submit review…"
   Label "No drafts"
 Toolbar "Session panels"

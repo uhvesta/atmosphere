@@ -696,7 +696,7 @@ impl crate::CarryOps<'_> {
         let refused = |source: ConversationError| CarryError::Conversation { agent: manifest.agent.clone(), source };
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_for_session(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let Some(to) = kind.placement(&self.home, folder) else {
             return Err(refused(ConversationError::Unsupported { format: packed.format, version: None }));
@@ -799,7 +799,7 @@ impl crate::CarryOps<'_> {
         let refused = |source: ConversationError| CarryError::Conversation { agent: manifest.agent.clone(), source };
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_for_session(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let Some(to) = kind.placement(&self.home, folder) else {
             return Ok(Vec::new());
@@ -1201,7 +1201,7 @@ impl crate::CarryOps<'_> {
         }
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_for_session(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let plan = kind.launch(&self.home, &folder, &manifest.conversation_id);
         let mut placed = None;
@@ -1287,7 +1287,7 @@ impl crate::CarryOps<'_> {
         };
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_for_session(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         // A moved session keeps the model it was started on.
         let model = self.store.session_detail(session).map_err(store("read the session's start"))?.and_then(|detail| detail.model);
@@ -1346,15 +1346,15 @@ impl crate::CarryOps<'_> {
         }
         if let Ok(bytes) = fs::read(stage.join(MANIFEST))
             && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
-            && let Ok(kind) = self.agents.get(&manifest.agent)
+            && let Ok(kind) = self.agents.get_as_ran(&manifest.session, &manifest.agent)
         {
             let new_folder = target_folder.clone();
             let plan = kind.launch(&self.home, &new_folder, &manifest.conversation_id);
             match &manifest.agent_files {
                 AgentFiles::None => {}
                 AgentFiles::File { .. } => keep(remove(&plan.conversation_file)),
-                AgentFiles::Conversation { .. } => keep(self.remove_placed(kind, &manifest.agent_files, &new_folder)),
-                AgentFiles::Earlier { .. } => keep(self.remove_placed(kind, &manifest.agent_files, &new_folder)),
+                AgentFiles::Conversation { .. } => keep(self.remove_placed(&kind, &manifest.agent_files, &new_folder)),
+                AgentFiles::Earlier { .. } => keep(self.remove_placed(&kind, &manifest.agent_files, &new_folder)),
                 AgentFiles::Project => {
                     if let Some(project) = plan.conversation_file.parent() {
                         keep(remove(project));

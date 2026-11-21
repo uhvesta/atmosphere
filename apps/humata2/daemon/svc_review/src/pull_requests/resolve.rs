@@ -21,7 +21,6 @@ const FIELDS: &str = "number,url,title,author,baseRefName,headRefName,headRefOid
 const STACK_FIELDS: &str = "number,url,title,author,baseRefName,headRefName,headRefOid,changedFiles,additions,deletions,state,mergedAt,statusCheckRollup,body";
 
 /// How a resolved pull request stack was discovered.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StackSource {
     /// Native `gh stack` / `gh-stack` metadata block in the PR body.
@@ -32,8 +31,17 @@ pub(super) enum StackSource {
     Single,
 }
 
+impl StackSource {
+    fn to_pb(self) -> pb::StackSource {
+        match self {
+            Self::NativeGhStack => pb::StackSource::NativeGhStack,
+            Self::BaseChain => pb::StackSource::BaseChain,
+            Self::Single => pb::StackSource::Single,
+        }
+    }
+}
+
 /// A resolved pull request stack, ordered bottom-to-top.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ResolvedStack {
     pub(super) layers: Vec<pb::PullRequestInfo>,
@@ -207,6 +215,8 @@ fn info_of(target: &PrTarget, printed: &Value) -> Result<pb::PullRequestInfo, Pu
         removed: count("deletions"),
         state: state as i32,
         checks: checks_summary(printed.get("statusCheckRollup")),
+        stack_layers: Vec::new(),
+        stack_source: pb::StackSource::Unspecified as i32,
     })
 }
 
@@ -498,7 +508,6 @@ fn fetch_open_repo_prs(target: &PrTarget) -> Result<Vec<pb::PullRequestInfo>, Pu
 /// Resolves the stack containing `target` via `gh`:
 /// native `gh stack` metadata -> base-chained open PRs -> single PR fallback.
 /// Blocking.
-#[allow(dead_code)]
 pub(super) fn resolve_stack(target: &PrTarget) -> Result<ResolvedStack, PullRequestError> {
     let (target_info, body) = fetch_with_body(target)?;
     let native_layers = if let Some(numbers) = parse_gh_stack_numbers(&body)
@@ -532,13 +541,44 @@ pub(super) fn resolve_stack(target: &PrTarget) -> Result<ResolvedStack, PullRequ
         ));
     }
 
-    let open_prs = fetch_open_repo_prs(target)?;
+    let open_prs = fetch_open_repo_prs(target).unwrap_or_default();
     Ok(resolve_stack_from_candidates(
         target_info,
         &body,
         None,
         &open_prs,
     ))
+}
+
+fn apply_resolved_stack(target: &PrTarget, resolved: ResolvedStack) -> pb::PullRequestInfo {
+    let mut info = resolved
+        .layers
+        .iter()
+        .find(|layer| pr_number(layer) == Some(target.number))
+        .cloned()
+        .or_else(|| resolved.layers.first().cloned())
+        .unwrap_or_default();
+    info.stack_source = resolved.source.to_pb() as i32;
+    if resolved.layers.len() > 1 {
+        info.stack_layers = resolved.layers;
+    } else {
+        info.stack_layers.clear();
+    }
+    info
+}
+
+fn resolve_with_stack(target: &PrTarget) -> Result<pb::PullRequestInfo, PullRequestError> {
+    let resolved = match resolve_stack(target) {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            let single = fetch(target)?;
+            ResolvedStack {
+                layers: vec![single],
+                source: StackSource::Single,
+            }
+        }
+    };
+    Ok(apply_resolved_stack(target, resolved))
 }
 
 impl PullRequests {
@@ -548,7 +588,7 @@ impl PullRequests {
         request: pb::ResolvePullRequestRequest,
     ) -> Result<pb::PullRequestInfo, Status> {
         let target = target_of(request.r#ref.as_ref()).map_err(|error| error.status())?;
-        blocking(move || fetch(&target).map_err(|error| error.status())).await?
+        blocking(move || resolve_with_stack(&target).map_err(|error| error.status())).await?
     }
 }
 
@@ -582,6 +622,8 @@ mod tests {
             removed: 2,
             state: pb::PullRequestState::Open as i32,
             checks: String::new(),
+            stack_layers: Vec::new(),
+            stack_source: pb::StackSource::Unspecified as i32,
         }
     }
 
@@ -677,5 +719,56 @@ Summary of changes.
         let resolved = resolve_stack_from_candidates(a, "", None, &open);
         assert_eq!(resolved.source, StackSource::BaseChain);
         assert_eq!(resolved.layers.len(), 2);
+    }
+
+    #[test]
+    fn apply_resolved_stack_populates_proto_source_and_layers() {
+        let target = PrTarget {
+            owner: "acme".to_owned(),
+            name: "api".to_owned(),
+            number: 102,
+        };
+        let pr1 = pr_info("acme", "api", 101, "main", "feat-1");
+        let pr2 = pr_info("acme", "api", 102, "feat-1", "feat-2");
+        let pr3 = pr_info("acme", "api", 103, "feat-2", "feat-3");
+
+        let stacked = apply_resolved_stack(
+            &target,
+            ResolvedStack {
+                layers: vec![pr1.clone(), pr2.clone(), pr3.clone()],
+                source: StackSource::NativeGhStack,
+            },
+        );
+        assert_eq!(pr_number(&stacked), Some(102));
+        assert_eq!(stacked.stack_source, pb::StackSource::NativeGhStack as i32);
+        assert_eq!(stacked.stack_layers.len(), 3);
+        assert_eq!(
+            stacked
+                .stack_layers
+                .iter()
+                .filter_map(pr_number)
+                .collect::<Vec<_>>(),
+            vec![101, 102, 103]
+        );
+
+        let chained = apply_resolved_stack(
+            &target,
+            ResolvedStack {
+                layers: vec![pr1, pr2.clone()],
+                source: StackSource::BaseChain,
+            },
+        );
+        assert_eq!(chained.stack_source, pb::StackSource::BaseChain as i32);
+        assert_eq!(chained.stack_layers.len(), 2);
+
+        let single = apply_resolved_stack(
+            &target,
+            ResolvedStack {
+                layers: vec![pr2],
+                source: StackSource::Single,
+            },
+        );
+        assert_eq!(single.stack_source, pb::StackSource::Single as i32);
+        assert!(single.stack_layers.is_empty());
     }
 }

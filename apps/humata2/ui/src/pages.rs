@@ -27,6 +27,7 @@ pub fn title(state: &AppState) -> String {
     match &state.route {
         Route::Home => "Home".to_owned(),
         Route::Inbox => "Agent inbox".to_owned(),
+        Route::Reviews => "Reviews".to_owned(),
         Route::Todo => "To-do".to_owned(),
         Route::Channel(id) => state
             .workspace
@@ -89,6 +90,7 @@ pub fn page(
         .into_any_element(),
         Route::Todo => todo_page(ui, state, todo_inputs, Look::of(cx)).into_any_element(),
         Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
+        Route::Reviews => crate::reviews_inbox::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
             || {
                 widgets::empty_in(look, "This channel is gone.", "Pick another in the sidebar.")

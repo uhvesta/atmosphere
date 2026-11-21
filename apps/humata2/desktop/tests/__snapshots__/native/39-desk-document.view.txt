@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk" expanded
     Button "Fold"

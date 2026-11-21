@@ -194,6 +194,7 @@ async fn send_comment(rig: &Rig, id: &pb::SessionId, comment: &pb::Comment) -> p
             idempotency_key: None,
             session: Some(id.clone()),
             ids: vec![comment.id.clone().expect("a draft has an id")],
+            overall_note: String::new(),
         })
         .await
         .expect("the send answers")

@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -51,11 +52,18 @@ Complementary "Diff"
     text "·"
     text "src/"
   text "client.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "api"
   text "·"
   text "src/"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/client.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Client {"
     #change-line-1
@@ -112,15 +120,12 @@ Complementary "Diff"
       text "One transaction for the whole batch, not one per entry."
       text "claude"
       text "post_many opens one transaction and commits once."
-    #change-line-6
-      Button "Comment on line 44"
-        text "44"
-      text "+"
-      #change-code-6-0
-        text "        tx.commit().await?;"
   #diff-looks-bar
     Button "Looks good"
     Label "0 of 3 files looked at"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"

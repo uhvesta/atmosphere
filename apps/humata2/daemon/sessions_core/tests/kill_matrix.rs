@@ -304,6 +304,11 @@ fn partials(dir: &Path, found: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.file_name().is_some_and(|n| n == "worktrees")
+            && dir.extension().is_some_and(|e| e == "git")
+        {
+            continue;
+        }
         if path.extension().is_some_and(|e| e == "partial") {
             found.push(path.clone());
         }
@@ -527,6 +532,9 @@ async fn nothing_orphaned(world: &World, point: &str) {
 
     let humata = world.layout().root();
     for folder in entries_of(&humata) {
+        if name_of(&folder) == ".repo-cache" {
+            continue;
+        }
         let Some(channel) = channels.iter().find(|c| c.folder == name_of(&folder)) else {
             panic!("{point}: a folder of no saved channel: {folder:?}");
         };

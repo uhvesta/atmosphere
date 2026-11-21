@@ -21,7 +21,7 @@ mod platform {
 
     use gpui_kit::{App, SharedString, SystemNotification};
     use humata2_clients::model::SessionId;
-    use humata2_clients::{DesktopNotice, NoticeSound, Notifier, NotifyTarget};
+    use humata2_clients::{DesktopNotice, NoticeSound, Notifier, NotifyTarget, PermissionStatus};
     use tokio::sync::mpsc;
 
     /// Logs a desktop-notifier gate event to stderr unless `HUMATA2_NOTIFY_TRACE=0`.
@@ -33,16 +33,7 @@ mod platform {
     }
 
     /// macOS `UNUserNotificationCenter` authorization state probed from the OS.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    #[allow(dead_code)]
-    pub(crate) enum OsPermissionStatus {
-        Unknown,
-        Authorized,
-        Denied,
-        NotDetermined,
-        Provisional,
-        Unbundled,
-    }
+    pub(crate) type OsPermissionStatus = PermissionStatus;
 
     /// Extracts `CFBundleIdentifier` from `<App>.app/Contents/Info.plist` when
     /// `exe` lives at `<App>.app/Contents/MacOS/<exe>`.
@@ -301,6 +292,7 @@ mod platform {
         Withdraw(Vec<String>),
         RequestPermission,
         PlaySound(NoticeSound),
+        SetDockBadge(Option<usize>),
     }
 
     /// Platform desktop notifier backed by macOS `UNUserNotificationCenter` via
@@ -332,27 +324,6 @@ mod platform {
             let notifier = Self { commands: tx, targets: Arc::clone(&targets) };
             let bridge = NotifierBridge { commands: rx, targets };
             (notifier, bridge)
-        }
-
-        /// Enqueues decoupled in-app playback of `sound`.
-        #[allow(dead_code)]
-        pub(crate) fn play_sound(&self, sound: NoticeSound) {
-            trace_notifier("live_play_sound", &format!("sound={}", sound.file_name()));
-            if self.commands.send(NotifierCommand::PlaySound(sound)).is_err() {
-                trace_notifier(
-                    "live_play_sound",
-                    "warning=channel_closed bridge_dropped=true",
-                );
-            }
-        }
-
-        /// Queries macOS notification permission status for the running bundle.
-        #[allow(dead_code)]
-        #[must_use]
-        pub(crate) fn query_permission(&self) -> OsPermissionStatus {
-            let status = probe_macos_permission_status();
-            trace_notifier("live_query_permission", &format!("status={status:?}"));
-            status
         }
 
         /// Posts a synthetic test notification to verify end-to-end delivery.
@@ -406,6 +377,32 @@ mod platform {
             if self.commands.send(NotifierCommand::RequestPermission).is_err() {
                 trace_notifier(
                     "live_request_permission",
+                    "warning=channel_closed bridge_dropped=true",
+                );
+            }
+        }
+
+        fn query_permission(&self) -> PermissionStatus {
+            let status = probe_macos_permission_status();
+            trace_notifier("live_query_permission", &format!("status={status:?}"));
+            status
+        }
+
+        fn play_sound(&self, sound: NoticeSound) {
+            trace_notifier("live_play_sound", &format!("sound={}", sound.file_name()));
+            if self.commands.send(NotifierCommand::PlaySound(sound)).is_err() {
+                trace_notifier(
+                    "live_play_sound",
+                    "warning=channel_closed bridge_dropped=true",
+                );
+            }
+        }
+
+        fn set_dock_badge(&self, count: Option<usize>) {
+            trace_notifier("live_set_dock_badge", &format!("count={count:?}"));
+            if self.commands.send(NotifierCommand::SetDockBadge(count)).is_err() {
+                trace_notifier(
+                    "live_set_dock_badge",
                     "warning=channel_closed bridge_dropped=true",
                 );
             }
@@ -483,6 +480,12 @@ mod platform {
                                 &format!("cmd=play_sound sound={}", sound.file_name()),
                             );
                             play_sound_in_app(sound);
+                        }
+                        NotifierCommand::SetDockBadge(count) => {
+                            trace_notifier(
+                                "bridge_dispatch",
+                                &format!("cmd=set_dock_badge count={count:?}"),
+                            );
                         }
                     }
                 }
@@ -750,13 +753,36 @@ mod platform {
                 }))
             );
         }
+
+        #[test]
+        fn set_dock_badge_enqueues_command_and_is_safe_when_bridge_dropped() {
+            let (notifier, mut bridge) = LiveNotifier::new();
+
+            notifier.set_dock_badge(Some(2));
+            assert_eq!(
+                bridge.commands.try_recv(),
+                Ok(NotifierCommand::SetDockBadge(Some(2)))
+            );
+
+            notifier.set_dock_badge(None);
+            assert_eq!(
+                bridge.commands.try_recv(),
+                Ok(NotifierCommand::SetDockBadge(None))
+            );
+
+            drop(bridge);
+            notifier.set_dock_badge(Some(2));
+            notifier.set_dock_badge(None);
+        }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use gpui_kit::App;
-    use humata2_clients::{DesktopNotice, NoopNotifier, Notifier, NotifyTarget};
+    use humata2_clients::{
+        DesktopNotice, NoopNotifier, NoticeSound, Notifier, NotifyTarget, PermissionStatus,
+    };
     use tokio::sync::mpsc;
 
     /// Non-macOS fallback notifier backed by [`NoopNotifier`].
@@ -783,6 +809,18 @@ mod platform {
 
         fn request_permission(&self) {
             self.0.request_permission();
+        }
+
+        fn query_permission(&self) -> PermissionStatus {
+            self.0.query_permission()
+        }
+
+        fn play_sound(&self, sound: NoticeSound) {
+            self.0.play_sound(sound);
+        }
+
+        fn set_dock_badge(&self, count: Option<usize>) {
+            self.0.set_dock_badge(count);
         }
     }
 

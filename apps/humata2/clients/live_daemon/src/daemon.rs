@@ -85,9 +85,14 @@ impl Shared {
     /// Follows a channel setup until it stops running, pushing each change.
     /// A failed or cancelled one is refused with the daemon's words.
     async fn watch_setup(&self, operation: pb::Operation) -> Result<pb::Operation, DaemonError> {
-        const WHAT: &str = "Setting up the channel";
         self.publish_setup(&operation);
-        let mut last = operation;
+        self.follow_setup(operation).await
+    }
+
+    /// Streams updates for an already-published channel setup operation until
+    /// it reaches a terminal state, publishing each change.
+    async fn follow_setup(&self, mut last: pb::Operation) -> Result<pb::Operation, DaemonError> {
+        const WHAT: &str = "Setting up the channel";
         if last.state == pb::OperationState::Running as i32 {
             if let Some(id) = last.id.clone() {
                 let opened = self
@@ -245,7 +250,7 @@ impl Shared {
     }
 
     async fn create_channel(
-        &self,
+        self: &Arc<Self>,
         name: String,
         repos: Vec<String>,
         machines: Vec<MachineId>,
@@ -296,7 +301,16 @@ impl Shared {
                     .setup_channels
                     .insert(operation.value.clone(), id.clone());
             }
-            self.watch_setup(setup).await?;
+            // Return as soon as the daemon has created the channel so the
+            // Create Channel sheet closes immediately while clone progress
+            // streams asynchronously via `Event::ChannelSetup` (SMB-001).
+            self.publish_setup(&setup);
+            if setup.state == pb::OperationState::Running as i32 {
+                let shared = self.clone();
+                self.spawn(async move {
+                    let _ = shared.follow_setup(setup).await;
+                });
+            }
         }
         Ok(id)
     }
@@ -1552,5 +1566,436 @@ impl Daemon for LiveDaemon {
     fn revoke_script_token(&self, id: String) -> Reply<()> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.revoke_script_token(id).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use humata2_clients::model::{ChannelId, MachineId, SetupState};
+    use humata2_clients::{Daemon, Event};
+    use tokio::net::UnixListener;
+    use tokio::sync::{Notify, mpsc};
+    use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
+    use tonic::{Request, Response, Status, Streaming};
+
+    use crate::connection::{LiveDaemon, LiveOptions};
+    use crate::humata2_grpc::humata::v1 as pb;
+    use crate::humata2_grpc::humata::v1::channel_service_server::{
+        ChannelService, ChannelServiceServer,
+    };
+    use crate::humata2_grpc::humata::v1::daemon_service_server::{
+        DaemonService, DaemonServiceServer,
+    };
+    use crate::humata2_grpc::humata::v1::event_service_server::{
+        EventService, EventServiceServer,
+    };
+    use crate::humata2_grpc::humata::v1::operation_service_server::{
+        OperationService, OperationServiceServer,
+    };
+
+    struct SocketGuard(PathBuf);
+
+    impl Drop for SocketGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockDaemon {
+        watch_opened: Arc<Notify>,
+        release_clone: Arc<Notify>,
+    }
+
+    fn setup_operation(state: pb::OperationState, clone_state: pb::StepState, version: u64) -> pb::Operation {
+        pb::Operation {
+            id: Some(pb::OperationId {
+                value: "op_setup_1".to_owned(),
+            }),
+            state: state as i32,
+            version,
+            cancellable: state == pb::OperationState::Running,
+            steps: vec![
+                pb::OperationStep {
+                    key: "record".to_owned(),
+                    title: "Saving the channel".to_owned(),
+                    state: pb::StepState::Done as i32,
+                    ..Default::default()
+                },
+                pb::OperationStep {
+                    key: "clone_main:acme/app".to_owned(),
+                    title: "Cloning acme/app".to_owned(),
+                    state: clone_state as i32,
+                    done_units: u64::from(clone_state == pb::StepState::Done),
+                    total_units: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[tonic::async_trait]
+    impl DaemonService for MockDaemon {
+        async fn get_server_info(
+            &self,
+            _request: Request<pb::GetServerInfoRequest>,
+        ) -> Result<Response<pb::ServerInfo>, Status> {
+            Ok(Response::new(pb::ServerInfo {
+                machine: Some(pb::MachineId {
+                    value: "ma_test".to_owned(),
+                }),
+                ..Default::default()
+            }))
+        }
+
+        async fn who_am_i(
+            &self,
+            _request: Request<pb::WhoAmIRequest>,
+        ) -> Result<Response<pb::WhoAmIResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn begin_relay(
+            &self,
+            _request: Request<pb::BeginRelayRequest>,
+        ) -> Result<Response<pb::BeginRelayResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn complete_relay(
+            &self,
+            _request: Request<pb::CompleteRelayRequest>,
+        ) -> Result<Response<pb::CompleteRelayResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        type PeerUplinkStream = ReceiverStream<Result<pb::MachineToHost, Status>>;
+
+        async fn peer_uplink(
+            &self,
+            _request: Request<Streaming<pb::HostToMachine>>,
+        ) -> Result<Response<Self::PeerUplinkStream>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn repair_restart(
+            &self,
+            _request: Request<pb::RepairRestartRequest>,
+        ) -> Result<Response<pb::RepairRestartResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn stop_sessions(
+            &self,
+            _request: Request<pb::StopSessionsRequest>,
+        ) -> Result<Response<pb::StopSessionsResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn start_sessions(
+            &self,
+            _request: Request<pb::StartSessionsRequest>,
+        ) -> Result<Response<pb::StartSessionsResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn upgrade(
+            &self,
+            _request: Request<pb::UpgradeRequest>,
+        ) -> Result<Response<pb::UpgradeResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl ChannelService for MockDaemon {
+        async fn create_channel(
+            &self,
+            request: Request<pb::CreateChannelRequest>,
+        ) -> Result<Response<pb::CreateChannelResponse>, Status> {
+            let name = request.into_inner().name;
+            Ok(Response::new(pb::CreateChannelResponse {
+                channel: Some(pb::Channel {
+                    id: Some(pb::ChannelId {
+                        value: "ch_1".to_owned(),
+                    }),
+                    name,
+                    folder: "q4-billing".to_owned(),
+                    ..Default::default()
+                }),
+                setup: Some(setup_operation(
+                    pb::OperationState::Running,
+                    pb::StepState::Running,
+                    1,
+                )),
+            }))
+        }
+
+        async fn get_channel(
+            &self,
+            _request: Request<pb::GetChannelRequest>,
+        ) -> Result<Response<pb::Channel>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn list_channels(
+            &self,
+            _request: Request<pb::ListChannelsRequest>,
+        ) -> Result<Response<pb::ListChannelsResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn rename_channel(
+            &self,
+            _request: Request<pb::RenameChannelRequest>,
+        ) -> Result<Response<pb::Channel>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn search_git_hub_repos(
+            &self,
+            _request: Request<pb::SearchGitHubReposRequest>,
+        ) -> Result<Response<pb::SearchGitHubReposResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn add_repo(
+            &self,
+            _request: Request<pb::AddRepoRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn plan_remove_repo(
+            &self,
+            _request: Request<pb::PlanRemoveRepoRequest>,
+        ) -> Result<Response<pb::RemoveRepoPlan>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn remove_repo(
+            &self,
+            _request: Request<pb::RemoveRepoRequest>,
+        ) -> Result<Response<pb::Channel>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn add_machine(
+            &self,
+            _request: Request<pb::AddChannelMachineRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn plan_remove_machine(
+            &self,
+            _request: Request<pb::PlanRemoveChannelMachineRequest>,
+        ) -> Result<Response<pb::RemoveChannelMachinePlan>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn remove_machine(
+            &self,
+            _request: Request<pb::RemoveChannelMachineRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn get_grid(
+            &self,
+            _request: Request<pb::GetGridRequest>,
+        ) -> Result<Response<pb::ChannelGrid>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn plan_delete_channel(
+            &self,
+            _request: Request<pb::PlanDeleteChannelRequest>,
+        ) -> Result<Response<pb::DeleteChannelPlan>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn delete_channel(
+            &self,
+            _request: Request<pb::DeleteChannelRequest>,
+        ) -> Result<Response<pb::DeleteChannelResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl OperationService for MockDaemon {
+        async fn get_operation(
+            &self,
+            _request: Request<pb::GetOperationRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Ok(Response::new(setup_operation(
+                pb::OperationState::Succeeded,
+                pb::StepState::Done,
+                2,
+            )))
+        }
+
+        async fn find_operation(
+            &self,
+            _request: Request<pb::FindOperationRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn list_operations(
+            &self,
+            _request: Request<pb::ListOperationsRequest>,
+        ) -> Result<Response<pb::ListOperationsResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        type WatchOperationStream = ReceiverStream<Result<pb::Operation, Status>>;
+
+        async fn watch_operation(
+            &self,
+            _request: Request<pb::WatchOperationRequest>,
+        ) -> Result<Response<Self::WatchOperationStream>, Status> {
+            let (tx, rx) = mpsc::channel(4);
+            let watch_opened = self.watch_opened.clone();
+            let release_clone = self.release_clone.clone();
+            tokio::spawn(async move {
+                watch_opened.notify_one();
+                release_clone.notified().await;
+                let _ = tx
+                    .send(Ok(setup_operation(
+                        pb::OperationState::Succeeded,
+                        pb::StepState::Done,
+                        2,
+                    )))
+                    .await;
+            });
+            Ok(Response::new(ReceiverStream::new(rx)))
+        }
+
+        async fn cancel_operation(
+            &self,
+            _request: Request<pb::CancelOperationRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+
+        async fn retry_operation(
+            &self,
+            _request: Request<pb::RetryOperationRequest>,
+        ) -> Result<Response<pb::Operation>, Status> {
+            Err(Status::unimplemented(""))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl EventService for MockDaemon {
+        type SubscribeStream = ReceiverStream<Result<pb::Event, Status>>;
+
+        async fn subscribe(
+            &self,
+            _request: Request<pb::SubscribeRequest>,
+        ) -> Result<Response<Self::SubscribeStream>, Status> {
+            let (tx, rx) = mpsc::channel(4);
+            // Hold the sender alive so the subscription stream stays open.
+            tokio::spawn(async move {
+                let _keep = tx;
+                std::future::pending::<()>().await;
+            });
+            Ok(Response::new(ReceiverStream::new(rx)))
+        }
+    }
+
+    async fn next_setup(
+        events: &mut humata2_clients::Events,
+    ) -> humata2_clients::model::ChannelSetup {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(item) = events.recv().await {
+                match item.expect("event ok") {
+                    Event::ChannelSetup(setup) => return setup,
+                    Event::Resync => continue,
+                    other => panic!("unexpected event while waiting for ChannelSetup: {other:?}"),
+                }
+            }
+            panic!("event stream closed before ChannelSetup arrived");
+        })
+        .await
+        .expect("timed out waiting for ChannelSetup event")
+    }
+
+    #[tokio::test]
+    async fn create_channel_returns_without_blocking_on_clone_completion() {
+        let socket_path = std::env::temp_dir().join(format!(
+            "humata-live-daemon-create-channel-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let _guard = SocketGuard(socket_path.clone());
+        let listener = UnixListener::bind(&socket_path).expect("bind test unix socket");
+
+        let watch_opened = Arc::new(Notify::new());
+        let release_clone = Arc::new(Notify::new());
+        let service = MockDaemon {
+            watch_opened: watch_opened.clone(),
+            release_clone: release_clone.clone(),
+        };
+        let server = tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(DaemonServiceServer::new(service.clone()))
+                .add_service(ChannelServiceServer::new(service.clone()))
+                .add_service(EventServiceServer::new(service.clone()))
+                .add_service(OperationServiceServer::new(service))
+                .serve_with_incoming(UnixListenerStream::new(listener))
+                .await;
+        });
+
+        let daemon = LiveDaemon::connect(LiveOptions::new(socket_path))
+            .await
+            .expect("connect to mock daemon");
+        let mut events = daemon.events().await.expect("subscribe to daemon events");
+
+        // `release_clone` has NOT been notified yet: `create_channel` must still
+        // return the new channel id immediately without waiting for the clone.
+        let id = tokio::time::timeout(
+            Duration::from_secs(2),
+            daemon.create_channel(
+                "Q4 Billing",
+                vec!["acme/app".to_owned()],
+                vec![MachineId::new("ma_test")],
+            ),
+        )
+        .await
+        .expect("create_channel must not block on clone completion")
+        .expect("create_channel succeeds");
+        assert_eq!(id, ChannelId::new("ch_1"));
+
+        // The initial running setup event is published right away.
+        let initial = next_setup(&mut events).await;
+        assert_eq!(initial.name, "Q4 Billing");
+        assert!(matches!(
+            initial.steps.get(1).map(|step| &step.state),
+            Some(SetupState::Running { .. })
+        ));
+
+        // The background watcher opens `WatchOperation` and streams completion
+        // asynchronously once the clone finishes.
+        tokio::time::timeout(Duration::from_secs(2), watch_opened.notified())
+            .await
+            .expect("background task opens WatchOperation");
+        release_clone.notify_one();
+
+        let done = next_setup(&mut events).await;
+        assert_eq!(done.name, "Q4 Billing");
+        assert_eq!(
+            done.steps.get(1).map(|step| &step.state),
+            Some(&SetupState::Done)
+        );
+
+        server.abort();
     }
 }

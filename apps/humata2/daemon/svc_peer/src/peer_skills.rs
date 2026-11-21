@@ -50,7 +50,8 @@ const ENGINE_FORMAT: u32 = 1;
 /// Each agent's skill folder under a home folder, as (agent, folder). One
 /// place to add an agent. A folder that isn't there is an agent that isn't
 /// installed.
-pub const AGENT_FOLDERS: [(&str, &str); 3] = [
+pub const AGENT_FOLDERS: [(&str, &str); 4] = [
+    ("agy", ".gemini/antigravity-cli/skills"),
     ("claude", ".claude/skills"),
     ("codex", ".codex/skills"),
     ("copilot", ".copilot/skills"),

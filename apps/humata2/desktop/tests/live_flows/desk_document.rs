@@ -196,7 +196,7 @@ fn drive(app: &mut App, world: &World, session: &SessionId, repo: &str, folder: 
     write_in_the_box(app, session, SIZES);
     app.click(Role::Button, "Comment");
     app.wait_until("the agent to get the comment on line 7", |_| {
-        world.conversation_text().contains(&format!("[comment on {RFC}:7]"))
+        world.conversation_text().contains(&format!(" on {RFC}:7]"))
     });
     app.wait_until("the comment to show as sent", |app| {
         comment_with(app, session, SIZES).is_some_and(|c| c.status == Status::Sent)
@@ -290,7 +290,7 @@ fn drive(app: &mut App, world: &World, session: &SessionId, repo: &str, folder: 
     });
     app.click(Role::Button, "Send 1 comment");
     app.wait_until("the agent to get it on line 10", |_| {
-        world.conversation_text().contains(&format!("[comment on {RFC}:10]"))
+        world.conversation_text().contains(&format!(" on {RFC}:10]"))
     });
     app.wait_until("the re-attached comment to be sent", |app| {
         comment_with(app, session, ARROWS).is_some_and(|c| c.status == Status::Sent)

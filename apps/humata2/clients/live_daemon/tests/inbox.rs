@@ -264,6 +264,9 @@ impl World {
     async fn channel(&self, name: &str) -> (ChannelId, String, MachineId) {
         let mac = self.this_mac().await;
         let repo = self.repo(name);
+        let mut events = within("events", self.daemon.events())
+            .await
+            .expect("subscribe to daemon events");
         let id = within(
             "create_channel",
             self.daemon
@@ -271,6 +274,30 @@ impl World {
         )
         .await
         .expect("create the channel");
+        within("channel setup done", async {
+            while let Some(item) = events.recv().await {
+                if let Ok(humata2_clients::Event::ChannelSetup(setup)) = item {
+                    if !setup.steps.is_empty()
+                        && setup
+                            .steps
+                            .iter()
+                            .all(|step| step.state == humata2_clients::model::SetupState::Done)
+                    {
+                        return;
+                    }
+                    if let Some(reason) = setup.steps.iter().find_map(|step| match &step.state {
+                        humata2_clients::model::SetupState::Failed { reason } => {
+                            Some(reason.as_str())
+                        }
+                        _ => None,
+                    }) {
+                        panic!("channel setup failed: {reason}");
+                    }
+                }
+            }
+            panic!("event stream closed before channel setup finished");
+        })
+        .await;
         (id, repo, mac)
     }
 

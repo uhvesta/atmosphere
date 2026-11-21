@@ -81,11 +81,8 @@ fn a_claude_session_continues_in_another_channel_from_before_turn_2() {
             .await
             .expect("the workspace has This Mac");
         let web = world.repo("owner", "web").expect("make billing's repo");
-        let billing = clients
-            .daemon
-            .create_channel("billing", vec![web], vec![mac])
-            .await
-            .expect("create billing");
+        let billing =
+            super::create_channel_ready(&clients.daemon, "billing", vec![web], vec![mac]).await;
         (world, clients, source, billing)
     });
     let before: Session = runtime

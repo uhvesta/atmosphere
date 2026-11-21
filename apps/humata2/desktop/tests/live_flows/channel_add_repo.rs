@@ -30,11 +30,8 @@ fn a_repo_from_the_library_is_added_to_an_existing_channel_from_its_repos_tab() 
             .await
             .expect("the workspace has This Mac");
         let api = world.repo("owner", "api").expect("make a repo");
-        let second = clients
-            .daemon
-            .create_channel("second", vec![api], vec![mac])
-            .await
-            .expect("create the second channel");
+        let second =
+            super::create_channel_ready(&clients.daemon, "second", vec![api], vec![mac]).await;
         (world, clients, second)
     });
     let mut app = App::open(&runtime, clients);

@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -46,6 +47,9 @@ Complementary "Diff"
     text "No changes against origin/main"
   Button "Compare with…"
   #diff-looks-bar
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude" disabled
   Button "Add repo…"
 Toolbar "Session panels"

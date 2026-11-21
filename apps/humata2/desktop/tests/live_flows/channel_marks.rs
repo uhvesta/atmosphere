@@ -401,8 +401,9 @@ fn a_channels_sessions_tab_shows_unread_turns_and_filters_and_folds_forks() {
         "the host holds the new unread mark"
     );
 
-    // The channel page opens on Sessions: all three rows, the fork nested.
+    // Open the channel page and switch to Sessions: all three rows, the fork nested.
     send(&mut app, AppAction::Navigate(Route::Channel(channel.clone())));
+    app.click(Role::Tab, "Sessions");
     app.wait_until("the Sessions tab to list the three sessions", |app| {
         let view = app.view();
         row_shown(&view, PARENT) && row_shown(&view, &child) && row_shown(&view, OTHER)

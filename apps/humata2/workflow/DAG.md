@@ -86,6 +86,11 @@ milestone file; agents read that file, not this one.
 | [FUSEFSWIRE](milestones/FUSEFSWIRE.md) | FUSEFS is actually on: humatad2 runs the mount as a fifth helper, sessions get native config homes with a zero-restart sync switch, moves carry chunks through the shared chunk store, and Settings › Sync controls it; it survives restarts, power cuts and link drops, proven on Lima remotes (T13) | L15 | proto + daemon + sessions_carry + MCP + clients + Settings UI | FUSEFS T1–T10 (12305aba); Settings › Sync frame from Fable first | open (owner, 2026-11-20; ships 0.6.0) |
 | [SCREENPARSE](milestones/SCREENPARSE.md) | Agent prompts on screen are read right for every agent, tested against recordings of the real CLIs driven by cheap models | L15 | svc_inbox + agent_hooks + slow-tier live recorder | HOOKCLEAR (fixes its regressions first) | open (owner, 2026-11-20; ships 0.6.1) |
 | [BROWSER](milestones/BROWSER.md) | Claude Code, Codex, Copilot and agy read my real browser tabs and, with my per-action approval, click, type and navigate; read can be granted for 30 min, write never | L16 | proto + humatad2 browser-host + svc_mcp + svc_inbox + clients + UI | core crates (12305aba); FUSEFSWIRE and SCREENPARSE release first; frames from Fable first | open (owner, 2026-11-20; ships 0.7.0) |
+| [INTENTSPEC](milestones/INTENTSPEC.md) | In any Desk or Channel Desk session, an agent drafts a schema-validated `intent.yaml` (`humata.intent/v1`) rendered in a `Structured \| YAML \| Diff` pane with `DOCV` versioning, inline comments, and `Approve & Start Milestone` | L16 | `intent_spec` + `features/session` + `ui/changes` + skill | DOCV, MILESTONES | in progress (owner, 2026-11-21) |
+| [INTENTMODE](milestones/INTENTMODE.md) | Board "Intent Mode": living LLM-authored Intent Packages (`DRAFT`, `TODO`, `IN PROGRESS`, `IN REVIEW`, `BLOCKED`, `DONE` + due dates) replace heavy To-do management, spawn multiple tagged sessions that continuously write back what is done and what remains, and notify me when an intent needs review or a decision | L17 | `intent_spec` + `svc_board` + `svc_mcp` + `features/todo` + `ui/changes` + `ui/workspace` | INTENTSPEC, BOARDSIMPLE, NOTIFYAUDIT, REVIEW_UI_AND_WEB | open (owner, 2026-11-21; mockups approved `im-1..im-6`) |
+| [MACOS_POLISH](milestones/MACOS_POLISH.md) | Native macOS visual & interaction polish in 3 surgical waves: Theme sync + cursors + light-mode hairlines + overlay scrollbars (W1), window vibrancy + 52pt titlebar alignment + inactive dimming + rail/tabs/type (W2), hit targets + menus + diff/todo/modal/settings polish (W3) | L17 | `ui/core` + `desktop/src` + `ui/*` | LOOK2, POLISH; INTENTSPEC* (shares `ui/changes`, `ui/workspace`, native snapshots) | open (owner, 2026-11-21) |
+| [UI_JANK_FIXES](milestones/UI_JANK_FIXES.md) | Fix 26 verified UI/UX jank, crash, keystroke-loss, painted-over menu, focus-trap, text-cutoff, dead-end, and large-list virtualization bugs across `ui/` and `features/` in 3 waves (W-A P0 crashes/focus/menus, W-B cutoffs/tooltips/depth, W-C dead-ends/races/virtualization) | L17 | `ui/*` + `features/{app,session,files}` | LOOK2, POLISH; MACOS_POLISH* (shares `ui/*` files & native snapshots) | open (owner, 2026-11-21) |
+| [UX_FILES](UX_FILES.md) | macOS native UX deviations, embedded terminal fixes (OSC 52 real clipboard, Light ANSI palette, OSC 10/11 + `COLORFGBG` + DEC 2031, `TerminalTheme`, saved font family, `Ctrl+C`/Option-as-Alt/cmd-line nav, paste prompt), menu bar + shortcuts + context menus + macOS Dock reopen/window bounds, real Dock badge + DND sound + Finder drop + copy feedback + microcopy, and dead Markdown links + `.cleanable()`/`.mask_toggle()`/`⌘Enter` + code copy | L17 | `terminal/*` + `daemon/{vt_authority,holder}` + `markdown` + `desktop/src` + `features/*` + `ui/*` | MACOS_POLISH*, UI_JANK_FIXES* (deduplicated; shares `ui/*` & `desktop/src`) | open (owner, 2026-11-21) |
 
 ## Critical path
 
@@ -338,4 +343,18 @@ graph TD
   FUSEFS --> FUSEFSWIRE
   FUSEFSWIRE --> BROWSER
   SCREENPARSE --> BROWSER
+  INTENTSPEC["INTENTSPEC: in progress"]
+  INTENTMODE["INTENTMODE: open"]
+  MACOS_POLISH["MACOS_POLISH: open"]
+  UI_JANK_FIXES["UI_JANK_FIXES: open"]
+  UX_FILES["UX_FILES: open"]
+  DOCV --> INTENTSPEC
+  INTENTSPEC --> INTENTMODE
+  TODO2 -.-> INTENTMODE
+  POLISH --> MACOS_POLISH
+  INTENTSPEC -.-> MACOS_POLISH
+  POLISH --> UI_JANK_FIXES
+  MACOS_POLISH -.-> UI_JANK_FIXES
+  MACOS_POLISH -.-> UX_FILES
+  UI_JANK_FIXES -.-> UX_FILES
 ```

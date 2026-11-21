@@ -270,7 +270,14 @@ async fn a_channel_desk_session_works_in_the_channels_desk_folder_and_stays_off_
     assert_eq!(part.channel, Some(fixture.channel_id()));
     assert_eq!(part.target, None);
     // Unset switches are the New desk session dialog's defaults.
-    assert_eq!(part.switches, Some(defaults()));
+    assert_eq!(
+        part.switches,
+        Some(pb::ChannelDeskSwitches {
+            read_files: true,
+            start_and_fork: true,
+            ..Default::default()
+        })
+    );
 
     let plain = fixture.listed(pb::ListDeskSessionsRequest::default()).await;
     assert!(plain.iter().all(|desk| desk.session.as_ref() != Some(&id)));
@@ -342,6 +349,9 @@ async fn desk_sessions_are_listed_by_channel_and_by_target() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_note_switch_covers_the_target_only_and_applies_from_the_next_call() {
     let fixture = Fixture::new().await;
+    fixture
+        .set_rule(pb::Capability::SessionNote, pb::Decision::Ask)
+        .await;
     let desk = fixture.on_target(defaults()).await;
     let (token, _attach) = shell_token(&fixture.daemon, &desk).await;
 
@@ -378,6 +388,9 @@ async fn a_fork_of_the_target_made_later_is_covered() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_read_switch_reads_the_targets_files_only() {
     let fixture = Fixture::new().await;
+    fixture
+        .set_rule(pb::Capability::FilesReadOtherSession, pb::Decision::Ask)
+        .await;
     let desk = fixture.on_target(defaults()).await;
     let (token, _attach) = shell_token(&fixture.daemon, &desk).await;
 
@@ -445,6 +458,9 @@ async fn the_stop_switch_stops_the_target() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_start_switch_forks_the_target_but_a_fresh_start_asks() {
     let fixture = Fixture::new().await;
+    fixture
+        .set_rule(pb::Capability::SessionStartSameMachine, pb::Decision::Ask)
+        .await;
     let desk = fixture
         .on_target(pb::ChannelDeskSwitches {
             start_and_fork: true,

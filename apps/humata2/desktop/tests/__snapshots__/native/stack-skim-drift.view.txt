@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -123,9 +124,11 @@ Complementary "Diff"
       CheckBox "Not looked at"
     Button "1 file to skim · package-lock.json" collapsed
   text "zstd.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "api"
   text "·"
-  text "src/codec/"
+  Button
+    text "Open file ↗"
   Button "Open in editor"
   Code "acme/api/src/codec/zstd.rs"
     #change-line-0
@@ -158,7 +161,10 @@ Complementary "Diff"
       text "+"
       #change-code-4-0
         text "impl Codec for Zstd {"
-  Button "Looks good"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
+  Button "Layer looks good"
   Button "‹ Previous"
   Button "Next layer ›"
 Toolbar "Session panels"

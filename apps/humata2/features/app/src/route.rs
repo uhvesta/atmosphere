@@ -24,6 +24,8 @@ pub enum Route {
     Home,
     /// The Inbox.
     Inbox,
+    /// Dedicated Reviews inbox (local stacks + GitHub PRs).
+    Reviews,
     /// The To-do list.
     Todo,
     /// A channel's page.
@@ -51,6 +53,7 @@ pub enum Route {
 enum SavedRoute {
     Home,
     Inbox,
+    Reviews,
     Board(serde::de::IgnoredAny),
     Todo,
     Channel(ChannelId),
@@ -68,6 +71,7 @@ impl From<SavedRoute> for Route {
         match saved {
             SavedRoute::Home => Self::Home,
             SavedRoute::Inbox => Self::Inbox,
+            SavedRoute::Reviews => Self::Reviews,
             SavedRoute::Board(_) | SavedRoute::Todo => Self::Todo,
             SavedRoute::Channel(id) => Self::Channel(id),
             SavedRoute::Session(id) => Self::Session(id),
@@ -246,6 +250,13 @@ impl App {
                     state,
                     AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::All)),
                 ));
+            }
+            Route::Reviews => {
+                state.session.open = None;
+                if !state.todo.loaded {
+                    effects.push(self.child(state, AppAction::Todo(TodoAction::Load)));
+                    effects.push(self.child(state, AppAction::Todo(TodoAction::Watch)));
+                }
             }
             Route::Todo => {
                 state.session.open = None;

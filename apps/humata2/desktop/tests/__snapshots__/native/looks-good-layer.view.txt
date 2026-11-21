@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -91,11 +92,19 @@ Complementary "Diff"
       CheckBox "Looked at"
     #stack-untouched ledger
       text "ledger isn't in this layer"
-  text "client.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   #diff-file-looked
     text "✓ You looked at this"
+  Button
+    text "Open file ↗"
   Button "Open in editor"
   Code "acme/api/src/client.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Client {"
     #change-line-1
@@ -138,6 +147,9 @@ Complementary "Diff"
       text "+"
       #change-code-6-0
         text "        tx.commit().await?;"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "✓ Looks good"
   Button "‹ Previous"
   Button "Next layer ›"

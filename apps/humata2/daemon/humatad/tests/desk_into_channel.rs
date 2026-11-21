@@ -62,7 +62,7 @@ const COPILOT: &str = "copilot";
 /// does. A resume whose session state doesn't name the folder it is
 /// given fails. What is said to it is not written down, as that would be
 /// no Copilot record.
-const COPILOT_AGENT: &str = r#"STATE='@STATE@'
+const COPILOT_AGENT: &str = r#"STATE="${COPILOT_HOME:-@STATE@}/session-state"
 mode=$1; id=$2; key=$3; place=$4
 f="$STATE/$id/events.jsonl"
 printf '%s\t%s\t%s\t%s\t%s\n' "$mode" "$id" "$key" "$place" "$(pwd -P)" >> '@LOG@'
@@ -130,7 +130,7 @@ fn keep_conversations_by_folder(world: &World, turn_end: Option<&str>) {
         agent["turn_end"] = turn_end.into();
     }
     let copilot_script = world.root.join("copilot.sh");
-    let state = copilot_state(world);
+    let state = world.root.join("home/.copilot");
     let log = world.root.join("conv.log");
     let text = COPILOT_AGENT.replace("@STATE@", &state.display().to_string());
     std::fs::write(&copilot_script, text.replace("@LOG@", &log.display().to_string())).unwrap();
@@ -144,12 +144,6 @@ fn keep_conversations_by_folder(world: &World, turn_end: Option<&str>) {
     copilot["conversation_format"] = "copilot-session-state".into();
     copilot["version_args"] = serde_json::json!([]);
     std::fs::write(&world.agents, serde_json::json!([agent, copilot]).to_string()).unwrap();
-}
-
-/// Where the Copilot agent keeps its session state: `COPILOT_HOME`'s
-/// `session-state`, the home being the fixture's `<root>/home`.
-fn copilot_state(world: &World) -> PathBuf {
-    world.root.join("home/.copilot/session-state")
 }
 
 /// The variables that keep every agent's own files inside `home`.
@@ -298,6 +292,14 @@ impl Fixture {
         let id = started.session.unwrap();
         let session = wait_running(&self.daemon, &id).await;
         if let Some(picked) = picked {
+            let conv = self
+                .store()
+                .agent(&id.value)
+                .unwrap()
+                .expect("a running session has an agent")
+                .launch
+                .conversation_file;
+            until("the agent to write its conversation", || conv.is_file()).await;
             self.age_into_picked(&id, picked);
         }
         let folder = self.folder_of(&id);
@@ -694,7 +696,13 @@ async fn a_copilot_desk_session_moved_into_a_channel_resumes_its_session_state_i
     // A picked folder is copied; a scratch one is renamed and its agent not restarted.
     let picked = picked_folder(&fixture.world);
     let session = fixture.desk_session(Some(&picked), Some(COPILOT)).await;
-    let events = copilot_state(&fixture.world).join(&session.conversation).join("events.jsonl");
+    let events = fixture
+        .store()
+        .agent(&session.id.value)
+        .unwrap()
+        .expect("a running session has an agent")
+        .launch
+        .conversation_file;
     until("the agent to write its session state", || events.is_file()).await;
 
     let plan = fixture.plan(&session.id).await.unwrap();
@@ -710,7 +718,14 @@ async fn a_copilot_desk_session_moved_into_a_channel_resumes_its_session_state_i
     assert_eq!(last.mode, "--resume", "it took up its session state: {last:?}");
     assert_eq!(fixture.folder_of(&session.id), new);
     assert!(!fixture.on_desk(&session.id), "it left the Desk");
-    let kept = std::fs::read_to_string(&events).unwrap();
+    let events_after = fixture
+        .store()
+        .agent(&session.id.value)
+        .unwrap()
+        .expect("a moved session has an agent")
+        .launch
+        .conversation_file;
+    let kept = std::fs::read_to_string(&events_after).unwrap();
     assert!(kept.contains(&new.display().to_string()), "it names its new folder: {kept:?}");
     assert!(!kept.contains(&session.folder.display().to_string()), "it names the Desk folder: {kept:?}");
 }

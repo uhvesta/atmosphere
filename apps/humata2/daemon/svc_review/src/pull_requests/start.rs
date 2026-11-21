@@ -473,6 +473,8 @@ mod tests {
             removed: 1,
             state: pb::PullRequestState::Open as i32,
             checks: String::new(),
+            stack_layers: Vec::new(),
+            stack_source: pb::StackSource::Unspecified as i32,
         }
     }
 

@@ -596,17 +596,6 @@ pub fn button(
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }
 fn toggle(ui: &Rc<Ui>, id: &str, on: bool, action: A, look: Look) -> impl IntoElement {
-    toggle_enabled(ui, id, on, true, action, look)
-}
-
-fn toggle_enabled(
-    ui: &Rc<Ui>,
-    id: &str,
-    on: bool,
-    enabled: bool,
-    action: A,
-    look: Look,
-) -> impl IntoElement {
     let ui = ui.clone();
     div()
         .id(SharedString::from(id.to_owned()))
@@ -622,10 +611,8 @@ fn toggle_enabled(
         .flex()
         .when(on, |x| x.justify_end())
         .child(div().size(px(12.)).rounded_full().bg(rgb(0xffffff)))
-        .when(enabled, |x| {
-            x.cursor_pointer()
-                .on_click(move |_, _, cx| ui.send(AppAction::Settings(action.clone()), cx))
-        })
+        .cursor_pointer()
+        .on_click(move |_, _, cx| ui.send(AppAction::Settings(action.clone()), cx))
 }
 /// Settings > Storage > Sessions (MASSDELETE, D875): Delete all sessions…
 /// opens the plan; deleting only some is done by ticking them.
@@ -1334,61 +1321,15 @@ pub fn page(
         }
         Section::Notifications => {
             body = body
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Notifications"),
-                )
-                .child(dim(
+                .child(crate::notifications::section(
+                    ui,
+                    state,
+                    state.settings.notification_permission,
                     look,
-                    "Requests that need you always appear in the Agent inbox and beside the session in the sidebar.",
+                    AppAction::Settings(A::SendTestNotification),
+                    AppAction::Settings(A::ToggleInAppToasts),
+                    AppAction::Settings(A::RequestNotificationPermission),
                 ))
-                .child(
-                    card(look)
-                        .child(setting(
-                            look,
-                            Row::DesktopNotifications.title(),
-                            "Post macOS notifications when an agent needs your answer or fails to resume. Quiet while you are looking at that item.",
-                            toggle(
-                                ui,
-                                "settings-desktop-notifications",
-                                prefs.notify.enabled,
-                                A::ToggleDesktopNotifications,
-                                look,
-                            )
-                            .into_any_element(),
-                        ))
-                        .child(
-                            setting(
-                                look,
-                                Row::PlaySound.title(),
-                                PLAY_SOUND_DESCRIPTION,
-                                toggle_enabled(
-                                    ui,
-                                    "settings-play-sound",
-                                    prefs.notify.play_sound,
-                                    prefs.notify.enabled,
-                                    A::TogglePlaySound,
-                                    look,
-                                )
-                                .into_any_element(),
-                            )
-                            .when(!prefs.notify.enabled, |x| x.opacity(0.4)),
-                        )
-                        .child(setting(
-                            look,
-                            Row::PermissionRequestAlerts.title(),
-                            "Show brief in-app toasts for new Agent inbox permission requests. Choose where approvals appear in Agents.",
-                            toggle(
-                                ui,
-                                "settings-permission-alerts",
-                                prefs.permission_request_alerts,
-                                A::TogglePermissionRequestAlerts,
-                                look,
-                            )
-                            .into_any_element(),
-                        )),
-                )
                 .child({
                     let general = &state.settings.general;
                     let current = general.current();
@@ -1524,9 +1465,6 @@ pub fn toolbar(look: Look) -> Div {
         )
 }
 
-const PLAY_SOUND_DESCRIPTION: &str =
-    "A short, soft chime with each notification; one for the Inbox, another for the To-do.";
-
 fn reset_branch_prefix_label(default_prefix: Option<&str>) -> String {
     match default_prefix.map(|p| p.trim_end_matches('/')).filter(|p| !p.is_empty()) {
         Some(user) => format!("Reset to @{user} default"),
@@ -1536,7 +1474,7 @@ fn reset_branch_prefix_label(default_prefix: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PLAY_SOUND_DESCRIPTION, reset_branch_prefix_label};
+    use super::reset_branch_prefix_label;
     use humata2_clients::daemon::sample_branch;
     use humata2_settings::{Row, Section};
 
@@ -1571,8 +1509,8 @@ mod tests {
         );
         assert_eq!(Row::PlaySound.title(), "Play a sound");
         assert_eq!(
-            PLAY_SOUND_DESCRIPTION,
-            "A short, soft chime with each notification; one for the Inbox, another for the To-do."
+            crate::notifications::play_sound_description(),
+            "Play a short chime when a notice or in-app toast fires. Silent when the exact request is already open in front of you."
         );
     }
 }

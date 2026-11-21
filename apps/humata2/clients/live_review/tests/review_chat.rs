@@ -37,12 +37,37 @@ async fn review_session() -> (real::RealWorld, LiveDaemon, SessionId, String) {
         .id
         .clone();
     let repo = world.repo("owner", "ledger");
+    let mut events = within("events", live.events())
+        .await
+        .expect("subscribe to daemon events");
     let channel = within(
         "create_channel",
         live.create_channel("payments", vec![repo.clone()], vec![mac.clone()]),
     )
     .await
     .expect("create channel");
+    within("channel setup done", async {
+        while let Some(item) = events.recv().await {
+            if let Ok(humata2_clients::Event::ChannelSetup(setup)) = item {
+                if !setup.steps.is_empty()
+                    && setup
+                        .steps
+                        .iter()
+                        .all(|step| step.state == humata2_clients::model::SetupState::Done)
+                {
+                    return;
+                }
+                if let Some(reason) = setup.steps.iter().find_map(|step| match &step.state {
+                    humata2_clients::model::SetupState::Failed { reason } => Some(reason.as_str()),
+                    _ => None,
+                }) {
+                    panic!("channel setup failed: {reason}");
+                }
+            }
+        }
+        panic!("event stream closed before channel setup finished");
+    })
+    .await;
     let session = within(
         "create_session",
         live.create_session(

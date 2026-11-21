@@ -158,14 +158,14 @@ fn a_channels_sessions_tab_lists_its_session_with_its_state() {
         .read(|state| state.workspace.session(&id).map(|s| s.channel.clone()))
         .expect("the session is loaded");
 
-    // The channel page opens on its Sessions tab (a Route, so the app's own
-    // navigation is used rather than a sidebar click on a channel name).
+    // Open the channel page and switch to its Sessions tab.
     app.cx
         .update(|cx| {
             app.ui
                 .send(AppAction::Navigate(Route::Channel(channel.clone())), cx)
         });
     app.settle();
+    app.click(Role::Tab, "Sessions");
     app.wait_until("the channel's Sessions tab to list the session", |app| {
         let status = app.ui.read(|state| {
             state

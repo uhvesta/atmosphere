@@ -104,7 +104,7 @@ impl crate::CarryOps<'_> {
         };
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_as_ran(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
 
         // The conversation as it was at the old folder, and what the
@@ -134,7 +134,7 @@ impl crate::CarryOps<'_> {
             Some(files) => files,
             None => {
                 let file = before.launch.conversation_file.clone();
-                let path = if project_keyed(kind) { file.parent().map(Path::to_owned) } else { Some(file) };
+                let path = if project_keyed(&kind) { file.parent().map(Path::to_owned) } else { Some(file) };
                 path.filter(|path| path.exists())
                     .map(|path| Discard { path, what: format!("conversation of {}", record.title) })
                     .into_iter()
@@ -204,7 +204,7 @@ impl crate::CarryOps<'_> {
         if packed.format != Format::CodexRollout {
             return None;
         }
-        let at = self.agents.get(&manifest.agent).ok()?.placement(&self.home, folder)?;
+        let at = self.agents.get_as_ran(&manifest.session, &manifest.agent).ok()?.placement(&self.home, folder)?;
         (at.home == *old_home && at.cli_home == *old_cli_home).then_some(packed)
     }
 
@@ -225,7 +225,7 @@ impl crate::CarryOps<'_> {
         }
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_as_ran(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let Some(was) = kind.placement(&self.home, Path::new(&manifest.old_folder)) else {
             return Ok(());
@@ -282,7 +282,7 @@ impl crate::CarryOps<'_> {
         let refused = |source: ConversationError| CarryError::Conversation { agent: manifest.agent.clone(), source };
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_as_ran(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let (Some(now), Some(was)) =
             (kind.placement(&self.home, folder), kind.placement(&self.home, Path::new(&manifest.old_folder)))
@@ -377,7 +377,7 @@ impl crate::CarryOps<'_> {
     fn remove_landed_conversation(&self, manifest: &Manifest, folder: &Path) -> Result<(), CarryError> {
         let kind = self
             .agents
-            .get(&manifest.agent)
+            .get_as_ran(&manifest.session, &manifest.agent)
             .map_err(|source| CarryError::Agent { agent: manifest.agent.clone(), source })?;
         let placed = kind.launch(&self.home, folder, &manifest.conversation_id).conversation_file;
         let was = kind
@@ -388,7 +388,7 @@ impl crate::CarryOps<'_> {
             AgentFiles::File { .. } if placed == was => Ok(()),
             AgentFiles::File { .. } => remove(&placed),
             AgentFiles::Conversation { .. } | AgentFiles::Earlier { .. } => {
-                self.remove_placed(kind, &manifest.agent_files, folder)
+                self.remove_placed(&kind, &manifest.agent_files, folder)
             }
             AgentFiles::Project => match (placed.parent(), was.parent()) {
                 (Some(project), Some(old)) if project != old => remove(project),

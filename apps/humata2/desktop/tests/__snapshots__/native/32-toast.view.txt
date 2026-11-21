@@ -10,6 +10,7 @@ Navigation "Sidebar"
     ListItem "acme/api #482"
   Link "Home" selected
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"

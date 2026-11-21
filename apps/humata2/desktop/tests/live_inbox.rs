@@ -20,7 +20,7 @@ use gpui_kit::{
 use humata2_app::Route;
 use humata2_clients::model::{
     Agent, Capability, ChannelId, MachineId, Preview, Request, RuleSetting, SessionId,
-    SessionOptions,
+    SessionOptions, SetupState,
 };
 use humata2_clients::{Clients, Daemon, Event};
 use humata2_clients_live::{LiveComments, LiveDaemon, LiveOptions};
@@ -410,26 +410,19 @@ impl World {
         Ok(())
     }
 
-    /// Sets the agent up to run the blocking permission hook the daemon
-    /// wrote into Claude's settings, on [`PERMISSION_ASK`].
+    /// Sets the agent up to run the blocking permission hook against this
+    /// daemon, on [`PERMISSION_ASK`].
+    ///
+    /// ATM-62 removed `PermissionRequest` from the packaged `claude-hooks.json`,
+    /// so the test invokes `humata hook claude permission` directly with this
+    /// daemon's socket.
     fn permission_hook(&self) -> Result<(), WorldError> {
-        let file = self.dir.path().join("state").join("claude-hooks.json");
-        let text = std::fs::read_to_string(&file).map_err(io("read claude-hooks.json"))?;
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|source| WorldError::Hooks {
-                why: format!("not JSON: {source}"),
-            })?;
-        let command = json["hooks"]["PermissionRequest"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|group| group["hooks"].as_array())
-            .flatten()
-            .filter_map(|hook| hook["command"].as_str())
-            .find(|command| command.contains("hook claude permission"))
-            .ok_or_else(|| WorldError::Hooks {
-                why: "no blocking permission hook in PermissionRequest".to_owned(),
-            })?;
+        let humata = binary("HUMATA")?;
+        let command = format!(
+            "HUMATA_SOCKET='{}' '{}' hook claude permission || true",
+            self.socket().display(),
+            humata.display()
+        );
         let out = self.agent().out;
         std::fs::write(out.join("hook.sh"), format!("{command}\n")).map_err(io("write hook.sh"))?;
         std::fs::write(out.join("ask.json"), PERMISSION_ASK).map_err(io("write ask.json"))
@@ -797,6 +790,54 @@ impl<'r> App<'r> {
     }
 }
 
+/// Creates a channel and, when `repos` is non-empty, waits for `Event::ChannelSetup`
+/// to report all steps `SetupState::Done` (panicking early on `SetupState::Failed`).
+async fn create_channel_ready(
+    daemon: &Arc<dyn Daemon>,
+    name: &str,
+    repos: Vec<String>,
+    machines: Vec<MachineId>,
+) -> ChannelId {
+    if repos.is_empty() {
+        return daemon
+            .create_channel(name, repos, machines)
+            .await
+            .expect("create the channel");
+    }
+    let mut events = daemon.events().await.expect("subscribe to daemon events");
+    let channel = daemon
+        .create_channel(name, repos, machines)
+        .await
+        .expect("create the channel");
+    let until = tokio::time::Instant::now() + DEADLINE;
+    loop {
+        match tokio::time::timeout_at(until, events.recv()).await {
+            Ok(Some(Ok(Event::ChannelSetup(setup)))) if setup.name == name => {
+                for step in &setup.steps {
+                    if let SetupState::Failed { reason } = &step.state {
+                        panic!("channel setup for {name:?} failed: {reason}");
+                    }
+                }
+                if !setup.steps.is_empty()
+                    && setup.steps.iter().all(|s| s.state == SetupState::Done)
+                {
+                    return channel;
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(err))) => {
+                panic!("daemon event stream error while waiting for channel setup for {name:?}: {err}");
+            }
+            Ok(None) => {
+                panic!("daemon event stream closed before channel setup for {name:?} finished");
+            }
+            Err(_) => {
+                panic!("timed out waiting for channel setup for {name:?} to finish");
+            }
+        }
+    }
+}
+
 /// A channel with one repo on This Mac and a session in it whose agent has
 /// taken its first message.
 async fn running_session(world: &World, clients: &Clients) -> (ChannelId, SessionId) {
@@ -810,11 +851,8 @@ async fn running_session(world: &World, clients: &Clients) -> (ChannelId, Sessio
         .map(|machine| machine.id.clone())
         .expect("the workspace has This Mac");
     let repo = world.repo("owner", "ledger").expect("make a repo");
-    let channel = clients
-        .daemon
-        .create_channel(CHANNEL, vec![repo.clone()], vec![mac.clone()])
-        .await
-        .expect("create the channel");
+    let channel =
+        create_channel_ready(&clients.daemon, CHANNEL, vec![repo.clone()], vec![mac.clone()]).await;
     let session = clients
         .daemon
         .create_session(
@@ -1018,6 +1056,7 @@ fn a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call
 /// daemon's: a fresh load from the daemon reads it back.
 #[test]
 fn the_agent_access_tab_sets_the_channels_rule_on_the_daemon() {
+    const ACCESS_TAB_RULE: &str = "files_read_other_session";
     let runtime = runtime();
     let (world, clients, channel) = runtime.block_on(async {
         let world = World::start().await.expect("start the daemon");
@@ -1032,7 +1071,11 @@ fn the_agent_access_tab_sets_the_channels_rule_on_the_daemon() {
             .workspace
             .rules
             .get(&channel)
-            .and_then(|rules| rules.iter().find(|rule| rule.capability == Capability::new(RULE)))
+            .and_then(|rules| {
+                rules
+                    .iter()
+                    .find(|rule| rule.capability == Capability::new(ACCESS_TAB_RULE))
+            })
             .cloned()
     };
     app.wait_until("the channel's rules to load", |app| {
@@ -1048,14 +1091,18 @@ fn the_agent_access_tab_sets_the_channels_rule_on_the_daemon() {
     app.click(Role::TreeItem, CHANNEL);
     app.click(Role::Tab, "Agent access");
     // The tab names the rule by its row, which may group several rules.
-    app.click(Role::RadioButton, "Read other channels\u{2019} to-dos and files: Ask");
+    app.click(Role::RadioButton, "Read or copy files from another session: Ask");
 
     app.wait_until("the daemon to keep the rule as Ask me", |app| {
         let loaded = app.runtime.block_on(daemon.load()).expect("load from the daemon");
         loaded
             .rules
             .get(&channel)
-            .and_then(|rules| rules.iter().find(|rule| rule.capability == Capability::new(RULE)))
+            .and_then(|rules| {
+                rules
+                    .iter()
+                    .find(|rule| rule.capability == Capability::new(ACCESS_TAB_RULE))
+            })
             .is_some_and(|rule| rule.setting == Some(RuleSetting::Ask))
     });
     app.wait_until("the tab to show Ask me chosen", |app| {

@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox" selected
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"

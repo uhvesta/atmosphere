@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_clients::model::{ChannelId, RequestKind, ResumeFailure, Session, SessionId, Status};
-use humata2_clients::{DaemonError, DesktopNotice, Event, Workspace};
-use humata2_notify::{FrontmostContext, NotifyEvent, trace_gate};
+use humata2_clients::{DaemonError, DesktopNotice, Event, NoticeSound, Workspace};
+use humata2_notify::{
+    DeckToastQueue, FrontmostContext, NotifyDecision, NotifyEvent, dock_badge_count, trace_gate,
+};
 use humata2_session::{Panel, SessionAction};
 use tca::{Effect, StreamEnd};
 
-use crate::{App, AppAction, AppState, Load, Route, channel, upsert};
+use crate::{App, AppAction, AppState, Load, Route, Toast, channel, upsert};
 
 fn session_channel_meta(
     workspace: &Workspace,
@@ -66,6 +68,17 @@ fn resume_failure_reason(failure: ResumeFailure) -> String {
     }
 }
 
+fn blocked_inbox_asks(workspace: &Workspace) -> usize {
+    workspace
+        .waiting()
+        .filter(|r| {
+            r.kind != RequestKind::Migrate
+                && !r.is_to_do_ask()
+                && !r.operation.starts_with("board.")
+        })
+        .count()
+}
+
 impl App {
     /// Prunes heavy cached per-session state when a session is archived or removed.
     pub(super) fn evict_session(state: &mut AppState, id: &SessionId) {
@@ -98,6 +111,7 @@ impl App {
         // leave `viewing_request` as `None` so list-level suppression applies
         // to every incoming request visible in that list; callers focused on a
         // single request detail can set `viewing_request = Some(id)`.
+        let viewing_request = None;
         FrontmostContext {
             app_active: state.window_active,
             viewing_inbox,
@@ -106,7 +120,7 @@ impl App {
             viewing_session_inbox,
             viewing_channel_inbox,
             viewing_todo: state.route == Route::Todo,
-            viewing_request: None,
+            viewing_request,
         }
     }
 
@@ -119,6 +133,20 @@ impl App {
         let notifier = self.clients.notifier.clone();
         Effect::run(move |_send| async move {
             notifier.post(notice);
+        })
+    }
+
+    fn play_sound(&self, sound: NoticeSound) -> Effect<AppAction> {
+        let notifier = self.clients.notifier.clone();
+        Effect::run(move |_send| async move {
+            notifier.play_sound(sound);
+        })
+    }
+
+    fn set_dock_badge(&self, count: Option<usize>) -> Effect<AppAction> {
+        let notifier = self.clients.notifier.clone();
+        Effect::run(move |_send| async move {
+            notifier.set_dock_badge(count);
         })
     }
 
@@ -210,8 +238,9 @@ impl App {
         let mut snapshot = None;
         let mut left = false;
         let mut permission_alert = None;
-        let mut notices: Vec<DesktopNotice> = Vec::new();
+        let mut decisions: Vec<NotifyDecision> = Vec::new();
         let mut withdraw_ids: Vec<String> = Vec::new();
+        let mut update_badge = false;
         match event {
             Event::Output { session, tab, line } => {
                 return self.child(
@@ -220,6 +249,7 @@ impl App {
                 );
             }
             Event::Session(session) => {
+                update_badge = true;
                 // Archived from another window: leave its page here, and drop
                 // it from the Back trail without moving off other screens.
                 let gone = Route::Session(session.id.clone());
@@ -263,9 +293,10 @@ impl App {
                     if prev_resume_failed.is_none()
                         && let Some(failure) = session.resume_failed
                     {
-                        let evaluated = humata2_notify::evaluate(
+                        let decision = humata2_notify::evaluate_decision(
                             &state.settings.preferences.notify,
                             &frontmost,
+                            state.settings.notification_permission,
                             &mut state.notify_burst,
                             NotifyEvent::ResumeFailed {
                                 session_id: session.id.clone(),
@@ -278,12 +309,14 @@ impl App {
                         );
                         trace_gate(
                             "event_session_resume_failed",
-                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            if decision.os_notice.is_some() || decision.deck_toast.is_some() {
+                                "notify"
+                            } else {
+                                "suppressed"
+                            },
                             &format!("session={}", session.id.as_str()),
                         );
-                        if let Some(notice) = evaluated {
-                            notices.push(notice);
-                        }
+                        decisions.push(decision);
                     }
                     if prev_status != Some(Status::NeedsYou) && session.status == Status::NeedsYou {
                         let has_pending_inbox_request = state.workspace.waiting().any(|request| {
@@ -304,9 +337,10 @@ impl App {
                                 &format!("session={} reason=pending_todo_ask", session.id.as_str()),
                             );
                         } else {
-                            let evaluated = humata2_notify::evaluate(
+                            let decision = humata2_notify::evaluate_decision(
                                 &state.settings.preferences.notify,
                                 &frontmost,
+                                state.settings.notification_permission,
                                 &mut state.notify_burst,
                                 NotifyEvent::TerminalNeedsYou {
                                     session_id: session.id.clone(),
@@ -320,24 +354,27 @@ impl App {
                             );
                             trace_gate(
                                 "event_session_needs_you",
-                                if evaluated.is_some() { "notify" } else { "suppressed" },
+                                if decision.os_notice.is_some() || decision.deck_toast.is_some() {
+                                    "notify"
+                                } else {
+                                    "suppressed"
+                                },
                                 &format!(
                                     "session={} has_pending_inbox={has_pending_inbox_request}",
                                     session.id.as_str()
                                 ),
                             );
-                            if let Some(notice) = evaluated {
-                                notices.push(notice);
-                            }
+                            decisions.push(decision);
                         }
                     }
                     if let Status::Exited { code } = session.status
                         && code != 0
                         && prev_status != Some(Status::Exited { code })
                     {
-                        let evaluated = humata2_notify::evaluate(
+                        let decision = humata2_notify::evaluate_decision(
                             &state.settings.preferences.notify,
                             &frontmost,
+                            state.settings.notification_permission,
                             &mut state.notify_burst,
                             NotifyEvent::AbnormalExit {
                                 session_id: session.id.clone(),
@@ -351,12 +388,14 @@ impl App {
                         );
                         trace_gate(
                             "event_session_abnormal_exit",
-                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            if decision.os_notice.is_some() || decision.deck_toast.is_some() {
+                                "notify"
+                            } else {
+                                "suppressed"
+                            },
                             &format!("session={} code={code}", session.id.as_str()),
                         );
-                        if let Some(notice) = evaluated {
-                            notices.push(notice);
-                        }
+                        decisions.push(decision);
                     }
                     if session.status == Status::Working
                         && session.resume_failed.is_none()
@@ -393,6 +432,7 @@ impl App {
                 state.session.keep_agent_tabs(workspace);
             }
             Event::Request(request) => {
+                update_badge = true;
                 let is_new = !state
                     .workspace
                     .requests
@@ -435,9 +475,10 @@ impl App {
                             humata2_clients::model::ToDoAsk::Item(id) => Some(id.clone()),
                             humata2_clients::model::ToDoAsk::NewItem => None,
                         };
-                        let evaluated = humata2_notify::evaluate(
+                        let decision = humata2_notify::evaluate_decision(
                             &state.settings.preferences.notify,
                             &frontmost,
+                            state.settings.notification_permission,
                             &mut state.notify_burst,
                             NotifyEvent::TodoAsk {
                                 request_id: request.id.clone(),
@@ -452,12 +493,14 @@ impl App {
                         );
                         trace_gate(
                             "event_request_todo",
-                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            if decision.os_notice.is_some() || decision.deck_toast.is_some() {
+                                "notify"
+                            } else {
+                                "suppressed"
+                            },
                             &format!("id={}", request.id.as_str()),
                         );
-                        if let Some(desktop_notice) = evaluated {
-                            notices.push(desktop_notice);
-                        }
+                        decisions.push(decision);
                     } else {
                         trace_gate(
                             "event_request_todo",
@@ -469,9 +512,10 @@ impl App {
                     if let Some(notice) = humata2_inbox::notification(&state.workspace, &request) {
                         let (session_title, channel_id, channel_name) =
                             session_meta(&state.workspace, &request.session, &request.channel);
-                        let evaluated = humata2_notify::evaluate(
+                        let decision = humata2_notify::evaluate_decision(
                             &state.settings.preferences.notify,
                             &frontmost,
+                            state.settings.notification_permission,
                             &mut state.notify_burst,
                             NotifyEvent::InboxRequest {
                                 request_id: request.id.clone(),
@@ -489,12 +533,14 @@ impl App {
                         );
                         trace_gate(
                             "event_request_inbox",
-                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            if decision.os_notice.is_some() || decision.deck_toast.is_some() {
+                                "notify"
+                            } else {
+                                "suppressed"
+                            },
                             &format!("id={}", request.id.as_str()),
                         );
-                        if let Some(desktop_notice) = evaluated {
-                            notices.push(desktop_notice);
-                        }
+                        decisions.push(decision);
                     } else {
                         trace_gate(
                             "event_request_inbox",
@@ -507,6 +553,7 @@ impl App {
                 upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
             }
             Event::RequestGone(id) => {
+                update_badge = true;
                 Arc::make_mut(&mut state.workspace)
                     .requests
                     .retain(|request| request.id != id);
@@ -663,19 +710,58 @@ impl App {
         if let Some(text) = permission_alert {
             effects.push(state.toast(text, &self.clients.clock));
         }
-        for notice in notices {
-            if live
-                && frontmost.app_active
-                && state.settings.preferences.notify.in_app_toasts
-                && !has_permission_alert
-            {
-                effects.push(state.toast_for(
-                    notice.title.clone(),
-                    &self.clients.clock,
-                    Duration::from_secs(humata2_notify::DECK_TOAST_DURATION_SECS),
-                ));
+        let mut deck_queue = DeckToastQueue::default();
+        for decision in decisions {
+            if let Some(notice) = decision.os_notice {
+                effects.push(self.post_notice(notice));
+            } else if let Some(sound) = decision.in_app_sound {
+                effects.push(self.play_sound(sound));
             }
-            effects.push(self.post_notice(notice));
+            if let Some(deck_toast) = decision.deck_toast {
+                deck_queue.push(deck_toast, now_secs);
+            }
+        }
+        if live
+            && !has_permission_alert
+            && let Some(deck_toast) = deck_queue.current()
+        {
+            debug_assert!(!DeckToastQueue::can_evict_undo());
+            let mut plain_ids = Vec::new();
+            state.toasts.retain(|toast| {
+                if toast.action.is_none() {
+                    plain_ids.push(toast.id);
+                    false
+                } else {
+                    true
+                }
+            });
+            for id in plain_ids {
+                effects.push(Effect::cancel(format!("toast-{id}")));
+            }
+            state.next_toast += 1;
+            let id = state.next_toast;
+            state.toasts.push(Toast {
+                id,
+                text: deck_toast.title.clone(),
+                action: None,
+                working: false,
+            });
+            let sleep = self
+                .clients
+                .clock
+                .sleep(Duration::from_secs(deck_toast.duration_secs));
+            effects.push(
+                Effect::future(async move {
+                    sleep.await;
+                    AppAction::ToastExpired(id)
+                })
+                .cancellable(format!("toast-{id}"), true),
+            );
+        }
+        if update_badge {
+            effects.push(self.set_dock_badge(dock_badge_count(blocked_inbox_asks(
+                &state.workspace,
+            ))));
         }
         if !withdraw_ids.is_empty() {
             effects.push(self.withdraw_notices(withdraw_ids));

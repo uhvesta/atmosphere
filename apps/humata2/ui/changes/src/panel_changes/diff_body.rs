@@ -222,8 +222,320 @@ struct DiffDrag {
     last: u32,
 }
 
+/// Default step size for in-place hunk gap expansion.
+pub(crate) const GAP_EXPAND_STEP: u32 = 20;
+
+/// Hidden context gap before a diff hunk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HunkGap {
+    pub(crate) gap_index: usize,
+    pub(crate) prev_new_end: u32,
+    pub(crate) next_new_start: u32,
+    pub(crate) hidden_lines: u32,
+}
+
+type GapKey = (SessionId, String, String, usize);
+type FileViewKey = (SessionId, String, String);
+
+/// Version shown in read-only full-file view mode (`Open file ↗`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileVersion {
+    Head,
+    Base,
+}
+
+/// Per-file read-only view mode state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileViewState {
+    pub(crate) open: bool,
+    pub(crate) version: FileVersion,
+}
+
+impl Default for FileViewState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            version: FileVersion::Head,
+        }
+    }
+}
+
+/// Kind of change marker on the read-only file scrollbar rail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkerKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// Proportional position (`0.0..=1.0`) of a change marker on the scrollbar rail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollbarMarker {
+    pub(crate) fraction: f32,
+    pub(crate) kind: MarkerKind,
+}
+
 thread_local! {
     static DIFF_DRAG: RefCell<Option<DiffDrag>> = const { RefCell::new(None) };
+    static EXPANDED_GAPS: RefCell<HashMap<GapKey, u32>> = RefCell::new(HashMap::new());
+    static FILE_VIEW_MODES: RefCell<HashMap<FileViewKey, FileViewState>> = RefCell::new(HashMap::new());
+}
+
+pub(crate) fn expand_gap_step(current_expanded: u32, total_hidden: u32, step: u32) -> u32 {
+    current_expanded.saturating_add(step).min(total_hidden)
+}
+
+pub(crate) fn expand_gap_all(total_hidden: u32) -> u32 {
+    total_hidden
+}
+
+pub(crate) fn remaining_hidden_lines(total_hidden: u32, expanded: u32) -> u32 {
+    total_hidden.saturating_sub(expanded)
+}
+
+pub(crate) fn gap_label(remaining: u32, is_top: bool) -> String {
+    let noun = if remaining == 1 { "line" } else { "lines" };
+    if is_top {
+        format!("{remaining} {noun} hidden above")
+    } else {
+        format!("{remaining} hidden {noun}")
+    }
+}
+
+/// Computes the hidden context gap immediately before the hunk header at `hunk_index`.
+pub(crate) fn compute_hunk_gap(lines: &[DiffLine], hunk_index: usize, gap_index: usize) -> Option<HunkGap> {
+    if lines.get(hunk_index)?.kind != LineKind::Hunk {
+        return None;
+    }
+    let next_new_start = lines
+        .get(hunk_index + 1..)?
+        .iter()
+        .take_while(|l| l.kind != LineKind::Hunk)
+        .filter(|l| is_code(l))
+        .find_map(|l| l.new.or(l.old))?;
+    let prev_new_end = lines
+        .get(..hunk_index)?
+        .iter()
+        .rev()
+        .filter(|l| is_code(l))
+        .find_map(|l| l.new.or(l.old))
+        .unwrap_or(0);
+    if next_new_start <= prev_new_end.saturating_add(1) {
+        return None;
+    }
+    let hidden_lines = next_new_start - prev_new_end - 1;
+    Some(HunkGap {
+        gap_index,
+        prev_new_end,
+        next_new_start,
+        hidden_lines,
+    })
+}
+
+fn gap_expanded_count(session: &SessionId, repo: &str, path: &str, gap_index: usize) -> u32 {
+    EXPANDED_GAPS.with(|cell| {
+        cell.borrow()
+            .get(&(session.clone(), repo.to_owned(), path.to_owned(), gap_index))
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
+fn set_gap_expanded_count(session: SessionId, repo: String, path: String, gap_index: usize, count: u32) {
+    EXPANDED_GAPS.with(|cell| {
+        cell.borrow_mut().insert((session, repo, path, gap_index), count);
+    });
+}
+
+/// Returns the current read-only file view state for `(session, repo, path)`.
+pub(super) fn file_view_state(session: &SessionId, repo: &str, path: &str) -> FileViewState {
+    FILE_VIEW_MODES.with(|cell| {
+        cell.borrow()
+            .get(&(session.clone(), repo.to_owned(), path.to_owned()))
+            .copied()
+            .unwrap_or_default()
+    })
+}
+
+/// Opens or closes read-only file view mode for `(session, repo, path)`.
+pub(super) fn set_file_view_open(session: SessionId, repo: String, path: String, open: bool) {
+    FILE_VIEW_MODES.with(|cell| {
+        let mut map = cell.borrow_mut();
+        let entry = map.entry((session, repo, path)).or_default();
+        entry.open = open;
+    });
+}
+
+/// Switches between `Head` and `Base` in read-only file view mode.
+pub(super) fn set_file_view_version(
+    session: SessionId,
+    repo: String,
+    path: String,
+    version: FileVersion,
+) {
+    FILE_VIEW_MODES.with(|cell| {
+        let mut map = cell.borrow_mut();
+        let entry = map.entry((session, repo, path)).or_default();
+        entry.version = version;
+    });
+}
+
+/// Extracts read-only file lines `(line_number, text, kind)` for `Head` or `Base`.
+pub(crate) fn readonly_file_lines(lines: &[DiffLine], version: FileVersion) -> Vec<(u32, &str, LineKind)> {
+    lines
+        .iter()
+        .filter(|line| is_code(line))
+        .filter_map(|line| match version {
+            FileVersion::Head => {
+                if line.kind == LineKind::Removed {
+                    None
+                } else {
+                    Some((line.new.unwrap_or(0), line.text.as_str(), line.kind))
+                }
+            }
+            FileVersion::Base => {
+                if line.kind == LineKind::Added {
+                    None
+                } else {
+                    Some((line.old.unwrap_or(0), line.text.as_str(), line.kind))
+                }
+            }
+        })
+        .collect()
+}
+
+/// Computes proportional scrollbar marker positions for Added (green), Removed (red),
+/// and Modified (amber) lines in `lines`.
+pub(crate) fn compute_scrollbar_markers(lines: &[DiffLine]) -> Vec<ScrollbarMarker> {
+    let code_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_code(l))
+        .map(|(ix, _)| ix)
+        .collect();
+    let total = code_indices.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let denom = total as f32;
+    let mut markers = Vec::new();
+    for (pos, &ix) in code_indices.iter().enumerate() {
+        let line = &lines[ix];
+        let kind = match line.kind {
+            LineKind::Added => {
+                if paired(lines, ix).is_some() {
+                    MarkerKind::Modified
+                } else {
+                    MarkerKind::Added
+                }
+            }
+            LineKind::Removed => {
+                if paired(lines, ix).is_some() {
+                    MarkerKind::Modified
+                } else {
+                    MarkerKind::Removed
+                }
+            }
+            _ => continue,
+        };
+        markers.push(ScrollbarMarker {
+            fraction: (pos as f32 / denom).clamp(0.0, 1.0),
+            kind,
+        });
+    }
+    markers
+}
+
+/// Renders the read-only full-file view with a slim vertical scrollbar marker rail.
+pub(super) fn readonly_file_view(
+    file: &humata2_clients::model::FileDiff,
+    version: FileVersion,
+    look: Look,
+    font_size: f32,
+    line_height: f32,
+) -> AnyElement {
+    let entries = readonly_file_lines(&file.lines, version);
+    let markers = compute_scrollbar_markers(&file.lines);
+    let rows: Vec<AnyElement> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (num, content, kind))| {
+            let bg = tint(look, kind);
+            row()
+                .id(SharedString::from(format!("readonly-line-{ix}")))
+                .w_full()
+                .min_h(px(line_height))
+                .when_some(bg, |r, c| r.bg(rgb(c)))
+                .child(
+                    text(if num > 0 { num.to_string() } else { String::new() })
+                        .w(px(44.))
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_end()
+                        .pr(px(8.))
+                        .text_color(rgb(look.term_dim)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_color(rgb(look.term_text))
+                        .child(content.to_owned()),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    let rail = div()
+        .id("diff-file-marker-rail")
+        .test_support()
+        .relative()
+        .w(px(8.))
+        .h_full()
+        .flex_shrink_0()
+        .bg(rgb(look.panel))
+        .border_l_1()
+        .border_color(rgb(look.line))
+        .children(markers.into_iter().enumerate().map(|(ix, marker)| {
+            let color = match marker.kind {
+                MarkerKind::Added => GREEN,
+                MarkerKind::Removed => RED,
+                MarkerKind::Modified => 0xd98200,
+            };
+            div()
+                .id(SharedString::from(format!("diff-file-marker-{ix}")))
+                .absolute()
+                .top(relative(marker.fraction))
+                .left(px(1.))
+                .w(px(6.))
+                .h(px(3.))
+                .rounded(px(1.))
+                .bg(rgb(color))
+        }));
+
+    row()
+        .id("diff-readonly-file-view")
+        .test_support()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .bg(rgb(look.term))
+        .child(
+            col()
+                .id("diff-readonly-file-scroll")
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .py(px(6.))
+                .font_family("Menlo")
+                .text_size(px(font_size))
+                .line_height(px(line_height))
+                .children(rows),
+        )
+        .child(rail)
+        .into_any_element()
 }
 
 fn clear_diff_drag() {
@@ -718,6 +1030,105 @@ impl CodeRows {
                     .test_support()
                     .into_any_element(),
             };
+            let gap_index = lines[..index]
+                .iter()
+                .filter(|l| l.kind == LineKind::Hunk)
+                .count();
+            if let (Some(gap), Some(target)) = (compute_hunk_gap(lines, index, gap_index), self.target.as_ref()) {
+                let expanded = gap_expanded_count(&target.session, &target.repo, &target.path, gap.gap_index);
+                let remaining = remaining_hidden_lines(gap.hidden_lines, expanded);
+                let mut stack = col().w_full();
+                if remaining > 0 {
+                    let s20 = target.session.clone();
+                    let r20 = target.repo.clone();
+                    let p20 = target.path.clone();
+                    let sall = target.session.clone();
+                    let rall = target.repo.clone();
+                    let pall = target.path.clone();
+                    let next_step = expand_gap_step(expanded, gap.hidden_lines, GAP_EXPAND_STEP);
+                    let total_hidden = gap.hidden_lines;
+                    let gix = gap.gap_index;
+                    stack = stack.child(
+                        row()
+                            .id(SharedString::from(format!("diff-hunk-gap-{gix}")))
+                            .test_support()
+                            .w_full()
+                            .h(px(24.))
+                            .px(px(10.))
+                            .gap(px(10.))
+                            .items_center()
+                            .bg(rgb(look.panel))
+                            .border_y_1()
+                            .border_color(rgb(look.line))
+                            .font_family(".SystemUIFont")
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(text(format!(
+                                "\u{2195} {}",
+                                gap_label(remaining, gap.prev_new_end == 0)
+                            )))
+                            .child(
+                                text("Expand 20 lines")
+                                    .id(SharedString::from(format!("diff-hunk-gap-expand-20-{gix}")))
+                                    .role(Role::Button)
+                                    .test_support()
+                                    .text_color(rgb(look.accent))
+                                    .cursor_pointer()
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        set_gap_expanded_count(s20.clone(), r20.clone(), p20.clone(), gix, next_step);
+                                        cx.refresh_windows();
+                                    }),
+                            )
+                            .child(
+                                text("Expand all")
+                                    .id(SharedString::from(format!("diff-hunk-gap-expand-all-{gix}")))
+                                    .role(Role::Button)
+                                    .test_support()
+                                    .text_color(rgb(look.accent))
+                                    .cursor_pointer()
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        set_gap_expanded_count(
+                                            sall.clone(),
+                                            rall.clone(),
+                                            pall.clone(),
+                                            gix,
+                                            expand_gap_all(total_hidden),
+                                        );
+                                        cx.refresh_windows();
+                                    }),
+                            ),
+                    );
+                }
+                if expanded > 0 {
+                    let start_line = gap.next_new_start.saturating_sub(expanded);
+                    for line_no in start_line..gap.next_new_start {
+                        stack = stack.child(
+                            row()
+                                .id(SharedString::from(format!("diff-hunk-gap-line-{}-{line_no}", gap.gap_index)))
+                                .w_full()
+                                .h(px(line_height))
+                                .bg(rgb(look.term))
+                                .child(
+                                    text(line_no.to_string())
+                                        .w(px(self.metrics.code_start()))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .justify_end()
+                                        .pr(px(10.))
+                                        .text_color(rgb(look.term_dim)),
+                                )
+                                .child(
+                                    text(format!("// context line {line_no}"))
+                                        .text_color(rgb(look.term_dim)),
+                                ),
+                        );
+                    }
+                }
+                stack = stack.child(header);
+                return (stack.into_any_element(), Vec::new());
+            }
             return (header, Vec::new());
         }
         if line.kind == LineKind::Note {
@@ -1296,5 +1707,66 @@ mod tests {
             resolve_diff_click(Some(&old_anchor), "api", "src/lib.rs", Side::New, Some(14), Some(16), true),
             Some((Side::Old, 10, 14))
         );
+    }
+
+    #[test]
+    fn hunk_gap_calculation_and_expand_transitions() {
+        let lines = vec![
+            DiffLine { kind: LineKind::Hunk, old: None, new: None, text: "@@ -58,3 +58,3 @@".into() },
+            DiffLine { kind: LineKind::Context, old: Some(58), new: Some(58), text: "a".into() },
+            DiffLine { kind: LineKind::Context, old: Some(59), new: Some(59), text: "b".into() },
+            DiffLine { kind: LineKind::Hunk, old: None, new: None, text: "@@ -85,2 +85,2 @@".into() },
+            DiffLine { kind: LineKind::Context, old: Some(85), new: Some(85), text: "c".into() },
+        ];
+        let top = compute_hunk_gap(&lines, 0, 0).expect("top gap");
+        assert_eq!(top.hidden_lines, 57);
+        assert_eq!(gap_label(top.hidden_lines, true), "57 lines hidden above");
+
+        let mid = compute_hunk_gap(&lines, 3, 1).expect("mid gap");
+        assert_eq!(mid.prev_new_end, 59);
+        assert_eq!(mid.next_new_start, 85);
+        assert_eq!(mid.hidden_lines, 25);
+        assert_eq!(gap_label(mid.hidden_lines, false), "25 hidden lines");
+
+        let after_20 = expand_gap_step(0, mid.hidden_lines, GAP_EXPAND_STEP);
+        assert_eq!(after_20, 20);
+        assert_eq!(remaining_hidden_lines(mid.hidden_lines, after_20), 5);
+
+        let after_all = expand_gap_all(mid.hidden_lines);
+        assert_eq!(after_all, 25);
+        assert_eq!(remaining_hidden_lines(mid.hidden_lines, after_all), 0);
+    }
+
+    #[test]
+    fn readonly_file_view_head_base_and_scrollbar_markers() {
+        let lines = vec![
+            DiffLine { kind: LineKind::Context, old: Some(1), new: Some(1), text: "ctx".into() },
+            DiffLine { kind: LineKind::Removed, old: Some(2), new: None, text: "old".into() },
+            DiffLine { kind: LineKind::Added, old: None, new: Some(2), text: "new".into() },
+            DiffLine { kind: LineKind::Added, old: None, new: Some(3), text: "extra".into() },
+            DiffLine { kind: LineKind::Context, old: Some(3), new: Some(4), text: "end".into() },
+        ];
+        let head = readonly_file_lines(&lines, FileVersion::Head);
+        assert_eq!(head.len(), 4);
+        assert_eq!(head[1], (2, "new", LineKind::Added));
+
+        let base = readonly_file_lines(&lines, FileVersion::Base);
+        assert_eq!(base.len(), 3);
+        assert_eq!(base[1], (2, "old", LineKind::Removed));
+
+        let markers = compute_scrollbar_markers(&lines);
+        assert_eq!(markers.len(), 3);
+        // Line 1 (Removed) and Line 2 (Added) are paired -> Modified (or Added if run lengths differ: 1 removed vs 2 added -> Removed + Added + Added).
+        assert_eq!(markers[0].kind, MarkerKind::Removed);
+        assert_eq!(markers[1].kind, MarkerKind::Added);
+        assert_eq!(markers[2].kind, MarkerKind::Added);
+        assert!(markers[0].fraction < markers[1].fraction);
+        assert!(markers[1].fraction < markers[2].fraction);
+
+        let sid = SessionId::new("se_fv");
+        assert_eq!(file_view_state(&sid, "api", "src/lib.rs"), FileViewState { open: false, version: FileVersion::Head });
+        set_file_view_open(sid.clone(), "api".into(), "src/lib.rs".into(), true);
+        set_file_view_version(sid.clone(), "api".into(), "src/lib.rs".into(), FileVersion::Base);
+        assert_eq!(file_view_state(&sid, "api", "src/lib.rs"), FileViewState { open: true, version: FileVersion::Base });
     }
 }

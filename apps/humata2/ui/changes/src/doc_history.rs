@@ -56,7 +56,7 @@ pub fn wanted(state: &AppState) -> Wanted {
         if out.message.is_none()
             && let Some(Tab::File { repo, path }) = group.tabs.get(group.selected)
             && repo.is_empty()
-            && is_markdown(path)
+            && (is_markdown(path) || humata2_intent_spec::is_intent_spec(path))
             && let Some(history) = state.session.history(id, path)
         {
             out.message = Some((path.clone(), history.message.clone()));

@@ -145,6 +145,7 @@ impl App {
             Command::ShowShortcuts => self.show_shortcuts(state),
             Command::Views => self.navigate(state, Route::Views),
             Command::Todo => self.navigate(state, Route::Todo),
+            Command::Reviews => self.navigate(state, Route::Reviews),
             Command::Machine(id) => self.navigate(state, Route::Machine(id)),
             // The palette asks for the machine itself and sends MoveTo, so
             // this is ⌥⌘M with no session open.

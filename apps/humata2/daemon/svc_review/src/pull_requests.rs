@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 use humata2_access::{Call, Capability, Refusal, Target};
 use humata2_daemon_ports::Caller;
 use crate::pb;
-use humata2_rpc_kit::{blocking, chain, failed, invalid_field, missing, not_found};
+use humata2_rpc_kit::{blocking, chain, failed, internal, invalid_field, missing, not_found, now_ms};
 use humata2_store::{ReviewSessionRecord, Store};
 use tonic::{Request, Response, Status};
 
@@ -42,10 +42,12 @@ mod submit;
 
 pub use clone_git::ReviewRemote;
 pub(super) use clone_git::remote_for as relayed_for;
+#[allow(unused_imports)]
 pub use feedback::{
     CollapsedBots, FeedbackError, FeedbackThread, PrFeedback, PrLifecycleState, ThreadComment,
     TopLevelReview, deduplicate_threads, fetch_pr_feedback, parse_pr_feedback,
 };
+#[allow(unused_imports)]
 pub use inbox_poll::{
     InboxNotification, InboxNotificationKind, InboxPollError, InboxPollState, PollFetchResult,
     PollTrigger, PrPollCursor, ReviewInboxPoller, ReviewRequestEntry, WatchedPr,
@@ -83,7 +85,11 @@ struct Inner {
     submits: submit::Plans,
     /// Each review's last check of its heads (A8, D298).
     checks: heads::Checks,
+    /// Serializes read-modify-write updates to `review.watched_prs`.
+    watched_prs: tokio::sync::Mutex<()>,
 }
+
+const WATCHED_PRS_SETTING: &str = "review.watched_prs";
 
 impl PullRequests {
     #[allow(clippy::too_many_arguments)]
@@ -112,6 +118,7 @@ impl PullRequests {
             operations,
             submits: submit::Plans::default(),
             checks: heads::Checks::default(),
+            watched_prs: tokio::sync::Mutex::new(()),
         });
         Self { inner }
     }
@@ -443,5 +450,352 @@ impl pb::pull_request_review_service_server::PullRequestReviewService for PullRe
         self.mark_commits_of(&caller, request.into_inner())
             .await
             .map(Response::new)
+    }
+
+    async fn watch_pull_request(
+        &self,
+        request: Request<pb::WatchPullRequestRequest>,
+    ) -> Result<Response<pb::WatchPullRequestResponse>, Status> {
+        let _caller = caller_of(&request)?;
+        self.watch_pull_request_of(request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn unwatch_pull_request(
+        &self,
+        request: Request<pb::UnwatchPullRequestRequest>,
+    ) -> Result<Response<pb::UnwatchPullRequestResponse>, Status> {
+        let _caller = caller_of(&request)?;
+        self.unwatch_pull_request_of(request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_watched_pull_requests(
+        &self,
+        request: Request<pb::ListWatchedPullRequestsRequest>,
+    ) -> Result<Response<pb::ListWatchedPullRequestsResponse>, Status> {
+        let _caller = caller_of(&request)?;
+        self.list_watched_pull_requests_of()
+            .await
+            .map(Response::new)
+    }
+}
+
+fn load_watched_prs(
+    store: &Store,
+    machine: &str,
+) -> Result<BTreeMap<String, inbox_poll::WatchedPr>, Status> {
+    let raw = store
+        .setting(WATCHED_PRS_SETTING)
+        .map_err(|error| store_error(error, machine, "read watched pull requests"))?;
+    match raw {
+        None => Ok(BTreeMap::new()),
+        Some(saved) if saved.value.trim().is_empty() => Ok(BTreeMap::new()),
+        Some(saved) => serde_json::from_str(&saved.value).map_err(|error| {
+            internal(
+                format!("couldn't decode saved watched pull requests: {error}"),
+                "",
+            )
+        }),
+    }
+}
+
+fn save_watched_prs(
+    store: &Store,
+    machine: &str,
+    watched: &BTreeMap<String, inbox_poll::WatchedPr>,
+) -> Result<(), Status> {
+    let json = serde_json::to_string(watched)
+        .map_err(|error| internal(format!("couldn't encode watched pull requests: {error}"), ""))?;
+    store
+        .put_setting(
+            WATCHED_PRS_SETTING,
+            &json,
+            u64::try_from(now_ms()).unwrap_or_default(),
+        )
+        .map_err(|error| store_error(error, machine, "save watched pull requests"))
+}
+
+fn watched_to_pb(pr: &inbox_poll::WatchedPr) -> pb::PullRequestRef {
+    pb::PullRequestRef {
+        repo: Some(pb::RepoRef {
+            owner: pr.owner.clone(),
+            name: pr.name.clone(),
+        }),
+        number: pr.number,
+        ..pb::PullRequestRef::default()
+    }
+}
+
+impl PullRequests {
+    async fn watch_pull_request_of(
+        &self,
+        request: pb::WatchPullRequestRequest,
+    ) -> Result<pb::WatchPullRequestResponse, Status> {
+        let watched = inbox_poll::parse_pr_url(&request.url).map_err(|error| {
+            invalid_field(
+                "url",
+                pb::invalid_field::Problem::BadFormat,
+                chain(&error),
+                "pass a GitHub pull request URL (https://github.com/<owner>/<repo>/pull/<number>) or <owner>/<repo>#<number>",
+            )
+        })?;
+        let _guard = self.inner.watched_prs.lock().await;
+        let (store, machine, entry) = (
+            self.inner.store.clone(),
+            self.inner.machine.clone(),
+            watched.clone(),
+        );
+        blocking(move || {
+            let mut map = load_watched_prs(&store, &machine)?;
+            map.insert(entry.key(), entry);
+            save_watched_prs(&store, &machine, &map)
+        })
+        .await??;
+        Ok(pb::WatchPullRequestResponse {
+            pr: Some(watched_to_pb(&watched)),
+            url: watched.url,
+        })
+    }
+
+    async fn unwatch_pull_request_of(
+        &self,
+        request: pb::UnwatchPullRequestRequest,
+    ) -> Result<pb::UnwatchPullRequestResponse, Status> {
+        let pr = request.pr.ok_or_else(|| missing("pr"))?;
+        let repo = pr.repo.unwrap_or_default();
+        if repo.owner.is_empty() || repo.name.is_empty() || pr.number == 0 {
+            return Err(invalid_field(
+                "pr",
+                pb::invalid_field::Problem::BadFormat,
+                format!(
+                    "{}/{}#{} is not a valid pull request reference",
+                    repo.owner, repo.name, pr.number
+                ),
+                "provide a pull request with non-empty repo owner, repo name, and positive number",
+            ));
+        }
+        let key = format!("{}/{}#{}", repo.owner, repo.name, pr.number);
+        let _guard = self.inner.watched_prs.lock().await;
+        let (store, machine) = (self.inner.store.clone(), self.inner.machine.clone());
+        let removed = blocking(move || {
+            let mut map = load_watched_prs(&store, &machine)?;
+            let removed = map.remove(&key).is_some();
+            if removed {
+                save_watched_prs(&store, &machine, &map)?;
+            }
+            Ok::<_, Status>(removed)
+        })
+        .await??;
+        Ok(pb::UnwatchPullRequestResponse { removed })
+    }
+
+    async fn list_watched_pull_requests_of(
+        &self,
+    ) -> Result<pb::ListWatchedPullRequestsResponse, Status> {
+        let _guard = self.inner.watched_prs.lock().await;
+        let (store, machine) = (self.inner.store.clone(), self.inner.machine.clone());
+        let prs = blocking(move || {
+            let map = load_watched_prs(&store, &machine)?;
+            Ok::<_, Status>(map.values().map(watched_to_pb).collect())
+        })
+        .await??;
+        Ok(pb::ListWatchedPullRequestsResponse { prs })
+    }
+}
+
+#[cfg(test)]
+mod watched_pr_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::pb::pull_request_review_service_server::PullRequestReviewService;
+    use crate::ports::{Checked, ReviewOperation, Scope};
+    use humata2_store::ChannelRecord;
+
+    struct DummyGuard;
+    impl ReviewGuard for DummyGuard {
+        fn check(&self, _caller: &Caller, _call: &Call) -> Result<Checked, Status> {
+            Ok(Checked::Allowed)
+        }
+
+        fn require(&self, _caller: &Caller, _call: &Call) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    struct DummyStarter;
+    impl ReviewStarter for DummyStarter {
+        fn channels_root(&self) -> PathBuf {
+            PathBuf::from("/tmp/humata-dummy")
+        }
+
+        fn remote_template(&self) -> String {
+            String::new()
+        }
+
+        fn create_pr_reviews_channel(
+            &self,
+            _machine: &str,
+            _default_agent: &str,
+        ) -> Result<ChannelRecord, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+    }
+
+    struct DummyTell;
+    #[tonic::async_trait]
+    impl ReviewTell for DummyTell {
+        async fn session(&self, _id: &str, _change: pb::Change, _by: Option<pb::Actor>) {}
+    }
+
+    struct DummyFeed;
+    impl ReviewFeed for DummyFeed {
+        fn send(
+            &self,
+            _scope: Scope,
+            _change: pb::Change,
+            _payload: pb::event::Payload,
+            _by: Option<pb::Actor>,
+        ) {
+        }
+    }
+
+    struct DummySink;
+    #[tonic::async_trait]
+    impl crate::CommentSink for DummySink {
+        async fn target(&self, _session: &str) -> Result<crate::sink::Target, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+
+        async fn paste(
+            &self,
+            _target: &crate::sink::Target,
+            _key: &str,
+            _paste: &[u8],
+        ) -> crate::sink::Pasted {
+            crate::sink::Pasted::NotTyped(Status::unimplemented("unused"))
+        }
+
+        async fn arrived(
+            &self,
+            _target: &crate::sink::Target,
+            _key: &str,
+        ) -> crate::sink::Arrived {
+            crate::sink::Arrived::Unknown
+        }
+    }
+
+    struct DummyOperations;
+    impl ReviewOperations for DummyOperations {
+        fn start(
+            &self,
+            _kind: pb::OperationKind,
+            _title: String,
+            _steps: Vec<String>,
+            _actor: Option<pb::Actor>,
+        ) -> Box<dyn ReviewOperation> {
+            unreachable!("unused")
+        }
+    }
+
+    fn test_service(store: Arc<Store>) -> PullRequests {
+        let guard: Arc<dyn ReviewGuard> = Arc::new(DummyGuard);
+        let feed: Arc<dyn ReviewFeed> = Arc::new(DummyFeed);
+        let review = crate::Review::new(
+            store.clone(),
+            guard.clone(),
+            "this-mac".to_owned(),
+            feed.clone(),
+            Arc::new(DummySink),
+        );
+        PullRequests::new(
+            store,
+            guard,
+            "this-mac".to_owned(),
+            Arc::new(DummyStarter),
+            Arc::new(DummyTell),
+            feed,
+            "claude".to_owned(),
+            review,
+            Arc::new(DummyOperations),
+        )
+    }
+
+    fn user_req<T>(body: T) -> Request<T> {
+        let mut req = Request::new(body);
+        req.extensions_mut()
+            .insert(Caller::User(humata2_daemon_ports::UserVia::App));
+        req
+    }
+
+    #[tokio::test]
+    async fn watch_list_unwatch_pull_request_roundtrip_and_invalid_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("humata.db")).unwrap());
+        let svc = test_service(store);
+
+        // Invalid URL is rejected with InvalidArgument.
+        let err = svc
+            .watch_pull_request(user_req(pb::WatchPullRequestRequest {
+                url: "not-a-pr-url".to_owned(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Watch two PRs (full URL + short ref).
+        let w1 = svc
+            .watch_pull_request(user_req(pb::WatchPullRequestRequest {
+                url: "https://github.com/acme/api/pull/42/files".to_owned(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(w1.url, "https://github.com/acme/api/pull/42");
+        assert_eq!(w1.pr.as_ref().map(|p| p.number), Some(42));
+
+        let w2 = svc
+            .watch_pull_request(user_req(pb::WatchPullRequestRequest {
+                url: "acme/web#7".to_owned(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(w2.url, "https://github.com/acme/web/pull/7");
+
+        // List returns both PRs.
+        let listed = svc
+            .list_watched_pull_requests(user_req(pb::ListWatchedPullRequestsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(listed.prs.len(), 2);
+
+        // Unwatch one PR -> removed: true, second unwatch -> removed: false.
+        let unwatched = svc
+            .unwatch_pull_request(user_req(pb::UnwatchPullRequestRequest { pr: w1.pr.clone() }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(unwatched.removed);
+
+        let unwatched_again = svc
+            .unwatch_pull_request(user_req(pb::UnwatchPullRequestRequest { pr: w1.pr }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!unwatched_again.removed);
+
+        // List now returns only the remaining PR.
+        let remaining = svc
+            .list_watched_pull_requests(user_req(pb::ListWatchedPullRequestsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(remaining.prs.len(), 1);
+        assert_eq!(remaining.prs[0].number, 7);
     }
 }

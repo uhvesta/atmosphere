@@ -542,20 +542,48 @@ pub fn files(
     // buttons keep the panel's padding. A clone can't be made on a machine
     // that is offline, so it waits like Open in editor and Upload… do.
     let offline = matches!(session.status, Status::Offline);
-    let add_repo = row().child(
-        action(
-            ui,
-            "files-add-repo",
-            "Add repo…",
-            AppAction::SessionAddRepo(humata2_app::SessionAddRepoAction::Open(session.id.clone())),
-            look,
-            false,
-        )
-        .disabled(offline),
-    );
+    let refresh_ui = ui.clone();
+    let refresh_session = session.id.clone();
+    let refresh_btn = div()
+        .id("files-refresh")
+        .role(Role::Button)
+        .aria_label("Refresh files")
+        .test_support()
+        .h(px(22.))
+        .w(px(22.))
+        .rounded(px(5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(13.))
+        .text_color(rgb(look.secondary))
+        .when(offline, |btn| btn.opacity(0.45))
+        .when(!offline, |btn| {
+            btn.cursor_pointer()
+                .hover(move |style| style.bg(rgb(look.fill)).text_color(rgb(look.text)))
+                .on_click(move |_, _, cx| {
+                    refresh_ui.send(AppAction::RefreshSessionFiles(refresh_session.clone()), cx);
+                })
+        })
+        .child("↻");
+    let header_actions = row()
+        .items_center()
+        .gap(px(4.))
+        .child(refresh_btn)
+        .child(
+            action(
+                ui,
+                "files-add-repo",
+                "Add repo…",
+                AppAction::SessionAddRepo(humata2_app::SessionAddRepoAction::Open(session.id.clone())),
+                look,
+                false,
+            )
+            .disabled(offline),
+        );
     col()
         .size_full()
-        .child(panel_header(ui, state, Panel::Files, full, Some(add_repo), look))
+        .child(panel_header(ui, state, Panel::Files, full, Some(header_actions), look))
         .child(
             div()
                 .id("session-file-filter")
@@ -964,5 +992,20 @@ mod tests {
         assert_eq!(single.total_files(), 1);
         assert_eq!(single.count_summary(), "1 file");
         assert_eq!(single.top_level[0].label, "Transcript (current)");
+    }
+
+    #[test]
+    fn session_root_files_stay_in_normal_tree_and_expanded_by_default() {
+        let files = vec![
+            sf("", "CHANNEL_HOME_SPEC.md"),
+            sf("uhvesta/atmosphere", "src/lib.rs"),
+        ];
+        let (normal, agent) = partition_session_files(&files);
+        assert!(agent.is_empty());
+        assert_eq!(normal.len(), 2);
+        assert!(normal.iter().any(|f| f.repo.is_empty() && f.path == "CHANNEL_HOME_SPEC.md"));
+
+        let folded = BTreeSet::<(String, String)>::new();
+        assert!(!folded.contains(&(String::new(), String::new())));
     }
 }

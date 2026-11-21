@@ -764,11 +764,12 @@ pub(crate) fn build(
     }
     if let Some(forwarder) = forwarder {
         svc = svc.forwarding(Arc::new(ForwarderAdapter { forwarder, link, store: store.clone() }));
-    } else if let Some(gh) = humata2_svc_board::GhReviewRequests::for_host() {
-        // The host reads the pull requests that ask for the user's review.
-        svc = svc.with_review_requests(Arc::new(gh));
     }
     if on_host {
+        if let Some(gh) = humata2_svc_board::GhReviewRequests::for_host() {
+            // The host reads the pull requests that ask for the user's review.
+            svc = svc.with_review_requests(Arc::new(gh));
+        }
         // The host acts on its sessions and reads watched pull requests, as
         // Settings (or a channel's own) says.
         svc = svc.with_automation(Arc::new(AutomationAdapter(store.clone())));

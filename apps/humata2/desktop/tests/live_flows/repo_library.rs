@@ -31,7 +31,8 @@ fn open_sheet_and_name(app: &mut App, name: &str) {
     });
 }
 
-/// Creates the channel the open sheet describes and waits for its page.
+/// Creates the channel the open sheet describes and waits for its page
+/// and its clones to finish.
 fn create_and_wait(app: &mut App, button: &str) {
     app.click(Role::Button, button);
     app.wait_until("the channel page to open", |app| {
@@ -42,6 +43,9 @@ fn create_and_wait(app: &mut App, button: &str) {
                     .iter()
                     .any(|overlay| matches!(overlay, Overlay::NewChannel(_)))
         })
+    });
+    app.wait_until("the channel's clones to finish", |app| {
+        app.ui.read(|state| state.workspace.setups.is_empty())
     });
 }
 

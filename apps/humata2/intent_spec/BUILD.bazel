@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Implementation Intent Spec (`humata.intent/v1`): strict YAML 1.2 subset parser,
+# semantic validator with step DAG cycle detection, semantic diff, and milestone brief renderer.
+rust_library(
+    name = "intent_spec",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_intent_spec",
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "intent_spec_unit_test",
+    crate = ":intent_spec",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

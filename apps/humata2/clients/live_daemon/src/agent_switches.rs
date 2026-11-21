@@ -6,15 +6,16 @@ use humata2_clients::{AgentSwitch, DaemonError, SwitchChange};
 use crate::humata2_grpc::humata::v1 as pb;
 
 use crate::connection::Shared;
+use crate::map::AgentNames;
 
 /// The app's switch for a daemon definition: every kind, built-in or custom
 /// (D782), except the plain shell, which has no switches.
-fn switch_of(definition: &pb::AgentDefinition) -> Option<AgentSwitch> {
+fn switch_of(definition: &pb::AgentDefinition, agents: &AgentNames) -> Option<AgentSwitch> {
     let id = definition.id.as_ref()?.value.as_str();
     if id == Agent::Shell.command() {
         return None;
     }
-    let agent = Agent::ALL.into_iter().find(|agent| agent.command() == id);
+    let agent = agents.known_agent(id);
     let name = if definition.name.is_empty() {
         id.to_owned()
     } else {
@@ -45,7 +46,11 @@ impl Shared {
             .await
             .map_err(|status| self.error(&status, WHAT))?
             .into_inner();
-        Ok(listed.agents.iter().filter_map(switch_of).collect())
+        Ok(listed
+            .agents
+            .iter()
+            .filter_map(|definition| switch_of(definition, &self.agents))
+            .collect())
     }
 
     /// Changes one agent's switches; gives what the daemon holds after.
@@ -68,7 +73,7 @@ impl Shared {
             .await
             .map_err(|status| self.error(&status, WHAT))?
             .into_inner();
-        switch_of(&saved).ok_or(DaemonError::NotFound { what: kind })
+        switch_of(&saved, &self.agents).ok_or(DaemonError::NotFound { what: kind })
     }
 }
 
@@ -90,23 +95,37 @@ mod tests {
 
     #[test]
     fn built_in_kinds_become_switches_and_the_shell_does_not() {
+        let agents = AgentNames::default();
         assert_eq!(
-            switch_of(&definition("codex", "Codex", false)).map(|s| (s.agent, s.enabled)),
+            switch_of(&definition("codex", "Codex", false), &agents).map(|s| (s.agent, s.enabled)),
             Some((Some(Agent::Codex), false))
         );
         assert_eq!(
-            switch_of(&definition("agy", "Antigravity", true)).map(|s| (s.agent, s.enabled)),
+            switch_of(&definition("agy", "Antigravity", true), &agents)
+                .map(|s| (s.agent, s.enabled)),
             Some((Some(Agent::Agy), true))
         );
-        assert_eq!(switch_of(&definition("zsh", "zsh", true)), None);
+        assert_eq!(switch_of(&definition("zsh", "zsh", true), &agents), None);
     }
 
     #[test]
     fn a_custom_kind_gets_switches_under_its_own_id_and_name() {
-        let switch = switch_of(&definition("my-agent", "My agent", true));
+        let agents = AgentNames::default();
+        let switch = switch_of(&definition("my-agent", "My agent", true), &agents);
         assert_eq!(
             switch.map(|s| (s.kind, s.name, s.agent, s.asks_in_inbox)),
             Some(("my-agent".to_owned(), "My agent".to_owned(), None, true))
+        );
+    }
+
+    #[test]
+    fn an_overridden_agent_name_maps_back_to_its_app_agent() {
+        let mut agents = AgentNames::default();
+        agents.set(Agent::Claude, "fake".to_owned());
+        let switch = switch_of(&definition("fake", "Fake", true), &agents);
+        assert_eq!(
+            switch.map(|s| (s.kind, s.agent, s.enabled)),
+            Some(("fake".to_owned(), Some(Agent::Claude), true))
         );
     }
 }

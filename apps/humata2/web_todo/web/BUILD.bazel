@@ -40,7 +40,7 @@ rust_shared_library(
 wasm_bundle(
     name = "bundle",
     index = "index.html",
-    licenses = ["//apps/humata2/terminal/client:licenses"],
+    notice_files = ["//apps/humata2/terminal/client:licenses"],
     visibility = ["//apps/humata2:__subpackages__"],
     wasm = ":application_fast",
 )

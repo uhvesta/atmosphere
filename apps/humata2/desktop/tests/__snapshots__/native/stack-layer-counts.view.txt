@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -118,10 +119,14 @@ Complementary "Diff"
   text "0042_accounts.sql"
   text "acme/ledger"
   text "·"
-  text "migrations/"
+  Button
+    text "Open file ↗"
   Button "Open in editor"
   #change-file-empty
     text "The changed lines aren't available"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude"
   Button "3 pull requests open"
 Toolbar "Session panels"

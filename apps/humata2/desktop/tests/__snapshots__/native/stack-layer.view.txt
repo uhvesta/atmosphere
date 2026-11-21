@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -94,11 +95,19 @@ Complementary "Diff"
     #stack-untouched acme/web
       text "web isn't in this layer"
   text "pages.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   text "api"
   text "·"
-  text "src/journal/"
+  Button
+    text "Open file ↗"
   Button "Open in editor"
   Code "acme/api/src/journal/pages.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Page"
     #change-line-1
@@ -143,7 +152,10 @@ Complementary "Diff"
       text " "
       #change-code-7-0
         text "    }"
-  Button "Looks good"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
+  Button "Layer looks good"
   Button "‹ Previous"
   Button "Next layer ›"
 Toolbar "Session panels"

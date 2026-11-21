@@ -41,7 +41,7 @@ fn a_fresh_channel_desk_tab_auto_starts_and_embeds_its_primary_terminal() {
     assert!(app.contains("channel-desk-primary"));
     assert!(app.contains("channel-desk-primary-bar"));
     assert!(app.contains("terminal-area"));
-    assert!(app.contains("channel-desk-new"));
+    assert!(app.contains("channel-desk-tab-add"));
     assert!(app.contains("sidebar-channel-desk-payments-rewrite"));
 
     // Verify Tab::Desk is the first tab (left of Sessions) and the embedded
@@ -160,20 +160,16 @@ fn switching_between_channels_keeps_each_channels_desk_scoped_and_embedded() {
 fn new_desk_session_offers_the_switches_and_marks_a_blocked_one() {
     let mut app = with_desk(true);
     app.send(AppAction::OpenChannelDesk(payments()));
-    app.click("channel-desk-new");
-    assert!(app.contains("new-channel-desk"));
+    assert!(!app.contains("channel-desk-new"));
+    assert!(app.contains("channel-desk-tab-add"));
+    app.click("channel-desk-tab-add");
+    assert!(app.contains("channel-desk-tab-picker"));
     for id in [
-        "new-channel-desk-read-files",
-        "new-channel-desk-send-notes",
-        "new-channel-desk-type-into-terminal",
-        "new-channel-desk-start-and-fork",
-        "new-channel-desk-stop-and-archive",
-        "new-channel-desk-change-board-items",
+        "channel-desk-tab-option-claude",
+        "channel-desk-tab-option-zsh",
     ] {
         assert!(app.contains(id), "{id}");
     }
-    assert!(app.contains("new-channel-desk-stop-and-archive-rule"));
-    assert!(!app.contains("new-channel-desk-read-files-rule"));
 }
 
 #[test]
@@ -268,7 +264,7 @@ fn a_sessions_menu_starts_a_desk_session_for_it() {
     app.click("session-menu");
     assert!(app.contains("session-menu-new-desk"));
     app.click("session-menu-new-desk");
-    assert!(app.contains("new-channel-desk"));
+    assert!(!app.contains("new-channel-desk"));
     assert!(!app.contains("session-menu-card"));
     let target = app.ui.read(|state| {
         state

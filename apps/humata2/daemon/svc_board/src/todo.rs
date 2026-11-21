@@ -26,13 +26,15 @@ use tonic::{Request, Response, Status};
 use super::automation;
 use super::asks::{change_ask, field_change, new_item_ask, pending_for};
 use super::history::{entry_pb, word_diff_pb};
+use super::local_review::{IncomingLocalReview, LocalReviewError, LocalReviewRequest};
 use super::ownership;
 use super::ports::{answer_key, caller_of};
 use super::pr_watch;
 use super::scope::{board_for_policy, board_pb, by_of, made_by_session};
 use super::todo_fields::{
-    self as saved, BlockerGoneRow, ExternalBlockRow, Fields, FieldsError, MigrationRow,
-    LifecyclePromptRow, SourceAnchorRow, StartRow, StepRow, TodoCommentRow, TodoHistoryRow, TodoOwnerRow, WatchedPrRow,
+    self as saved, BlockerGoneRow, ExternalBlockRow, Fields, FieldsError, LifecyclePromptRow,
+    LocalReviewLayerRow, LocalReviewState, MigrationRow, SourceAnchorRow, StartRow, StepRow,
+    TodoCommentRow, TodoHistoryRow, TodoOwnerRow, WatchedPrRow,
 };
 use super::{
     BoardSvc, DEFAULT_COLUMN, ids, item_id, item_ids, keys, merged, no_item, page_of,
@@ -48,6 +50,23 @@ const CLOSED_WINDOW_MS: i64 = 7 * DAY_MS;
 impl From<FieldsError> for Status {
     fn from(error: FieldsError) -> Self {
         internal(humata2_rpc_kit::chain(&error), "")
+    }
+}
+
+impl From<LocalReviewError> for Status {
+    fn from(error: LocalReviewError) -> Self {
+        match error {
+            LocalReviewError::NotFound { .. } => Status::not_found(error.to_string()),
+            LocalReviewError::InvalidTransition { .. }
+            | LocalReviewError::PushNotApproved { .. }
+            | LocalReviewError::NoLocalReview { .. }
+            | LocalReviewError::NotAutoAttached { .. }
+            | LocalReviewError::LayerNotFound { .. } => {
+                Status::failed_precondition(error.to_string())
+            }
+            LocalReviewError::Rpc(status) => status,
+            LocalReviewError::Fields(err) => err.into(),
+        }
     }
 }
 
@@ -1109,6 +1128,38 @@ impl BoardSvc {
             run_count,
             total_cost_micros,
             wont_do_reason: fields.wont_do_reason.clone().unwrap_or_default(),
+            local_review: fields.local_review.as_ref().map(|lr| pb::LocalReview {
+                state: match lr.state {
+                    LocalReviewState::Draft => pb::LocalReviewState::Draft as i32,
+                    LocalReviewState::LocalReviewRequested => {
+                        pb::LocalReviewState::LocalReviewRequested as i32
+                    }
+                    LocalReviewState::ChangesRequested => {
+                        pb::LocalReviewState::ChangesRequested as i32
+                    }
+                    LocalReviewState::Submitted => pb::LocalReviewState::Submitted as i32,
+                    LocalReviewState::Approved => pb::LocalReviewState::Approved as i32,
+                    LocalReviewState::Done => pb::LocalReviewState::Done as i32,
+                },
+                layers: lr
+                    .layers
+                    .iter()
+                    .map(|l| pb::LocalReviewLayer {
+                        repo: l.repo.clone(),
+                        base_branch: l.base_branch.clone(),
+                        head_branch: l.head_branch.clone(),
+                        title: l.title.clone(),
+                        pr_number: l.pr_number,
+                    })
+                    .collect(),
+                summary_what: lr.summary_what.clone(),
+                summary_why: lr.summary_why.clone(),
+                summary_details: lr.summary_details.clone(),
+                owner_approved_push: lr.owner_approved_push,
+                fixes_pushed_since_review: lr.fixes_pushed_since_review,
+                attachment_reason: lr.attachment_reason.clone(),
+                auto_attached: lr.auto_attached,
+            }),
         }
     }
 
@@ -2230,9 +2281,90 @@ impl pb::todo_service_server::TodoService for BoardSvc {
             .await
             .map(Response::new)
     }
+
+    async fn request_local_review(
+        &self,
+        request: Request<pb::RequestLocalReviewRequest>,
+    ) -> Result<Response<pb::RequestLocalReviewResponse>, Status> {
+        let caller = self.todo_caller(&request)?;
+        let request = request.into_inner();
+        let me = self.clone();
+        blocking(move || me.request_local_review_in(&caller, request, now_ms()))
+            .await?
+            .map(Response::new)
+    }
 }
 
 impl BoardSvc {
+    pub(super) fn request_local_review_in(
+        &self,
+        caller: &Caller,
+        request: pb::RequestLocalReviewRequest,
+        now: i64,
+    ) -> Result<pb::RequestLocalReviewResponse, Status> {
+        let layers: Vec<LocalReviewLayerRow> = request
+            .layers
+            .into_iter()
+            .map(|l| LocalReviewLayerRow {
+                repo: l.repo,
+                base_branch: l.base_branch,
+                head_branch: l.head_branch,
+                title: l.title,
+                pr_number: l.pr_number,
+            })
+            .collect();
+        let explicit_id = request
+            .id
+            .map(|id| id.value.trim().to_owned())
+            .filter(|id| !id.is_empty());
+        if let Some(id) = explicit_id {
+            let notice = self.request_local_review(
+                &id,
+                LocalReviewRequest {
+                    layers,
+                    summary_what: request.summary_what,
+                    summary_why: request.summary_why,
+                    summary_details: request.summary_details,
+                },
+            )?;
+            Ok(pb::RequestLocalReviewResponse {
+                todo_key: notice.todo_key,
+                attached: false,
+                attachment_reason: None,
+                layers_count: u32::try_from(notice.layers_count).unwrap_or(u32::MAX),
+                notice: notice.text,
+            })
+        } else {
+            let session_id = match caller {
+                Caller::Agent(agent) => Some(agent.session.id.to_string()),
+                _ => None,
+            };
+            let channel = request
+                .channel
+                .map(|c| c.value.trim().to_owned())
+                .filter(|c| !c.is_empty());
+            let out = self.attach_or_create_todo_for_local_review(
+                caller,
+                IncomingLocalReview {
+                    channel,
+                    session_id,
+                    title: request.title,
+                    layers,
+                    summary_what: request.summary_what,
+                    summary_why: request.summary_why,
+                    summary_details: request.summary_details,
+                },
+                now,
+            )?;
+            Ok(pb::RequestLocalReviewResponse {
+                todo_key: out.todo_key,
+                attached: out.attached,
+                attachment_reason: out.attachment_reason,
+                layers_count: u32::try_from(out.notice.layers_count).unwrap_or(u32::MAX),
+                notice: out.notice.text,
+            })
+        }
+    }
     pub(super) fn add_todo_comment_in(
         &self,
         caller: &Caller,
@@ -3672,7 +3804,7 @@ mod tests {
         on_day(&svc, "TD-3", 12, 14, s, high);
         let pay5 = on_day(&svc, "PAY-5", 11, 23, m, high);
         let review = on_day(&svc, "REV-1", 11, 20, 0, 0);
-        let pay7 = on_day(&svc, "PAY-7", 11, 18, s, high);
+        let _pay7 = on_day(&svc, "PAY-7", 11, 18, s, high);
         let inf6 = on_day(&svc, "INF-6", 11, 19, s, medium);
         // Not in Next at all: in progress, closed, and waiting.
         let working = on_day(&svc, "PAY-3", 11, 20, m, high);
@@ -4481,5 +4613,144 @@ mod tests {
             owned.item.unwrap().fields.unwrap().owner.unwrap().kind,
             pb::TodoOwnerKind::User as i32
         );
+    }
+
+    #[test]
+    fn request_local_review_rpc_and_fields_pb_wire_local_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+        put_channel(&svc, "ch_pay", "Payments");
+        let existing_key = key_of(&add(&svc, "Ship checkout", Some("ch_pay"), |_| {}));
+
+        // 1. Explicit id: transitions existing To-do to LocalReviewRequested.
+        let resp = svc
+            .request_local_review_in(
+                &user(),
+                pb::RequestLocalReviewRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId {
+                        value: existing_key.clone(),
+                    }),
+                    title: String::new(),
+                    channel: None,
+                    layers: vec![pb::LocalReviewLayer {
+                        repo: "acme/pay".into(),
+                        base_branch: "main".into(),
+                        head_branch: "feat/checkout".into(),
+                        title: "Checkout layer".into(),
+                        pr_number: Some(42),
+                    }],
+                    summary_what: "Checkout flow ready".into(),
+                    summary_why: "Unblocks Q4 launch".into(),
+                    summary_details: "Added retries and tests".into(),
+                },
+                now(),
+            )
+            .unwrap();
+        assert_eq!(resp.todo_key, existing_key);
+        assert!(!resp.attached);
+        assert_eq!(resp.layers_count, 1);
+
+        // Verify fields_pb exposes local_review on list_todo_in.
+        let listed = svc
+            .list_todo_in(&user(), &pb::ListTodoRequest::default(), &[], now())
+            .unwrap();
+        let item = listed
+            .items
+            .iter()
+            .find(|i| i.fields.as_ref().is_some_and(|f| f.key == existing_key))
+            .expect("existing item in list");
+        let lr = item
+            .fields
+            .as_ref()
+            .unwrap()
+            .local_review
+            .as_ref()
+            .expect("local_review wired in fields_pb");
+        assert_eq!(lr.state, pb::LocalReviewState::LocalReviewRequested as i32);
+        assert_eq!(lr.layers.len(), 1);
+        assert_eq!(lr.layers[0].repo, "acme/pay");
+        assert_eq!(lr.layers[0].head_branch, "feat/checkout");
+        assert_eq!(lr.layers[0].pr_number, Some(42));
+        assert_eq!(lr.summary_what, "Checkout flow ready");
+        assert_eq!(lr.summary_why, "Unblocks Q4 launch");
+        assert_eq!(lr.summary_details, "Added retries and tests");
+        assert!(!lr.owner_approved_push);
+        assert!(!lr.fixes_pushed_since_review);
+        assert!(!lr.auto_attached);
+
+        // 2. Empty id stacked on existing layer: auto-attaches.
+        let stacked = svc
+            .request_local_review_in(
+                &user(),
+                pb::RequestLocalReviewRequest {
+                    idempotency_key: None,
+                    id: None,
+                    title: "Add receipt email".into(),
+                    channel: None,
+                    layers: vec![pb::LocalReviewLayer {
+                        repo: "acme/pay".into(),
+                        base_branch: "feat/checkout".into(),
+                        head_branch: "feat/receipt".into(),
+                        title: "Receipt email".into(),
+                        pr_number: None,
+                    }],
+                    summary_what: "Receipt emails sent after checkout".into(),
+                    summary_why: String::new(),
+                    summary_details: String::new(),
+                },
+                now() + 10,
+            )
+            .unwrap();
+        assert_eq!(stacked.todo_key, existing_key);
+        assert!(stacked.attached);
+        assert!(stacked.attachment_reason.is_some());
+
+        // 3. Empty id with no match: creates a new To-do.
+        let created = svc
+            .request_local_review_in(
+                &user(),
+                pb::RequestLocalReviewRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId {
+                        value: String::new(),
+                    }),
+                    title: "add billing metrics".into(),
+                    channel: Some(pb::ChannelId {
+                        value: "ch_pay".into(),
+                    }),
+                    layers: vec![pb::LocalReviewLayer {
+                        repo: "acme/billing".into(),
+                        base_branch: "main".into(),
+                        head_branch: "feat/metrics".into(),
+                        title: "Billing metrics".into(),
+                        pr_number: None,
+                    }],
+                    summary_what: "Billing metrics exported".into(),
+                    summary_why: String::new(),
+                    summary_details: String::new(),
+                },
+                now() + 20,
+            )
+            .unwrap();
+        assert_ne!(created.todo_key, existing_key);
+        assert!(!created.attached);
+        assert_eq!(created.layers_count, 1);
+
+        // 4. Missing explicit id maps to NotFound.
+        let err = svc
+            .request_local_review_in(
+                &user(),
+                pb::RequestLocalReviewRequest {
+                    idempotency_key: None,
+                    id: Some(pb::BoardItemId {
+                        value: "MISSING-999".into(),
+                    }),
+                    ..Default::default()
+                },
+                now() + 30,
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 }

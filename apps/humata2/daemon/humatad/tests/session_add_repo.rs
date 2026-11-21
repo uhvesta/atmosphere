@@ -184,7 +184,16 @@ async fn an_agent_is_asked_first_and_may_not_bring_in_a_repo_its_channel_lacks()
     let (daemon, world) = common::shared::shared_world().await;
     let owner = common::shared::unique_name("acme");
     let ch_name = common::shared::unique_name("Payments");
-    let (_channel, session) = running(daemon, world, &owner, &ch_name).await;
+    let (channel, session) = running(daemon, world, &owner, &ch_name).await;
+    pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: channel.id.clone(),
+            capability: pb::Capability::OwnSessionManage as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .expect("set OwnSessionManage to Ask");
     let (token, _attach) = shell_token(daemon, &session).await;
 
     let asked = daemon

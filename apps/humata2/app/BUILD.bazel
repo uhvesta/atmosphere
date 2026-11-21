@@ -25,7 +25,7 @@ humata2_fskit_appex(
 sh_test(
     name = "fskit_appex_test",
     srcs = ["fskit_appex_test.sh"],
-    args = ["$(location :fskit_appex)"],
+    args = ["$(rootpath :fskit_appex)"],
     data = [":fskit_appex"],
     target_compatible_with = [
         "@platforms//cpu:arm64",

@@ -70,6 +70,7 @@ mod remote_review;
 mod remote_start;
 mod script_steps;
 mod start_fresh;
+mod startup_boot;
 pub(crate) mod status_since;
 mod stop_launching;
 mod stop_running;
@@ -570,6 +571,7 @@ impl SessionSvc {
             self.starter.clone(),
             self.tell.clone(),
             self.tokens.clone(),
+            self.inbox.clone(),
             start,
             progress,
             keys,
@@ -733,10 +735,11 @@ impl SessionSvc {
         };
         let (ready, recorded) = oneshot::channel();
         let install = installing.then(|| (self.starter.agents.clone(), agent_name));
-        let (starter, tell, tokens, by) = (
+        let (starter, tell, tokens, inbox, by) = (
             self.starter.clone(),
             self.tell.clone(),
             self.tokens.clone(),
+            self.inbox.clone(),
             identity::actor(caller),
         );
         tokio::spawn(async move {
@@ -753,7 +756,7 @@ impl SessionSvc {
                     }
                 }
             }
-            run_start(starter, tell, tokens, start, progress, keys, ready, by, None).await;
+            run_start(starter, tell, tokens, inbox, start, progress, keys, ready, by, None).await;
         });
         match recorded.await {
             Ok(Ok(())) => {
@@ -1268,15 +1271,17 @@ impl SessionSvc {
             })));
         } else {
             let live = ResumingNow::enter(&id);
-            let (starter, tell, by, tokens) = (
+            let (starter, tell, by, tokens, inbox) = (
                 self.starter.clone(),
                 self.tell.clone(),
                 identity::actor(caller),
                 self.tokens.clone(),
+                self.inbox.clone(),
             );
             tokio::spawn(async move {
                 let _live = live;
-                run_resume(starter, tell, by, tokens, loaded, progress).await;
+                run_resume_with_inbox(starter, tell, by, tokens, Some(inbox), loaded, progress)
+                    .await;
             });
         }
         Ok(Gated::Done(operation))
@@ -2090,10 +2095,42 @@ fn advance(progress: &Progress, keys: &[String], event: &str) -> String {
 /// Runs the start for `progress`. `ready` hears once the session is
 /// recorded (the call answers then), or the failure when it didn't get
 /// that far.
+async fn spawn_startup_boot(
+    store: Arc<humata2_store::Store>,
+    inbox: Arc<Inbox>,
+    machine: String,
+    session_id: String,
+    agent_kind: String,
+    session_folder: PathBuf,
+) {
+    if !startup_boot::is_supported_tui_agent(&agent_kind) {
+        return;
+    }
+    let store_for_read = store.clone();
+    let key = session_id.clone();
+    let found = tokio::task::spawn_blocking(move || store_for_read.agent(&key)).await;
+    if let Ok(Ok(Some(agent))) = found
+        && let AgentState::Running { holder_pid } = agent.state
+    {
+        startup_boot::spawn_for_session(
+            store,
+            inbox,
+            machine,
+            session_id,
+            agent_kind,
+            session_folder,
+            agent.launch.holder_socket,
+            holder_pid,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_start(
     starter: Starter,
     tell: Tell,
     tokens: Arc<Tokens>,
+    inbox: Arc<Inbox>,
     request: StartRequest,
     progress: Progress,
     keys: Vec<String>,
@@ -2129,9 +2166,20 @@ async fn run_start(
         Ok(started) => {
             progress.set_step("verify", pb::StepState::Done, None);
             let session = started.session.id;
+            let agent_kind = started.session.agent;
+            let session_folder = started.session.folder;
             // The watch hears the agent before the start says it runs, so
             // its first answer is never missed (CH-16).
             let _ = watch::agent_attached(tell.clone(), session.clone()).await;
+            spawn_startup_boot(
+                starter.store.clone(),
+                inbox,
+                tell.machine.clone(),
+                session.clone(),
+                agent_kind,
+                session_folder,
+            )
+            .await;
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
                 value: session.clone(),
             })));
@@ -2273,6 +2321,18 @@ pub(crate) async fn run_resume(
     loaded: Loaded,
     progress: Progress,
 ) {
+    run_resume_with_inbox(starter, tell, by, tokens, None, loaded, progress).await;
+}
+
+async fn run_resume_with_inbox(
+    starter: Starter,
+    tell: Tell,
+    by: pb::Actor,
+    tokens: Arc<Tokens>,
+    inbox: Option<Arc<Inbox>>,
+    loaded: Loaded,
+    progress: Progress,
+) {
     let Loaded { record, agent, moved, .. } = loaded;
     let session = record.id.clone();
     progress.set_step("launch", pb::StepState::Running, None);
@@ -2337,7 +2397,7 @@ pub(crate) async fn run_resume(
             );
             progress.fail(failure);
         }
-        Ok(Revived::Resumed { .. } | Revived::Reattached | Revived::Relaunched) => {
+        Ok(revived @ (Revived::Resumed { .. } | Revived::Reattached | Revived::Relaunched)) => {
             move_session::restart_session_shells(&starter, &session, &env).await;
             progress.set_step("launch", pb::StepState::Done, None);
             progress.set_step("verify", pb::StepState::Done, None);
@@ -2345,6 +2405,19 @@ pub(crate) async fn run_resume(
                 value: session.clone(),
             })));
             watch::agent(tell.clone(), session.clone());
+            if matches!(revived, Revived::Resumed { .. } | Revived::Relaunched) {
+                if let Some(inbox) = inbox {
+                    spawn_startup_boot(
+                        starter.store.clone(),
+                        inbox,
+                        tell.machine.clone(),
+                        session.clone(),
+                        record.agent.clone(),
+                        record.folder.clone(),
+                    )
+                    .await;
+                }
+            }
         }
         Ok(Revived::Exited { .. } | Revived::Left) => {
             progress.set_step("launch", pb::StepState::Failed, None);

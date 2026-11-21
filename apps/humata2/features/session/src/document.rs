@@ -1,4 +1,4 @@
-//! A document tab's view settings (D166): Markdown files open as a page.
+//! A document tab's view settings (D166): Markdown and intent spec files open as a page.
 use crate::SessionView;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,19 @@ pub fn is_markdown(path: &str) -> bool {
     lower.ends_with(".md") || lower.ends_with(".mdx") || lower.ends_with(".markdown")
 }
 
+/// An intent spec file: `intent.yaml` or `<name>.intent.yaml`, any case.
+pub fn is_intent_spec(path: &str) -> bool {
+    let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let lower = filename.to_ascii_lowercase();
+    lower == "intent.yaml"
+        || (lower.ends_with(".intent.yaml") && lower.len() > ".intent.yaml".len())
+}
+
+/// A versioned document file: Markdown or an intent spec (`intent.yaml` / `*.intent.yaml`).
+pub fn is_versioned_doc(path: &str) -> bool {
+    is_markdown(path) || is_intent_spec(path)
+}
+
 impl SessionView {
     /// A file's document settings; the defaults when none were picked.
     pub fn document(&self, repo: &str, path: &str) -> DocumentView {
@@ -69,6 +82,46 @@ impl SessionView {
                 path: path.to_owned(),
                 view,
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_intent_spec, is_versioned_doc};
+
+    #[test]
+    fn intent_spec_matches_expected_filenames() {
+        for path in [
+            "intent.yaml",
+            "docs/intent.yaml",
+            "docs\\INTENT.YAML",
+            "cursor.intent.yaml",
+            "sub/PAY-14.INTENT.YAML",
+        ] {
+            assert!(is_intent_spec(path), "expected intent spec: {path}");
+            assert!(is_versioned_doc(path), "expected versioned doc: {path}");
+        }
+    }
+
+    #[test]
+    fn versioned_doc_matches_markdown_and_rejects_non_versioned_files() {
+        for path in ["a.md", "b.mdx", "c.markdown"] {
+            assert!(!is_intent_spec(path), "not an intent spec: {path}");
+            assert!(is_versioned_doc(path), "expected versioned doc: {path}");
+        }
+        for path in [
+            "config.yaml",
+            "intent.yml",
+            "myintent.yaml",
+            "intent.yaml.bak",
+            ".intent.yaml",
+            "docs/.intent.yaml",
+            "a.rs",
+            "",
+        ] {
+            assert!(!is_intent_spec(path), "unexpected intent spec: {path}");
+            assert!(!is_versioned_doc(path), "unexpected versioned doc: {path}");
         }
     }
 }

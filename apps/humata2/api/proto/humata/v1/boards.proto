@@ -276,6 +276,9 @@ service TodoService {
   rpc ResolveBlockerGone(ResolveBlockerGoneRequest) returns (WriteTodoResponse);
   // Resolve a quiet PR/session lifecycle prompt on a to-do item.
   rpc ResolveLifecyclePrompt(ResolveLifecyclePromptRequest) returns (WriteTodoResponse);
+  // ATM-56: move a To-do to LocalReviewRequested (or auto-attach / create)
+  // and return a buttonless Reviews-inbox notice without blocking in Agent inbox.
+  rpc RequestLocalReview(RequestLocalReviewRequest) returns (RequestLocalReviewResponse);
 }
 
 // An item as the list shows it: the board item it is stored as, with the
@@ -343,6 +346,8 @@ message TodoFields {
   optional uint64 total_cost_micros = 30;
   // Optional reason recorded when state is WONT_DO.
   string wont_do_reason = 31;
+  // Local review requested state and metadata (ATM-56, ATM-71, ATM-72).
+  LocalReview local_review = 32;
 }
 
 // A calendar day in the user's time zone, without a time.
@@ -755,4 +760,62 @@ message ResolveLifecyclePromptRequest {
   BoardItemId id = 2;
   string prompt_id = 3;
   string choice = 4;
+}
+
+// Local review state (ATM-56, ATM-71, ATM-72).
+enum LocalReviewState {
+  LOCAL_REVIEW_STATE_UNSPECIFIED = 0;
+  LOCAL_REVIEW_STATE_DRAFT = 1;
+  LOCAL_REVIEW_STATE_LOCAL_REVIEW_REQUESTED = 2;
+  LOCAL_REVIEW_STATE_CHANGES_REQUESTED = 3;
+  LOCAL_REVIEW_STATE_SUBMITTED = 4;
+  LOCAL_REVIEW_STATE_APPROVED = 5;
+  LOCAL_REVIEW_STATE_DONE = 6;
+}
+
+message LocalReviewLayer {
+  string repo = 1;
+  string base_branch = 2;
+  string head_branch = 3;
+  string title = 4;
+  optional uint32 pr_number = 5;
+}
+
+message LocalReview {
+  LocalReviewState state = 1;
+  repeated LocalReviewLayer layers = 2;
+  string summary_what = 3;
+  string summary_why = 4;
+  string summary_details = 5;
+  bool owner_approved_push = 6;
+  bool fixes_pushed_since_review = 7;
+  optional string attachment_reason = 8;
+  bool auto_attached = 9;
+}
+
+message ManualWatchedPr {
+  string owner = 1;
+  string name = 2;
+  uint32 number = 3;
+  string url = 4;
+  int64 added_at_ms = 5;
+}
+
+message RequestLocalReviewRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  string title = 3;
+  ChannelId channel = 4;
+  repeated LocalReviewLayer layers = 5;
+  string summary_what = 6;
+  string summary_why = 7;
+  string summary_details = 8;
+}
+
+message RequestLocalReviewResponse {
+  string todo_key = 1;
+  bool attached = 2;
+  optional string attachment_reason = 3;
+  uint32 layers_count = 4;
+  string notice = 5;
 }

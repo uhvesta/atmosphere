@@ -12,7 +12,8 @@ use humata2_clients::docs::{DocVersion, DocVersions, Restored, VersionDiff, Vers
 use humata2_clients::model::{DiffLine, SessionId};
 use tca::Effect;
 
-use crate::{Panel, SessionAction, SessionState, Sessions, is_markdown};
+use crate::document::is_versioned_doc;
+use crate::{Panel, SessionAction, SessionState, Sessions};
 
 /// Which text a tab shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -186,11 +187,12 @@ pub enum HistoryAction {
     },
 }
 
-/// Whether `repo`/`path` of `session` can have a history: a Markdown file in
-/// the Desk folder itself (no repository), and the folder keeps versions.
+/// Whether `repo`/`path` of `session` can have a history: a versioned document
+/// (Markdown or intent spec) in the Desk folder itself (no repository), and
+/// the folder keeps versions.
 fn eligible(state: &SessionState, session: &SessionId, repo: &str, path: &str) -> bool {
     repo.is_empty()
-        && is_markdown(path)
+        && is_versioned_doc(path)
         && state
             .workspace
             .desk

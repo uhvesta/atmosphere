@@ -156,22 +156,27 @@ fn nothing_is_typed_once_the_deadline_has_passed() {
 
 #[test]
 fn a_plain_terminal_never_gets_a_prompt() {
-    let mut rig = rig();
-    rig.store.send(
+    let mut rig1 = rig();
+    rig1.store.send(
         A::OpenTerminal {
             agent: Agent::Shell,
             split: false,
         },
         |_| {},
     );
-    rig.store
+    rig1.store
         .receive_matching("the tab opening", |a| matches!(a, A::TerminalOpened { .. }), |_| {});
-    rig.store.send(A::NewTerminalTab, |_| {});
-    rig.store
+    rig1.later(QUIET);
+    rig1.later(QUIET);
+    assert!(rig1.typed().is_empty(), "{:?}", rig1.typed());
+
+    let mut rig2 = rig();
+    rig2.store.send(A::NewTerminalTab, |_| {});
+    rig2.store
         .receive_matching("the tab opening", |a| matches!(a, A::TerminalOpened { .. }), |_| {});
-    rig.later(QUIET);
-    rig.later(QUIET);
-    assert!(rig.typed().is_empty(), "{:?}", rig.typed());
+    rig2.later(QUIET);
+    rig2.later(QUIET);
+    assert!(rig2.typed().is_empty(), "{:?}", rig2.typed());
 }
 
 #[test]

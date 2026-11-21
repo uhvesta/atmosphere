@@ -39,16 +39,22 @@ impl AgentNames {
             .unwrap_or_else(|| agent.command().to_owned())
     }
 
-    /// The app's agent for a daemon name; a name nobody knows is a shell.
+    /// The app's agent for a daemon name, if known (either via an explicit
+    /// override or a built-in command name); `None` for custom agent kinds.
     #[must_use]
-    pub fn agent(&self, name: &str) -> Agent {
+    pub fn known_agent(&self, name: &str) -> Option<Agent> {
         if let Some(agent) = self.overrides.get(name) {
-            return *agent;
+            return Some(*agent);
         }
         Agent::ALL
             .into_iter()
             .find(|agent| agent.command() == name)
-            .unwrap_or(Agent::Shell)
+    }
+
+    /// The app's agent for a daemon name; a name nobody knows is a shell.
+    #[must_use]
+    pub fn agent(&self, name: &str) -> Agent {
+        self.known_agent(name).unwrap_or(Agent::Shell)
     }
 }
 

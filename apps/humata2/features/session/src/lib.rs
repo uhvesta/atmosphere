@@ -44,6 +44,53 @@ use tca::{Effect, Reducer};
 /// scrollback.
 pub const LIVE_LINES: usize = 2_000;
 
+/// Maximum open terminal/agent tabs of the same kind in one session (ATM-65).
+pub const MAX_TABS_PER_KIND: usize = 2;
+
+/// Flat cap on total open terminal/agent tabs for a session: `enabled_kinds + 2` (ATM-65).
+#[must_use]
+pub const fn flat_tab_cap(enabled_kinds: usize) -> usize {
+    enabled_kinds + 2
+}
+
+/// Why an agent or shell kind cannot be opened in a session's tab strip (ATM-65).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabCapReason {
+    /// Already at [`MAX_TABS_PER_KIND`] open tabs for this kind.
+    AtKindLimit,
+    /// Already at the session's flat total tab cap.
+    AtTotalLimit {
+        /// The flat total tab cap.
+        limit: usize,
+    },
+    /// Turned off in Settings › Agents.
+    OffInSettings,
+}
+
+/// Per-kind tab cap status for a session's `+` terminal/agent menu (ATM-65).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabKindOption {
+    /// The agent kind (or [`Agent::Shell`] for Terminal).
+    pub agent: Agent,
+    /// How many tabs of this kind are currently open in the session.
+    pub open_count: usize,
+    /// Whether this kind is enabled in Settings (`Agent::Shell` is always enabled).
+    pub enabled: bool,
+    /// Why this kind is currently disabled, if it is.
+    pub disabled_reason: Option<TabCapReason>,
+}
+
+/// Computed tab cap summary for a session's `+` terminal/agent menu (ATM-65).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabCapSummary {
+    /// Total open terminal/agent tabs in the session.
+    pub total_open: usize,
+    /// Maximum allowed open terminal/agent tabs (`enabled_kinds + 2`).
+    pub total_cap: usize,
+    /// Per-kind options in [`Agent::ALL`] order.
+    pub options: Vec<TabKindOption>,
+}
+
 /// How long a line highlight from a terminal file link stays visible before
 /// fading out (TERMLINKS, ATM-16).
 pub const FILE_JUMP_FADE: std::time::Duration = std::time::Duration::from_millis(2_500);
@@ -391,6 +438,89 @@ impl SessionState {
             .keys()
             .filter(|(id, tab)| *id == session.id && !session.terminal_agents.contains_key(tab));
         usize::from(session.agent != Agent::Shell) + session.terminal_agents.len() + opened.count()
+    }
+
+    /// The agent kind running in each open terminal tab of `session` (ATM-65):
+    /// tab 0 is `session.agent`, and tabs `1..=session.shells.len()` resolve
+    /// `session.terminal_agents` then `self.agent_tabs`, defaulting to
+    /// [`Agent::Shell`].
+    #[must_use]
+    pub fn open_terminal_agents(&self, session: &Session) -> Vec<Agent> {
+        let mut agents = Vec::with_capacity(1 + session.shells.len());
+        agents.push(session.agent);
+        for tab in 1..=session.shells.len() {
+            let agent = session
+                .terminal_agents
+                .get(&tab)
+                .or_else(|| self.agent_tabs.get(&(session.id.clone(), tab)))
+                .copied()
+                .unwrap_or(Agent::Shell);
+            agents.push(agent);
+        }
+        agents
+    }
+
+    /// Computes the ATM-65 flat tab cap summary for `session` given the agents
+    /// enabled in Settings.
+    #[must_use]
+    pub fn tab_cap_summary(&self, session: &Session, enabled_agents: &[Agent]) -> TabCapSummary {
+        let enabled_count = Agent::ALL
+            .iter()
+            .filter(|a| **a != Agent::Shell && enabled_agents.contains(a))
+            .count();
+        let total_cap = flat_tab_cap(enabled_count);
+        let open_agents = self.open_terminal_agents(session);
+        let total_open = open_agents.len();
+
+        let options = Agent::ALL
+            .iter()
+            .copied()
+            .map(|agent| {
+                let open_count = open_agents.iter().filter(|a| **a == agent).count();
+                let enabled = agent == Agent::Shell || enabled_agents.contains(&agent);
+                let disabled_reason = if !enabled {
+                    Some(TabCapReason::OffInSettings)
+                } else if open_count >= MAX_TABS_PER_KIND {
+                    Some(TabCapReason::AtKindLimit)
+                } else if total_open >= total_cap {
+                    Some(TabCapReason::AtTotalLimit { limit: total_cap })
+                } else {
+                    None
+                };
+                TabKindOption {
+                    agent,
+                    open_count,
+                    enabled,
+                    disabled_reason,
+                }
+            })
+            .collect();
+
+        TabCapSummary {
+            total_open,
+            total_cap,
+            options,
+        }
+    }
+
+    /// Checks whether `session` may open another tab of kind `next` under the
+    /// ATM-65 flat tab cap and per-kind cap.
+    pub fn check_tab_cap(
+        &self,
+        session: &Session,
+        next: Agent,
+        enabled_agents: &[Agent],
+    ) -> Result<(), TabCapReason> {
+        let summary = self.tab_cap_summary(session, enabled_agents);
+        match summary
+            .options
+            .into_iter()
+            .find(|opt| opt.agent == next)
+            .and_then(|opt| opt.disabled_reason)
+        {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
     }
 
     /// Whether a prompt still waits to be typed into tab `tab` of
@@ -849,6 +979,33 @@ fn keep_agent_tabs(tabs: &BTreeMap<(SessionId, usize), Agent>, workspace: &mut W
     }
 }
 
+fn all_non_shell_agents() -> Vec<Agent> {
+    Agent::ALL
+        .iter()
+        .copied()
+        .filter(|a| *a != Agent::Shell)
+        .collect()
+}
+
+fn tab_cap_error(agent: Agent, reason: TabCapReason) -> String {
+    let kind = if agent == Agent::Shell {
+        "Terminal"
+    } else {
+        agent.name()
+    };
+    match reason {
+        TabCapReason::AtKindLimit => format!(
+            "At most {MAX_TABS_PER_KIND} {kind} tabs can be open in one session. Close an existing {kind} tab before opening another."
+        ),
+        TabCapReason::AtTotalLimit { limit } => format!(
+            "This session is at its {limit}-tab limit. Close an open terminal or agent tab before opening another."
+        ),
+        TabCapReason::OffInSettings => format!(
+            "{kind} is turned off in Settings › Agents. Turn it on before opening a {kind} tab."
+        ),
+    }
+}
+
 /// The name that cancels the opening prompt of one tab.
 fn opening_prompt_id(session: &SessionId, tab: usize) -> String {
     format!("opening-prompt-{session}-{tab}")
@@ -1205,22 +1362,25 @@ impl Reducer for Sessions {
             }
             SessionAction::Restore(views) => state.views = views,
             SessionAction::Open(id) => {
+                let switching = state.open.as_ref() != Some(&id);
                 let shells = state.workspace.session(&id).map_or(0, |s| s.shells.len());
                 state
                     .views
                     .entry(id.clone())
                     .or_default()
                     .ensure_groups(shells);
-                state.terminal_menu = None;
-                state.queue_expanded = false;
                 state.open = Some(id.clone());
-                state.fork = None;
-                state.moving = None;
-                state.continuing = None;
-                state.archiving = None;
-                state.menu = false;
-                state.renaming = None;
-                state.error = None;
+                if switching {
+                    state.terminal_menu = None;
+                    state.queue_expanded = false;
+                    state.fork = None;
+                    state.moving = None;
+                    state.continuing = None;
+                    state.archiving = None;
+                    state.menu = false;
+                    state.renaming = None;
+                    state.error = None;
+                }
                 let unread = state
                     .workspace
                     .session(&id)
@@ -1328,6 +1488,14 @@ impl Reducer for Sessions {
                 let Some(session) = state.open.clone() else {
                     return Effect::none();
                 };
+                if let Some(ws_session) = state.workspace.session(&session) {
+                    let enabled = all_non_shell_agents();
+                    if let Err(reason) = state.check_tab_cap(ws_session, agent, &enabled) {
+                        state.terminal_menu = None;
+                        state.error = Some(tab_cap_error(agent, reason));
+                        return Effect::none();
+                    }
+                }
                 let group = state
                     .terminal_menu
                     .or_else(|| state.view().map(|v| v.focused_group))
@@ -1389,6 +1557,14 @@ impl Reducer for Sessions {
                 let Some(session) = state.open.clone() else {
                     return Effect::none();
                 };
+                if let Some(ws_session) = state.workspace.session(&session) {
+                    let enabled = all_non_shell_agents();
+                    if let Err(reason) = state.check_tab_cap(ws_session, agent, &enabled) {
+                        state.terminal_menu = None;
+                        state.error = Some(tab_cap_error(agent, reason));
+                        return Effect::none();
+                    }
+                }
                 let group = state
                     .terminal_menu
                     .or_else(|| state.view().map(|v| v.focused_group))
@@ -1430,6 +1606,13 @@ impl Reducer for Sessions {
             SessionAction::RevealFailed(message) => state.error = Some(message),
             SessionAction::OpenTerminalIn { session, folder } => {
                 state.clone_menu = None;
+                if let Some(ws_session) = state.workspace.session(&session) {
+                    let enabled = all_non_shell_agents();
+                    if let Err(reason) = state.check_tab_cap(ws_session, Agent::Shell, &enabled) {
+                        state.error = Some(tab_cap_error(Agent::Shell, reason));
+                        return Effect::none();
+                    }
+                }
                 let group = state.views.get(&session).map_or(0, |view| view.focused_group);
                 let terminals = self.clients.terminals.clone();
                 return Effect::future(async move {
@@ -2490,6 +2673,129 @@ mod eviction_tests {
             },
         );
         assert_eq!(state.file_jump(&session, "humata/app", "src/lib.rs"), None);
+    }
+
+    #[test]
+    fn flat_tab_cap_scales_with_enabled_kinds() {
+        assert_eq!(flat_tab_cap(0), 2);
+        assert_eq!(flat_tab_cap(1), 3);
+        assert_eq!(flat_tab_cap(4), 6);
+    }
+
+    #[test]
+    fn per_kind_cap_limits_each_agent_and_shell_to_two() {
+        let mut workspace = humata2_clients_fakes::fixture::design();
+        let session = &mut workspace.sessions[0];
+        session.agent = Agent::Claude;
+        session.shells = vec!["claude-2".into(), "zsh-1".into(), "zsh-2".into()];
+        session.terminal_agents.clear();
+        session.terminal_agents.insert(1, Agent::Claude);
+
+        let state = SessionState {
+            workspace: Arc::new(workspace),
+            ..SessionState::default()
+        };
+        let session = &state.workspace.sessions[0];
+        let enabled = [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode];
+
+        assert_eq!(
+            state.open_terminal_agents(session),
+            vec![Agent::Claude, Agent::Claude, Agent::Shell, Agent::Shell]
+        );
+        assert_eq!(
+            state.check_tab_cap(session, Agent::Claude, &enabled),
+            Err(TabCapReason::AtKindLimit)
+        );
+        assert_eq!(
+            state.check_tab_cap(session, Agent::Shell, &enabled),
+            Err(TabCapReason::AtKindLimit)
+        );
+        assert_eq!(state.check_tab_cap(session, Agent::Codex, &enabled), Ok(()));
+    }
+
+    #[test]
+    fn flat_cap_blocks_new_tabs_at_total_limit() {
+        let mut workspace = humata2_clients_fakes::fixture::design();
+        let session = &mut workspace.sessions[0];
+        session.agent = Agent::Claude;
+        session.shells = vec!["zsh-1".into(), "zsh-2".into()];
+        session.terminal_agents.clear();
+
+        let state = SessionState {
+            workspace: Arc::new(workspace),
+            ..SessionState::default()
+        };
+        let session = &state.workspace.sessions[0];
+        // 1 enabled agent kind => flat cap = 3; 3 tabs are already open (Claude + 2 shells).
+        let enabled = [Agent::Claude];
+        let summary = state.tab_cap_summary(session, &enabled);
+        assert_eq!(summary.total_open, 3);
+        assert_eq!(summary.total_cap, 3);
+        assert_eq!(
+            state.check_tab_cap(session, Agent::Claude, &enabled),
+            Err(TabCapReason::AtTotalLimit { limit: 3 })
+        );
+        assert_eq!(
+            state.check_tab_cap(session, Agent::Codex, &enabled),
+            Err(TabCapReason::OffInSettings)
+        );
+    }
+
+    #[test]
+    fn open_terminal_and_open_agent_tab_refuse_when_capped() {
+        let mut workspace = humata2_clients_fakes::fixture::design();
+        let session_id = workspace.sessions[0].id.clone();
+        workspace.sessions[0].agent = Agent::Claude;
+        workspace.sessions[0].shells = vec!["claude-2".into(), "zsh-1".into(), "zsh-2".into()];
+        workspace.sessions[0].terminal_agents.clear();
+        workspace.sessions[0].terminal_agents.insert(1, Agent::Claude);
+
+        let clock = Arc::new(tca::TestClock::new());
+        let (clients, _) = humata2_clients_fakes::fake_clients(workspace.clone(), clock);
+        let reducer = Sessions::new(clients);
+        let mut state = SessionState {
+            workspace: Arc::new(workspace),
+            open: Some(session_id.clone()),
+            terminal_menu: Some(0),
+            ..SessionState::default()
+        };
+
+        // Already 2 Shell tabs open: OpenTerminal(Shell) must be refused.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenTerminal {
+                agent: Agent::Shell,
+                split: false,
+            },
+        );
+        assert!(!state.opening_terminal);
+        assert!(state.error.is_some());
+        assert_eq!(state.terminal_menu, None);
+
+        // Already 2 Claude tabs open: OpenAgentTab(Claude) must be refused.
+        state.error = None;
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenAgentTab {
+                agent: Agent::Claude,
+                prompt: "review".into(),
+            },
+        );
+        assert!(!state.opening_terminal);
+        assert!(state.opening_prompt.is_none());
+        assert!(state.error.is_some());
+
+        // Already 2 Shell tabs open: OpenTerminalIn must be refused.
+        state.error = None;
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenTerminalIn {
+                session: session_id,
+                folder: "/tmp".into(),
+            },
+        );
+        assert!(!state.opening_terminal);
+        assert!(state.error.is_some());
     }
 }
 

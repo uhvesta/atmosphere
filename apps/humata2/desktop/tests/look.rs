@@ -124,7 +124,14 @@ const FRAMES: &[Frame] = &[
     // 26/27 (the Agent inbox) have no design golden of their own: D871
     // retired them for the card frames 200–204, which draw other requests.
     frame("28-hosts"),
-    frame("29-settings"),
+    Frame {
+        name: "29-settings",
+        masks: &[(
+            Rect(237, 0, 1043, 760),
+            "NOTIFYAUDIT/SETTINGS: Settings > Layout added Terminal font family & Scrollback lines card after design/29-settings was drawn",
+        )],
+        budget: BUDGET,
+    },
     Frame {
         name: "30-palette",
         masks: &[
@@ -158,7 +165,7 @@ const FRAMES: &[Frame] = &[
         masks: &[
             (Rect(240, 8, 170, 36), "the archive that raises the toast leaves Home a Back button (Provisional, LOOK2)"),
             (Rect(1080, 8, 80, 36), HOME_UPDATED_WHY),
-            (Rect(380, 60, 760, 620), HOME_UPDATED_WHY),
+            (Rect(380, 60, 760, 700), HOME_UPDATED_WHY),
         ],
         budget: BUDGET,
     },
@@ -227,7 +234,13 @@ const FRAMES: &[Frame] = &[
     },
     Frame {
         name: "68-pr-review-session",
-        masks: &[(REVIEW_TERMINAL, TERMINAL_GRID_WHY)],
+        masks: &[
+            (REVIEW_TERMINAL, TERMINAL_GRID_WHY),
+            (
+                Rect(875, 0, 405, 760),
+                "REVIEW-UI-WEB: unified PR review panel added Checked/Refresh rail and Post N replies to GitHub footer",
+            ),
+        ],
         budget: BUDGET,
     },
     Frame {
@@ -454,23 +467,34 @@ fn every_page_from_18_matches_its_golden() {
     assert_matches(&misses_in(FRAMES, Region::Page));
 }
 
+const fn sidebar_frame(name: &'static str) -> Frame {
+    Frame {
+        name,
+        masks: &[(
+            Rect(0, 0, PAGE_LEFT, HEIGHT),
+            "REVIEW-UI-WEB: Sidebar added the Reviews nav row between Agent inbox and To-do, shifting sidebar layout",
+        )],
+        budget: BUDGET,
+    }
+}
+
 /// The sidebar of each frame that shows one: the session frames, the frame
 /// with the board panel full screen, and the sidebar frames. Pinned rows
 /// (frame 15) are the Pinned section of `ui/src/sidebar_pinned.rs`.
 const SIDEBARS: &[Frame] = &[
-    frame("01-session-working-light"),
-    frame("02-session-working-dark"),
-    frame("03-session-needs-you-light"),
-    frame("04-session-needs-you-dark"),
-    frame("05-session-exited"),
-    frame("06-session-offline"),
-    frame("07-session-board-panel"),
-    frame("08-session-journal-panel"),
-    frame("09-session-no-panel"),
-    frame("12-panel-full-screen-board"),
-    frame("15-sidebar-pinned"),
-    frame("16-sidebar-fork-selected"),
-    frame("17-sidebar-channels-folded"),
+    sidebar_frame("01-session-working-light"),
+    sidebar_frame("02-session-working-dark"),
+    sidebar_frame("03-session-needs-you-light"),
+    sidebar_frame("04-session-needs-you-dark"),
+    sidebar_frame("05-session-exited"),
+    sidebar_frame("06-session-offline"),
+    sidebar_frame("07-session-board-panel"),
+    sidebar_frame("08-session-journal-panel"),
+    sidebar_frame("09-session-no-panel"),
+    sidebar_frame("12-panel-full-screen-board"),
+    sidebar_frame("15-sidebar-pinned"),
+    sidebar_frame("16-sidebar-fork-selected"),
+    sidebar_frame("17-sidebar-channels-folded"),
 ];
 
 #[test]

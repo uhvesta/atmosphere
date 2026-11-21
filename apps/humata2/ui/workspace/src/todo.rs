@@ -360,6 +360,134 @@ pub(crate) fn close_readiness_text(todo: &Todo) -> Option<String> {
     todo.close_readiness.as_ref().map(|cr| cr.summary_line())
 }
 
+/// Deterministic auto-attached PR banner (`ATM-72`): one concrete reason and a
+/// single `Move to its own To-do` button, with no redundant `Undo` pair or
+/// `"checked N open To-dos…"` audit chatter.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AutoAttachedPrBanner {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) reason: String,
+    pub(crate) action_label: &'static str,
+    pub(crate) action: A,
+}
+
+fn is_auto_attached_pr_prompt(lp: &LifecyclePrompt) -> bool {
+    let kind = lp.kind.to_ascii_lowercase();
+    if matches!(
+        kind.as_str(),
+        "auto_attached_pr" | "auto_fit" | "pr_auto_attached" | "pr_attached"
+    ) {
+        return true;
+    }
+    lp.choices.iter().any(|c| {
+        let lower = c.to_ascii_lowercase();
+        lower.contains("its own to-do") || lower.contains("its own todo")
+    })
+}
+
+fn strip_audit_chatter(detail: &str) -> String {
+    let kept: Vec<&str> = detail
+        .split(['·', '—', ';'])
+        .flat_map(|part| part.split(". "))
+        .map(str::trim)
+        .filter(|part| {
+            if part.is_empty() {
+                return false;
+            }
+            let lower = part.to_ascii_lowercase();
+            !(lower.contains("checked ")
+                && (lower.contains("open to-do") || lower.contains("open todo")))
+        })
+        .collect();
+    let mut joined = kept.join(". ");
+    if !joined.is_empty() && !joined.ends_with('.') {
+        joined.push('.');
+    }
+    joined
+}
+
+/// Returns the deterministic `ATM-72` auto-attached PR banner for `lp` if it
+/// represents an auto-attached PR prompt.
+pub(crate) fn auto_attached_pr_banner(
+    todo: &Todo,
+    lp: &LifecyclePrompt,
+) -> Option<AutoAttachedPrBanner> {
+    if !is_auto_attached_pr_prompt(lp) {
+        return None;
+    }
+    let mut reason = strip_audit_chatter(&lp.detail);
+    if reason.is_empty() {
+        reason = if lp.session.is_some() {
+            "Session is already linked to this To-do.".to_owned()
+        } else if lp.pr_ref.is_some() {
+            "Branch is stacked on an existing layer.".to_owned()
+        } else {
+            "Matched by deterministic stack or session signal.".to_owned()
+        };
+    }
+    let choice = lp
+        .choices
+        .iter()
+        .find(|c| {
+            let lower = c.to_ascii_lowercase();
+            lower.contains("its own to-do") || lower.contains("its own todo")
+        })
+        .or_else(|| lp.choices.iter().find(|c| !c.eq_ignore_ascii_case("undo")))
+        .cloned()
+        .unwrap_or_else(|| "Move to its own To-do".to_owned());
+    Some(AutoAttachedPrBanner {
+        id: lp.id.clone(),
+        title: format!("Added to {} automatically", todo.key),
+        reason,
+        action_label: "Move to its own To-do",
+        action: A::ResolveLifecyclePrompt {
+            key: todo.key.clone(),
+            prompt_id: lp.id.clone(),
+            choice,
+        },
+    })
+}
+
+/// Inline drawer prompt offered when all attached/watched PRs on an active
+/// To-do have merged (`DECISIONS.md` §3).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CloseMergedPrompt {
+    pub(crate) heading: String,
+    pub(crate) detail: String,
+    pub(crate) close_label: &'static str,
+    pub(crate) dismiss_label: &'static str,
+    pub(crate) close_action: A,
+}
+
+/// Returns the inline `Close <KEY>?` prompt if and only if `todo` is active
+/// (not `Closed`, `WontDo`, or `Became`), has at least one attached/watched PR,
+/// and all attached PRs are merged.
+pub(crate) fn close_merged_prompt(todo: &Todo) -> Option<CloseMergedPrompt> {
+    if !todo.state.is_active()
+        || todo.watched_prs.is_empty()
+        || !todo.watched_prs.iter().all(|pr| pr.merged)
+    {
+        return None;
+    }
+    let count = todo.watched_prs.len();
+    let detail = if count == 1 {
+        format!(
+            "All attached PRs merged ({}) · Close {}?",
+            todo.watched_prs[0].repo_pr, todo.key
+        )
+    } else {
+        format!("All {count} attached PRs merged · Close {}?", todo.key)
+    };
+    Some(CloseMergedPrompt {
+        heading: format!("Close {}?", todo.key),
+        detail,
+        close_label: "Close",
+        dismiss_label: "Keep open",
+        close_action: A::SetState(todo.key.clone(), State::Closed),
+    })
+}
+
 /// The question an ask puts to the person.
 pub(crate) fn ask_question(todo: &Todo, ask: &Ask) -> String {
     match &ask.kind {
@@ -668,6 +796,7 @@ pub struct Inputs {
     fold_open: Rc<Cell<bool>>,
     ext_block_open: Rc<Cell<bool>>,
     milestone_start_menu_open: Rc<Cell<bool>>,
+    dismissed_close_prompts: Rc<RefCell<std::collections::BTreeSet<String>>>,
     editing: Cell<bool>,
     step_context_at: Cell<Option<usize>>,
     /// The store's text last put in quick add, search, edit and the step
@@ -748,6 +877,7 @@ impl Inputs {
             fold_open: Rc::new(Cell::new(false)),
             ext_block_open: Rc::new(Cell::new(false)),
             milestone_start_menu_open: Rc::new(Cell::new(false)),
+            dismissed_close_prompts: Rc::new(RefCell::new(std::collections::BTreeSet::new())),
             editing: Cell::new(false),
             step_context_at: Cell::new(None),
             synced: RefCell::new(Default::default()),
@@ -2409,7 +2539,26 @@ pub(crate) fn drawer(
         )
         .children(t.stuck_agent.as_ref().map(|stuck| stuck_agent_card(send, &key, stuck, look)))
         .children(t.blocker_gone.iter().map(|bg| blocker_gone_card(send, &key, bg, look)))
-        .children(t.lifecycle_prompts.iter().map(|lp| lifecycle_prompt_card(send, &key, lp, look)))
+        .children(
+            close_merged_prompt(t)
+                .filter(|_| !inputs.dismissed_close_prompts.borrow().contains(&t.key))
+                .map(|prompt| {
+                    close_merged_prompt_card(
+                        send,
+                        &key,
+                        &prompt,
+                        inputs.dismissed_close_prompts.clone(),
+                        look,
+                    )
+                }),
+        )
+        .children(t.lifecycle_prompts.iter().map(|lp| {
+            if let Some(banner) = auto_attached_pr_banner(t, lp) {
+                auto_attached_pr_card(send, &banner, look).into_any_element()
+            } else {
+                lifecycle_prompt_card(send, &key, lp, look).into_any_element()
+            }
+        }))
         .children(t.review.as_ref().filter(|_| t.state.is_active()).map(|_| {
             row().child(primary(send, "todo-start-review", "Start the review", A::StartReview(key.clone()), look))
         }))
@@ -4250,6 +4399,86 @@ fn lifecycle_prompt_card(send: &Send, key: &str, lp: &LifecyclePrompt, look: Loo
         .test_support()
 }
 
+fn auto_attached_pr_card(
+    send: &Send,
+    banner: &AutoAttachedPrBanner,
+    look: Look,
+) -> impl IntoElement {
+    row()
+        .id(SharedString::from(format!("todo-auto-attached-pr-{}", banner.id)))
+        .mt(px(6.))
+        .p(px(12.))
+        .gap(px(12.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.fill))
+        .child(
+            col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(banner.title.clone()))
+                .child(small(banner.reason.clone(), look)),
+        )
+        .child(quiet(
+            send,
+            SharedString::from(format!("todo-auto-pr-move-{}", banner.id)),
+            banner.action_label,
+            banner.action.clone(),
+            look,
+        ))
+        .test_support()
+}
+
+fn close_merged_prompt_card(
+    send: &Send,
+    key: &str,
+    prompt: &CloseMergedPrompt,
+    dismissed: Rc<RefCell<std::collections::BTreeSet<String>>>,
+    look: Look,
+) -> AnyElement {
+    let dismiss_key = key.to_owned();
+    row()
+        .id(SharedString::from(format!("todo-close-merged-{key}")))
+        .mt(px(6.))
+        .p(px(12.))
+        .gap(px(10.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.fill))
+        .child(
+            col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(prompt.heading.clone()))
+                .child(small(prompt.detail.clone(), look)),
+        )
+        .child(primary(
+            send,
+            SharedString::from(format!("todo-close-merged-confirm-{key}")),
+            prompt.close_label,
+            prompt.close_action.clone(),
+            look,
+        ))
+        .child(
+            push_quiet_shape(
+                SharedString::from(format!("todo-close-merged-dismiss-{key}")),
+                prompt.dismiss_label,
+                look,
+            )
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                dismissed.borrow_mut().insert(dismiss_key.clone());
+                window.refresh();
+            }),
+        )
+        .test_support()
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4745,5 +4974,84 @@ mod tests {
         assert_eq!(milestone_helper_text(0), "All steps done · S");
         assert_eq!(milestone_helper_text(1), "Pre-fills 1 open step · S");
         assert_eq!(milestone_helper_text(3), "Pre-fills 3 open steps · S");
+    }
+
+    #[test]
+    fn auto_attached_pr_banner_returns_concrete_reason_and_single_move_action_without_audit_chatter() {
+        let s = state();
+        let todo = Todo::new("PAY-9", "Refund holds", s.today);
+        let lp = LifecyclePrompt {
+            id: "lp-auto-1".into(),
+            kind: "auto_attached_pr".into(),
+            title: "Added to PAY-9 automatically".into(),
+            detail: "Checked 14 open To-dos · Branch is stacked directly on step 3 (refund-holds-api)".into(),
+            choices: vec!["Undo".into(), "Make it its own To-do".into()],
+            pr_ref: Some("acme/api#412".into()),
+            session: None,
+        };
+        let banner = auto_attached_pr_banner(&todo, &lp).expect("auto-attached PR banner");
+        assert_eq!(banner.title, "Added to PAY-9 automatically");
+        assert_eq!(banner.reason, "Branch is stacked directly on step 3 (refund-holds-api).");
+        assert!(!banner.reason.to_ascii_lowercase().contains("checked 14 open"));
+        assert_eq!(banner.action_label, "Move to its own To-do");
+        assert_eq!(
+            banner.action,
+            A::ResolveLifecyclePrompt {
+                key: "PAY-9".into(),
+                prompt_id: "lp-auto-1".into(),
+                choice: "Make it its own To-do".into(),
+            }
+        );
+
+        let unrelated = LifecyclePrompt {
+            id: "lp-other".into(),
+            kind: "stale_session".into(),
+            title: "Session idle".into(),
+            detail: "Idle for 3 days".into(),
+            choices: vec!["Pause".into()],
+            pr_ref: None,
+            session: None,
+        };
+        assert_eq!(auto_attached_pr_banner(&todo, &unrelated), None);
+    }
+
+    #[test]
+    fn close_merged_prompt_triggers_only_for_active_items_with_all_prs_merged() {
+        let s = state();
+        let mut todo = Todo::new("PAY-7", "Ship webhooks", s.today);
+        assert_eq!(close_merged_prompt(&todo), None);
+
+        todo.watched_prs.push(humata2_todo::WatchedPr {
+            repo_pr: "acme/api#71".into(),
+            merged: true,
+            ..Default::default()
+        });
+        let prompt = close_merged_prompt(&todo).expect("prompt when all PRs merged");
+        assert_eq!(prompt.heading, "Close PAY-7?");
+        assert!(prompt.detail.contains("Close PAY-7?"));
+        assert_eq!(prompt.close_label, "Close");
+        assert_eq!(prompt.dismiss_label, "Keep open");
+        assert_eq!(prompt.close_action, A::SetState("PAY-7".into(), State::Closed));
+
+        // WatchingPr and InProgress are also active states.
+        todo.state = State::WatchingPr;
+        assert!(close_merged_prompt(&todo).is_some());
+        todo.state = State::InProgress;
+        assert!(close_merged_prompt(&todo).is_some());
+
+        // Any unmerged PR suppresses the prompt.
+        todo.watched_prs.push(humata2_todo::WatchedPr {
+            repo_pr: "acme/api#72".into(),
+            merged: false,
+            ..Default::default()
+        });
+        assert_eq!(close_merged_prompt(&todo), None);
+
+        // Terminal states suppress the prompt even if all PRs are merged.
+        todo.watched_prs[1].merged = true;
+        todo.state = State::Closed;
+        assert_eq!(close_merged_prompt(&todo), None);
+        todo.state = State::WontDo;
+        assert_eq!(close_merged_prompt(&todo), None);
     }
 }

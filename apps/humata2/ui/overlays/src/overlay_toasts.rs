@@ -75,6 +75,9 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                 } else {
                     0x3a3a3d
                 }))
+                .border_1()
+                .border_color(rgba(0x0000_0000))
+                .hover(|s| s.border_color(rgba(0xffff_ff33)))
                 .text_color(rgb(0xffffff))
                 .text_size(px(12.5))
                 .shadow_lg()

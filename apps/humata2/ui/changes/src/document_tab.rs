@@ -6,6 +6,9 @@
 //! `MarkdownView`, the source pane's scroll handle, and one text field for
 //! the comment box. Everything else is read from the store on each draw.
 
+#[path = "intent_tab.rs"]
+pub mod intent_tab;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -1229,6 +1232,9 @@ impl Documents {
         path: &str,
         look: Look,
     ) -> Option<AnyElement> {
+        if humata2_intent_spec::is_intent_spec(path) {
+            return intent_tab::body(self, ui, state, session, repo, path, look);
+        }
         let key = (session.id.clone(), repo.to_owned(), path.to_owned());
         let page = self.pages.get(&key)?;
         let Some(Ok(text)) = state.session.file_contents.get(&key) else {
@@ -1705,7 +1711,8 @@ pub fn mode_switch(
     let Some(Tab::File { repo, path }) = tabs.tabs.get(tabs.selected) else {
         return None;
     };
-    if !is_markdown(path) {
+    let is_intent = humata2_intent_spec::is_intent_spec(path);
+    if !is_markdown(path) && !is_intent {
         return None;
     }
     let current = state
@@ -1714,11 +1721,19 @@ pub fn mode_switch(
         .map(|view| view.document(repo, path))
         .unwrap_or_default()
         .mode;
-    let segments = [
-        (DocumentMode::Preview, "Preview", "preview"),
-        (DocumentMode::Source, "Source", "source"),
-        (DocumentMode::SideBySide, "Side by side", "side-by-side"),
-    ];
+    let segments = if is_intent {
+        [
+            (DocumentMode::Preview, "Structured", "structured"),
+            (DocumentMode::Source, "YAML", "yaml"),
+            (DocumentMode::SideBySide, "Diff", "diff"),
+        ]
+    } else {
+        [
+            (DocumentMode::Preview, "Preview", "preview"),
+            (DocumentMode::Source, "Source", "source"),
+            (DocumentMode::SideBySide, "Side by side", "side-by-side"),
+        ]
+    };
     Some(
         row()
             .id(SharedString::from(format!("doc-modes-{group}")))

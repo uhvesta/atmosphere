@@ -216,6 +216,10 @@ operations! {
     SessionPush => "session_push", "session.push";
     /// `PullRequestReviewService.StartReview`.
     PrReviewStart => "pr_review_start", "review.start";
+    /// `PullRequestReviewService.WatchPullRequest`.
+    WatchPrUrl => "watch_pr_url", "review.watch_pr_url";
+    /// `PullRequestReviewService.UnwatchPullRequest`.
+    UnwatchPr => "unwatch_pr", "review.unwatch_pr";
     /// `MachineService.AddSshMachine`.
     MachineAddSsh => "machine_add_ssh", "machine.add_ssh";
     /// `ProviderService.CreateMachine`.
@@ -419,7 +423,9 @@ pub(crate) fn category(operation: Operation) -> &'static str {
         | Op::ReviewNoteEdit
         | Op::ReviewNoteDrop
         | Op::ReviewPrepare
-        | Op::PrReviewStart => "review",
+        | Op::PrReviewStart
+        | Op::WatchPrUrl
+        | Op::UnwatchPr => "review",
         Op::TodoNext
         | Op::TodoAdd
         | Op::TodoClose
@@ -1416,15 +1422,15 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::TodoRequestReview => define(
-            "Ask the user to review work on a To-do item (distinct from closing it) and wait for Approved or Changes asked.",
+            "Notify the owner that local work is ready for review (moves the To-do to Local review requested and posts a buttonless notice in the Reviews inbox without blocking in Agent inbox).",
             Effect::Create,
             object(vec![
-                req("key", string().describe("An item key or id such as PAY-3")),
-                req(
+                opt("key", string().describe("An item key or id such as PAY-3; omit to auto-attach to the active To-do")),
+                opt(
                     "summary",
                     string()
                         .max_length(500)
-                        .describe("Short summary of what is ready for review"),
+                        .describe("Short summary of what is ready for review (alias for summary_what)"),
                 ),
                 opt(
                     "step_id",
@@ -1434,7 +1440,7 @@ fn definition(operation: Operation) -> Definition {
                     "details",
                     string()
                         .max_length(10_000)
-                        .describe("Optional expandable Markdown details"),
+                        .describe("Optional expandable Markdown details (alias for summary_details)"),
                 ),
                 opt(
                     "round",
@@ -1447,7 +1453,37 @@ fn definition(operation: Operation) -> Definition {
                     one_of_strings(["with_context", "defined", "done"])
                         .describe("Optional checkpoint this review checks"),
                 ),
-                opt("wait_seconds", wait_seconds()),
+                opt("title", title().describe("Optional title for the local review")),
+                opt("channel", string().describe("Optional channel id")),
+                opt(
+                    "summary_what",
+                    string()
+                        .max_length(500)
+                        .describe("What changed and is ready for review"),
+                ),
+                opt(
+                    "summary_why",
+                    string()
+                        .max_length(1_000)
+                        .describe("Why this change was made"),
+                ),
+                opt(
+                    "summary_details",
+                    string()
+                        .max_length(10_000)
+                        .describe("Optional expandable Markdown details"),
+                ),
+                opt(
+                    "layers",
+                    array(object(vec![
+                        req("repo", repo()),
+                        opt("base_branch", string().describe("Base branch to diff against")),
+                        req("head_branch", string().describe("Head branch with the changes")),
+                        opt("title", string().describe("Optional layer title")),
+                        opt("pr_number", integer().at_least(1).describe("Optional linked PR number")),
+                    ]))
+                    .describe("Optional stack layers included in this local review"),
+                ),
             ]),
         ),
         Op::TodoStepUpdate => define(
@@ -1628,8 +1664,8 @@ fn definition(operation: Operation) -> Definition {
             "Leave the user a note on a file, a hunk or lines, to help them understand the change. Notes are never posted; the user can make one a draft.",
             Effect::Create,
             object(vec![
-                req("repo", repo()),
-                req("path", relative_path()),
+                opt("repo", repo()),
+                opt("path", relative_path()),
                 opt("lines", lines().describe("The lines; leave out for a note on the file")),
                 opt(
                     "hunk_at",
@@ -1640,6 +1676,14 @@ fn definition(operation: Operation) -> Definition {
                 opt("side", side()),
                 opt("quoted", string().describe("The lines, as you read them")),
                 opt("layer", layer().describe("The stack layer the note is on, by title; leave out for Whole stack")),
+                opt(
+                    "reply_to",
+                    string().describe("Optional note_id to reply in-thread instead of creating a new note"),
+                ),
+                opt(
+                    "resolve",
+                    boolean().describe("When replying with reply_to, also mark the thread resolved"),
+                ),
                 req("text", string().max_length(4000)),
             ]),
         ),
@@ -2108,6 +2152,22 @@ fn definition(operation: Operation) -> Definition {
                 opt("agent", string()),
             ]),
         )),
+        Op::WatchPrUrl => reaching_out(define(
+            "Watch a remote GitHub pull request URL in the Reviews inbox.",
+            Effect::Create,
+            object(vec![req(
+                "url",
+                string().describe("GitHub PR URL or owner/repo#number"),
+            )]),
+        )),
+        Op::UnwatchPr => define(
+            "Stop watching a remote GitHub pull request in the Reviews inbox.",
+            Effect::Remove,
+            object(vec![req(
+                "pr",
+                string().describe("Pull request as owner/repo#number"),
+            )]),
+        ),
         Op::MachineAddSsh => reaching_out(define(
             "Add a machine reached over ssh. Usually asks the user first.",
             Effect::Create,

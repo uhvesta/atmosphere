@@ -265,10 +265,38 @@ impl GrpcDaemon {
         Ok(applied(result, None))
     }
 
-    /// `review_note`: a note for the user on a file, a hunk or lines.
+    /// `review_note`: a note for the user on a file, a hunk or lines, or a reply
+    /// in-thread to an existing note when `reply_to` is provided.
     async fn review_note(&self, call: Call) -> Result<Reply, ToolError> {
-        let session = self.own_session().await?;
         let arguments = &call.arguments;
+        let reply_to = text(arguments, "reply_to");
+        if !reply_to.is_empty() {
+            let resolve = arguments
+                .get("resolve")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let request = self.request(pb::ReplyToCommentRequest {
+                idempotency_key: Some(key(&call)),
+                id: Some(pb::CommentId { value: reply_to }),
+                text: text(arguments, "text"),
+                resolve,
+            })?;
+            let comment = self
+                .comments()
+                .reply_to_comment(request)
+                .await
+                .map_err(|status| self.failed(&status))?
+                .into_inner();
+            return Ok(applied(
+                json!({
+                    "note_id": comment.id.map(|id| id.value),
+                    "replied": true,
+                    "resolved": resolve,
+                }),
+                None,
+            ));
+        }
+        let session = self.own_session().await?;
         // A comment's anchor has no hunk: a note on a hunk is on the line
         // inside it.
         let lines = review::lines(arguments.get("lines")).or_else(|| {
@@ -1487,6 +1515,8 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewDraftDrop |
             Operation::ReviewSummaryDraft |
             Operation::PrReviewStart |
+            Operation::WatchPrUrl |
+            Operation::UnwatchPr |
             Operation::ProviderImport |
             Operation::ProviderRequestImport |
             Operation::ProviderGuide |
@@ -1585,6 +1615,8 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewDraftDrop => self.review_draft_drop(call).await,
             Operation::ReviewSummaryDraft => self.review_summary_draft(call).await,
             Operation::PrReviewStart => self.pr_review_start(call).await,
+            Operation::WatchPrUrl => self.watch_pr_url(call).await,
+            Operation::UnwatchPr => self.unwatch_pr(call).await,
             Operation::DeskSessionMoveToChannel => self.desk_move_to_channel(call).await,
             Operation::ProviderImport | Operation::ProviderRequestImport => {
                 self.provider_import(call).await

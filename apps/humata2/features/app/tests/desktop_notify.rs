@@ -219,7 +219,8 @@ fn frontmost_on_item_suppresses_notification() {
     store.skip_received();
     assert!(notifier.posted().is_empty());
 
-    // Viewing Session(s1) with Panel::Inbox suppresses requests for s1, but not s2.
+    // Viewing Session(s1) with Panel::Inbox suppresses requests for s1,
+    // while requests for s2 route to an in-app Deck toast (not an OS notice).
     store.send(A::Switch(Route::Session(s1.id.clone())), |_| {});
     store.skip_received();
     store.send(A::Session(SessionAction::SetPanel(Some(Panel::Inbox))), |_| {});
@@ -228,11 +229,13 @@ fn frontmost_on_item_suppresses_notification() {
     store.send(A::Event(Event::Request(req2)), |_| {});
     store.skip_received();
     assert!(notifier.posted().is_empty());
+    assert!(store.state().toasts.is_empty());
 
     let req_other = make_request(&store, &s2.id, "req-other-session", RequestKind::Command);
     store.send(A::Event(Event::Request(req_other)), |_| {});
     store.skip_received();
-    assert_eq!(notifier.posted().len(), 1);
+    assert!(notifier.posted().is_empty());
+    assert_eq!(store.state().toasts.len(), 1);
     notifier.clear();
 
     // Viewing Channel(c) on Tab::Inbox suppresses requests for sessions in that channel.
@@ -422,4 +425,70 @@ fn launch_requests_permission_once_when_notifications_were_saved_enabled() {
     store.skip_received();
     store.skip_in_flight();
     assert_eq!(notifier.permission_requests(), 2);
+}
+
+#[test]
+fn frontmost_deck_toast_preserves_undo_plays_decoupled_sound_and_updates_dock_badge() {
+    let workspace = Arc::new(fixture::design());
+    let clock = Arc::new(TestClock::new());
+    let (clients, fakes) = humata2_clients::fake_clients((*workspace).clone(), clock.clone());
+    let notifier = fakes.notifier.clone();
+    let mut state = AppState::launch(&clients);
+    state.load = Load::Ready;
+    state.workspace = workspace.clone();
+    state.inbox.workspace = workspace.clone();
+    state.session.workspace = workspace;
+    state.route = Route::Home;
+    state.window_active = true;
+    state.settings.preferences.notify.enabled = false;
+    state.settings.preferences.notify.play_sound = true;
+    state.settings.preferences.notify.in_app_toasts = true;
+    let undo_session = state.workspace.sessions[0].id.clone();
+    state.toasts.push(humata2_app::Toast {
+        id: 999,
+        text: "Archived session".to_owned(),
+        action: Some(humata2_app::ToastAction::RestoreSession(undo_session)),
+        working: false,
+    });
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    let (s1, _, _) = two_sessions_in_same_channel(&store);
+    let existing_blocked = store
+        .state()
+        .workspace
+        .waiting()
+        .filter(|r| {
+            r.kind != RequestKind::Migrate
+                && !r.is_to_do_ask()
+                && !r.operation.starts_with("board.")
+        })
+        .count();
+
+    let req1 = make_request(&store, &s1.id, "deck-toast-1", RequestKind::Command);
+    store.send(A::Event(Event::Request(req1)), |_| {});
+    store.skip_received();
+
+    // Frontmost with master off routes to in-app Deck toast + decoupled sound, never OS notice.
+    assert!(notifier.posted().is_empty());
+    assert_eq!(notifier.sounds_played(), vec![humata2_clients::NoticeSound::Inbox]);
+    assert_eq!(notifier.last_dock_badge(), Some(Some(existing_blocked + 1)));
+    assert_eq!(store.state().toasts.len(), 2);
+    assert!(store.state().toasts.iter().any(|t| t.id == 999));
+
+    // A second Deck toast replaces the 1-slot notification toast without evicting Undo.
+    clock.advance(Duration::from_secs(1));
+    let req2 = make_request(&store, &s1.id, "deck-toast-2", RequestKind::FileEdit);
+    store.send(A::Event(Event::Request(req2)), |_| {});
+    store.skip_received();
+
+    assert_eq!(store.state().toasts.len(), 2);
+    assert!(store.state().toasts.iter().any(|t| t.id == 999));
+    assert_eq!(notifier.last_dock_badge(), Some(Some(existing_blocked + 2)));
+
+    // Non-blocking board.* / Migrate requests do not increase the dock badge.
+    let mut board_req = make_request(&store, &s1.id, "deck-board", RequestKind::Command);
+    board_req.operation = "board.item.move".to_owned();
+    store.send(A::Event(Event::Request(board_req)), |_| {});
+    store.skip_received();
+    assert_eq!(notifier.last_dock_badge(), Some(Some(existing_blocked + 2)));
 }

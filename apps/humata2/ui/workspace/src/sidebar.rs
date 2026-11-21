@@ -699,10 +699,11 @@ impl Render for Sidebar {
                         .all(|m| matches!(m.kind, MachineKind::ThisMac)),
             )
         });
-        let (route, waiting, machines) = ui.read(|s| {
+        let (route, waiting, reviews, machines) = ui.read(|s| {
             (
                 s.route.clone(),
                 humata2_inbox::waiting(&s.workspace) + s.pending_cli_logins.len(),
+                reviews_count(s),
                 s.workspace
                     .machines
                     .iter()
@@ -888,6 +889,16 @@ impl Render for Sidebar {
                 Route::Inbox,
                 route == Route::Inbox,
                 (waiting > 0).then_some(waiting),
+                look,
+            ))
+            .child(nav(
+                ui,
+                "rail-reviews",
+                "Reviews",
+                IconName::GitFork,
+                Route::Reviews,
+                route == Route::Reviews,
+                (reviews > 0).then_some(reviews),
                 look,
             ))
             .child(nav(
@@ -1102,6 +1113,49 @@ fn stopped_on_machine(s: &AppState, id: &humata2_clients::model::SessionId) -> b
         .find(|session| &session.id == id)
         .and_then(|session| s.workspace.machine(&session.machine))
         .is_some_and(|machine| machine.stop.as_ref().is_some_and(|stop| stop.delivered))
+}
+
+/// Count of items waiting in the dedicated `Reviews` inbox (local review asks +
+/// GitHub review requests + open watched PRs + open PR review sessions).
+fn reviews_count(s: &AppState) -> usize {
+    let mut seen_sessions = std::collections::HashSet::new();
+    let mut seen_prs = std::collections::HashSet::new();
+    let mut count = 0;
+
+    for entry in &s.todo.items {
+        let todo = &entry.todo;
+        if todo.closed.is_some() || !todo.state.is_active() {
+            continue;
+        }
+        if let Some(ask) = &todo.ask
+            && matches!(ask.kind, humata2_todo::AskKind::ReviewRequest { .. })
+        {
+            if let Some(sid) = todo.sessions.first() {
+                seen_sessions.insert(SessionId(sid.clone()));
+            }
+            count += 1;
+        }
+        if let Some(review) = &todo.review {
+            for pr in &review.repo_prs {
+                seen_prs.insert(pr.clone());
+            }
+            count += 1;
+        }
+        for pr in &todo.watched_prs {
+            if !pr.merged && !pr.closed_without_merge && seen_prs.insert(pr.repo_pr.clone()) {
+                count += 1;
+            }
+        }
+    }
+    for session in &s.workspace.sessions {
+        if !session.archived
+            && session.pull_request_review
+            && seen_sessions.insert(session.id.clone())
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Only a VIP session shows its inbox count; it covers the pending requests

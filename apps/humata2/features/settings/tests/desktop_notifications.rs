@@ -122,39 +122,78 @@ fn row_is_in_notifications_before_permission_alerts_and_reachable_from_palette()
 }
 
 #[test]
-fn play_sound_defaults_off_is_disabled_while_master_off_and_keeps_value() {
+fn play_sound_defaults_off_and_is_decoupled_from_master_switch() {
     let (clients, _) =
         humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
 
     assert!(!store.state().preferences.notify.play_sound);
+    assert!(!store.state().preferences.notify.enabled);
 
-    // Master is off: toggling play_sound is ignored.
-    store.send(A::TogglePlaySound, |_| {});
-    assert!(!store.state().preferences.notify.play_sound);
-
-    // Turn master on, then turn play_sound on.
-    store.send(A::ToggleDesktopNotifications, |s| {
-        s.preferences.notify.enabled = true;
-    });
+    // Master is off: toggling play_sound still works (decoupled for in-app toasts).
     store.send(A::TogglePlaySound, |s| {
         s.preferences.notify.play_sound = true;
     });
+    assert!(store.state().preferences.notify.play_sound);
 
-    // Turning master off keeps play_sound = true, and blocks changes while off.
+    // Toggling master on and off preserves play_sound = true.
+    store.send(A::ToggleDesktopNotifications, |s| {
+        s.preferences.notify.enabled = true;
+    });
+    assert!(store.state().preferences.notify.play_sound);
+
     store.send(A::ToggleDesktopNotifications, |s| {
         s.preferences.notify.enabled = false;
     });
     assert!(store.state().preferences.notify.play_sound);
-    store.send(A::TogglePlaySound, |_| {});
-    assert!(store.state().preferences.notify.play_sound);
 
-    // Turning master back on preserves play_sound = true.
-    store.send(A::ToggleDesktopNotifications, |s| {
-        s.preferences.notify.enabled = true;
+    // Turning play_sound off while master is off also works.
+    store.send(A::TogglePlaySound, |s| {
+        s.preferences.notify.play_sound = false;
     });
-    assert!(store.state().preferences.notify.play_sound);
+    assert!(!store.state().preferences.notify.play_sound);
     store.finish();
+}
+
+#[test]
+fn in_app_toasts_test_notification_and_permission_check() {
+    let (clients, fakes) =
+        humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    fakes
+        .notifier
+        .set_permission(humata2_clients::PermissionStatus::Authorized);
+    let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
+
+    assert!(store.state().preferences.notify.in_app_toasts);
+    store.send(A::ToggleInAppToasts, |s| {
+        s.preferences.notify.in_app_toasts = false;
+    });
+    store.send(A::ToggleInAppToasts, |s| {
+        s.preferences.notify.in_app_toasts = true;
+    });
+
+    store.send(A::SendTestNotification, |_| {});
+    store.send(A::TogglePlaySound, |s| {
+        s.preferences.notify.play_sound = true;
+    });
+    store.send(A::SendTestNotification, |_| {});
+
+    store.send(A::RequestNotificationPermission, |_| {});
+    store.receive(
+        A::NotificationPermissionChecked(humata2_settings::PermissionStatus::Authorized),
+        |s| {
+            s.notification_permission = humata2_settings::PermissionStatus::Authorized;
+        },
+    );
+    store.finish();
+
+    let posted = fakes.notifier.posted();
+    assert_eq!(posted.len(), 2);
+    assert_eq!(posted[0].id, "humata.test");
+    assert_eq!(posted[0].sound, None);
+    assert_eq!(posted[1].id, "humata.test");
+    assert_eq!(posted[1].sound, Some(humata2_clients::NoticeSound::Inbox));
+    assert_eq!(fakes.notifier.permission_requests(), 1);
 }
 
 #[test]

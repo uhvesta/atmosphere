@@ -10,6 +10,7 @@ Navigation "Sidebar"
     ListItem "Token refresh retry" selected
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -32,7 +33,6 @@ Navigation "Sidebar"
   TreeItem "Nightly backup"
   TreeItem "scratch" expanded
     Button "Fold"
-  TreeItem "Shell"
   Link "This Mac"
   Link "gpu-box"
   Link "ci-runner"
@@ -74,10 +74,16 @@ Complementary "Diff"
   Button "Open in editor" description="Open in editor"
   text "api"
   text "·"
-  #diff-open-file
+  Button
     text "Open file ↗"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "acme/api/src/client.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Client {"
     #change-line-1

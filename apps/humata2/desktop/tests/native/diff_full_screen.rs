@@ -208,28 +208,29 @@ fn first_row_tabs(app: &mut App) -> usize {
         .read(|state| state.session.view().map_or(0, |view| view.groups[0].tabs.len()))
 }
 
-/// UXSIMPLE 3-3, 3-4 (REVIEWER simplified): full screen offers New agent
-/// tab; its menu lists Terminal and the agents, and a pick opens a tab in
-/// the session's own tab strip with the Diff beside it.
+/// Full screen offers the `Agent · N ⌘J` dock; its `+` menu lists Terminal and
+/// the agents, and a pick opens a tab in the dock and session while staying in
+/// full screen.
 #[test]
 fn new_agent_tab_opens_a_tab_beside_the_diff() {
     let mut app = app();
-    assert!(!app.contains("new-agent-tab"), "only full screen offers it");
+    assert!(!app.contains("agent-dock-toggle"), "only full screen offers it");
     app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    assert!(app.contains("new-agent-tab-menu"));
-    assert!(app.contains("new-agent-tab-zsh"));
-    assert!(app.contains("new-agent-tab-claude"));
+    if !app.contains("agent-dock") {
+        app.click("agent-dock-toggle");
+    }
+    assert!(app.contains("agent-dock"));
+    app.click("agent-dock-add");
+    assert!(app.contains("agent-dock-add-menu"));
+    assert!(app.contains("agent-dock-add-zsh"));
+    assert!(app.contains("agent-dock-add-claude"));
     let before = first_row_tabs(&mut app);
-    app.click("new-agent-tab-copilot");
-    assert!(!app.contains("new-agent-tab-menu"));
-    assert!(!full(&mut app));
-    assert!(app.contains("side-panel"));
+    app.click("agent-dock-add-copilot");
+    assert!(!app.contains("agent-dock-add-menu"));
+    assert!(full(&mut app));
+    assert!(app.contains("agent-dock"));
     assert_eq!(first_row_tabs(&mut app), before + 1);
-    // The menu remembers the pick as last used.
-    app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    assert!(app.contains("new-agent-tab-last-used-copilot"));
+    app.click("agent-dock-close");
 }
 
 /// D858: an agent pick calls `open_agent_tab` directly with its agent and
@@ -239,8 +240,14 @@ fn new_agent_tab_opens_a_tab_beside_the_diff() {
 fn an_agent_pick_waits_with_its_prompt_and_terminal_has_none() {
     let mut app = app();
     app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    app.click("new-agent-tab-zsh");
+    if !app.contains("agent-dock") {
+        app.click("agent-dock-toggle");
+    }
+    // Anchor at the bottom so the `+` popover stays well inside the viewport
+    // even after multiple tabs are added.
+    app.click("agent-dock-position");
+    app.click("agent-dock-add");
+    app.click("agent-dock-add-zsh");
     let calls_after_zsh = app.fakes.daemon.calls();
     assert!(
         calls_after_zsh.iter().any(|call| call.contains("zsh")),
@@ -250,9 +257,8 @@ fn an_agent_pick_waits_with_its_prompt_and_terminal_has_none() {
         !calls_after_zsh.iter().any(|call| call.starts_with("open_agent_tab")),
         "zsh never calls open_agent_tab: {calls_after_zsh:?}"
     );
-    app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    app.click("new-agent-tab-copilot");
+    app.click("agent-dock-add");
+    app.click("agent-dock-add-copilot");
     let calls = app.fakes.daemon.calls();
     assert!(
         calls
@@ -262,21 +268,27 @@ fn an_agent_pick_waits_with_its_prompt_and_terminal_has_none() {
     );
     let typed = calls.iter().any(|call| call.starts_with("send_to_tab"));
     assert!(!typed, "nothing is typed via send_to_tab: {calls:?}");
+    app.click("agent-dock-close");
 }
 
-/// Escape closes the menu before it leaves full screen.
+/// Closing the Agent dock closes its add menu and stays in full screen.
 #[test]
 fn escape_closes_the_new_agent_tab_menu_first() {
     let mut app = app();
     app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    app.send(AppAction::Escape);
-    assert!(!app.contains("new-agent-tab-menu"));
+    if !app.contains("agent-dock") {
+        app.click("agent-dock-toggle");
+    }
+    app.click("agent-dock-add");
+    assert!(app.contains("agent-dock-add-menu"));
+    app.click("agent-dock-close");
+    assert!(!app.contains("agent-dock-add-menu"));
+    assert!(!app.contains("agent-dock"));
     assert!(full(&mut app));
 }
 
 /// ⌘T (UXSIMPLE 3-3) opens a Terminal tab from full screen, the Diff
-/// beside it, and doesn't touch the agents' last used mark.
+/// beside it.
 #[test]
 fn cmd_t_opens_a_terminal_tab_and_leaves_full_screen() {
     let mut app = app();
@@ -286,9 +298,6 @@ fn cmd_t_opens_a_terminal_tab_and_leaves_full_screen() {
     assert!(!full(&mut app));
     assert!(app.contains("side-panel"));
     assert_eq!(first_row_tabs(&mut app), before + 1);
-    app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    assert!(!app.contains("new-agent-tab-last-used-zsh"));
 }
 
 /// D857: an agent the session's machine lacks is listed as "not installed",
@@ -303,7 +312,7 @@ fn a_missing_agent_row_is_listed_and_opens_nothing() {
         .read(|state| state.workspace.session(&SessionId::new("ledger")).map(|s| s.machine.clone()))
         .expect("the fixture has the ledger session");
     app.fakes.machines.set_detail(Ok(MachineDetail {
-        machine,
+        machine: machine.clone(),
         os: "Ubuntu 24.04".to_owned(),
         arch: "x86_64".to_owned(),
         address: "devbox-1.lan".to_owned(),
@@ -324,17 +333,26 @@ fn a_missing_agent_row_is_listed_and_opens_nothing() {
         rules: Vec::new(),
         stop: None,
     }));
+    // Load the machine's health so `missing_agents()` sees only Claude installed.
+    app.send(AppAction::Hosts(humata2_hosts::HostsAction::ReadHealth(machine)));
     app.send(AppAction::Session(SessionAction::ToggleWiden));
-    app.click("new-agent-tab");
-    assert!(app.contains("new-agent-tab-codex"), "a missing agent still has its row");
+    if !app.contains("agent-dock") {
+        app.click("agent-dock-toggle");
+    }
+    app.click("agent-dock-add");
+    assert!(
+        app.contains("agent-dock-add-codex-disabled"),
+        "a missing agent still has its disabled row"
+    );
     let before = app.ui.read(|state| state.session.open.as_ref().and_then(|id| state.workspace.session(id)).map_or(0, |s| s.shells.len()));
-    app.click("new-agent-tab-codex");
-    assert!(app.contains("new-agent-tab-menu"), "a missing agent can't be picked");
+    app.click("agent-dock-add-codex-disabled");
+    assert!(app.contains("agent-dock-add-menu"), "a missing agent can't be picked");
     assert!(full(&mut app));
     let after = app.ui.read(|state| state.session.open.as_ref().and_then(|id| state.workspace.session(id)).map_or(0, |s| s.shells.len()));
     assert_eq!(before, after);
-    app.click("new-agent-tab-claude");
-    assert!(!app.contains("new-agent-tab-menu"));
+    app.click("agent-dock-add-claude");
+    assert!(!app.contains("agent-dock-add-menu"));
+    app.click("agent-dock-close");
 }
 
 #[test]

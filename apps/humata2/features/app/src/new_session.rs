@@ -161,6 +161,31 @@ impl App {
         self.start_new_for_item_inner(state, id, false)
     }
 
+    /// Opens the New session sheet pre-filled from an approved Intent Spec.
+    pub fn start_new_for_intent(
+        &self,
+        state: &mut AppState,
+        title: String,
+        channel: Option<String>,
+        todo_key: Option<String>,
+        brief: String,
+        repos: Vec<String>,
+    ) -> Effect<AppAction> {
+        let effect = self.reduce(state, AppAction::StartNewSession);
+        if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
+            apply_intent_to_new_session(
+                sheet,
+                &state.workspace,
+                title,
+                channel,
+                todo_key,
+                brief,
+                repos,
+            );
+        }
+        effect
+    }
+
     fn start_new_for_item_inner(
         &self,
         state: &mut AppState,
@@ -394,6 +419,116 @@ impl App {
         });
         if let Some(sheet) = sheet.filter(|sheet| sheet.creating) {
             humata2_session::follow_operation(&mut sheet.op, &mut sheet.progress, update);
+        }
+    }
+}
+
+fn apply_intent_to_new_session(
+    sheet: &mut NewSession,
+    workspace: &humata2_clients::Workspace,
+    title: String,
+    channel: Option<String>,
+    todo_key: Option<String>,
+    brief: String,
+    repos: Vec<String>,
+) {
+    if !title.trim().is_empty() {
+        sheet.title = title;
+    }
+    sheet.first_message = brief;
+    if let Some(key) = todo_key.filter(|k| !k.trim().is_empty()) {
+        sheet.item = Some(ItemId::new(key));
+    }
+    if let Some(ch_name) = channel.as_deref() {
+        let trimmed = ch_name.trim().trim_start_matches('#');
+        if let Some(ch_id) = workspace
+            .channels
+            .iter()
+            .find(|c| {
+                c.name == ch_name
+                    || c.id.as_str() == ch_name
+                    || c.name.trim_start_matches('#') == trimmed
+                    || c.id.as_str() == trimmed
+            })
+            .map(|c| c.id.clone())
+        {
+            sheet.machine = workspace
+                .channel_machines(&ch_id)
+                .find(|m| m.online)
+                .map(|m| m.id.clone());
+            sheet.channel = Some(ch_id);
+            sheet.excluded_repos.clear();
+        }
+    }
+    if !repos.is_empty()
+        && let Some(ch_id) = sheet.channel.as_ref()
+        && let Some(ch) = workspace.channel(ch_id)
+    {
+        let matched_any = ch.repos.iter().any(|r| {
+            repos
+                .iter()
+                .any(|wanted| wanted == r || wanted.rsplit('/').next() == Some(r.as_str()))
+        });
+        if matched_any {
+            sheet.excluded_repos = ch
+                .repos
+                .iter()
+                .filter(|r| {
+                    !repos.iter().any(|wanted| {
+                        wanted == *r || wanted.rsplit('/').next() == Some(r.as_str())
+                    })
+                })
+                .cloned()
+                .collect();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humata2_clients::fixture;
+
+    #[test]
+    fn apply_intent_prefills_title_channel_todo_key_brief_and_repo_scope() {
+        let workspace = fixture::design();
+        let first_channel = workspace.channels.first().expect("fixture channel");
+        let target_repo = first_channel.repos.first().cloned().unwrap_or_default();
+        let mut sheet = NewSession {
+            channel: None,
+            agent: Agent::Claude,
+            machine: None,
+            title: String::new(),
+            first_message: String::new(),
+            excluded_repos: Default::default(),
+            item: None,
+            picker: None,
+            creating: false,
+            progress: None,
+            op: None,
+            error: None,
+            note: None,
+        };
+        apply_intent_to_new_session(
+            &mut sheet,
+            &workspace,
+            "Cursor pagination".to_owned(),
+            Some(first_channel.name.clone()),
+            Some("PAY-14".to_owned()),
+            "Approved brief (v3)".to_owned(),
+            if target_repo.is_empty() {
+                Vec::new()
+            } else {
+                vec![target_repo.clone()]
+            },
+        );
+        assert_eq!(sheet.title, "Cursor pagination");
+        assert_eq!(sheet.first_message, "Approved brief (v3)");
+        assert_eq!(sheet.item, Some(ItemId::new("PAY-14")));
+        assert_eq!(sheet.channel, Some(first_channel.id.clone()));
+        if first_channel.repos.len() > 1 {
+            assert!(!sheet.excluded_repos.contains(&target_repo));
+            assert_eq!(sheet.excluded_repos.len(), first_channel.repos.len() - 1);
         }
     }
 }

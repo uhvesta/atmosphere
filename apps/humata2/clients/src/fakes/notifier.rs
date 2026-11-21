@@ -2,13 +2,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{DesktopNotice, Notifier};
+use crate::{DesktopNotice, NoticeSound, Notifier, PermissionStatus};
 
 #[derive(Debug, Default)]
 struct State {
     posted: Vec<DesktopNotice>,
     withdrawn: Vec<String>,
     permission_requests: usize,
+    permission: PermissionStatus,
+    sounds_played: Vec<NoticeSound>,
+    dock_badges: Vec<Option<usize>>,
 }
 
 /// An in-memory notifier that records every post, withdrawal, and permission request.
@@ -48,7 +51,47 @@ impl FakeNotifier {
         state.permission_requests
     }
 
-    /// Clears all recorded posts, withdrawals, and permission requests.
+    /// Sets the permission status returned by [`Notifier::query_permission`].
+    pub fn set_permission(&self, status: PermissionStatus) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.permission = status;
+    }
+
+    /// Every sound played via [`Notifier::play_sound`], oldest first.
+    #[must_use]
+    pub fn sounds_played(&self) -> Vec<NoticeSound> {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.sounds_played.clone()
+    }
+
+    /// Every dock badge update passed to [`Notifier::set_dock_badge`], oldest first.
+    #[must_use]
+    pub fn dock_badges(&self) -> Vec<Option<usize>> {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.dock_badges.clone()
+    }
+
+    /// The most recent dock badge update, if any.
+    #[must_use]
+    pub fn last_dock_badge(&self) -> Option<Option<usize>> {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.dock_badges.last().copied()
+    }
+
+    /// Clears all recorded posts, withdrawals, permission requests, sounds,
+    /// dock badges, and resets permission to [`PermissionStatus::Unknown`].
     pub fn clear(&self) {
         let mut state = match self.state.lock() {
             Ok(state) => state,
@@ -57,6 +100,9 @@ impl FakeNotifier {
         state.posted.clear();
         state.withdrawn.clear();
         state.permission_requests = 0;
+        state.permission = PermissionStatus::Unknown;
+        state.sounds_played.clear();
+        state.dock_badges.clear();
     }
 }
 
@@ -84,13 +130,37 @@ impl Notifier for FakeNotifier {
         };
         state.permission_requests += 1;
     }
+
+    fn query_permission(&self) -> PermissionStatus {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.permission
+    }
+
+    fn play_sound(&self, sound: NoticeSound) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.sounds_played.push(sound);
+    }
+
+    fn set_dock_badge(&self, count: Option<usize>) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.dock_badges.push(count);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::FakeNotifier;
     use crate::model::{RequestId, SessionId};
-    use crate::{DesktopNotice, NoopNotifier, Notifier, NotifyTarget};
+    use crate::{DesktopNotice, NoopNotifier, NoticeSound, Notifier, NotifyTarget, PermissionStatus};
 
     #[test]
     fn fake_notifier_records_and_clears() {
@@ -105,24 +175,43 @@ mod tests {
             },
             sound: None,
         };
+        assert_eq!(notifier.query_permission(), PermissionStatus::Unknown);
+        assert_eq!(notifier.last_dock_badge(), None);
+
+        notifier.set_permission(PermissionStatus::Authorized);
         notifier.request_permission();
         notifier.post(notice.clone());
         notifier.withdraw(&["humata.session.s1".to_owned()]);
+        notifier.play_sound(NoticeSound::Inbox);
+        notifier.set_dock_badge(Some(3));
+        notifier.set_dock_badge(None);
 
+        assert_eq!(notifier.query_permission(), PermissionStatus::Authorized);
         assert_eq!(notifier.permission_requests(), 1);
         assert_eq!(notifier.posted(), vec![notice]);
         assert_eq!(notifier.withdrawn(), vec!["humata.session.s1".to_owned()]);
+        assert_eq!(notifier.sounds_played(), vec![NoticeSound::Inbox]);
+        assert_eq!(notifier.dock_badges(), vec![Some(3), None]);
+        assert_eq!(notifier.last_dock_badge(), Some(None));
 
         notifier.clear();
+        assert_eq!(notifier.query_permission(), PermissionStatus::Unknown);
         assert_eq!(notifier.permission_requests(), 0);
         assert!(notifier.posted().is_empty());
         assert!(notifier.withdrawn().is_empty());
+        assert!(notifier.sounds_played().is_empty());
+        assert!(notifier.dock_badges().is_empty());
+        assert_eq!(notifier.last_dock_badge(), None);
     }
 
     #[test]
     fn noop_notifier_accepts_all_calls() {
         let notifier = NoopNotifier;
         notifier.request_permission();
+        assert_eq!(notifier.query_permission(), PermissionStatus::Unknown);
+        notifier.play_sound(NoticeSound::Todo);
+        notifier.set_dock_badge(Some(1));
+        notifier.set_dock_badge(None);
         notifier.post(DesktopNotice {
             id: "id".to_owned(),
             title: "t".to_owned(),

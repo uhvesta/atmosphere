@@ -9,7 +9,8 @@ use humata2_app::{AppAction, AppState, Route};
 use humata2_clients::model::{Agent, MoveProgress, MoveStepState, Session, Status, Turn};
 use humata2_inbox::InboxAction;
 use humata2_session::{
-    GroupWidth, SessionAction, SessionRefused, Tab, TabGroup, group_widths, is_markdown,
+    GroupWidth, SessionAction, SessionRefused, Tab, TabCapReason, TabGroup, group_widths,
+    is_markdown,
 };
 
 use humata2_ui_changes::code_editor;
@@ -454,58 +455,120 @@ fn notice(
         .into_any_element()
 }
 
-fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
-    // AGENTSET (D725): the enabled agents, then the plain shell.
-    let offered: Vec<Agent> = ui
-        .read(|state| state.settings.offered_agents())
+fn menu(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    session: &Session,
+    group: usize,
+    look: Look,
+) -> Stateful<Div> {
+    // AGENTSET (D725) + ATM-65: the enabled agents, then the plain shell, with
+    // per-kind and flat total tab cap enforcement.
+    let enabled_agents = state.settings.offered_agents();
+    let summary = state.session.tab_cap_summary(session, &enabled_agents);
+    let offered: Vec<Agent> = enabled_agents
         .into_iter()
         .chain([Agent::Shell])
         .collect();
+    let header_caption = format!("{} of {} tabs", summary.total_open, summary.total_cap);
     humata2_ui_core::action_menu::card("new-terminal-menu", 280., look)
         .top(px(32.))
         .left(px(8.))
+        .child(
+            div()
+                .id("new-terminal-menu-cap")
+                .px(px(8.))
+                .py(px(4.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(look.secondary))
+                .child(header_caption.clone())
+                .test_text(header_caption)
+                .test_support(),
+        )
         .children(offered.into_iter().map(|agent| {
+            let opt = summary.options.iter().find(|opt| opt.agent == agent);
+            let disabled = opt.is_some_and(|opt| opt.disabled_reason.is_some());
+            let status_text = opt.and_then(|opt| match opt.disabled_reason {
+                Some(TabCapReason::AtKindLimit) => Some("2 of 2 open"),
+                Some(TabCapReason::OffInSettings) => Some("Off in Settings"),
+                Some(TabCapReason::AtTotalLimit { .. }) => Some("Tab cap reached"),
+                None if opt.open_count == 1 => Some("1 open"),
+                None => None,
+            });
             let name = if agent == Agent::Shell {
                 "New terminal"
             } else {
                 agent.name()
             };
+            let open_id = SharedString::from(format!("new-terminal-{group}-{}", agent.command()));
+            let split_id =
+                SharedString::from(format!("split-terminal-{group}-{}", agent.command()));
+            let open_ui = ui.clone();
+            let split_ui = ui.clone();
             row()
                 .gap(px(6.))
                 .child(
-                    send(
-                        ui,
-                        format!("new-terminal-{group}-{}", agent.command()),
-                        name,
-                        SessionAction::OpenTerminal {
-                            agent,
-                            split: false,
-                        },
-                        look,
-                    )
-                    .flex_1()
-                    .px(px(8.))
-                    .py(px(5.))
-                    .rounded(px(4.))
-                    .hover(move |x| x.bg(rgb(look.fill)))
-                    .text_color(rgb(look.text))
-                    .child(name)
-                    .test_support(),
+                    row()
+                        .id(open_id)
+                        .role(Role::Button)
+                        .aria_label(name.to_owned())
+                        .flex_1()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .opacity(if disabled { 0.5 } else { 1. })
+                        .text_color(rgb(look.text))
+                        .when(!disabled, |el| {
+                            el.cursor_pointer()
+                                .hover(move |x| x.bg(rgb(look.fill)))
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    open_ui.send(
+                                        AppAction::Session(SessionAction::OpenTerminal {
+                                            agent,
+                                            split: false,
+                                        }),
+                                        cx,
+                                    );
+                                })
+                        })
+                        .child(div().flex_1().child(name))
+                        .children(status_text.map(|text| {
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(look.secondary))
+                                .child(text)
+                                .test_text(text)
+                        }))
+                        .test_support(),
                 )
                 .child(
-                    send(
-                        ui,
-                        format!("split-terminal-{group}-{}", agent.command()),
-                        "Open in second group",
-                        SessionAction::OpenTerminal { agent, split: true },
-                        look,
-                    )
-                    .px(px(6.))
-                    .py(px(5.))
-                    .rounded(px(4.))
-                    .hover(move |x| x.bg(rgb(look.fill)))
-                    .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
-                    .test_support(),
+                    div()
+                        .id(split_id)
+                        .role(Role::Button)
+                        .aria_label("Open in second group".to_owned())
+                        .px(px(6.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .opacity(if disabled { 0.5 } else { 1. })
+                        .when(!disabled, |el| {
+                            el.cursor_pointer()
+                                .hover(move |x| x.bg(rgb(look.fill)))
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    split_ui.send(
+                                        AppAction::Session(SessionAction::OpenTerminal {
+                                            agent,
+                                            split: true,
+                                        }),
+                                        cx,
+                                    );
+                                })
+                        })
+                        .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
+                        .test_support(),
                 )
         }))
         .child(
@@ -884,7 +947,7 @@ pub fn body(
                                     "close-terminal-menu-scrim",
                                     AppAction::Session(SessionAction::TerminalMenu(None)),
                                 ))
-                                .child(menu(ui, group, look).test_support())
+                                .child(menu(ui, state, session, group, look).test_support())
                             })
                     }),
             ),

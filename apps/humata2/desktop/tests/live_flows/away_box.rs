@@ -336,10 +336,13 @@ async fn prepare(world: &World, clients: &Clients) -> String {
         .map(|machine| machine.id.clone())
         .expect("the host lists This Mac");
     let repo = world.repo("owner", "ledger").expect("make a repo");
-    let channel = daemon
-        .create_channel("ledger", vec![repo.clone()], vec![mac, devbox.clone()])
-        .await
-        .expect("create the channel");
+    let channel = super::create_channel_ready(
+        &daemon,
+        "ledger",
+        vec![repo.clone()],
+        vec![mac, devbox.clone()],
+    )
+    .await;
     let start = |title: &'static str, first_message: &'static str| {
         let daemon = daemon.clone();
         let channel = channel.clone();

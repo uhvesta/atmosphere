@@ -7,6 +7,7 @@ Navigation "Sidebar"
   Button "Search"
   Link "Home"
   Link "Agent inbox"
+  Link "Reviews"
   Link "To-do"
   Link "Desk"
   Button "New channel"
@@ -39,6 +40,11 @@ Complementary "Diff"
       text "PR #482 against main · 2 repos"
     Button "Full screen" description="Full screen  ⌃⌘↩"
     Button "Close panel" description="Close panel"
+  #github-feedback-checked-rail
+    text "Checked 2m ago"
+    text "·"
+    Button
+      text "Refresh"
   #diff-file-bar
     Button "Previous file" description="Previous file  ⌥⌘↑"
     Button "Next file" description="Next file  ⌥⌘↓"
@@ -94,7 +100,10 @@ Complementary "Diff"
     #review-repo-acme/ledger
       Label "ledger"
       text "#91"
-  Button "Submit review…"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
+  Button "Post 4 replies to GitHub"
   Label "4 drafts · 3 by claude, 1 by you"
 Toolbar "Session panels"
   Button "Agent inbox"

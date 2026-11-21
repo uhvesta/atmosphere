@@ -214,6 +214,8 @@ pub struct AppState {
     /// Sessions whose file list was asked for, once, when the palette first
     /// opened with them; events keep those lists current.
     files_asked: std::collections::BTreeSet<SessionId>,
+    /// Sessions with an in-flight `find_files` RPC (FILESFRESH).
+    files_in_flight: std::collections::HashSet<SessionId>,
     last_saved: SavedUi,
     save_generation: u64,
     save_due: bool,
@@ -328,6 +330,7 @@ impl AppState {
             answering_cli_logins: std::collections::BTreeSet::new(),
             next_toast: 0,
             files_asked: std::collections::BTreeSet::new(),
+            files_in_flight: std::collections::HashSet::new(),
             last_saved: saved.clone(),
             save_generation: 0,
             save_due: false,
@@ -600,6 +603,8 @@ pub enum AppAction {
         allow: bool,
         result: Result<(), DaemonError>,
     },
+    /// Explicitly re-sync a session's Files panel against disk (FILESFRESH).
+    RefreshSessionFiles(SessionId),
 }
 
 /// Today in UTC, for ranking by due date.
@@ -877,9 +882,13 @@ impl App {
                 SessionAction::ArchivePlanned { result: Err(error), .. }
                 | SessionAction::Archived { result: Err(error), .. }
                 | SessionAction::DeskEnded { result: Err(error), .. },
-            ) if matches!(state.route, Route::Machine(_)) => {
-                state.machine_page.running.error = Some(error.to_string());
-                Effect::none()
+            ) if !matches!(state.route, Route::Session(_)) => {
+                if matches!(state.route, Route::Machine(_)) {
+                    state.machine_page.running.error = Some(error.to_string());
+                    Effect::none()
+                } else {
+                    state.toast(error.to_string(), &clock)
+                }
             }
             AppAction::Inbox(InboxAction::Delegate(delegate)) => match delegate {
                 I::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
@@ -1211,11 +1220,14 @@ impl App {
             AppAction::Loaded(Ok(workspace)) => {
                 state.load = Load::Ready;
                 let mut workspace = workspace;
-                // A reload brings no file lists; the ones fetched stay.
+                // A reload brings no file lists or in-flight channel setups; keep what we have.
                 for id in &state.files_asked {
                     if let Some(files) = state.workspace.session_files.get(id) {
                         workspace.session_files.insert(id.clone(), files.clone());
                     }
+                }
+                if workspace.setups.is_empty() && !state.workspace.setups.is_empty() {
+                    workspace.setups = state.workspace.setups.clone();
                 }
                 let before = state.workspace.restarts.clone();
                 state.workspace = Arc::new(workspace);
@@ -1853,20 +1865,9 @@ impl App {
                             .and(self.child(state, AppAction::Review(ReviewAction::Open(id))))
                             .and(comments)
                     }
-                    // A list that came back empty was read before the
-                    // clones were on disk, or failed: opening Files reads
-                    // it again. One on its way, or with files, stays.
-                    (Panel::Files, Some(id)) => {
-                        if state
-                            .workspace
-                            .session_files
-                            .get(&id)
-                            .is_some_and(Vec::is_empty)
-                        {
-                            state.files_asked.remove(&id);
-                        }
-                        effect.and(self.ask_files(state, id))
-                    }
+                    // FILESFRESH: opening Files always reconciles with disk
+                    // (deduplicated via `files_in_flight`), even when cached.
+                    (Panel::Files, Some(id)) => effect.and(self.refresh_files(state, id)),
                     (Panel::Inbox, Some(_)) => effect.and(self.clear_visible_notices(state)),
                     _ => effect,
                 }
@@ -1939,6 +1940,7 @@ impl App {
             AppAction::Restart(change) => self.change_restart(state, change),
             AppAction::AddMachine(change) => self.add_machine(state, change),
             AppAction::MachinePage(change) => self.machine_page(state, change),
+            AppAction::RefreshSessionFiles(session) => self.refresh_files(state, session),
             action @ (AppAction::Sidebar(_)
             | AppAction::Session(_)
             | AppAction::Review(_)

@@ -103,7 +103,7 @@ use gpui_kit::{
 };
 use humata2_app::{AppAction, NewSession, Overlay, Route};
 use humata2_clients::model::{
-    Agent, ChannelId, Recovery, Session, SessionId, SessionOptions, Status,
+    Agent, ChannelId, MachineId, Recovery, Session, SessionId, SessionOptions, SetupState, Status,
 };
 use humata2_clients::{Clients, Daemon, Event};
 use humata2_engine::Resources;
@@ -446,16 +446,60 @@ impl<'r> App<'r> {
     }
 }
 
+/// Creates a channel and, when `repos` is non-empty, waits for `Event::ChannelSetup`
+/// to report all steps `SetupState::Done` (panicking early on `SetupState::Failed`).
+async fn create_channel_ready(
+    daemon: &Arc<dyn Daemon>,
+    name: &str,
+    repos: Vec<String>,
+    machines: Vec<MachineId>,
+) -> ChannelId {
+    if repos.is_empty() {
+        return daemon
+            .create_channel(name, repos, machines)
+            .await
+            .expect("create the channel");
+    }
+    let mut events = daemon.events().await.expect("subscribe to daemon events");
+    let channel = daemon
+        .create_channel(name, repos, machines)
+        .await
+        .expect("create the channel");
+    let until = tokio::time::Instant::now() + DEADLINE;
+    loop {
+        match tokio::time::timeout_at(until, events.recv()).await {
+            Ok(Some(Ok(Event::ChannelSetup(setup)))) if setup.name == name => {
+                for step in &setup.steps {
+                    if let SetupState::Failed { reason } = &step.state {
+                        panic!("channel setup for {name:?} failed: {reason}");
+                    }
+                }
+                if !setup.steps.is_empty()
+                    && setup.steps.iter().all(|s| s.state == SetupState::Done)
+                {
+                    return channel;
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(err))) => {
+                panic!("daemon event stream error while waiting for channel setup for {name:?}: {err}");
+            }
+            Ok(None) => {
+                panic!("daemon event stream closed before channel setup for {name:?} finished");
+            }
+            Err(_) => {
+                panic!("timed out waiting for channel setup for {name:?} to finish");
+            }
+        }
+    }
+}
+
 async fn channel_with_repo(world: &World, clients: &Clients, name: &str) -> (ChannelId, String) {
     let mac = World::this_mac(clients)
         .await
         .expect("the workspace has This Mac");
     let repo = world.repo("owner", "ledger").expect("make a repo");
-    let channel = clients
-        .daemon
-        .create_channel(name, vec![repo.clone()], vec![mac])
-        .await
-        .expect("create the channel");
+    let channel = create_channel_ready(&clients.daemon, name, vec![repo.clone()], vec![mac]).await;
     (channel, repo)
 }
 

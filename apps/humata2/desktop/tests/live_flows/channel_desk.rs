@@ -1,15 +1,12 @@
-//! A channel's own Desk on a real daemon (CD-2, CD-4, CD-6): from the
-//! channel's Desk tab, New desk session starts one; it is listed on the
-//! tab and under the channel in the sidebar; Close session, once confirmed,
-//! leaves neither.
+//! A channel's own Desk on a real daemon (CD-2, CD-4, CD-6, CHANNELDESK):
+//! opening the channel's Desk tab starts its persistent primary Desk session;
+//! it is listed on the tab and under the channel in the sidebar; Close Desk,
+//! once confirmed, leaves neither.
 use gpui_kit::Role;
 use humata2_app::{AppAction, Route};
-use humata2_desk::DeskAction;
 
 use super::world::World;
 use super::{App, channel_with_repo, runtime};
-
-const TITLE: &str = "Triage flaky tests";
 
 #[test]
 fn a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away() {
@@ -27,6 +24,13 @@ fn a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away() {
                 && state.workspace.machines.iter().any(|machine| machine.online)
         })
     });
+    assert!(
+        app.ui
+            .read(|state| state.desk.channel_rows(&channel).is_empty()),
+        "a new channel has no Desk session before its Desk tab opens"
+    );
+
+    // Opening the channel's Desk tab ensures its persistent primary Desk.
     app.cx
         .update(|cx| app.ui.send(AppAction::OpenChannelDesk(channel.clone()), cx));
     app.settle();
@@ -34,43 +38,18 @@ fn a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away() {
         app.ui
             .read(|state| state.route == Route::Channel(channel.clone()))
     });
-    assert!(
-        app.ui
-            .read(|state| state.desk.channel_rows(&channel).is_empty()),
-        "a new channel has no Desk session"
-    );
-
-    app.click(Role::Button, "New desk session");
-    app.wait_until("the New desk session dialog", |app| {
-        app.ui.read(|state| state.desk.channel_new.is_some())
-    });
-    app.click(Role::TextInput, "Title");
-    app.type_text(TITLE);
-    app.wait_until("the typed title to reach the form", |app| {
-        app.ui.read(|state| {
-            state
-                .desk
-                .channel_new
-                .as_ref()
-                .is_some_and(|form| form.title == TITLE)
-        })
-    });
-    app.click(Role::Button, "Start");
-    app.wait_until("the session to be listed on the channel's Desk", |app| {
+    app.wait_until("the primary Desk session to start for the channel", |app| {
         app.ui
             .read(|state| state.desk.channel_rows(&channel).len() == 1)
     });
-    let (id, listed) = app.ui.read(|state| {
-        let rows = state.desk.channel_rows(&channel);
-        (
-            rows.first().map(|row| row.session.id.clone()),
-            rows.first().map(|row| row.session.title.clone()),
-        )
+    let listed = app.ui.read(|state| {
+        state
+            .desk
+            .channel_rows(&channel)
+            .first()
+            .map(|row| row.session.title.clone())
     });
-    let (Some(id), Some(listed)) = (id, listed) else {
-        panic!("the Desk lists the session it started")
-    };
-    assert_eq!(listed, TITLE);
+    assert_eq!(listed.as_deref(), Some("#payments Desk"));
     app.wait_until("the sidebar to show the channel's Desk row", |app| {
         app.ui.read(|state| {
             state
@@ -81,15 +60,8 @@ fn a_channel_desk_session_starts_from_its_tab_and_closing_it_takes_it_away() {
         })
     });
 
-    // Back on the tab, closing asks first.
-    app.cx
-        .update(|cx| app.ui.send(AppAction::OpenChannelDesk(channel.clone()), cx));
-    app.settle();
-    app.cx.update(|cx| {
-        app.ui
-            .send(AppAction::Desk(DeskAction::AskClose(id.clone())), cx)
-    });
-    app.settle();
+    // Closing from the Desk tab asks first.
+    app.click(Role::Button, "Close Desk");
     app.wait_until("the confirmation", |app| {
         app.ui.read(|state| state.desk.channel_close.is_some())
     });

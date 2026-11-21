@@ -329,6 +329,24 @@ impl App {
         if !state.files_asked.insert(session.clone()) {
             return Effect::none();
         }
+        self.fetch_files(state, session)
+    }
+
+    /// Reconciles `session`'s file list against the daemon, unless a request
+    /// for it is already in flight (FILESFRESH).
+    pub(super) fn refresh_files(
+        &self,
+        state: &mut AppState,
+        session: SessionId,
+    ) -> Effect<AppAction> {
+        state.files_asked.insert(session.clone());
+        self.fetch_files(state, session)
+    }
+
+    fn fetch_files(&self, state: &mut AppState, session: SessionId) -> Effect<AppAction> {
+        if !state.files_in_flight.insert(session.clone()) {
+            return Effect::none();
+        }
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
             let result = daemon.find_files(&session).await;
@@ -342,6 +360,7 @@ impl App {
         session: SessionId,
         result: Result<Vec<SessionFile>, DaemonError>,
     ) -> Effect<AppAction> {
+        state.files_in_flight.remove(&session);
         match result {
             Ok(files) => {
                 let files = fair_share(files, SESSION_FILES_CAP);
@@ -357,7 +376,9 @@ impl App {
             // page does. The open session's Files tree and walkthrough wait
             // on the list, so its person is told why nothing came.
             Err(error) => {
-                state.files_asked.remove(&session);
+                if !state.workspace.session_files.contains_key(&session) {
+                    state.files_asked.remove(&session);
+                }
                 if state.session.open.as_ref() != Some(&session) {
                     return Effect::none();
                 }

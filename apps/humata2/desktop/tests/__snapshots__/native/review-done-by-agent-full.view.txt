@@ -1,6 +1,7 @@
 Complementary "Diff"
   Label "# payments-rewrite › Ledger schema migration"
-  Button "New agent tab"
+  Button "Details ⤢"
+  Button "Agent · 1 ⌘J" collapsed
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
@@ -54,12 +55,21 @@ Complementary "Diff"
       CheckBox "Not looked at"
   Splitter "Resize the file list"
   text "entry.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   Button "Open in editor" description="Open in editor"
   text "api"
   text "·"
   text "src/"
+  Button
+    text "Open file ↗"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "api/src/entry.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Client {"
     #change-line-1
@@ -125,6 +135,9 @@ Complementary "Diff"
       text "+"
       #change-code-6-0
         text "        tx.commit().await?;"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Looks good"
   Button "Send to claude" disabled
   Label "0 of 3 files looked at"

@@ -24,7 +24,7 @@ pub use humata2_ui_overlays::{overlays, palette_hits};
 pub use humata2_ui_report::{record, record_video, report_view};
 pub use humata2_ui_settings::{access, settings, settings_providers, settings_repositories};
 pub use humata2_ui_workspace::{
-    channel, cli_login, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed,
+    channel, cli_login, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed, reviews_inbox,
     session_tabs, sidebar, sidebar_pinned, terminals, todo, view_tab,
 };
 

@@ -163,6 +163,8 @@ pub enum Command {
     Views,
     /// Go to the To-do list.
     Todo,
+    /// Go to Reviews.
+    Reviews,
     /// Open a host's page.
     Machine(MachineId),
     /// Move the open session to another machine; the palette asks which.
@@ -931,6 +933,7 @@ impl PaletteState {
             (Command::ShowShortcuts, "Keyboard shortcuts", "⌘/"),
             (Command::Views, "Go to Views", ""),
             (Command::Todo, "Go to To-do", "⌘3"),
+            (Command::Reviews, "Go to Reviews", ""),
         ]
         .into_iter()
         .map(|(command, title, hint)| Entry {

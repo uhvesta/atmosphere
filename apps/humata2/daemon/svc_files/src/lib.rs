@@ -256,6 +256,7 @@ impl Files {
     /// The list of session clones' files, told on the feed as these calls
     /// change it (bug 23).
     pub fn use_changes(&self, changes: Arc<FileChanges>) {
+        self.find.use_changes(changes.clone());
         let _ = self.changes.set(changes);
     }
 

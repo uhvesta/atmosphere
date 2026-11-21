@@ -213,6 +213,50 @@ impl Host {
         repo
     }
 
+    /// Creates `name` with `repos` on `mac` and waits until every setup step
+    /// finishes cloning so an immediate `create_session` can use those repos.
+    async fn create_channel_ready(
+        daemon: &LiveDaemon,
+        name: &str,
+        repos: Vec<String>,
+        mac: &humata2_clients::model::MachineId,
+    ) -> humata2_clients::model::ChannelId {
+        let mut events = within("events", daemon.events())
+            .await
+            .expect("subscribe to daemon events");
+        let channel = within(
+            "create_channel",
+            daemon.create_channel(name, repos, vec![mac.clone()]),
+        )
+        .await
+        .expect("create the channel");
+        within("channel setup done", async {
+            while let Some(item) = events.recv().await {
+                if let Ok(humata2_clients::Event::ChannelSetup(setup)) = item {
+                    if !setup.steps.is_empty()
+                        && setup
+                            .steps
+                            .iter()
+                            .all(|step| step.state == humata2_clients::model::SetupState::Done)
+                    {
+                        return;
+                    }
+                    if let Some(reason) = setup.steps.iter().find_map(|step| match &step.state {
+                        humata2_clients::model::SetupState::Failed { reason } => {
+                            Some(reason.as_str())
+                        }
+                        _ => None,
+                    }) {
+                        panic!("channel setup failed: {reason}");
+                    }
+                }
+            }
+            panic!("event stream closed before channel setup finished");
+        })
+        .await;
+        channel
+    }
+
     /// A session titled `title` over `ledger` (which has `release/2.4`)
     /// and `api`, in a channel of its own.
     async fn two_repo_session(&self, daemon: &LiveDaemon, title: &str) -> SessionId {
@@ -224,12 +268,7 @@ impl Host {
             .id
             .clone();
         let repos = vec![self.repo_with_release("ledger"), self.repo("api")];
-        let channel = within(
-            "create_channel",
-            daemon.create_channel("payments", repos.clone(), vec![mac.clone()]),
-        )
-        .await
-        .expect("create the channel");
+        let channel = Self::create_channel_ready(daemon, "payments", repos.clone(), &mac).await;
         within(
             "create_session",
             daemon.create_session(
@@ -258,12 +297,7 @@ impl Host {
             .id
             .clone();
         let repo = self.repo("ledger");
-        let channel = within(
-            "create_channel",
-            daemon.create_channel("payments", vec![repo.clone()], vec![mac.clone()]),
-        )
-        .await
-        .expect("create the channel");
+        let channel = Self::create_channel_ready(daemon, "payments", vec![repo.clone()], &mac).await;
         within(
             "create_session",
             daemon.create_session(

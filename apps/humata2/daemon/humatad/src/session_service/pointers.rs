@@ -140,7 +140,8 @@ impl Cache {
 
     /// Watches the session's folder, clones, and agent artifact directories;
     /// refreshes when the set of watched paths changes (e.g. a repo is added
-    /// or the conversation id rotates).
+    /// or the conversation id rotates). Returns `true` when watchers were
+    /// newly installed or updated.
     fn watch(
         self: &Arc<Self>,
         session: &str,
@@ -148,7 +149,7 @@ impl Cache {
         repos: &[SessionRepo],
         skip_dirs: &HashSet<String>,
         agent_dirs: &[PathBuf],
-    ) {
+    ) -> bool {
         let mut wanted_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
         if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
             wanted_paths.insert(folder.to_owned());
@@ -163,7 +164,7 @@ impl Cache {
             .get(session)
             .is_some_and(|(paths, _)| *paths == wanted_paths)
         {
-            return;
+            return false;
         }
         let mut watchers = Vec::with_capacity(wanted_paths.len());
         if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
@@ -216,6 +217,7 @@ impl Cache {
             }
         }
         watching.insert(session.to_owned(), (wanted_paths, watchers));
+        true
     }
 
     /// Stores `now` for `session`; whether it differs from what was kept.
@@ -299,7 +301,14 @@ fn is_noisy_path(
     if matches!(first, "target" | "node_modules") {
         return true;
     }
-    components.any(|part| matches!(part, "target" | "node_modules"))
+    let mut last = first;
+    for part in components {
+        if matches!(part, "target" | "node_modules") {
+            return true;
+        }
+        last = part;
+    }
+    last.starts_with('.') && (last.ends_with(".partial") || last.contains(".humata-partial-"))
 }
 
 /// Starts the loop that looks at this machine's live sessions: once for
@@ -350,7 +359,13 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
         else {
             return Vec::new();
         };
-        let live: HashSet<String> = agents
+        let archived: HashSet<String> = store
+            .archives()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.session_id)
+            .collect();
+        let mut live: HashSet<String> = agents
             .into_iter()
             .filter(|agent| {
                 matches!(
@@ -360,40 +375,55 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
             })
             .map(|agent| agent.session)
             .collect();
+        // FILESFRESH: watch non-archived local sessions with any live holder
+        // (agent or shell) so files created from shell tabs emit FileChanged.
+        for tab in store.tabs().unwrap_or_default() {
+            if let Some(session) = tab.session
+                && crate::channel_service::delete::pid_alive(tab.holder_pid)
+            {
+                live.insert(session);
+            }
+        }
         let here: HashMap<String, PathBuf> = records
             .iter()
-            .filter(|record| !remote::elsewhere(record, &machine))
+            .filter(|record| {
+                !remote::elsewhere(record, &machine) && !archived.contains(&record.id)
+            })
             .map(|record| (record.id.clone(), record.folder.clone()))
+            .collect();
+        let repos_by_session: HashMap<String, Vec<SessionRepo>> = details
+            .into_iter()
+            .map(|detail| (detail.session, detail.repos))
             .collect();
         let wanted = |session: &str| only.as_ref().is_none_or(|only| only.contains_key(session));
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         let mut found = Vec::new();
         let mut watched = HashSet::new();
         let empty_skip = HashSet::new();
-        for detail in details {
-            let Some(folder) = here.get(&detail.session) else {
-                continue;
-            };
-            if !live.contains(&detail.session) || !wanted(&detail.session) {
+        for (session, folder) in &here {
+            if !live.contains(session) || !wanted(session) {
                 continue;
             }
-            let skip_dirs = clone_dir_names(folder, &detail.repos);
+            let repos = repos_by_session.get(session).map_or(&[][..], Vec::as_slice);
+            let skip_dirs = clone_dir_names(folder, repos);
             let session_folder = (!folder.as_os_str().is_empty()).then_some(folder.as_path());
-            let agent_dirs = crate::files::session_agent_watch_dirs(&store, &home, &detail.session);
-            cache.watch(
-                &detail.session,
+            let agent_dirs = crate::files::session_agent_watch_dirs(&store, &home, session);
+            let newly_watched = cache.watch(
+                session,
                 session_folder,
-                &detail.repos,
+                repos,
                 &skip_dirs,
                 &agent_dirs,
             );
-            watched.insert(detail.session.clone());
+            watched.insert(session.clone());
             // Bug 23: the watcher wakes this look on every file change in the
             // session folder or clone, an agent's edits included. Only the paths
             // it named are looked at; the root is listed again only when events
-            // were lost or it has no list yet (the first pass, which names none).
-            let dirty = only.as_ref().and_then(|only| only.get(&detail.session));
-            let rescan = dirty.is_some_and(|dirty| dirty.rescan);
+            // were lost, watchers were newly installed (catching files written
+            // between `find_files` seeding and watcher setup), or it has no list
+            // yet.
+            let dirty = only.as_ref().and_then(|only| only.get(session));
+            let rescan = newly_watched || dirty.is_some_and(|dirty| dirty.rescan);
             if let Some(folder) = session_folder {
                 let canon = dirty
                     .filter(|dirty| !dirty.paths.is_empty())
@@ -412,9 +442,9 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                             .collect()
                     })
                     .unwrap_or_default();
-                file_changes.look(&detail.session, None, folder, &touched, rescan, &skip_dirs);
+                file_changes.look(session, None, folder, &touched, rescan, &skip_dirs);
             }
-            for repo in &detail.repos {
+            for repo in repos {
                 let named = pb::RepoRef {
                     owner: repo.owner.clone(),
                     name: repo.name.clone(),
@@ -432,7 +462,7 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                     })
                     .unwrap_or_default();
                 file_changes.look(
-                    &detail.session,
+                    session,
                     Some(&named),
                     &repo.path,
                     &touched,
@@ -458,7 +488,7 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                     })
                     .unwrap_or_default();
                 file_changes.look(
-                    &detail.session,
+                    session,
                     Some(&agent_repo),
                     agent_root,
                     &touched,
@@ -466,8 +496,8 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                     &empty_skip,
                 );
             }
-            let pointers: Vec<pb::Pointer> = detail.repos.iter().filter_map(pointer).collect();
-            found.push((detail.session, pointers));
+            let pointers: Vec<pb::Pointer> = repos.iter().filter_map(pointer).collect();
+            found.push((session.clone(), pointers));
         }
         // A session that stopped, was archived or left is no longer watched.
         let mut watching = lock(&cache.watching);
@@ -496,9 +526,11 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
     }
 }
 
-/// Top-level directory names under `folder` belonging to `repos`.
+/// Top-level directory names under `folder` to skip when watching a session's
+/// own folder: its repo clones and Humata's internal `state` directory.
 fn clone_dir_names(folder: &Path, repos: &[SessionRepo]) -> HashSet<String> {
-    let mut names = HashSet::with_capacity(repos.len());
+    let mut names = HashSet::with_capacity(repos.len() + 1);
+    names.insert("state".to_owned());
     for repo in repos {
         if !repo.name.is_empty() {
             names.insert(repo.name.clone());

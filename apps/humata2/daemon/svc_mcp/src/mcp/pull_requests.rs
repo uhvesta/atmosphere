@@ -260,4 +260,34 @@ impl GrpcDaemon {
             None,
         ))
     }
+
+    /// `watch_pr_url {url}` -> `{pr, url}`.
+    pub(super) async fn watch_pr_url(&self, call: Call) -> Result<Reply, ToolError> {
+        let url = text(&call.arguments, "url");
+        let request = self.request(pb::WatchPullRequestRequest { url })?;
+        let watched = self
+            .pull_request_client()
+            .watch_pull_request(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let pr = watched.pr.and_then(|pr| {
+            let repo = pr.repo?;
+            Some(format!("{}/{}#{}", repo.owner, repo.name, pr.number))
+        });
+        Ok(applied(json!({ "pr": pr, "url": watched.url }), None))
+    }
+
+    /// `unwatch_pr {pr}` -> `{removed}`.
+    pub(super) async fn unwatch_pr(&self, call: Call) -> Result<Reply, ToolError> {
+        let pr = pull_request(&text(&call.arguments, "pr"))?;
+        let request = self.request(pb::UnwatchPullRequestRequest { pr: Some(pr) })?;
+        let unwatched = self
+            .pull_request_client()
+            .unwatch_pull_request(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(json!({ "removed": unwatched.removed }), None))
+    }
 }

@@ -484,6 +484,43 @@ fn undo(
     Ok(())
 }
 
+/// Rewrites `<old_root>/.repo-cache` pointers inside linked worktree `.git`
+/// files under `channel_dir` to `<new_root>/.repo-cache`, then runs
+/// `git worktree repair` so each bare cache's `worktrees/<id>/gitdir` points
+/// back to the moved checkout.
+fn repoint_worktrees_for_root_move(channel_dir: &Path, old_root: &Path, new_root: &Path) {
+    let old_raw = old_root.join(".repo-cache");
+    let old_canon = old_root
+        .canonicalize()
+        .unwrap_or_else(|_| old_root.to_path_buf())
+        .join(".repo-cache");
+    let new_cache = new_root
+        .canonicalize()
+        .unwrap_or_else(|_| new_root.to_path_buf())
+        .join(".repo-cache");
+    let old_raw_s = old_raw.to_string_lossy();
+    let old_canon_s = old_canon.to_string_lossy();
+    let new_s = new_cache.to_string_lossy();
+
+    for (repo_path, _) in humata2_sessions::collect_worktrees_in_folder(channel_dir) {
+        let dot_git = repo_path.join(".git");
+        let Ok(raw) = fs::read_to_string(&dot_git) else {
+            continue;
+        };
+        let updated = if old_canon != old_raw && raw.contains(old_canon_s.as_ref()) {
+            raw.replace(old_canon_s.as_ref(), new_s.as_ref())
+        } else if raw.contains(old_raw_s.as_ref()) {
+            raw.replace(old_raw_s.as_ref(), new_s.as_ref())
+        } else {
+            continue;
+        };
+        if updated != raw {
+            let _ = fs::write(&dot_git, updated);
+        }
+    }
+    humata2_sessions::repair_worktrees_in_folder(channel_dir);
+}
+
 /// Moves `channels` (and the Desk, the trash and what other machines sent)
 /// from the layout's root into `new_root`, with their files and records.
 /// Then `finish` runs (it saves the new root). One that fails, or a `finish`
@@ -498,6 +535,7 @@ fn move_everything(
     new_root: &Path,
     finish: impl FnOnce() -> Result<(), StoreError>,
 ) -> Result<(), RootError> {
+    let old_root = layout.root();
     let all = jobs(store, layout, channels, new_root)?;
     fs::create_dir_all(new_root).map_err(|source| RootError::Make {
         path: new_root.to_owned(),
@@ -515,6 +553,8 @@ fn move_everything(
                     store,
                     channels_port,
                     here,
+                    &old_root,
+                    new_root,
                     done,
                     what,
                     from,
@@ -524,12 +564,19 @@ fn move_everything(
             }
         }
     }
+    for (job, _) in &done {
+        if matches!(job.records, Records::Channel(_)) {
+            repoint_worktrees_for_root_move(&job.new, &old_root, new_root);
+        }
+    }
     if let Err(source) = finish() {
         let what = "the setting that names the new Humata folder".to_owned();
         return Err(put_back(
             store,
             channels_port,
             here,
+            &old_root,
+            new_root,
             done,
             what,
             layout.root(),
@@ -546,6 +593,8 @@ fn put_back(
     store: &Store,
     channels_port: &dyn MachineChannelsPort,
     here: &str,
+    old_root: &Path,
+    new_root: &Path,
     done: Vec<(Job, Carried)>,
     what: String,
     from: PathBuf,
@@ -561,6 +610,11 @@ fn put_back(
                 job.old.display()
             );
             left.push(format!("{} (now at {})", job.what, job.new.display()));
+        }
+    }
+    for (job, progress) in &done {
+        if progress.renamed && matches!(job.records, Records::Channel(_)) && exists(&job.old) {
+            repoint_worktrees_for_root_move(&job.old, new_root, old_root);
         }
     }
     if left.is_empty() {

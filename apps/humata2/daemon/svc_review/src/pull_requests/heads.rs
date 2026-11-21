@@ -18,7 +18,7 @@ use humata2_daemon_ports::Caller;
 use crate::pb;
 use humata2_review_diff::bracketed_paste;
 use humata2_rpc_kit::{
-    blocking, chain, error_of, failed, invalid_field, log::say, missing, not_found,
+    blocking, chain, failed, invalid_field, log::say, missing, not_found,
 };
 use humata2_store::{ReviewPr, ReviewSessionRecord, SessionRecord, Store, StoreError};
 use serde_json::Value;

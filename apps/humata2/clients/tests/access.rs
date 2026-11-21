@@ -38,7 +38,7 @@ fn setting(daemon: &FakeDaemon, channel: &str, capability: &str) -> Option<RuleS
 fn setting_a_rule_changes_it_and_announces_the_channels_rules() {
     let daemon = daemon();
     let mut events = block_on(daemon.events()).expect("events start");
-    assert_eq!(setting(&daemon, "web", "files_read_other_session"), Some(RuleSetting::Ask));
+    assert_eq!(setting(&daemon, "web", "files_read_other_session"), Some(RuleSetting::Allow));
     block_on(daemon.set_rule(
         &ChannelId::new("web"),
         &Capability::new("files_read_other_session"),
@@ -46,7 +46,7 @@ fn setting_a_rule_changes_it_and_announces_the_channels_rules() {
     ))
     .expect("the rule changes");
     assert_eq!(setting(&daemon, "web", "files_read_other_session"), Some(RuleSetting::Never));
-    assert_eq!(setting(&daemon, "api", "files_read_other_session"), Some(RuleSetting::Ask));
+    assert_eq!(setting(&daemon, "api", "files_read_other_session"), Some(RuleSetting::Allow));
     let mut announced = None;
     while let Ok(event) = events.try_recv() {
         if let Ok(Event::Rules { channel, rules }) = event {

@@ -38,10 +38,13 @@ async fn session_on_devbox(world: &World, clients: &Clients) -> SessionId {
     let devbox = machine(&|name| name == DEVBOX);
     let mac = machine(&|name| name != DEVBOX);
     let repo = world.repo("owner", "ledger").expect("make a repo");
-    let channel = daemon
-        .create_channel("ledger", vec![repo.clone()], vec![mac, devbox.clone()])
-        .await
-        .expect("create the channel");
+    let channel = super::create_channel_ready(
+        &daemon,
+        "ledger",
+        vec![repo.clone()],
+        vec![mac, devbox.clone()],
+    )
+    .await;
     daemon
         .create_session(
             &channel,

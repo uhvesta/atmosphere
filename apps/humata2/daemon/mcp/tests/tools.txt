@@ -103,8 +103,10 @@ todo_set_checkpoint
 todo_step_update
 topology_get
 trash_restore
+unwatch_pr
 view_mark_ready
 view_prepare
 view_revise
 views_list
+watch_pr_url
 whoami

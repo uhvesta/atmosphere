@@ -44,7 +44,7 @@ use humata2_clients::machines::{
 };
 use humata2_clients::model::Agent;
 use humata2_clients::{Clients, DaemonError, KeychainError};
-pub use humata2_notify::NotifyConfig;
+pub use humata2_notify::{NotifyConfig, PermissionStatus};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
@@ -391,6 +391,8 @@ pub struct SettingsState {
     pub scripts_error: Option<String>,
     /// PROVIDERS: the Providers block of Machines.
     pub providers: ProvidersState,
+    /// Last queried OS notification permission status.
+    pub notification_permission: PermissionStatus,
 }
 
 /// What happens on the settings page.
@@ -422,6 +424,14 @@ pub enum SettingsAction {
     ToggleDesktopNotifications,
     /// Enable or disable desktop notification chimes (NOTIFY2).
     TogglePlaySound,
+    /// Enable or disable in-app notification toasts.
+    ToggleInAppToasts,
+    /// Send a synthetic test notification.
+    SendTestNotification,
+    /// Request OS notification permission and refresh the cached status.
+    RequestNotificationPermission,
+    /// OS notification permission status was checked.
+    NotificationPermissionChecked(PermissionStatus),
     /// Enable or disable extra permission-request alerts.
     TogglePermissionRequestAlerts,
     /// Free the memory of terminals hidden for 30 seconds, or keep every screen.
@@ -767,9 +777,29 @@ impl Reducer for Settings {
                 }
             }
             SettingsAction::TogglePlaySound => {
-                if preferences.notify.enabled {
-                    preferences.notify.play_sound = !preferences.notify.play_sound;
-                }
+                preferences.notify.play_sound = !preferences.notify.play_sound;
+            }
+            SettingsAction::ToggleInAppToasts => {
+                preferences.notify.in_app_toasts = !preferences.notify.in_app_toasts;
+            }
+            SettingsAction::SendTestNotification => {
+                let notifier = self.clients.notifier.clone();
+                let play_sound = preferences.notify.play_sound;
+                return Effect::run(move |_send| async move {
+                    notifier.post(humata2_notify::build_test_notice(play_sound));
+                });
+            }
+            SettingsAction::RequestNotificationPermission => {
+                let notifier = self.clients.notifier.clone();
+                return Effect::future(async move {
+                    notifier.request_permission();
+                    SettingsAction::NotificationPermissionChecked(map_permission(
+                        notifier.query_permission(),
+                    ))
+                });
+            }
+            SettingsAction::NotificationPermissionChecked(status) => {
+                state.notification_permission = status;
             }
             SettingsAction::TogglePermissionRequestAlerts => {
                 preferences.permission_request_alerts = !preferences.permission_request_alerts;
@@ -850,6 +880,18 @@ impl Reducer for Settings {
             SettingsAction::WebTodo(_) => {}
         }
         Effect::none()
+    }
+}
+
+const fn map_permission(status: humata2_clients::PermissionStatus) -> PermissionStatus {
+    match status {
+        humata2_clients::PermissionStatus::Unknown => PermissionStatus::Unknown,
+        humata2_clients::PermissionStatus::Authorized => PermissionStatus::Authorized,
+        humata2_clients::PermissionStatus::Denied => PermissionStatus::Denied,
+        humata2_clients::PermissionStatus::NotDetermined => PermissionStatus::NotDetermined,
+        humata2_clients::PermissionStatus::Provisional => PermissionStatus::Provisional,
+        humata2_clients::PermissionStatus::Ephemeral => PermissionStatus::Ephemeral,
+        humata2_clients::PermissionStatus::Unbundled => PermissionStatus::Unbundled,
     }
 }
 

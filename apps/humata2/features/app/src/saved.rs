@@ -26,6 +26,101 @@ use crate::layout::{FullScreen, Layout};
 /// The storage key the app's state is saved under.
 pub const KEY: &str = "humata2-ui.json";
 
+/// The storage key per-channel Desk To-do split pane state is saved under (DESKTODO).
+pub const DESK_TODO_PANES_KEY: &str = "humata2-desk-todo-panes.json";
+
+/// Persisted visibility and width for a channel's Desk To-do split pane (DESKTODO).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedChannelTodoPane {
+    /// Whether the split pane is shown.
+    pub visible: bool,
+    /// Clamped width in pixels.
+    pub width: f32,
+}
+
+impl Default for SavedChannelTodoPane {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            width: humata2_desk::TODO_PANE_DEFAULT_WIDTH,
+        }
+    }
+}
+
+/// Captures per-channel Desk To-do split pane state for persistence, clamping widths.
+#[must_use]
+pub fn capture_desk_todo_panes(
+    panes: &BTreeMap<ChannelId, humata2_desk::ChannelTodoPane>,
+) -> BTreeMap<ChannelId, SavedChannelTodoPane> {
+    panes
+        .iter()
+        .map(|(channel, pane)| {
+            (
+                channel.clone(),
+                SavedChannelTodoPane {
+                    visible: pane.visible,
+                    width: humata2_desk::clamp_todo_pane_width(pane.width),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Builds the Desk actions to restore saved per-channel To-do split pane states.
+#[must_use]
+pub fn restore_desk_todo_pane_actions(
+    saved: &BTreeMap<ChannelId, SavedChannelTodoPane>,
+) -> Vec<humata2_desk::DeskAction> {
+    saved
+        .iter()
+        .map(|(channel, pane)| humata2_desk::DeskAction::RestoreChannelTodoPane {
+            channel: channel.clone(),
+            visible: pane.visible,
+            width: humata2_desk::clamp_todo_pane_width(pane.width),
+        })
+        .collect()
+}
+
+/// Saves per-channel Desk To-do split pane state to `storage`.
+///
+/// # Errors
+///
+/// [`SaveError`] when it can't be encoded or stored.
+pub fn save_desk_todo_panes(
+    storage: &dyn Storage,
+    panes: &BTreeMap<ChannelId, humata2_desk::ChannelTodoPane>,
+) -> Result<(), SaveError> {
+    let captured = capture_desk_todo_panes(panes);
+    let bytes = serde_json::to_vec(&captured).map_err(|source| SaveError::Encode { source })?;
+    storage
+        .save(DESK_TODO_PANES_KEY, &bytes)
+        .map_err(|source| SaveError::Save { source })
+}
+
+/// Reads saved per-channel Desk To-do split pane state from `storage`; nothing
+/// saved returns an empty map.
+///
+/// # Errors
+///
+/// [`RestoreError`] when storage fails or what was saved can't be read.
+pub fn restore_desk_todo_panes(
+    storage: &dyn Storage,
+) -> Result<BTreeMap<ChannelId, SavedChannelTodoPane>, RestoreError> {
+    let Some(bytes) = storage
+        .load(DESK_TODO_PANES_KEY)
+        .map_err(|source| RestoreError::Load { source })?
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let mut panes: BTreeMap<ChannelId, SavedChannelTodoPane> =
+        serde_json::from_slice(&bytes).map_err(|source| RestoreError::Decode { source })?;
+    for pane in panes.values_mut() {
+        pane.width = humata2_desk::clamp_todo_pane_width(pane.width);
+    }
+    Ok(panes)
+}
+
 /// What is saved.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -176,5 +271,103 @@ impl Saver {
             .map_err(|source| SaveError::Save { source })?;
         *written = generation;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tca::StorageError;
+
+    #[derive(Default)]
+    struct MemoryStorage {
+        entries: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl Storage for MemoryStorage {
+        fn load(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(key)
+                .cloned())
+        }
+
+        fn save(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+            self.entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key.to_owned(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn desk_todo_panes_round_trip_and_clamp() {
+        let storage = MemoryStorage::default();
+        let ch_a = ChannelId::new("ch-a");
+        let ch_b = ChannelId::new("ch-b");
+
+        let mut panes = BTreeMap::new();
+        panes.insert(
+            ch_a.clone(),
+            humata2_desk::ChannelTodoPane {
+                visible: true,
+                width: 100.0,
+                ..Default::default()
+            },
+        );
+        panes.insert(
+            ch_b.clone(),
+            humata2_desk::ChannelTodoPane {
+                visible: false,
+                width: 900.0,
+                ..Default::default()
+            },
+        );
+
+        save_desk_todo_panes(&storage, &panes).expect("save succeeds");
+        let restored = restore_desk_todo_panes(&storage).expect("restore succeeds");
+
+        assert_eq!(
+            restored.get(&ch_a),
+            Some(&SavedChannelTodoPane {
+                visible: true,
+                width: humata2_desk::TODO_PANE_MIN_WIDTH,
+            })
+        );
+        assert_eq!(
+            restored.get(&ch_b),
+            Some(&SavedChannelTodoPane {
+                visible: false,
+                width: humata2_desk::TODO_PANE_MAX_WIDTH,
+            })
+        );
+
+        let actions = restore_desk_todo_pane_actions(&restored);
+        assert_eq!(
+            actions,
+            vec![
+                humata2_desk::DeskAction::RestoreChannelTodoPane {
+                    channel: ch_a,
+                    visible: true,
+                    width: humata2_desk::TODO_PANE_MIN_WIDTH,
+                },
+                humata2_desk::DeskAction::RestoreChannelTodoPane {
+                    channel: ch_b,
+                    visible: false,
+                    width: humata2_desk::TODO_PANE_MAX_WIDTH,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_desk_todo_panes_empty_when_missing() {
+        let storage = MemoryStorage::default();
+        let restored = restore_desk_todo_panes(&storage).expect("empty restore succeeds");
+        assert!(restored.is_empty());
     }
 }

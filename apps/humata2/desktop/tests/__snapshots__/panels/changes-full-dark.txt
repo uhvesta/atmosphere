@@ -1,7 +1,7 @@
 Complementary "Diff"
   Label "# api › Token refresh retry"
   Button "Details ⤢"
-  Button "Agent ⌘J"
+  Button "Agent · 1 ⌘J" collapsed
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
@@ -42,10 +42,16 @@ Complementary "Diff"
   text "api"
   text "·"
   text "src/"
-  #diff-open-file
+  Button
     text "Open file ↗"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "acme/api/src/client.rs"
+    #diff-hunk-gap-0
+      text "↕ 39 lines hidden above"
+      Button
+        text "Expand 20 lines"
+      Button
+        text "Expand all"
     #change-hunk-0
       text "impl Client {"
     #change-line-1

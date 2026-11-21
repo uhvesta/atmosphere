@@ -22,6 +22,8 @@ pub mod script_steps;
 pub mod status_since;
 pub mod stop_launching;
 pub mod stop_running;
+pub mod tab_cap;
+pub mod terminal_safety;
 pub mod turns;
 pub mod turns_list;
 pub mod watch;

@@ -182,8 +182,9 @@ async fn undo_inside_the_window_restores_it_on_box_1_in_place() {
     let (rig, channel, id) = on_box().await;
     let clone = rig.the("box-1").path(&channel, CLONE);
     // Not work (MV-9 would refuse a plain archive over that), and a fresh
-    // clone wouldn't have it: it shows the clone itself came back.
-    std::fs::write(clone.join(".git").join("humata-test-marker"), "kept through the archive\n").unwrap();
+    // clone wouldn't have it: it shows the session folder itself came back.
+    let marker = clone.parent().unwrap().join("humata-test-marker");
+    std::fs::write(&marker, "kept through the archive\n").unwrap();
     let ended = archive(&rig, &id).await;
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
 
@@ -191,7 +192,7 @@ async fn undo_inside_the_window_restores_it_on_box_1_in_place() {
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     let back = rig.wait_session(&id, "live on box-1", |s| s.machine.as_ref() == Some(&Rig::box_id("box-1")) && is_live(s)).await;
     assert!(back.archive.is_none());
-    assert_eq!(std::fs::read_to_string(clone.join(".git").join("humata-test-marker")).unwrap(), "kept through the archive\n");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "kept through the archive\n");
 }
 
 /// Every entry the host's mirror of `id` holds, page by page.

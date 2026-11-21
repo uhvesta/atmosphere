@@ -1,10 +1,9 @@
-//! The session page's Files panel lists the session's files. A list read
-//! before the clones were on disk came back empty; opening Files reads it
-//! again, and a list that has files is not read twice.
+//! The session page's Files panel lists the session's files and reconciles
+//! against the daemon whenever the panel is opened or refreshed.
 use std::sync::Arc;
 
 use humata2_app::{App, AppAction as A, AppState, Route};
-use humata2_clients::model::SessionId;
+use humata2_clients::model::{SessionFile, SessionId};
 use humata2_clients::{Clients, Fakes, fixture};
 use humata2_session::{Panel, SessionAction};
 use tca::{TestClock, TestStore};
@@ -73,14 +72,76 @@ fn opening_files_reads_a_list_that_came_back_empty_again() {
 }
 
 #[test]
-fn opening_files_with_its_list_read_reads_nothing() {
-    let (mut store, fakes, session) = on_a_session_page();
+fn opening_files_reconciles_non_empty_cache_with_new_session_root_file() {
+    let mut workspace = fixture::design();
+    let session = workspace
+        .session_files
+        .iter()
+        .find(|(_, files)| !files.is_empty())
+        .map(|(id, _)| id.clone())
+        .expect("the design workspace has a session with files");
+    let repo_only = workspace.session_files[&session].clone();
+    let root_doc = SessionFile {
+        repo: String::new(),
+        path: "CHANNEL_HOME_SPEC.md".to_owned(),
+        folder: false,
+    };
+    workspace
+        .session_files
+        .entry(session.clone())
+        .or_default()
+        .push(root_doc.clone());
+
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});
+    store.settle();
+    store.send(A::Switch(Route::Session(session.clone())), |_| {});
+    store.settle();
+
+    // Simulate a stale non-empty cache that has repo files but missed the new session-root file.
+    store.send(
+        A::SessionFiles {
+            session: session.clone(),
+            result: Ok(repo_only),
+        },
+        |_| {},
+    );
     assert!(listed(&store, &session) > 0);
+    assert!(!store.state().workspace.session_files[&session].contains(&root_doc));
     let before = file_requests(&fakes);
 
     store.send(A::Session(SessionAction::SetPanel(Some(Panel::Files))), |_| {});
-    store.settle();
-    assert_eq!(file_requests(&fakes), before);
+    store.receive_matching(
+        "the session's files, reconciled on Panel::Files open",
+        |a| matches!(a, A::SessionFiles { session: s, result: Ok(files) } if *s == session && files.contains(&root_doc)),
+        |_| {},
+    );
+    assert_eq!(file_requests(&fakes), before + 1);
+    assert!(store.state().workspace.session_files[&session].contains(&root_doc));
+
+    // Explicit RefreshSessionFiles also reconciles even when non-empty.
+    store.send(
+        A::SessionFiles {
+            session: session.clone(),
+            result: Ok(vec![SessionFile {
+                repo: "acme/api".to_owned(),
+                path: "src/lib.rs".to_owned(),
+                folder: false,
+            }]),
+        },
+        |_| {},
+    );
+    let before_refresh = file_requests(&fakes);
+    store.send(A::RefreshSessionFiles(session.clone()), |_| {});
+    store.receive_matching(
+        "the session's files, reconciled on explicit refresh",
+        |a| matches!(a, A::SessionFiles { session: s, result: Ok(files) } if *s == session && files.contains(&root_doc)),
+        |_| {},
+    );
+    assert_eq!(file_requests(&fakes), before_refresh + 1);
+    assert!(store.state().workspace.session_files[&session].contains(&root_doc));
     store.skip_in_flight();
 }
 

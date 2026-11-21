@@ -1,6 +1,7 @@
 Complementary "Diff"
   Label "# payments-rewrite › Ledger schema migration"
-  Button "New agent tab"
+  Button "Details ⤢"
+  Button "Agent · 1 ⌘J" collapsed
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
@@ -87,8 +88,13 @@ Complementary "Diff"
   text "acme/ledger"
   text "·"
   text "migrations/"
+  Button
+    text "Open file ↗"
   Button "Open in editor"
   #change-file-empty
     text "The changed lines aren't available"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude"
   Button "3 pull requests open"

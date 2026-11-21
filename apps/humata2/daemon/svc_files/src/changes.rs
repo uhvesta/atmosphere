@@ -187,6 +187,20 @@ impl FileChanges {
         lock(&self.tracker).sight(&key_of(session, repo), root, skip_dirs);
     }
 
+    /// Seeds the clone's (or session folder's) baseline from an unfiltered
+    /// `find_files` listing if no list is kept yet, so the first file written
+    /// afterward emits `FileChanged::Created` instead of being swallowed as
+    /// the initial sighting. Stats `listed` on disk: call on a blocking thread.
+    pub fn seed(
+        &self,
+        session: &str,
+        repo: Option<&pb::RepoRef>,
+        root: &Path,
+        listed: &[String],
+    ) {
+        lock(&self.tracker).seed(&key_of(session, repo), root, listed);
+    }
+
     /// Drops every remembered file list for `session`, so archived or freed
     /// sessions do not accumulate in memory.
     pub fn forget(&self, session: &str) {
@@ -292,6 +306,29 @@ impl Tracker {
             }
             None => {}
         }
+    }
+
+    /// Seeds `key`'s baseline from `listed` (an unfiltered `find_files` result)
+    /// unless a list is already kept or it is known to be over the cap.
+    fn seed(&mut self, key: &Key, root: &Path, listed: &[String]) {
+        if self.seen.contains_key(key) || self.over.contains(key) {
+            return;
+        }
+        if listed.len() >= self.cap {
+            self.over.insert(key.clone());
+            return;
+        }
+        let now: HashSet<String> = listed
+            .iter()
+            .filter(|path| !partial(path))
+            .filter(|path| {
+                root.join(path)
+                    .symlink_metadata()
+                    .is_ok_and(|meta| !meta.is_dir())
+            })
+            .cloned()
+            .collect();
+        self.seen.insert(key.clone(), now);
     }
 
     /// Updates the clone's (or session folder's) list for `named` (or all of
@@ -474,11 +511,11 @@ fn files(
     }
 }
 
-/// An upload's hidden partial file (see `Upload::start`).
+/// An upload's or atomic write's hidden partial file (see `Upload::start`).
 fn partial(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|name| name.starts_with('.') && name.contains(".humata-partial-"))
+    path.rsplit('/').next().is_some_and(|name| {
+        name.starts_with('.') && (name.ends_with(".partial") || name.contains(".humata-partial-"))
+    })
 }
 
 /// What the list of files lost and gained: removed first, then added, each
@@ -568,6 +605,7 @@ mod tests {
     #[test]
     fn an_uploads_partial_file_is_not_a_file() {
         assert!(partial("src/.lib.rs.humata-partial-0123"));
+        assert!(partial("state/.status-since.json.33096-7.partial"));
         assert!(!partial("src/lib.rs"));
     }
 
@@ -851,5 +889,31 @@ mod tests {
             &skip,
         );
         assert_eq!(changes, vec![Change::Created("notes.md".to_owned())]);
+    }
+
+    #[test]
+    fn seed_primes_empty_session_folder_so_first_file_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder_key = ("se".to_owned(), String::new());
+        let skip = HashSet::new();
+        let mut tracker = Tracker::default();
+
+        tracker.seed(&folder_key, dir.path(), &[]);
+        assert_eq!(tracker.lists, 0);
+        assert!(tracker.seen[&folder_key].is_empty());
+
+        put(dir.path(), "CHANNEL_HOME_SPEC.md");
+        let changes = tracker.apply(
+            &folder_key,
+            dir.path(),
+            &named(&["CHANNEL_HOME_SPEC.md"]),
+            false,
+            &skip,
+        );
+        assert_eq!(
+            changes,
+            vec![Change::Created("CHANNEL_HOME_SPEC.md".to_owned())]
+        );
+        assert_eq!(tracker.lists, 0);
     }
 }

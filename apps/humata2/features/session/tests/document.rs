@@ -244,3 +244,42 @@ fn a_lone_tab_in_the_only_group_does_not_move() {
     store.send(A::MoveTab { group: 0, index: 5 }, |_| {});
     store.finish();
 }
+
+#[test]
+fn intent_spec_tabs_keep_their_view_mode_per_file_and_session() {
+    let mut store = store();
+    let ledger = SessionId::new("ledger");
+    store.send(mode("intent.yaml", DocumentMode::Source), |s| {
+        s.views.get_mut(&ledger).unwrap().set_document(
+            "api",
+            "intent.yaml",
+            DocumentView {
+                mode: DocumentMode::Source,
+                linked: true,
+            },
+        );
+    });
+    store.send(mode("docs/pay.intent.yaml", DocumentMode::SideBySide), |s| {
+        s.views.get_mut(&ledger).unwrap().set_document(
+            "api",
+            "docs/pay.intent.yaml",
+            DocumentView {
+                mode: DocumentMode::SideBySide,
+                linked: true,
+            },
+        );
+    });
+    let state = store.state();
+    let view = &state.views[&ledger];
+    assert_eq!(view.document("api", "intent.yaml").mode, DocumentMode::Source);
+    assert_eq!(
+        view.document("api", "docs/pay.intent.yaml").mode,
+        DocumentMode::SideBySide
+    );
+    assert_eq!(
+        state.views[&SessionId::new("other")]
+            .document("api", "intent.yaml")
+            .mode,
+        DocumentMode::Preview
+    );
+}

@@ -1163,7 +1163,7 @@ fn prepared_non_stacked_review_plan_with_include_paths_and_empty_targets_loads_r
                 "repos": [
                     {
                         "repo": "api",
-                        "base": { "merge_base_with": "main" },
+                        "base": { "merge_base_with": "origin/main" },
                         "include_paths": ["refund.rs"]
                     }
                 ]

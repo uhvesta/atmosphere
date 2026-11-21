@@ -64,7 +64,9 @@ fn starting_from_the_menu_puts_the_new_desk_session_against_that_session() {
     app.send(AppAction::Navigate(Route::Session(SessionId::new("ledger"))));
     app.click("session-menu");
     app.click("session-menu-new-desk");
-    app.click("new-channel-desk-start");
+    app.send(AppAction::Desk(humata2_desk::DeskAction::ChannelNew(
+        humata2_desk::ChannelNewAction::Start,
+    )));
     let workspace = app.fakes.daemon.workspace();
     let looking_after_ledger = workspace
         .desk

@@ -17,6 +17,7 @@ pub mod panel_info;
 pub mod panel_journal;
 pub mod request_card;
 pub mod resume_failed;
+pub mod reviews_inbox;
 pub mod session_tabs;
 pub mod sidebar;
 pub mod sidebar_pinned;

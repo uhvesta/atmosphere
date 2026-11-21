@@ -66,6 +66,26 @@ pub struct DesktopNotice {
     pub sound: Option<NoticeSound>,
 }
 
+/// OS notification authorization state reported by the platform notifier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionStatus {
+    /// Permission state could not be determined.
+    #[default]
+    Unknown,
+    /// Notifications are allowed by the user.
+    Authorized,
+    /// Notifications are explicitly denied by the user.
+    Denied,
+    /// The user has not yet been prompted for notification permission.
+    NotDetermined,
+    /// Notifications are provisionally authorized (quiet delivery).
+    Provisional,
+    /// Notifications are authorized for a temporary session.
+    Ephemeral,
+    /// Running outside a bundled app where OS notifications are unavailable.
+    Unbundled,
+}
+
 /// Platform seam for posting and withdrawing desktop notifications.
 pub trait Notifier: Send + Sync {
     /// Posts `notice`, replacing any existing notification with the same `id`.
@@ -76,6 +96,15 @@ pub trait Notifier: Send + Sync {
 
     /// Requests OS notification permission if not yet granted.
     fn request_permission(&self);
+
+    /// Queries the current OS notification authorization status.
+    fn query_permission(&self) -> PermissionStatus;
+
+    /// Plays a notification sound immediately.
+    fn play_sound(&self, sound: NoticeSound);
+
+    /// Updates the application's dock badge count, or clears it when `None`.
+    fn set_dock_badge(&self, count: Option<usize>);
 }
 
 /// A notifier that drops every call. Used when notifications are unavailable
@@ -89,4 +118,12 @@ impl Notifier for NoopNotifier {
     fn withdraw(&self, _ids: &[String]) {}
 
     fn request_permission(&self) {}
+
+    fn query_permission(&self) -> PermissionStatus {
+        PermissionStatus::Unknown
+    }
+
+    fn play_sound(&self, _sound: NoticeSound) {}
+
+    fn set_dock_badge(&self, _count: Option<usize>) {}
 }

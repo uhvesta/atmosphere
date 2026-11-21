@@ -1,0 +1,79 @@
+---
+# Complete reference example for humata.intent/v1.
+# This file parses cleanly under humata2_intent_spec::parse.
+schema: humata.intent/v1
+
+metadata:
+  id: intent-example-001
+  title: Add structured Intent Spec support
+  # One of: draft, review, approved, implementing, verified
+  status: review
+  channel: "#platform"
+  todo_key: HUM-101
+  repos:
+    - atmosphere
+  # Populated automatically when the owner approves a specific doc version.
+  approved_doc_version: null
+
+outcome: |
+  Enable channels to author, validate, diff, and approve humata.intent/v1
+  specifications that generate a pinned milestone brief on approval.
+
+non_goals:
+  - Full arbitrary YAML 1.2 anchors, aliases, or custom tags
+  - Automatic execution without explicit owner approval
+
+invariants:
+  - Unknown fields are rejected at parse time
+  - Approval is blocked whenever any blocking open question is unresolved
+  - Step dependency graphs are strictly acyclic
+
+constraints:
+  forbidden_actions:
+    - Running git push or modifying unrelated crates
+  approval_boundaries:
+    - Changes to the humata.intent/v1 schema require owner sign-off
+
+touch_points:
+  - repo: atmosphere
+    path: apps/humata2/intent_spec/src/lib.rs
+    mode: modify
+    note: Core parser, validator, diff, and milestone brief renderer
+  - repo: atmosphere
+    path: apps/humata2/todo/BUILD.bazel
+    mode: read
+    note: Reference Bazel conventions
+
+steps:
+  - id: step-parser
+    title: Implement strict YAML parser and validator
+    outcome: Parse humata.intent/v1 into strongly typed structs and validate DAG
+    crates:
+      - humata2_intent_spec
+    verify: bazel test //apps/humata2/intent_spec:intent_spec_unit_test
+  - id: step-ui
+    title: Render Intent Spec card and approval flow
+    outcome: Display validation status and Approve & Start Milestone action
+    depends_on:
+      - step-parser
+    crates:
+      - humata2_web
+    verify: bazel build //apps/humata2/web:all
+
+acceptance:
+  - id: ac-parse-valid
+    given: A valid humata.intent/v1 document with no blocking open questions
+    when: The spec is parsed and validated
+    then: is_schema_valid() and can_approve() both return true
+  - id: ac-gate-blocking
+    given: A spec with an unresolved blocking open question
+    when: Validation runs
+    then: can_approve() returns false and lists the blocking question ID
+
+open_questions:
+  - id: q-banner
+    question: Should draft specs show a subtle draft banner in the channel header?
+    default_choice: Yes, show a muted Draft pill
+    blocking: false
+    resolved: false
+...

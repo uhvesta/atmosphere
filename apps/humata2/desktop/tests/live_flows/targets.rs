@@ -84,11 +84,13 @@ fn a_repository_picked_onto_a_release_branch_changes_and_its_neighbour_does_not(
             .expect("the channels folder has a parent")
             .to_owned();
         cut_release(&root, "ledger");
-        let channel = clients
-            .daemon
-            .create_channel("payments", repos.clone(), vec![mac.clone()])
-            .await
-            .expect("create the channel");
+        let channel = super::create_channel_ready(
+            &clients.daemon,
+            "payments",
+            repos.clone(),
+            vec![mac.clone()],
+        )
+        .await;
         let session = clients
             .daemon
             .create_session(

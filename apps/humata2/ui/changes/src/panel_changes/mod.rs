@@ -463,7 +463,12 @@ pub fn changes(
             } else {
                 DiffMarkdownMode::Diff
             };
-            let view_width = (width - if full { file_list_width } else { 0. }).max(0.);
+            let dock_right_w = if full && !inline && agent_tab::is_open() && agent_tab::position() == agent_tab::DockPosition::Right {
+                agent_tab::effective_width(width)
+            } else {
+                0.
+            };
+            let view_width = (width - if full { file_list_width } else { 0. } - dock_right_w).max(0.);
             let code_view_width = if md_mode == DiffMarkdownMode::Split {
                 ((view_width - 1.) / 2.).max(0.)
             } else {
@@ -727,15 +732,134 @@ pub fn changes(
                         )
                     })
                     .when(!bar, |header| {
-                        header.child(
-                            text("Open file \u{2197}")
-                                .id("diff-open-file")
-                                .test_support()
-                                .flex_shrink_0()
-                                .whitespace_nowrap()
-                                .text_size(px(11.5))
-                                .text_color(rgb(look.secondary)),
-                        )
+                        let fv = file_view_state(&diff.session, &diff.repo, &file.path);
+                        let s_open = diff.session.clone();
+                        let r_open = diff.repo.clone();
+                        let p_open = file.path.clone();
+                        if fv.open {
+                            let s_head = diff.session.clone();
+                            let r_head = diff.repo.clone();
+                            let p_head = file.path.clone();
+                            let s_base = diff.session.clone();
+                            let r_base = diff.repo.clone();
+                            let p_base = file.path.clone();
+                            header
+                                .child(
+                                    row()
+                                        .id("diff-file-version-toggle")
+                                        .test_support()
+                                        .flex_shrink_0()
+                                        .rounded(px(5.))
+                                        .border_1()
+                                        .border_color(rgb(look.line))
+                                        .bg(rgb(look.fill))
+                                        .child(
+                                            div()
+                                                .id("diff-file-version-head")
+                                                .role(Role::Button)
+                                                .test_support()
+                                                .px(px(6.))
+                                                .h(px(18.))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(11.))
+                                                .cursor_pointer()
+                                                .when(fv.version == FileVersion::Head, |el| {
+                                                    el.bg(rgb(look.card))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(rgb(look.text))
+                                                })
+                                                .when(fv.version != FileVersion::Head, |el| {
+                                                    el.text_color(rgb(look.secondary))
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    cx.stop_propagation();
+                                                    set_file_view_version(
+                                                        s_head.clone(),
+                                                        r_head.clone(),
+                                                        p_head.clone(),
+                                                        FileVersion::Head,
+                                                    );
+                                                    cx.refresh_windows();
+                                                })
+                                                .child("Head"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("diff-file-version-base")
+                                                .role(Role::Button)
+                                                .test_support()
+                                                .px(px(6.))
+                                                .h(px(18.))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(11.))
+                                                .cursor_pointer()
+                                                .when(fv.version == FileVersion::Base, |el| {
+                                                    el.bg(rgb(look.card))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(rgb(look.text))
+                                                })
+                                                .when(fv.version != FileVersion::Base, |el| {
+                                                    el.text_color(rgb(look.secondary))
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    cx.stop_propagation();
+                                                    set_file_view_version(
+                                                        s_base.clone(),
+                                                        r_base.clone(),
+                                                        p_base.clone(),
+                                                        FileVersion::Base,
+                                                    );
+                                                    cx.refresh_windows();
+                                                })
+                                                .child("Base"),
+                                        ),
+                                )
+                                .child(
+                                    text("Show changes")
+                                        .id("diff-show-changes")
+                                        .role(Role::Button)
+                                        .test_support()
+                                        .flex_shrink_0()
+                                        .whitespace_nowrap()
+                                        .text_size(px(11.5))
+                                        .text_color(rgb(look.accent))
+                                        .cursor_pointer()
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            set_file_view_open(
+                                                s_open.clone(),
+                                                r_open.clone(),
+                                                p_open.clone(),
+                                                false,
+                                            );
+                                            cx.refresh_windows();
+                                        }),
+                                )
+                        } else {
+                            header.child(
+                                text("Open file \u{2197}")
+                                    .id("diff-open-file")
+                                    .role(Role::Button)
+                                    .test_support()
+                                    .flex_shrink_0()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(look.accent))
+                                    .cursor_pointer()
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        set_file_view_open(
+                                            s_open.clone(),
+                                            r_open.clone(),
+                                            p_open.clone(),
+                                            true,
+                                        );
+                                        cx.refresh_windows();
+                                    }),
+                            )
+                        }
                     })
                     .when(!bar && !stacked, |header| header.child(open_in_editor(look)))
                     .when(!bar && stacked, |header| header.child(open_in_editor_words(look))),
@@ -755,24 +879,31 @@ pub fn changes(
                     .text_ellipsis();
                 full_text(line, whole)
             }))
-            .child(match md_mode {
-                DiffMarkdownMode::Diff => code,
-                DiffMarkdownMode::Split => row()
-                    .id("diff-md-split")
-                    .test_support()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .items_stretch()
-                    .child(col().flex_1().min_w_0().min_h_0().child(code))
-                    .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(look.line)))
-                    .child(markdown_view::rendered_pane(
-                        ui, state, diff, file, documents, look, true,
-                    ))
-                    .into_any_element(),
-                DiffMarkdownMode::Rendered => markdown_view::rendered_pane(
-                    ui, state, diff, file, documents, look, false,
-                ),
+            .child({
+                let fv = file_view_state(&diff.session, &diff.repo, &file.path);
+                if fv.open {
+                    readonly_file_view(file, fv.version, look, font_size, line_height)
+                } else {
+                    match md_mode {
+                        DiffMarkdownMode::Diff => code,
+                        DiffMarkdownMode::Split => row()
+                            .id("diff-md-split")
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .items_stretch()
+                            .child(col().flex_1().min_w_0().min_h_0().child(code))
+                            .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(look.line)))
+                            .child(markdown_view::rendered_pane(
+                                ui, state, diff, file, documents, look, true,
+                            ))
+                            .into_any_element(),
+                        DiffMarkdownMode::Rendered => markdown_view::rendered_pane(
+                            ui, state, diff, file, documents, look, false,
+                        ),
+                    }
+                }
             })
         })
         .when(picked.is_none() && !failed, |view| {
@@ -876,8 +1007,13 @@ pub fn changes(
             let move_drag = documents.diff_list_drag.clone();
             let move_ui = ui.clone();
             let up_drag = documents.diff_list_drag.clone();
+            let viewport_h = f32::from(window.viewport_size().height);
             panel
                 .on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
+                    if agent_tab::drag_move(event, width, viewport_h) {
+                        cx.refresh_windows();
+                        return;
+                    }
                     let Some((start_x, start_width)) = move_drag.get() else {
                         return;
                     };
@@ -890,6 +1026,7 @@ pub fn changes(
                 })
                 .on_mouse_up(MouseButton::Left, move |_, _, _| {
                     up_drag.set(None);
+                    agent_tab::drag_end();
                 })
         })
         // A pull request review's header names the pull request instead
@@ -1104,11 +1241,28 @@ pub fn changes(
                     )
                 })
                 .when(!inline || refresh_failed, |body| body.child(view))
+                .when(
+                    full && !inline && agent_tab::is_open() && agent_tab::position() == agent_tab::DockPosition::Right,
+                    |body| {
+                        let vh = f32::from(window.viewport_size().height);
+                        body.child(agent_tab::resize_handle(look, width, vh))
+                            .child(agent_tab::dock(ui, state, look, width, vh))
+                    },
+                )
                 .children(crate::changes_loading::changes_loading(
                     look,
                     &state.review.fetch,
                     session_id.as_ref(),
                 )),
+        )
+        .when(
+            full && !inline && agent_tab::is_open() && agent_tab::position() == agent_tab::DockPosition::Bottom,
+            |panel| {
+                let vh = f32::from(window.viewport_size().height);
+                panel
+                    .child(agent_tab::resize_handle(look, width, vh))
+                    .child(agent_tab::dock(ui, state, look, width, vh))
+            },
         )
         .children((!overall_comments.is_empty()).then(|| {
             let agent = session_id

@@ -135,15 +135,24 @@ impl GrpcDaemon {
 
     /// `todo_request_review`.
     pub(super) async fn todo_request_review(&self, call: Call) -> Result<Reply, ToolError> {
-        let ask = request_review_request(&call.arguments, key(&call))?;
-        let request = self.request(ask)?;
-        let response = self
-            .inbox()
-            .ask_user(request)
+        let req = request_local_review_request(&call.arguments, key(&call))?;
+        let request = self.request(req)?;
+        let resp = self
+            .todo_client()
+            .request_local_review(request)
             .await
             .map_err(|status| self.failed(&status))?
             .into_inner();
-        outcome(response)
+        Ok(applied(
+            json!({
+                "todo_key": resp.todo_key,
+                "attached": resp.attached,
+                "attachment_reason": resp.attachment_reason,
+                "layers_count": resp.layers_count,
+                "notice": resp.notice,
+            }),
+            None,
+        ))
     }
 
     /// `todo_step_update`.
@@ -253,45 +262,70 @@ fn request_action_request(
     })
 }
 
-fn request_review_request(
+fn request_local_review_request(
     arguments: &Map<String, Value>,
     idempotency_key: pb::IdempotencyKey,
-) -> Result<pb::AskUserRequest, ToolError> {
-    let item_key = require_non_empty(arguments, "key")?;
-    let summary = require_non_empty(arguments, "summary")?;
-    let round = match arguments.get("round") {
-        None => None,
+) -> Result<pb::RequestLocalReviewRequest, ToolError> {
+    let item_key = text(arguments, "key");
+    let channel = text(arguments, "channel");
+    let summary_what = {
+        let s = text(arguments, "summary_what");
+        if s.is_empty() {
+            text(arguments, "summary")
+        } else {
+            s
+        }
+    };
+    let summary_details = {
+        let s = text(arguments, "summary_details");
+        if s.is_empty() {
+            text(arguments, "details")
+        } else {
+            s
+        }
+    };
+    let layers = match arguments.get("layers") {
+        None | Some(Value::Null) => Vec::new(),
         Some(value) => {
-            let n = value
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .filter(|n| *n >= 1)
-                .ok_or_else(|| invalid("round", &value.to_string(), "an integer >= 1"))?;
-            Some(n)
+            let raw_layers = value
+                .as_array()
+                .ok_or_else(|| invalid("layers", &value.to_string(), "an array of layer objects"))?;
+            let mut parsed = Vec::with_capacity(raw_layers.len());
+            for raw in raw_layers {
+                let obj = raw.as_object().ok_or_else(|| {
+                    invalid("layers", &raw.to_string(), "an object with repo and head_branch")
+                })?;
+                let repo = require_non_empty(obj, "repo")?;
+                let head_branch = require_non_empty(obj, "head_branch")?;
+                let pr_number = match obj.get("pr_number") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .filter(|n| *n >= 1)
+                            .ok_or_else(|| invalid("pr_number", &v.to_string(), "an integer >= 1"))?,
+                    ),
+                };
+                parsed.push(pb::LocalReviewLayer {
+                    repo,
+                    base_branch: text(obj, "base_branch"),
+                    head_branch,
+                    title: text(obj, "title"),
+                    pr_number,
+                });
+            }
+            parsed
         }
     };
-    let checkpoint = match arguments.get("checkpoint").and_then(Value::as_str) {
-        None => None,
-        Some(raw) => {
-            let parsed = parse_checkpoint(raw)?;
-            Some(lower(parsed.as_str_name(), "TODO_CHECKPOINT_"))
-        }
-    };
-    let question = match (round, checkpoint.as_deref()) {
-        (Some(r), Some(cp)) => format!("[Review round {r} · {cp}] {summary}"),
-        (Some(r), None) => format!("[Review round {r}] {summary}"),
-        (None, Some(cp)) => format!("[Review · {cp}] {summary}"),
-        (None, None) => summary,
-    };
-    Ok(pb::AskUserRequest {
+    Ok(pb::RequestLocalReviewRequest {
         idempotency_key: Some(idempotency_key),
-        question,
-        choices: vec!["Approved".to_owned(), "Changes asked".to_owned()],
-        wait_seconds: 0,
-        todo_item: Some(pb::BoardItemId { value: item_key }),
-        step_id: text(arguments, "step_id"),
-        multi_select: false,
-        details: text(arguments, "details"),
+        id: (!item_key.is_empty()).then_some(pb::BoardItemId { value: item_key }),
+        title: text(arguments, "title"),
+        channel: (!channel.is_empty()).then_some(pb::ChannelId { value: channel }),
+        layers,
+        summary_what,
+        summary_why: text(arguments, "summary_why"),
+        summary_details,
     })
 }
 
@@ -714,32 +748,48 @@ mod tests {
         assert_eq!(action.choices, vec!["Done", "Can't be done"]);
         assert!(!action.multi_select);
 
-        let review = request_review_request(
+        let review = request_local_review_request(
             &args(json!({
                 "key": "PAY-7",
+                "title": "Schema migration",
+                "channel": "ch-1",
                 "summary": "Schema migration ready",
-                "round": 2,
-                "checkpoint": "defined",
-                "details": "Addressed round 1 feedback"
+                "summary_why": "Needed for v2 queries",
+                "details": "Addressed round 1 feedback",
+                "layers": [
+                    {
+                        "repo": "acme/api",
+                        "base_branch": "main",
+                        "head_branch": "feat/schema",
+                        "title": "Schema layer",
+                        "pr_number": 42
+                    }
+                ]
             })),
             ikey(),
         )
         .unwrap();
-        assert_eq!(review.todo_item.as_ref().map(|i| i.value.as_str()), Some("PAY-7"));
-        assert_eq!(review.question, "[Review round 2 · defined] Schema migration ready");
-        assert_eq!(review.choices, vec!["Approved", "Changes asked"]);
-        assert_eq!(review.details, "Addressed round 1 feedback");
+        assert_eq!(review.id.as_ref().map(|i| i.value.as_str()), Some("PAY-7"));
+        assert_eq!(review.title, "Schema migration");
+        assert_eq!(review.channel.as_ref().map(|c| c.value.as_str()), Some("ch-1"));
+        assert_eq!(review.summary_what, "Schema migration ready");
+        assert_eq!(review.summary_why, "Needed for v2 queries");
+        assert_eq!(review.summary_details, "Addressed round 1 feedback");
+        assert_eq!(review.layers.len(), 1);
+        assert_eq!(review.layers[0].repo, "acme/api");
+        assert_eq!(review.layers[0].base_branch, "main");
+        assert_eq!(review.layers[0].head_branch, "feat/schema");
+        assert_eq!(review.layers[0].title, "Schema layer");
+        assert_eq!(review.layers[0].pr_number, Some(42));
 
-        let bad_round = request_review_request(
+        let bad_layer_pr = request_local_review_request(
             &args(json!({
-                "key": "PAY-7",
-                "summary": "Check",
-                "round": 0
+                "layers": [{ "repo": "acme/api", "head_branch": "feat/x", "pr_number": 0 }]
             })),
             ikey(),
         )
         .unwrap_err();
-        assert_eq!(bad_round.kind, ErrorKind::InvalidField);
+        assert_eq!(bad_layer_pr.kind, ErrorKind::InvalidField);
     }
 
     #[test]

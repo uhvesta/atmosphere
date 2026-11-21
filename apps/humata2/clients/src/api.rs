@@ -59,7 +59,7 @@ pub use file_manager::{
 pub use files::{FileError, FileSystem};
 pub use keychain::{Keychain, KeychainError};
 pub use local_daemon::LocalDaemon;
-pub use notifier::{DesktopNotice, NoopNotifier, NoticeSound, Notifier, NotifyTarget};
+pub use notifier::{DesktopNotice, NoopNotifier, NoticeSound, Notifier, NotifyTarget, PermissionStatus};
 pub use reveal::{FinderReveal, Reveal, RevealError, is_this_mac};
 pub use tca::{Clock, MemoryStorage, Storage};
 pub use workspace::Workspace;

@@ -61,6 +61,7 @@ pub(crate) struct Find {
     roots: Arc<Roots>,
     reads: Reads,
     store: Arc<Store>,
+    changes: std::sync::OnceLock<Arc<crate::FileChanges>>,
 }
 
 impl Find {
@@ -69,7 +70,12 @@ impl Find {
             roots,
             reads,
             store,
+            changes: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn use_changes(&self, changes: Arc<crate::FileChanges>) {
+        let _ = self.changes.set(changes);
     }
 
     /// The files of the session's repos whose paths match the query: repos
@@ -228,7 +234,13 @@ impl Find {
         }
 
         let query = request.query;
-        let (entries, next) = blocking(move || search(&targets, &query, offset, size)).await??;
+        let changes = (query.is_empty() && offset == 0)
+            .then(|| self.changes.get().cloned())
+            .flatten();
+        let (entries, next) = blocking(move || {
+            search(&targets, &query, offset, size, &session, changes.as_deref())
+        })
+        .await??;
         Ok(Response::new(pb::FindFilesResponse {
             entries,
             page: Some(pb::PageResponse {
@@ -264,13 +276,15 @@ enum Scope {
     AgentState,
 }
 
-/// Top-level directory names under `folder` that belong to `repos`, so walking
-/// the session folder never double-lists clone files (even for non-git clones).
+/// Top-level directory names under `folder` to skip when listing or watching
+/// a session's own folder: its repo clones (so clone files are never
+/// double-listed) and Humata's internal `state` directory.
 pub(crate) fn clone_dir_names(
     folder: &Path,
     repos: &[humata2_store::SessionRepo],
 ) -> HashSet<String> {
-    let mut names = HashSet::with_capacity(repos.len());
+    let mut names = HashSet::with_capacity(repos.len() + 1);
+    names.insert("state".to_owned());
     for repo in repos {
         if !repo.name.is_empty() {
             names.insert(repo.name.clone());
@@ -291,6 +305,8 @@ fn search(
     query: &str,
     offset: usize,
     size: usize,
+    session: &str,
+    changes: Option<&crate::FileChanges>,
 ) -> Result<(Vec<pb::FileEntry>, Option<usize>), Status> {
     let mut skip = offset;
     let mut consumed = 0;
@@ -308,6 +324,15 @@ fn search(
             Scope::OwnFolder { skip_dirs } => own_files(&root, skip_dirs)?,
             Scope::AgentState => walk_agent_state(&root)?,
         };
+        if let Some(changes) = changes
+            && matches!(scope, Scope::OwnFolder { .. } | Scope::Clone)
+        {
+            let repo = match &target.location.root {
+                Some(pb::file_location::Root::SessionClone(clone)) => clone.repo.as_ref(),
+                _ => None,
+            };
+            changes.seed(session, repo, &root, &paths);
+        }
         let matched = ranked(paths, query);
         if consumed == size {
             // Only whether anything is left matters now.
@@ -596,7 +621,10 @@ fn walk_from(
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if name == ".git" {
+            if name == ".git"
+                || (name.starts_with('.')
+                    && (name.ends_with(".partial") || name.contains(".humata-partial-")))
+            {
                 continue;
             }
             let Ok(kind) = entry.file_type() else {
