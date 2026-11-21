@@ -286,19 +286,11 @@ fn user_cannot_resolve_a_comment_being_typed() {
 }
 
 #[test]
-fn agent_resolve_needs_a_reply_and_a_sent_comment() {
+fn agent_resolve_allows_optional_reply_and_needs_sent_comment() {
     let mut l = sent_one();
     assert!(matches!(
         l.resolve("c-2", agent(), Some("done"), 20, None),
         Err(CommentError::NotSent { .. })
-    ));
-    assert!(matches!(
-        l.resolve("c-1", agent(), None, 20, None),
-        Err(CommentError::ReplyNeeded { .. })
-    ));
-    assert!(matches!(
-        l.resolve("c-1", agent(), Some("  "), 20, None),
-        Err(CommentError::ReplyNeeded { .. })
     ));
     let c = l.resolve("c-1", agent(), Some("fixed"), 20, None).unwrap();
     assert_eq!(c.status, CommentStatus::Resolved);
@@ -308,6 +300,17 @@ fn agent_resolve_needs_a_reply_and_a_sent_comment() {
         l.resolve("c-1", agent(), Some("again"), 21, None),
         Err(CommentError::AlreadyResolved { .. })
     ));
+
+    // Agent can also resolve with None or blank reply without pushing an empty reply.
+    let mut l2 = sent_one();
+    let c2 = l2.resolve("c-1", agent(), None, 20, None).unwrap();
+    assert_eq!(c2.status, CommentStatus::Resolved);
+    assert!(c2.replies.is_empty());
+
+    let mut l3 = sent_one();
+    let c3 = l3.resolve("c-1", agent(), Some("   "), 20, None).unwrap();
+    assert_eq!(c3.status, CommentStatus::Resolved);
+    assert!(c3.replies.is_empty());
 }
 
 #[test]

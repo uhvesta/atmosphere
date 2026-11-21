@@ -552,6 +552,9 @@ message SendCommentsRequest {
   SessionId session = 2;
   // The drafts the user saw; others stay drafts.
   repeated CommentId ids = 3;
+  // Optional session-level comment or request on the whole change; persisted
+  // as a session-level comment and included at the end of the paste.
+  string overall_note = 4;
 }
 
 message SendCommentsResponse {
@@ -563,7 +566,7 @@ message ResolveCommentRequest {
   IdempotencyKey idempotency_key = 1;
   CommentId id = 2;
   Revision expected_revision = 3;
-  // SM-19: what was done. Required from an agent; shown in the thread.
+  // SM-19: optional note on what was done; shown in the thread when non-empty.
   string reply = 4;
 }
 
@@ -601,6 +604,8 @@ message ReplyToCommentRequest {
   IdempotencyKey idempotency_key = 1;
   CommentId id = 2;
   string text = 3;
+  // When true, also marks the comment resolved in the same call.
+  bool resolve = 4;
 }
 
 message ArchiveCommentRequest {

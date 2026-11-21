@@ -52,7 +52,7 @@ pub enum Call {
     /// `make_note_a_draft`, with the pull request named, if any.
     MakeNoteADraft(CommentId, Option<(String, u32)>),
     /// `send`.
-    Send(SessionId, Vec<CommentId>),
+    Send(SessionId, Vec<CommentId>, Option<String>),
     /// `take_back`.
     TakeBack(SessionId, Vec<CommentId>),
     /// `resolve`.
@@ -257,6 +257,11 @@ fn side_name(side: Side) -> &'static str {
 /// One comment of a message (SM-9).
 fn message_part(comment: &Comment, show_repo: bool) -> String {
     let anchor = &comment.anchor;
+    if anchor.path.is_empty() {
+        let mut out = String::from("[comment on session]\n");
+        out.push_str(comment.text.trim_end());
+        return out;
+    }
     let mut out = String::from("[comment on ");
     // A document of the session's own folder has no repo to lead with.
     if show_repo && !anchor.repo.is_empty() {
@@ -568,8 +573,14 @@ impl FakeComments {
 }
 
 impl Inner {
-    fn send(&mut self, session: &SessionId, ids: &[CommentId]) -> Result<Sent, DaemonError> {
-        if ids.is_empty() {
+    fn send(
+        &mut self,
+        session: &SessionId,
+        ids: &[CommentId],
+        overall_note: Option<&str>,
+    ) -> Result<Sent, DaemonError> {
+        let overall = overall_note.map(str::trim).filter(|text| !text.is_empty());
+        if ids.is_empty() && overall.is_none() {
             return Err(refused("This send", "no comments were chosen; pick at least one draft"));
         }
         let state = self.session(session);
@@ -605,6 +616,21 @@ impl Inner {
                     "notes and pull request drafts are not typed into the terminal; take them out of the selection",
                 ));
             }
+        }
+        if let Some(note) = overall {
+            let anchor = Anchor {
+                repo: String::new(),
+                path: String::new(),
+                side: Side::New,
+                first: 0,
+                last: 0,
+                quoted: Vec::new(),
+                base: None,
+                detached: false,
+                outdated: false,
+            };
+            state.add(session, anchor, note, Destination::Terminal, Author::User);
+            chosen.push(state.comments.len() - 1);
         }
         let typing = state.typing;
         let batch = state.next_batch;
@@ -856,9 +882,15 @@ impl CommentsClient for FakeComments {
         })
     }
 
-    fn send(&self, session: &SessionId, ids: &[CommentId]) -> Reply<Sent> {
-        self.call("send", Call::Send(session.clone(), ids.to_vec()), |inner| {
-            inner.send(session, ids)
+    fn send(
+        &self,
+        session: &SessionId,
+        ids: &[CommentId],
+        overall_note: Option<&str>,
+    ) -> Reply<Sent> {
+        let note = overall_note.map(str::to_owned);
+        self.call("send", Call::Send(session.clone(), ids.to_vec(), note), |inner| {
+            inner.send(session, ids, overall_note)
         })
     }
 

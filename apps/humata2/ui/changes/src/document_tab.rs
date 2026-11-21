@@ -474,6 +474,11 @@ pub struct Documents {
     file_filter: Entity<InputState>,
     file_filter_for: Option<SessionId>,
     _file_filtering: Subscription,
+    /// The Diff panel's overall ("as a whole") comment/request input, and the
+    /// session whose draft it holds.
+    overall_input: Entity<TextareaState>,
+    overall_input_for: Option<SessionId>,
+    _overall_typing: Subscription,
     /// The Diff's file list: while it has this focus its arrows and Enter move
     /// the cursor, open a file or fold a repository (DS-84).
     pub diff_list: FocusHandle,
@@ -756,6 +761,41 @@ impl Documents {
                 },
             )
         };
+        let overall_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Comment or request on the whole change…")
+                .auto_grow(1, 4)
+        });
+        let overall_typing = {
+            let ui = ui.clone();
+            cx.subscribe(
+                &overall_input,
+                move |input: Entity<TextareaState>, event: &InputEvent, cx: &mut App| match event {
+                    InputEvent::Change => {
+                        let value = input.read(cx).value().to_string();
+                        let held = ui.read(|state| {
+                            state.session.open.clone().map(|session| {
+                                let held = state.comments.overall_draft(&session).to_owned();
+                                (session, held)
+                            })
+                        });
+                        if let Some((session, held)) = held.filter(|(_, held)| *held != value) {
+                            let _ = held;
+                            ui.send(
+                                AppAction::Comments(CommentsAction::SetOverallDraft(session, value)),
+                                cx,
+                            );
+                        }
+                    }
+                    InputEvent::PressEnter { secondary: true, .. } => {
+                        if let Some(session) = ui.read(|state| state.session.open.clone()) {
+                            ui.send(AppAction::Comments(CommentsAction::SendAll(session)), cx);
+                        }
+                    }
+                    _ => {}
+                },
+            )
+        };
         Self {
             pages: LruMap::new(MAX_CACHED_VIEWS),
             diff_pages: LruMap::new(MAX_CACHED_VIEWS),
@@ -775,6 +815,9 @@ impl Documents {
             file_filter,
             file_filter_for: None,
             _file_filtering: file_filtering,
+            overall_input,
+            overall_input_for: None,
+            _overall_typing: overall_typing,
             diff_list: cx.focus_handle(),
             diff_stack: cx.focus_handle(),
             diff_code: cx.focus_handle(),
@@ -797,6 +840,11 @@ impl Documents {
     /// The Diff panel's "Filter files" field.
     pub fn file_filter(&self) -> Entity<InputState> {
         self.file_filter.clone()
+    }
+
+    /// The Diff panel's overall ("as a whole") comment/request field.
+    pub fn overall_input(&self) -> Entity<TextareaState> {
+        self.overall_input.clone()
     }
 
     /// The filter field of the open repository base menu.
@@ -1078,6 +1126,22 @@ impl Documents {
                 self.file_filter
                     .update(cx, |input, cx| input.set_value(text, window, cx));
                 self.file_filter_for = Some(session);
+            }
+        }
+
+        // The Diff panel's overall comment/request field follows the open session.
+        let open_overall = ui.read(|state| {
+            state.session.open.clone().map(|session| {
+                let text = state.comments.overall_draft(&session).to_owned();
+                (session, text)
+            })
+        });
+        if let Some((session, text)) = open_overall {
+            let shown = self.overall_input.read(cx).value().to_string();
+            if self.overall_input_for.as_ref() != Some(&session) || shown != text {
+                self.overall_input
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+                self.overall_input_for = Some(session);
             }
         }
 

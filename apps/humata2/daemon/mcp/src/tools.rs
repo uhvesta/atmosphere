@@ -1689,30 +1689,38 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::CommentsList => define(
-            "List the comments the user sent to your session, with their ids, for comment_reply and comment_resolve.",
+            "List the comments the user sent to your session, with their ids, for comment_reply and comment_resolve. Defaults to unresolved (sent and queued) comments; pass compact: true to omit quoted code.",
             Effect::Read,
             object(vec![
                 opt(
                     "status",
-                    array(one_of_strings(["sent", "queued", "addressed"])),
+                    array(one_of_strings(["sent", "queued", "addressed", "resolved"])),
                 ),
                 opt("path", relative_path()),
+                opt(
+                    "compact",
+                    boolean().describe("Omit quoted code from each comment to save context"),
+                ),
             ]),
         ),
         Op::CommentReply => define(
-            "Answer the user in the thread of a comment they sent to your session; find ids with comments_list. You still answer in your terminal as usual. This is a mechanical call: hand it to a cheap subagent if your CLI has subagents.",
+            "Answer the user in the thread of a comment they sent to your session (ids appear in the [comment c-N on ...] header, or via comments_list). Pass resolve: true to answer and resolve in one call. This is a mechanical call: hand it to a cheap subagent if your CLI has subagents.",
             Effect::Create,
             object(vec![
                 req("comment_id", string()),
                 req("text", string().max_length(4000)),
+                opt(
+                    "resolve",
+                    boolean().describe("Also mark the comment resolved in the same call"),
+                ),
             ]),
         ),
         Op::CommentResolve => define(
-            "Mark a comment the user sent to your session as resolved, with a short note on what you did (required; it shows in the thread under your name). The user can reopen it. Hand this to a cheap subagent if your CLI has subagents.",
+            "Mark a comment the user sent to your session as resolved, with an optional short reply note on what you did (shown in the thread under your name when provided). The user can reopen it. Hand this to a cheap subagent if your CLI has subagents.",
             Effect::Change,
             object(vec![
                 req("comment_id", string()),
-                req("reply", string().max_length(4000)),
+                opt("reply", string().max_length(4000)),
             ]),
         ),
         Op::DocVersionsList => define(

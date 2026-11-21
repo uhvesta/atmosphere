@@ -556,3 +556,43 @@ async fn browser_tools_are_strictly_read_only_and_reject_execute_tools() {
     assert_eq!(calls[1].operation, Operation::BrowserScreenshot);
     assert!(calls[1].arguments.is_empty());
 }
+
+#[tokio::test]
+async fn comment_tools_support_trivial_resolve_reply_and_compact_list() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    // comment_resolve accepts comment_id alone (optional reply).
+    let r1 = client
+        .call_raw(json!(1), "comment_resolve", json!({ "comment_id": "c-12" }))
+        .await;
+    assert!(r1["result"].is_object(), "{r1}");
+
+    // comment_reply accepts optional resolve: true.
+    let r2 = client
+        .call_raw(
+            json!(2),
+            "comment_reply",
+            json!({ "comment_id": "c-12", "text": "Done.", "resolve": true }),
+        )
+        .await;
+    assert!(r2["result"].is_object(), "{r2}");
+
+    // comments_list accepts compact: true and "resolved" in status.
+    let r3 = client
+        .call_raw(
+            json!(3),
+            "comments_list",
+            json!({ "status": ["sent", "resolved"], "compact": true }),
+        )
+        .await;
+    assert!(r3["result"].is_object(), "{r3}");
+
+    let calls = daemon.calls();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].operation, Operation::CommentResolve);
+    assert_eq!(calls[1].operation, Operation::CommentReply);
+    assert_eq!(calls[1].arguments["resolve"], json!(true));
+    assert_eq!(calls[2].operation, Operation::CommentsList);
+    assert_eq!(calls[2].arguments["compact"], json!(true));
+}

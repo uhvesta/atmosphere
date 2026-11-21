@@ -182,13 +182,13 @@ impl Review {
                         format!("anchor the draft on a file of {repo}"),
                     ));
                 }
-                let anchor = self.anchor_from_pb(&record, anchor, Some(repo.clone())).await?;
+                let anchor = self.anchor_from_pb(&record, anchor, Some(repo.clone()), false).await?;
                 lock(&review.comments)
                     .add_for_pull_request(anchor, &request.text, author, &repo, number, now())
                     .clone()
             }
             _ => {
-                let anchor = self.anchor_from_pb(&record, anchor, None).await?;
+                let anchor = self.anchor_from_pb(&record, anchor, None, true).await?;
                 lock(&review.comments).add(anchor, &request.text, now()).clone()
             }
         };
@@ -277,7 +277,7 @@ impl Review {
         }
         let anchor = request.anchor.as_ref().ok_or_else(|| ports::missing("anchor"))?;
         let held = lock(&review.comments).comment(&id).map(|comment| comment.anchor.file.repo.clone());
-        let anchor = self.anchor_from_pb(&record, anchor, held).await?;
+        let anchor = self.anchor_from_pb(&record, anchor, held, false).await?;
         let expected = expected(request.expected_revision.as_ref());
         let comment = lock(&review.comments)
             .reattach(&id, anchor, expected)
@@ -307,8 +307,9 @@ impl Review {
                     request.id.as_ref(),
                     request.idempotency_key.as_ref(),
                     move |ledger, id| {
+                        let reply = (!reply.trim().is_empty()).then_some(reply.as_str());
                         ledger
-                            .resolve(id, author, Some(reply.as_str()), now(), expected)
+                            .resolve(id, author, reply, now(), expected)
                             .cloned()
                             .map_err(|error| comment_failed(&error))
                     },
@@ -369,7 +370,8 @@ impl Review {
         Ok(pb::ResolveAddressedCommentsResponse { comments })
     }
 
-    /// The agent answers in a comment's thread (DK-9).
+    /// The agent answers in a comment's thread (DK-9), optionally resolving it
+    /// in the same call when `request.resolve` is true.
     pub(super) async fn reply_to_user_comment(
         &self,
         caller: &Caller,
@@ -380,6 +382,13 @@ impl Review {
         };
         let author = CommentAuthor::Agent(agent.agent.clone());
         let text = request.text;
+        let resolve = request.resolve;
+        if resolve {
+            let (_, session, _) = self.note_session(caller, request.id.as_ref())?;
+            if agent.session.id.as_str() == session.id.as_str() {
+                self.require_use(caller, Capability::CommentResolve, &session)?;
+            }
+        }
         self.agent_comment_change(
             caller,
             agent,
@@ -387,9 +396,19 @@ impl Review {
             request.id.as_ref(),
             request.idempotency_key.as_ref(),
             move |ledger, id| {
+                let at = now();
                 ledger
-                    .reply(id, author, &text, now())
+                    .reply(id, author.clone(), &text, at)
                     .map_err(|error| comment_failed(&error))?;
+                if resolve
+                    && ledger
+                        .comment(id)
+                        .is_some_and(|c| c.status != CommentStatus::Resolved)
+                {
+                    ledger
+                        .resolve(id, author, None, at, None)
+                        .map_err(|error| comment_failed(&error))?;
+                }
                 ledger
                     .comment(id)
                     .cloned()
@@ -491,6 +510,7 @@ impl Review {
                 .is_some_and(|detail| detail.repos.len() > 1)
         };
         let named = local_ids(&record.id, &request.ids)?;
+        let overall_note = request.overall_note.trim().to_owned();
 
         // Begin the batches in memory: the ledger checks everything before
         // it changes anything.
@@ -513,6 +533,28 @@ impl Review {
                     None => fresh.push(id.clone()),
                 }
             }
+            // Validate existing inline drafts before persisting a new overall
+            // comment so a failure leaves the ledger untouched.
+            if !fresh.is_empty() {
+                ledger.sendable(&fresh).map_err(|error| comment_failed(&error))?;
+            }
+            if !overall_note.is_empty() {
+                let anchor = CommentAnchor {
+                    file: FileRef {
+                        repo: String::new(),
+                        path: String::new(),
+                    },
+                    side: Side::New,
+                    first: 0,
+                    last: 0,
+                    quoted: Vec::new(),
+                    base: String::new(),
+                    blob: String::new(),
+                    detached: false,
+                };
+                let overall_id = ledger.add(anchor, &overall_note, now()).id.clone();
+                fresh.push(overall_id);
+            }
             let message = if fresh.is_empty() && !retry.is_empty() {
                 None
             } else {
@@ -530,14 +572,18 @@ impl Review {
                     .iter()
                     .zip(&folders)
                     .map(|(comment, folder)| MessagePart {
-                        // A folder file (repo "") has no repo to lead with.
-                        repo: (several_clones && !folder.is_empty()).then_some(folder.as_str()),
+                        id: Some(comment.id.as_str()),
+                        // A folder file or session-level comment (repo "") has no repo to lead with.
+                        repo: (several_clones && !folder.is_empty() && !comment.anchor.file.path.is_empty())
+                            .then_some(folder.as_str()),
                         path: &comment.anchor.file.path,
                         first: comment.anchor.first,
                         last: comment.anchor.last,
-                        diff: (!comment.anchor.base.is_empty()).then(|| DiffContext {
-                            side: comment.anchor.side,
-                            base: &comment.anchor.base,
+                        diff: (!comment.anchor.file.path.is_empty() && !comment.anchor.base.is_empty()).then(|| {
+                            DiffContext {
+                                side: comment.anchor.side,
+                                base: &comment.anchor.base,
+                            }
                         }),
                         quoted: &comment.anchor.quoted,
                         text: &comment.text,
@@ -645,6 +691,7 @@ impl Review {
             .filter(|comment| {
                 comment.archived.is_none()
                     && comment.pull_request.is_none()
+                    && !comment.anchor.file.path.is_empty()
                     && comment.anchor.side == Side::New
                     && !comment.anchor.quoted.is_empty()
                     && matches!(
@@ -1239,9 +1286,29 @@ impl Review {
         record: &SessionRecord,
         anchor: &pb::CommentAnchor,
         fallback: Option<String>,
+        allow_session_level: bool,
     ) -> Result<CommentAnchor, Status> {
         let path = anchor.file.as_ref().map(|file| file.path.clone()).unwrap_or_default();
+        let (first, last) = anchor
+            .lines
+            .as_ref()
+            .map_or((0, 0), |lines| normalize_lines(lines.first, lines.last));
         if path.is_empty() {
+            if allow_session_level && first == 0 && last == 0 {
+                return Ok(CommentAnchor {
+                    file: FileRef {
+                        repo: String::new(),
+                        path: String::new(),
+                    },
+                    side: Side::New,
+                    first: 0,
+                    last: 0,
+                    quoted: Vec::new(),
+                    base: anchor.base.clone(),
+                    blob: String::new(),
+                    detached: false,
+                });
+            }
             return Err(ports::missing("anchor.file"));
         }
         let named = anchor
@@ -1276,10 +1343,6 @@ impl Review {
                 }
             }
         };
-        let (first, last) = anchor
-            .lines
-            .as_ref()
-            .map_or((0, 0), |lines| normalize_lines(lines.first, lines.last));
         let side = if anchor.side == pb::DiffSide::Old as i32 { Side::Old } else { Side::New };
         let mut quoted: Vec<String> = if anchor.quoted.is_empty() {
             Vec::new()
@@ -1579,6 +1642,7 @@ impl Review {
             .filter(|comment| {
                 comment.archived.is_none()
                     && comment.pull_request.is_none()
+                    && !comment.anchor.file.path.is_empty()
                     && comment.anchor.side == Side::New
                     && !comment.anchor.quoted.is_empty()
                     && comment.anchor.file.repo == repo
@@ -2101,7 +2165,7 @@ fn comment_failed(error: &CommentError) -> Status {
 
 #[cfg(test)]
 mod repo_rule_tests {
-    use super::repo_holds_pull;
+    use super::*;
 
     #[test]
     fn a_draft_fits_the_same_repository_or_its_bare_name_only() {
@@ -2110,5 +2174,50 @@ mod repo_rule_tests {
         assert!(!repo_holds_pull("other/api", "acme/api"));
         assert!(!repo_holds_pull("web", "acme/api"));
         assert!(!repo_holds_pull("api", "api2"));
+    }
+
+    #[test]
+    fn session_level_overall_comment_formats_and_roundtrips_without_quote() {
+        let mut ledger = CommentLedger::new();
+        let anchor = CommentAnchor {
+            file: FileRef {
+                repo: String::new(),
+                path: String::new(),
+            },
+            side: Side::New,
+            first: 0,
+            last: 0,
+            quoted: Vec::new(),
+            base: String::new(),
+            blob: String::new(),
+            detached: false,
+        };
+        let comment = ledger.add(anchor, "Please check error handling across the PR.", 100).clone();
+        assert_eq!(comment.id, "c-1");
+
+        let pb = to_pb(&comment, "se-1");
+        assert_eq!(pb.id.as_ref().map(|id| id.value.as_str()), Some("se-1/c-1"));
+        assert_eq!(
+            pb.anchor
+                .as_ref()
+                .and_then(|a| a.file.as_ref())
+                .map(|f| f.path.as_str()),
+            Some("")
+        );
+
+        let message = compose(&[MessagePart {
+            id: Some(comment.id.as_str()),
+            repo: None,
+            path: &comment.anchor.file.path,
+            first: comment.anchor.first,
+            last: comment.anchor.last,
+            diff: None,
+            quoted: &comment.anchor.quoted,
+            text: &comment.text,
+        }]);
+        assert_eq!(
+            message,
+            "[comment c-1 on session]\nPlease check error handling across the PR."
+        );
     }
 }

@@ -182,6 +182,31 @@ pub struct ServeArgs {
     /// Where repositories are cloned from, with {owner} and {name}. For tests.
     #[arg(long, hide = true, default_value = humata2_sessions::DEFAULT_REMOTE_TEMPLATE)]
     remote_template: String,
+    /// Detach into a background session before serving (double-fork, setsid,
+    /// redirect stdin to /dev/null and stdout/stderr to a log file). For
+    /// machines without systemd or setsid(1).
+    #[arg(long, conflicts_with = "stdio")]
+    pub daemonize: bool,
+    /// With --daemonize, where redirected stdout and stderr go. Default:
+    /// `<state>/logs/humatad2.daemon.log`, falling back to `/dev/null`.
+    #[arg(long, requires = "daemonize")]
+    pub log_file: Option<PathBuf>,
+}
+
+impl ServeArgs {
+    /// Where `--daemonize` redirects stdout and stderr before starting the
+    /// runtime. Uses `--log-file` when given, otherwise
+    /// `<state>/logs/humatad2.daemon.log`.
+    pub fn daemonize_log_path(&self) -> Option<PathBuf> {
+        if let Some(path) = &self.log_file {
+            return Some(path.clone());
+        }
+        let state = self
+            .state
+            .clone()
+            .or_else(|| home_folder().ok().map(|home| home.join("state")))?;
+        Some(state.join("logs").join("humatad2.daemon.log"))
+    }
 }
 
 /// `~/.humata2`, where the daemon lives unless told otherwise.

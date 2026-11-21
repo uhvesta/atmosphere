@@ -662,3 +662,72 @@ fn a_draft_stays_saved_when_its_create_fails() {
     );
     assert!(handed.is_err());
 }
+
+#[test]
+fn overall_draft_sends_standalone_and_clears_on_success() {
+    let mut rig = rig();
+    rig.load();
+
+    rig.store.send(
+        A::SetOverallDraft(session(), "Please add tests for the whole change.".to_owned()),
+        |state| {
+            assert_eq!(
+                state.overall_draft(&session()),
+                "Please add tests for the whole change."
+            );
+        },
+    );
+
+    rig.store.send(A::SendAll(session()), |_| {});
+    rig.store.receive_matching(
+        "sent overall batch",
+        |a| matches!(a, A::SentBatch(_, true, Ok(_))),
+        |state| {
+            assert_eq!(state.overall_draft(&session()), "");
+            let overall = state.overall_comments(&session());
+            assert_eq!(overall.len(), 1);
+            assert!(overall[0].anchor.path.is_empty());
+            assert_eq!(overall[0].text, "Please add tests for the whole change.");
+            assert_eq!(overall[0].status, Status::Sent);
+        },
+    );
+    let typed = rig.fake.typed(&session());
+    assert_eq!(typed.len(), 1);
+    assert!(typed[0].contains("[comment on session]\nPlease add tests for the whole change."));
+}
+
+#[test]
+fn overall_draft_sends_alongside_inline_drafts_and_stays_on_failure() {
+    let mut rig = rig();
+    rig.load();
+
+    rig.store.send(A::OpenBox(session(), anchor("src/a.rs", 5)), |_| {});
+    rig.store.send(A::Typed(session(), "Rename this".to_owned()), |_| {});
+    rig.store.receive_matching("draft saved", |a| matches!(a, A::Written(_, Ok(_))), |_| {});
+    rig.store.send(A::Close(session()), |_| {});
+
+    rig.store.send(
+        A::SetOverallDraft(session(), "Also check error handling.".to_owned()),
+        |_| {},
+    );
+
+    // Failure keeps the overall draft intact.
+    rig.fake.fail("send", DaemonError::Offline { machine: humata2_clients::model::MachineId::new("m") });
+    rig.store.send(A::SendAll(session()), |_| {});
+    rig.store.receive_matching("send failed", |a| matches!(a, A::SentBatch(_, true, Err(_))), |state| {
+        assert_eq!(state.overall_draft(&session()), "Also check error handling.");
+    });
+    toasted(&mut rig);
+
+    // Retry succeeds: sends both inline + overall and clears overall draft.
+    rig.fake.clear_failure("send");
+    rig.store.send(A::SendAll(session()), |_| {});
+    rig.store.receive_matching("send succeeded", |a| matches!(a, A::SentBatch(_, true, Ok(_))), |state| {
+        assert_eq!(state.overall_draft(&session()), "");
+        assert_eq!(state.overall_comments(&session()).len(), 1);
+    });
+    let typed = rig.fake.typed(&session());
+    assert_eq!(typed.len(), 1);
+    assert!(typed[0].contains("Rename this"));
+    assert!(typed[0].ends_with("[comment on session]\nAlso check error handling."));
+}

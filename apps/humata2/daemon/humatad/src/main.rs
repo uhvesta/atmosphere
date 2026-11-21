@@ -128,6 +128,14 @@ fn main() -> ExitCode {
     if matches!(command, Command::Serve(_)) && tool_path::asked() {
         tool_path::widen_from_login_shell();
     }
+    // Before the runtime starts any thread: double-fork and detach when asked.
+    if let Command::Serve(ref args) = command
+        && args.base.daemonize
+        && let Err(error) = humatad_core::daemonize::detach(args.base.daemonize_log_path().as_deref())
+    {
+        log::say!("humatad2: {}", status::chain(&error));
+        std::process::exit(1);
+    }
     let mut builder = if matches!(command, Command::Serve(_)) {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.worker_threads(4);

@@ -47,7 +47,7 @@ fn draft_at(fake: &FakeComments, key: &str, anchor: Anchor, text: &str) -> Comme
 
 fn sent(fake: &FakeComments, ids: &[&Comment]) -> humata2_clients::comments::Sent {
     let ids: Vec<CommentId> = ids.iter().map(|c| c.id.clone()).collect();
-    match block_on(fake.send(&session(), &ids)) {
+    match block_on(fake.send(&session(), &ids, None)) {
         Ok(sent) => sent,
         Err(error) => panic!("send works: {error}"),
     }
@@ -174,8 +174,8 @@ fn only_the_chosen_drafts_are_sent() {
     let b = draft(&fake, "b", "two");
     sent(&fake, &[&a]);
     assert_eq!(current(&fake, &b.id).status, Status::Draft);
-    assert!(is_refused(block_on(fake.send(&session(), &[]))));
-    assert!(is_refused(block_on(fake.send(&session(), &[a.id.clone()]))));
+    assert!(is_refused(block_on(fake.send(&session(), &[], None))));
+    assert!(is_refused(block_on(fake.send(&session(), &[a.id.clone()], None))));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn an_archived_comment_is_never_sent_or_counted_and_unarchive_restores_it() {
     let Ok(archived) = block_on(fake.archive(&a.id)) else { panic!("archive works") };
     assert!(archived.archived);
     assert_eq!(archived.status, Status::Draft);
-    assert!(is_refused(block_on(fake.send(&session(), &[a.id.clone()]))));
+    assert!(is_refused(block_on(fake.send(&session(), &[a.id.clone()], None))));
     assert_eq!(listing(&fake, Which::Open).draft_count, 0);
     assert!(listing(&fake, Which::Open).comments.is_empty());
     assert_eq!(listing(&fake, Which::Archived).comments.len(), 1);
@@ -420,11 +420,11 @@ fn fail_makes_a_call_fail_until_cleared_and_calls_are_recorded() {
     let a = draft(&fake, "a", "one");
     let error = DaemonError::NotFound { what: "this session".to_owned() };
     fake.fail("send", error.clone());
-    assert_eq!(block_on(fake.send(&session(), &[a.id.clone()])).err(), Some(error));
+    assert_eq!(block_on(fake.send(&session(), &[a.id.clone()], None)).err(), Some(error));
     assert_eq!(current(&fake, &a.id).status, Status::Draft);
     fake.clear_failure("send");
-    assert!(block_on(fake.send(&session(), &[a.id.clone()])).is_ok());
-    assert!(fake.calls().contains(&Call::Send(session(), vec![a.id.clone()])));
+    assert!(block_on(fake.send(&session(), &[a.id.clone()], None)).is_ok());
+    assert!(fake.calls().contains(&Call::Send(session(), vec![a.id.clone()], None)));
 }
 
 #[test]
@@ -480,8 +480,8 @@ fn only_terminal_drafts_count_toward_the_badge_and_only_they_are_sent() {
         12,
     );
     assert_eq!(listing(&fake, Which::Open).draft_count, 1);
-    assert!(is_refused(block_on(fake.send(&session(), &[note.id.clone()]))));
-    assert!(is_refused(block_on(fake.send(&session(), &[pull_request.id.clone()]))));
+    assert!(is_refused(block_on(fake.send(&session(), &[note.id.clone()], None))));
+    assert!(is_refused(block_on(fake.send(&session(), &[pull_request.id.clone()], None))));
     assert!(fake.typed(&session()).is_empty());
 
     let result = sent(&fake, &[&terminal]);
@@ -686,7 +686,7 @@ fn creating_a_pull_request_draft_makes_a_user_draft_for_it_that_is_not_typed() {
     let listed = listing(&fake, Which::Open);
     assert_eq!(listed.comments, vec![made.clone()]);
     assert_eq!(listed.draft_count, 0);
-    assert!(is_refused(block_on(fake.send(&session(), &[made.id]))));
+    assert!(is_refused(block_on(fake.send(&session(), &[made.id], None))));
 }
 
 #[test]

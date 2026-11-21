@@ -434,10 +434,28 @@ impl Setup {
         Ok(())
     }
 
-    /// Use `setsid` and crontab instead of systemd from now on (PER-19),
-    /// when lingering or the user's service manager can't be had.
+    /// Use a non-systemd service kind (`setsid` + crontab when available,
+    /// otherwise built-in `humatad2 --daemonize` via `ServiceKind::Detached`)
+    /// from now on (PER-19), when lingering or the user's service manager
+    /// can't be had.
     pub fn use_setsid(&mut self) {
-        self.service = Some(ServiceKind::Setsid);
+        self.use_without_systemd();
+    }
+
+    /// Use `ServiceKind::Setsid` when `setsid` and `crontab` are available,
+    /// otherwise `ServiceKind::Detached` (`humatad2 --daemonize`).
+    pub fn use_without_systemd(&mut self) {
+        self.service = Some(
+            self.facts
+                .as_ref()
+                .map(ServiceKind::without_systemd)
+                .unwrap_or(ServiceKind::Setsid),
+        );
+    }
+
+    /// Use built-in `humatad2 --daemonize` (`ServiceKind::Detached`) directly.
+    pub fn use_detached(&mut self) {
+        self.service = Some(ServiceKind::Detached);
     }
 
     /// Runs the current step.
@@ -531,9 +549,7 @@ impl Setup {
                 remedies.push(Remedy::RunAsAdmin {
                     command: admin_command.clone(),
                 });
-                if self.facts.as_ref().is_some_and(|facts| facts.setsid && facts.crontab) {
-                    remedies.push(Remedy::StartWithoutSystemd);
-                }
+                remedies.push(Remedy::StartWithoutSystemd);
             }
             _ => {}
         }
@@ -764,8 +780,8 @@ impl Setup {
         }
         let service = match self.service {
             Some(ServiceKind::Setsid) => ServiceKind::Setsid,
-            _ => ServiceKind::for_machine(&facts)
-                .ok_or_else(|| Failed::new(SetupError::NoServiceManager { machine: machine.clone() }))?,
+            Some(ServiceKind::Detached) => ServiceKind::Detached,
+            _ => ServiceKind::for_machine(&facts),
         };
         let payloads = builds.payloads(found).map_err(Failed::new)?;
         // A machine that already runs humatad2 is upgraded by Migrate

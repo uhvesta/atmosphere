@@ -737,9 +737,6 @@ impl CommentLedger {
                         status: c.status,
                     });
                 }
-                if reply.is_none() {
-                    return Err(CommentError::ReplyNeeded { id: c.id.clone() });
-                }
             }
         }
         let c = &mut self.comments[i];

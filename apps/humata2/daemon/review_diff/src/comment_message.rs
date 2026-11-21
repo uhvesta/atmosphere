@@ -14,15 +14,19 @@ const QUOTE_LIMIT: usize = 12;
 
 /// One comment of a batch, as the message needs it.
 pub struct MessagePart<'a> {
+    /// The comment's id (e.g. `c-12`), included in the header so the agent can
+    /// call `comment_reply` / `comment_resolve` directly without `comments_list`.
+    pub id: Option<&'a str>,
     /// The repo, when the session has more than one (SM-9); None otherwise.
     pub repo: Option<&'a str>,
+    /// File path, or empty for a session-level overall comment.
     pub path: &'a str,
-    /// 1-based inclusive lines; 0..0 is the whole file.
+    /// 1-based inclusive lines; 0..0 is the whole file (or whole session when `path` is empty).
     pub first: u32,
     pub last: u32,
     /// Set for a comment made in a diff (RV-27).
     pub diff: Option<DiffContext<'a>>,
-    /// The quoted code; used only with `diff`.
+    /// The quoted code; used only with `diff` on a file comment.
     pub quoted: &'a [String],
     pub text: &'a str,
 }
@@ -40,7 +44,17 @@ pub fn compose(parts: &[MessagePart<'_>]) -> String {
 }
 
 fn one(part: &MessagePart<'_>) -> String {
-    let mut out = String::from("[comment on ");
+    let mut out = String::from("[comment");
+    if let Some(id) = part.id.filter(|id| !id.is_empty()) {
+        out.push(' ');
+        out.push_str(id);
+    }
+    out.push_str(" on ");
+    if part.path.is_empty() {
+        out.push_str("session]\n");
+        out.push_str(part.text.trim_end());
+        return out;
+    }
     if let Some(repo) = part.repo {
         out.push_str(repo);
         out.push('/');

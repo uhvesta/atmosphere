@@ -321,6 +321,14 @@ pub fn changes(
     let sendable = session_id
         .as_ref()
         .map_or(0, |session| state.comments.sendable(session).len());
+    let has_overall = session_id
+        .as_ref()
+        .is_some_and(|session| !state.comments.overall_draft(session).trim().is_empty());
+    let can_send = sendable > 0 || has_overall;
+    let overall_comments: Vec<&DaemonComment> = session_id
+        .as_ref()
+        .map(|session| state.comments.overall_comments(session))
+        .unwrap_or_default();
     let (looked_n, looks_total) = looked_of(state, &diffs);
     let looked_all = looks_total > 0 && looked_n == looks_total;
     let roomy = full || width >= 560.;
@@ -1022,6 +1030,36 @@ pub fn changes(
                     session_id.as_ref(),
                 )),
         )
+        .children((!overall_comments.is_empty()).then(|| {
+            let agent = session_id
+                .as_ref()
+                .and_then(|id| state.workspace.session(id))
+                .map_or("agent", |found| found.agent.command());
+            let todo_ctx = session_id
+                .as_ref()
+                .map(|id| crate::comment_cards::todo_context(state, id))
+                .unwrap_or_default();
+            let noop_reattach: crate::comment_cards::StartReattach = Rc::new(|_, _| {});
+            div()
+                .id("overall-comments-list")
+                .test_support()
+                .max_h(px(180.))
+                .overflow_y_scroll()
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(rgb(look.line))
+                .children(overall_comments.iter().map(|comment| {
+                    crate::comment_cards::plain_card(
+                        ui,
+                        look,
+                        comment,
+                        agent,
+                        false,
+                        &noop_reattach,
+                        &todo_ctx,
+                    )
+                }))
+        }))
         .children((!roomy).then(|| {
             let status = looks_status_el();
             let button = looks_button_el();
@@ -1042,6 +1080,24 @@ pub fn changes(
                     .children(button)
             })
         }).flatten())
+        .when_some(session_id.clone(), |panel, _| {
+            panel.child(
+                div()
+                    .id("overall-comment-input")
+                    .test_support()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(rgb(look.line))
+                    .flex_shrink_0()
+                    .child(
+                        gpui_kit::component::input::Textarea::new(&documents.overall_input())
+                            .xsmall()
+                            .text_size(px(12.))
+                            .aria_label("Comment or request on the whole change"),
+                    ),
+            )
+        })
         .child(
             row()
                 .gap(px(8.))
@@ -1202,9 +1258,9 @@ pub fn changes(
                 // draft waits, as a secondary button left of Submit review….
                 .when_some(session_id.clone().filter(|_| {
                     if review.is_some() {
-                        sendable > 0
+                        can_send
                     } else if stacked {
-                        crate::panel_stack::whole_picked(&state.review) || sendable > 0
+                        crate::panel_stack::whole_picked(&state.review) || can_send
                     } else {
                         true
                     }
@@ -1221,12 +1277,12 @@ pub fn changes(
                                 format!("Send to {agent}"),
                                 AppAction::Comments(CommentsAction::SendAll(session)),
                                 look,
-                                review.is_none() && sendable > 0,
+                                review.is_none() && can_send,
                             )
-                            .when(sendable == 0, |button| {
+                            .when(!can_send, |button| {
                                 button.text_color(rgb(look.secondary)).cursor_default()
                             })
-                            .disabled(sendable == 0),
+                            .disabled(!can_send),
                         )
                 })
                 // DS-16: Submit review… sits in the footer, beside the

@@ -360,7 +360,14 @@ pub trait CommentsClient: Send + Sync + 'static {
 
     /// Types these drafts, or an unconfirmed batch again, into the session's
     /// main agent as one message (SM-9, SE-23). Other drafts stay drafts.
-    fn send(&self, session: &SessionId, ids: &[CommentId]) -> Reply<Sent>;
+    /// When `overall_note` is non-blank, a session-level overall comment is
+    /// persisted and included at the end of the paste (even when `ids` is empty).
+    fn send(
+        &self,
+        session: &SessionId,
+        ids: &[CommentId],
+        overall_note: Option<&str>,
+    ) -> Reply<Sent>;
 
     /// Waiting comments go back to drafts; for an unconfirmed batch, the
     /// whole batch (SE-23). Answers every comment that went back.

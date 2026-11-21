@@ -118,9 +118,35 @@ pub struct SessionComments {
 pub struct CommentsState {
     /// By session.
     pub sessions: BTreeMap<SessionId, SessionComments>,
+    /// Unsent overall ("as a whole") comment/request draft per session.
+    pub overall_drafts: BTreeMap<SessionId, String>,
 }
 
 impl CommentsState {
+    /// The unsent overall comment/request text for `session`, or `""`.
+    #[must_use]
+    pub fn overall_draft(&self, session: &SessionId) -> &str {
+        self.overall_drafts.get(session).map_or("", String::as_str)
+    }
+
+    /// Non-archived session-level overall comments (`anchor.path.is_empty()`)
+    /// for `session`, in creation order.
+    #[must_use]
+    pub fn overall_comments(&self, session: &SessionId) -> Vec<&Comment> {
+        self.sessions
+            .get(session)
+            .map(|held| {
+                held.comments
+                    .iter()
+                    .filter(|c| {
+                        !c.archived
+                            && c.anchor.path.is_empty()
+                            && matches!(c.destination, Destination::Terminal)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     /// What the parent should keep across restarts.
     #[must_use]
     pub fn saved(&self) -> CommentsSaved {
@@ -302,10 +328,14 @@ pub enum CommentsAction {
     /// itself was dropped.
     NoteSent(SessionId, CommentId, Result<Vec<Comment>, DaemonError>, Result<(), DaemonError>),
 
-    /// Send every draft held (Send N).
+    /// Update the unsent overall ("as a whole") comment/request draft for a session.
+    SetOverallDraft(SessionId, String),
+    /// Send every draft held (Send N), along with any overall draft.
     SendAll(SessionId),
     /// Send an unconfirmed comment's batch again.
     SendAgain(SessionId, CommentId),
+    /// A send batch answered; clears `overall_drafts` on success when `had_overall` is true.
+    SentBatch(SessionId, bool, Result<Vec<Comment>, DaemonError>),
     /// Waiting comments go back to drafts.
     TakeBack(SessionId, CommentId),
     /// Comments changed by one call.
@@ -432,7 +462,12 @@ impl Comments {
     }
 
     /// Does what the box is waiting to do once it has nothing in flight.
-    fn drive(&self, session: &SessionId, s: &mut SessionComments) -> Effect<CommentsAction> {
+    fn drive(
+        &self,
+        session: &SessionId,
+        s: &mut SessionComments,
+        overall_drafts: &BTreeMap<SessionId, String>,
+    ) -> Effect<CommentsAction> {
         let Some(b) = s.editing.as_ref() else {
             return Effect::none();
         };
@@ -466,7 +501,7 @@ impl Comments {
                 Some(id) if s.comments.iter().any(|c| c.id == id && is_agent_note(c)) => {
                     stop.and(self.send_note(session, s, id))
                 }
-                Some(id) => stop.and(self.send(session, vec![id])),
+                Some(id) => stop.and(self.send(session, vec![id], None)),
                 None => stop,
             },
             Then::Archive(id) => stop.and(self.archive(session, &id)),
@@ -476,7 +511,11 @@ impl Comments {
             }
             Then::SendAll => {
                 let ids = Self::draft_ids(s);
-                stop.and(self.send(session, ids))
+                let overall = overall_drafts
+                    .get(session)
+                    .map(|text| text.trim().to_owned())
+                    .filter(|text| !text.is_empty());
+                stop.and(self.send(session, ids, overall))
             }
         }
     }
@@ -547,14 +586,25 @@ impl Comments {
         s.comments.iter().filter(|c| c.counts_as_draft()).map(|c| c.id.clone()).collect()
     }
 
-    fn send(&self, session: &SessionId, ids: Vec<CommentId>) -> Effect<CommentsAction> {
-        if ids.is_empty() {
+    fn send(
+        &self,
+        session: &SessionId,
+        ids: Vec<CommentId>,
+        overall_note: Option<String>,
+    ) -> Effect<CommentsAction> {
+        let overall = overall_note.filter(|text| !is_blank(text));
+        if ids.is_empty() && overall.is_none() {
             return Effect::none();
         }
-        let call = self.client.send(session, &ids);
+        let had_overall = overall.is_some();
+        let call = self.client.send(session, &ids, overall.as_deref());
         let session = session.clone();
         Effect::future(async move {
-            CommentsAction::ManyChanged(session, call.await.map(|sent: Sent| sent.comments))
+            CommentsAction::SentBatch(
+                session,
+                had_overall,
+                call.await.map(|sent: Sent| sent.comments),
+            )
         })
     }
 
@@ -572,7 +622,9 @@ impl Comments {
         Effect::future(async move {
             let sent = async {
                 let made = client.create(&session, anchor, &text, &key).await?;
-                let sent = client.send(&session, std::slice::from_ref(&made.id)).await?;
+                let sent = client
+                    .send(&session, std::slice::from_ref(&made.id), None)
+                    .await?;
                 Ok(sent.comments)
             }
             .await;
@@ -739,7 +791,7 @@ impl Reducer for Comments {
                     .filter(|b| b.then.is_none() && !is_blank(&b.text))
                 {
                     open.then = Some(Then::Open(anchor));
-                    return self.drive(&session, s);
+                    return self.drive(&session, s, &state.overall_drafts);
                 }
                 self.open_box(&session, s, new_box(anchor, None, String::new()));
                 Effect::none()
@@ -797,7 +849,7 @@ impl Reducer for Comments {
                             b.saved = std::mem::take(&mut b.sending);
                             b.comment = Some(id);
                         }
-                        self.drive(&session, s)
+                        self.drive(&session, s, &state.overall_drafts)
                     }
                     Err(error) => {
                         let Some(b) = s.editing.as_mut() else {
@@ -854,7 +906,7 @@ impl Reducer for Comments {
                             if let Some(b) = s.editing.as_mut() {
                                 b.due = true;
                             }
-                            return self.drive(&session, s);
+                            return self.drive(&session, s, &state.overall_drafts);
                         }
                         if let Some(b) = s.editing.as_mut() {
                             b.then = None;
@@ -886,7 +938,7 @@ impl Reducer for Comments {
                 } else {
                     Then::Comment
                 });
-                self.drive(&session, s)
+                self.drive(&session, s, &state.overall_drafts)
             }
             A::DraftForGitHub(session, repo, number) => {
                 let s = state.sessions.entry(session.clone()).or_default();
@@ -900,7 +952,7 @@ impl Reducer for Comments {
                     return Effect::none();
                 }
                 b.then = Some(Then::GitHub { repo, number });
-                self.drive(&session, s)
+                self.drive(&session, s, &state.overall_drafts)
             }
             A::GitHubDrafted(session, made, dropped) => {
                 let s = state.sessions.entry(session).or_default();
@@ -960,7 +1012,7 @@ impl Reducer for Comments {
                     return Effect::none();
                 };
                 b.then = Some(if is_blank(&b.text) { Then::Cancel } else { Then::Close });
-                self.drive(&session, s)
+                self.drive(&session, s, &state.overall_drafts)
             }
             A::Cancel(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
@@ -968,19 +1020,47 @@ impl Reducer for Comments {
                     return Effect::none();
                 };
                 b.then = Some(Then::Cancel);
-                self.drive(&session, s)
+                self.drive(&session, s, &state.overall_drafts)
             }
 
+            A::SetOverallDraft(session, text) => {
+                if text.is_empty() {
+                    state.overall_drafts.remove(&session);
+                } else {
+                    state.overall_drafts.insert(session, text);
+                }
+                Effect::none()
+            }
             A::SendAll(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
                 if let Some(b) = s.editing.as_mut() {
                     b.then = Some(Then::SendAll);
-                    return self.drive(&session, s);
+                    return self.drive(&session, s, &state.overall_drafts);
                 }
                 let ids = Self::draft_ids(s);
-                self.send(&session, ids)
+                let overall = state
+                    .overall_drafts
+                    .get(&session)
+                    .map(|text| text.trim().to_owned())
+                    .filter(|text| !text.is_empty());
+                self.send(&session, ids, overall)
             }
-            A::SendAgain(session, id) => self.send(&session, vec![id]),
+            A::SendAgain(session, id) => self.send(&session, vec![id], None),
+            A::SentBatch(session, had_overall, result) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                match result {
+                    Ok(comments) => {
+                        for comment in comments {
+                            upsert(s, comment);
+                        }
+                        if had_overall {
+                            state.overall_drafts.remove(&session);
+                        }
+                        Effect::none()
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
             A::TakeBack(session, id) => {
                 let call = self.client.take_back(&session, &[id]);
                 Effect::future(async move { A::ManyChanged(session, call.await) })
@@ -1033,7 +1113,7 @@ impl Reducer for Comments {
                 let s = state.sessions.entry(session.clone()).or_default();
                 if let Some(b) = s.editing.as_mut() {
                     b.then = Some(Then::Archive(id));
-                    return self.drive(&session, s);
+                    return self.drive(&session, s, &state.overall_drafts);
                 }
                 self.archive(&session, &id)
             }

@@ -432,14 +432,6 @@ fn the_check_refuses_machines_setup_cant_use() {
             },
             "disk",
         ),
-        (
-            CheckFacts {
-                systemd: false,
-                cron: false,
-                ..CheckFacts::default()
-            },
-            "service manager",
-        ),
     ];
     for (facts, case) in cases {
         let runner = FakeRunner::new();
@@ -458,11 +450,118 @@ fn the_check_refuses_machines_setup_cant_use() {
         let expected = match case {
             "unsupported" => matches!(failure.error, SetupError::Unsupported { .. }),
             "git" => matches!(failure.error, SetupError::GitMissing { .. }),
-            "disk" => matches!(failure.error, SetupError::DiskLow { .. }),
-            _ => matches!(failure.error, SetupError::NoServiceManager { .. }),
+            _ => matches!(failure.error, SetupError::DiskLow { .. }),
         };
         assert!(expected, "{case}: {:?}", failure.error);
     }
+}
+
+#[test]
+fn without_systemd_setsid_or_crontab_setup_falls_back_to_detached_daemonize() {
+    let runner = FakeRunner::new();
+    let facts = CheckFacts {
+        systemd: false,
+        cron: false,
+        ..CheckFacts::default()
+    };
+    answer_up_to_service(&runner, &facts);
+    runner.ok(Purpose::Service, "");
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Ready(ready) = progress else {
+        panic!("expected detached fallback to succeed, got {progress:?}");
+    };
+    assert_eq!(ready.service, ServiceKind::Detached);
+    let service_scripts = runner.ran(Purpose::Service);
+    assert_eq!(service_scripts.len(), 1);
+    let script_text = service_scripts[0].args.join(" ");
+    assert!(
+        script_text.contains("serve --role machine --daemonize"),
+        "expected detached script to invoke --daemonize, got: {script_text}"
+    );
+}
+
+#[test]
+fn without_lingering_and_without_setsid_or_crontab_detached_remedy_is_offered() {
+    let runner = FakeRunner::new();
+    let facts = CheckFacts {
+        systemd: true,
+        cron: false,
+        ..CheckFacts::default()
+    };
+    answer_up_to_service(&runner, &facts);
+    runner
+        .answer(Purpose::Service, Exit::Code(75), "", "lingering can't be turned on")
+        .ok(Purpose::Service, "");
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Failed(failure) = progress else {
+        panic!("{progress:?}");
+    };
+    assert!(matches!(failure.error, SetupError::LingerUnavailable { .. }));
+    assert!(failure.remedies.contains(&Remedy::StartWithoutSystemd));
+
+    setup.use_without_systemd();
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Ready(ready) = progress else {
+        panic!("{progress:?}");
+    };
+    assert_eq!(ready.service, ServiceKind::Detached);
+    let scripts = runner.ran(Purpose::Service);
+    assert_eq!(scripts.len(), 2);
+    assert!(scripts[1].args.join(" ").contains("serve --role machine --daemonize"));
+}
+
+#[test]
+fn reconnecting_a_detached_machine_starts_daemonize_again_when_not_running() {
+    let runner = FakeRunner::new();
+    let files = payloads();
+    let installed: Vec<(InstalledFile, String)> = files
+        .iter()
+        .map(|p| (p.file(), p.sha256().to_owned()))
+        .collect();
+    let facts = CheckFacts {
+        systemd: false,
+        cron: false,
+        installed,
+        ..CheckFacts::default()
+    };
+    // First reconnect: humatad2 is NOT running (e.g. container restarted), binaries are intact.
+    runner
+        .ok(Purpose::Probe, "Linux x86_64\n")
+        .ok(Purpose::Check, &format!("{}humata2.running=no\n", facts.stdout()))
+        .ok(Purpose::Service, "");
+    let mut setup = ssh_machine(Path::new(KNOWN_HOSTS));
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Ready(ready) = progress else {
+        panic!("{progress:?}");
+    };
+    assert_eq!(ready.service, ServiceKind::Detached);
+    assert!(runner.ran(Purpose::Install).is_empty(), "binaries already match");
+    let service_scripts = runner.ran(Purpose::Service);
+    assert_eq!(service_scripts.len(), 1);
+    assert!(service_scripts[0].args.join(" ").contains("serve --role machine --daemonize"));
+
+    // Second reconnect: humatad2 IS already running detached -> no restart needed.
+    let runner2 = FakeRunner::new();
+    runner2
+        .ok(Purpose::Probe, "Linux x86_64\n")
+        .ok(Purpose::Check, &format!("{}humata2.running=detached\n", facts.stdout()));
+    let mut setup2 = ssh_machine(Path::new(KNOWN_HOSTS));
+
+    let (progress2, _) = drive(&mut setup2, &runner2, &FakeBuilds::files());
+    let Progress::Ready(ready2) = progress2 else {
+        panic!("{progress2:?}");
+    };
+    assert_eq!(ready2.service, ServiceKind::Detached);
+    assert!(runner2.ran(Purpose::Service).is_empty(), "already running detached");
 }
 
 #[test]

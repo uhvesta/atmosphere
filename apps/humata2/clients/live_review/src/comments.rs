@@ -475,16 +475,23 @@ impl CommentsClient for LiveComments {
         })
     }
 
-    fn send(&self, session: &SessionId, ids: &[CommentId]) -> Reply<Sent> {
+    fn send(
+        &self,
+        session: &SessionId,
+        ids: &[CommentId],
+        overall_note: Option<&str>,
+    ) -> Reply<Sent> {
         let shared = self.shared.clone();
         let session = session.clone();
         let ids: Vec<_> = ids.iter().filter_map(comment_id).collect();
+        let overall_note = overall_note.unwrap_or_default().to_owned();
         Box::pin(async move {
             let answer = comments_service(&shared)
                 .send_comments(pb::SendCommentsRequest {
                     idempotency_key: fresh_key(),
                     session: session_id(&session),
                     ids,
+                    overall_note,
                 })
                 .await
                 .map_err(|status| shared.error(&status, "Sending the comments"))?

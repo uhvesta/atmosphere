@@ -1,6 +1,7 @@
 //! Keeping humatad2 running on a Linux machine: a systemd user service with
-//! lingering (PER-18), or `setsid` plus a crontab `@reboot` entry where
-//! there is no systemd (PER-19).
+//! lingering (PER-18), `setsid` plus a crontab `@reboot` entry where there is
+//! no systemd (PER-19), or built-in `--daemonize` (`ServiceKind::Detached`)
+//! where neither systemd nor `setsid`+`crontab` is available.
 
 use crate::check::Facts;
 use crate::link::BIN_DIR;
@@ -20,19 +21,35 @@ pub enum ServiceKind {
     /// `setsid` now and a crontab `@reboot` entry for boots. Nothing restarts
     /// it if it crashes.
     Setsid,
+    /// `humatad2 serve --role machine --daemonize`: built-in double-fork
+    /// daemonization for machines or containers without systemd, `setsid`, or
+    /// `crontab`. Reconnect starts it again if the machine restarts.
+    Detached,
 }
 
 impl ServiceKind {
     /// The kind the machine supports, systemd first: a machine booted by
     /// systemd gets a user service even when the user's manager isn't
-    /// running yet, since turning lingering on starts it.
-    pub(crate) fn for_machine(facts: &Facts) -> Option<Self> {
+    /// running yet, since turning lingering on starts it. When neither
+    /// systemd nor `setsid`+`crontab` is available, falls back to `Detached`
+    /// (`humatad2 --daemonize`).
+    pub(crate) fn for_machine(facts: &Facts) -> Self {
         if facts.systemd || facts.systemd_init {
-            Some(Self::SystemdUser)
+            Self::SystemdUser
         } else if facts.setsid && facts.crontab {
-            Some(Self::Setsid)
+            Self::Setsid
         } else {
-            None
+            Self::Detached
+        }
+    }
+
+    /// The non-systemd fallback for this machine: `Setsid` when both `setsid`
+    /// and `crontab` are available, otherwise `Detached`.
+    pub(crate) fn without_systemd(facts: &Facts) -> Self {
+        if facts.setsid && facts.crontab {
+            Self::Setsid
+        } else {
+            Self::Detached
         }
     }
 }
@@ -75,12 +92,14 @@ WantedBy=default.target
 ";
 
 /// Shell helpers every script shares. `stray` stops a machine daemon this
-/// unit doesn't own, such as one a bridge or an older setsid start left
+/// unit doesn't own, such as one a bridge, setsid, or `--daemonize` start left
 /// behind, which would hold the socket and make the new one exit; it never
 /// matches a `serve --stdio` peer link. `-x -f` matches the whole command
 /// line, which must start with the daemon's own path: the scripts run as
 /// `sh -c '<script>'` and their text holds the unit's `ExecStart=` line, so
 /// a pattern matched anywhere in the command line would stop the script.
+/// When `pgrep`/`pkill` are unavailable (e.g. minimal containers), falls back
+/// to the PID recorded in `$HOME/.humata2/state/daemon.lock`.
 const HELPERS: &str = r#"set -u
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -90,10 +109,34 @@ drop_cron() {
   fi
   return 0
 }
+daemon_running() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1 && return 0
+  fi
+  lock="$HOME/.humata2/state/daemon.lock"
+  if [ -f "$lock" ]; then
+    pid=$(cat "$lock" 2>/dev/null)
+    case "$pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$pid" 2>/dev/null && [ -S "$HOME/.humata2/humatad.sock" ] && return 0
+  fi
+  return 1
+}
 stray() {
-  pkill -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' 2>/dev/null
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' 2>/dev/null
+  fi
+  lock="$HOME/.humata2/state/daemon.lock"
+  if [ -f "$lock" ]; then
+    pid=$(cat "$lock" 2>/dev/null)
+    case "$pid" in
+      ''|*[!0-9]*) ;;
+      *) kill "$pid" 2>/dev/null ;;
+    esac
+  fi
   n=0
-  while pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
+  while daemon_running && [ "$n" -lt 10 ]; do
     sleep 1; n=$((n + 1))
   done
   return 0
@@ -107,8 +150,9 @@ const BOOT_LINE: &str = r#"@reboot setsid "$HOME/.humata2/bin/humatad2" serve --
 /// A check fragment: prints `humata2.running=systemd` when the user service
 /// runs from the unit [`script`] writes, with lingering on and no boot
 /// entry beside it; `humata2.running=setsid` when the daemon runs with the
-/// boot entry and no unit; else `humata2.running=no`. Setup then restarts
-/// nothing when no file changed either.
+/// boot entry and no unit; `humata2.running=detached` when the daemon runs
+/// with neither unit nor boot entry; else `humata2.running=no`. Setup then
+/// restarts nothing when no file changed either.
 pub(crate) fn running_script() -> String {
     let unit = UNIT.trim_end();
     format!(
@@ -116,6 +160,20 @@ pub(crate) fn running_script() -> String {
 expected_unit='{unit}'
 boot_entry=no
 if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qxF '{BOOT_LINE}'; then boot_entry=yes; fi
+daemon_running() {{
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1 && return 0
+  fi
+  lock="$HOME/.humata2/state/daemon.lock"
+  if [ -f "$lock" ]; then
+    pid=$(cat "$lock" 2>/dev/null)
+    case "$pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$pid" 2>/dev/null && [ -S "$HOME/.humata2/humatad.sock" ] && return 0
+  fi
+  return 1
+}}
 if [ -f "$unit_dir/humatad2.service" ] && [ "$(cat "$unit_dir/humatad2.service" 2>/dev/null)" = "$expected_unit" ] \
   && [ "$boot_entry" = no ] \
   && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = yes ] \
@@ -123,8 +181,11 @@ if [ -f "$unit_dir/humatad2.service" ] && [ "$(cat "$unit_dir/humatad2.service" 
   && systemctl --user is-active --quiet humatad2.service 2>/dev/null; then
   printf 'humata2.running=systemd\n'
 elif [ ! -f "$unit_dir/humatad2.service" ] && [ "$boot_entry" = yes ] \
-  && pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null 2>&1; then
+  && daemon_running; then
   printf 'humata2.running=setsid\n'
+elif [ ! -f "$unit_dir/humatad2.service" ] && [ "$boot_entry" = no ] \
+  && daemon_running; then
+  printf 'humata2.running=detached\n'
 else
   printf 'humata2.running=no\n'
 fi
@@ -187,7 +248,21 @@ line='{BOOT_LINE}'
 stray
 setsid "$bin" serve --role machine </dev/null >/dev/null 2>&1 &
 sleep 2
-pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
+daemon_running || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
+"#
+        ),
+        ServiceKind::Detached => format!(
+            r#"bin="$HOME/{BIN_DIR}/humatad2"
+if command -v systemctl >/dev/null 2>&1 && [ -f "$unit_dir/humatad2.service" ]; then
+  systemctl --user disable --now humatad2.service >/dev/null 2>&1
+  rm -f "$unit_dir/humatad2.service"
+  systemctl --user daemon-reload >/dev/null 2>&1
+fi
+drop_cron || exit 1
+stray
+"$bin" serve --role machine --daemonize || {{ echo "humatad2 failed to daemonize; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
+sleep 2
+daemon_running || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
 "#
         ),
     };
@@ -354,7 +429,7 @@ if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/mat
                     r#"#!/bin/sh
 if [ "$1" = 2 ]; then
   n=0
-  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/active" ] || [ -e "$STATE/broken" ] || [ "$n" -ge 100 ]; do
+  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/daemonize_ran" ] || [ -e "$STATE/active" ] || [ -e "$STATE/broken" ] || [ "$n" -ge 100 ]; do
     {real} 0.005; n=$((n + 1))
   done
   exit 0
@@ -368,7 +443,13 @@ exec {real} 0.005
             fs::set_permissions(&sleep, fs::Permissions::from_mode(0o755)).unwrap();
             let installed = home.join(BIN_DIR);
             fs::create_dir_all(&installed).unwrap();
-            fs::write(installed.join("humatad2"), "").unwrap();
+            let humatad_path = installed.join("humatad2");
+            fs::write(
+                &humatad_path,
+                "#!/bin/sh\nif [ \"$*\" = \"serve --role machine --daemonize\" ]; then\n  touch \"$STATE/daemonize_ran\"\n  [ -e \"$STATE/broken\" ] && exit 1\n  touch \"$STATE/running\"\n  exit 0\nfi\nexit 1\n",
+            )
+            .unwrap();
+            fs::set_permissions(&humatad_path, fs::Permissions::from_mode(0o755)).unwrap();
             fs::write(installed.join("humata2_holder"), "").unwrap();
             fs::write(installed.join("humata"), "").unwrap();
             fs::write(installed.join("stack"), "").unwrap();
@@ -453,6 +534,9 @@ exec {real} 0.005
         assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
         assert_eq!(machine.running(), "humata2.running=setsid");
 
+        assert_eq!(machine.run(&script(ServiceKind::Detached)), Some(0));
+        assert_eq!(machine.running(), "humata2.running=detached");
+
         assert_eq!(machine.run(&remove_script()), Some(0));
         assert_eq!(machine.running(), "humata2.running=no");
     }
@@ -466,6 +550,8 @@ exec {real} 0.005
         machine.running();
         assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
         machine.running();
+        assert_eq!(machine.run(&script(ServiceKind::Detached)), Some(0));
+        machine.running();
         assert_eq!(machine.run(&remove_script()), Some(0));
         assert!(!machine.has("matched_self"));
     }
@@ -475,6 +561,7 @@ exec {real} 0.005
         for text in [
             script(ServiceKind::SystemdUser),
             script(ServiceKind::Setsid),
+            script(ServiceKind::Detached),
             remove_script(),
             running_script(),
         ] {
@@ -531,6 +618,46 @@ exec {real} 0.005
         let machine = Machine::new(false);
         machine.set("broken");
         assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(DID_NOT_START));
+
+        let machine = Machine::new(false);
+        machine.set("broken");
+        assert_eq!(machine.run(&script(ServiceKind::Detached)), Some(DID_NOT_START));
+    }
+
+    #[test]
+    fn detached_starts_humatad2_daemonize_without_systemd_setsid_or_crontab() {
+        let machine = Machine::new(false);
+        // Remove setsid and crontab completely from PATH to simulate a minimal container.
+        fs::remove_file(machine.bin.join("setsid")).unwrap();
+        fs::remove_file(machine.bin.join("crontab")).unwrap();
+
+        assert_eq!(machine.run(&script(ServiceKind::Detached)), Some(0));
+        assert!(machine.has("daemonize_ran"));
+        assert!(machine.has("running"));
+        assert_eq!(machine.running(), "humata2.running=detached");
+        assert!(!machine.unit().exists());
+        assert!(machine.crontab().is_empty());
+    }
+
+    #[test]
+    fn detached_takes_over_from_an_earlier_user_service_and_crontab() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        fs::write(
+            machine.state.join("crontab"),
+            format!("{OTHER_CRON}@reboot setsid old serve --role machine # humatad2\n"),
+        )
+        .unwrap();
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(0));
+
+        assert_eq!(machine.run(&script(ServiceKind::Detached)), Some(0));
+
+        assert!(!machine.unit().exists());
+        assert!(!machine.has("active"));
+        assert!(machine.has("daemonize_ran"));
+        assert!(machine.has("running"));
+        assert_eq!(machine.crontab(), OTHER_CRON);
+        assert_eq!(machine.running(), "humata2.running=detached");
     }
 
     #[test]

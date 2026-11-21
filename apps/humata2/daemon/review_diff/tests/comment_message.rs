@@ -1,7 +1,33 @@
 use humata2_review_diff::{DiffContext, MessagePart, Placement, Side, bracketed_paste, compose, place};
 
 fn plain<'a>(path: &'a str, first: u32, last: u32, text: &'a str) -> MessagePart<'a> {
-    MessagePart { repo: None, path, first, last, diff: None, quoted: &[], text }
+    MessagePart { id: None, repo: None, path, first, last, diff: None, quoted: &[], text }
+}
+
+#[test]
+fn plain_one_line_with_id() {
+    let mut part = plain("src/a.rs", 7, 7, "fix this");
+    part.id = Some("c-12");
+    assert_eq!(compose(&[part]), "[comment c-12 on src/a.rs:7]\nfix this");
+}
+
+#[test]
+fn session_level_overall_comment_has_no_quoted_block() {
+    let quoted = vec!["ignored".to_string()];
+    let part = MessagePart {
+        id: Some("c-42"),
+        repo: Some("api"),
+        path: "",
+        first: 0,
+        last: 0,
+        diff: Some(DiffContext { side: Side::New, base: "main" }),
+        quoted: &quoted,
+        text: "Please add unit tests for the whole change.\n",
+    };
+    assert_eq!(
+        compose(&[part]),
+        "[comment c-42 on session]\nPlease add unit tests for the whole change."
+    );
 }
 
 #[test]
@@ -30,6 +56,7 @@ fn repo_prefix_and_trailing_whitespace() {
 fn diff_comment_matches_app_format() {
     let quoted = vec!["let x = 1;".to_string()];
     let part = MessagePart {
+        id: Some("c-3"),
         repo: Some("api"),
         path: "src/a.rs",
         first: 3,
@@ -40,7 +67,7 @@ fn diff_comment_matches_app_format() {
     };
     assert_eq!(
         compose(&[part]),
-        "[comment on api/src/a.rs:3 · new · base main]\n> let x = 1;\nwhy?"
+        "[comment c-3 on api/src/a.rs:3 · new · base main]\n> let x = 1;\nwhy?"
     );
 }
 
@@ -48,6 +75,7 @@ fn diff_comment_matches_app_format() {
 fn diff_comment_empty_base() {
     let quoted = vec!["a".to_string(), "b".to_string()];
     let part = MessagePart {
+        id: None,
         repo: None,
         path: "a.rs",
         first: 1,
@@ -69,6 +97,7 @@ fn comments_are_joined_by_a_blank_line() {
 fn long_quotes_are_cut() {
     let quoted: Vec<String> = (1..=15).map(|n| format!("l{n}")).collect();
     let part = MessagePart {
+        id: None,
         repo: None,
         path: "a.rs",
         first: 1,

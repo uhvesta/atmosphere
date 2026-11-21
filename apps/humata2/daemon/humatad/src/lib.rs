@@ -19,6 +19,7 @@ mod channel_service;
 mod cli_login;
 pub(crate) use humata2_rpc_kit::compression;
 mod contained;
+pub mod daemonize;
 mod wire_stop_restart;
 pub(crate) use humata2_svc_stop_restart::{daemon, doctor};
 pub use humata2_svc_stop_restart::{restart, stop};

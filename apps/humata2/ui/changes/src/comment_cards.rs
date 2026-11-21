@@ -65,10 +65,15 @@ fn agent_label(author: &Author) -> String {
     }
 }
 
-/// "line 7" or "lines 13–14".
+/// "line 7", "lines 13–14", "whole file", or "whole change" for session-level comments.
 pub fn lines_label(anchor: &Anchor) -> String {
+    if anchor.path.is_empty() {
+        return "whole change".to_owned();
+    }
     let (first, last) = anchor.line_range();
-    if first == last {
+    if first == 0 && last == 0 {
+        "whole file".to_owned()
+    } else if first == last {
         format!("line {first}")
     } else {
         format!("lines {first}–{last}")
@@ -128,6 +133,23 @@ pub fn agent_reply(comment: &Comment) -> Option<(&str, &str)> {
         Author::Agent(name) => Some((name.as_str(), reply.text.as_str())),
         Author::User => None,
     })
+}
+
+/// Every reply on a comment in chronological order, shown regardless of
+/// whether the comment is still open or already done.
+#[must_use]
+pub fn visible_replies(comment: &Comment) -> Vec<(&str, &str)> {
+    comment
+        .replies
+        .iter()
+        .map(|reply| {
+            let who = match &reply.author {
+                Author::User => "You",
+                Author::Agent(name) => name.as_str(),
+            };
+            (who, reply.text.as_str())
+        })
+        .collect()
 }
 
 /// How many comments are done when every one of `comments` is, else `None`.
@@ -640,7 +662,7 @@ fn agent_note(
         )
 }
 
-fn plain_card(
+pub fn plain_card(
     ui: &Rc<Ui>,
     look: Look,
     comment: &Comment,
@@ -729,7 +751,7 @@ fn plain_card(
                 ),
         )
         .child(text(comment.text.clone()))
-        .children(state.done.then(|| agent_reply(comment)).flatten().map(|(who, said)| {
+        .children(visible_replies(comment).into_iter().map(|(who, said)| {
             row()
                 .gap(px(8.))
                 .mt(px(4.))
@@ -1052,5 +1074,43 @@ mod tests {
         a.first = 18;
         a.last = 10;
         assert_eq!(lines_label(&a), "lines 10–18");
+
+        // Whole file vs session-level overall comment.
+        a.first = 0;
+        a.last = 0;
+        assert_eq!(lines_label(&a), "whole file");
+        a.path.clear();
+        assert_eq!(lines_label(&a), "whole change");
+    }
+
+    #[test]
+    fn visible_replies_shows_replies_on_open_comments_in_chronological_order() {
+        let mut c = comment(Status::Sent);
+        assert!(!card_state(&c, "claude").done);
+        c.replies = vec![
+            ThreadReply {
+                id: "r-1".into(),
+                author: Author::Agent("claude".into()),
+                text: "First answer".into(),
+            },
+            ThreadReply {
+                id: "r-2".into(),
+                author: Author::User,
+                text: "Follow up".into(),
+            },
+            ThreadReply {
+                id: "r-3".into(),
+                author: Author::Agent("claude".into()),
+                text: "Second answer".into(),
+            },
+        ];
+        assert_eq!(
+            visible_replies(&c),
+            vec![
+                ("claude", "First answer"),
+                ("You", "Follow up"),
+                ("claude", "Second answer"),
+            ]
+        );
     }
 }

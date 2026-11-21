@@ -173,6 +173,7 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         running: match facts.get("running") {
             Some(&"systemd") => Some(ServiceKind::SystemdUser),
             Some(&"setsid") => Some(ServiceKind::Setsid),
+            Some(&"detached") => Some(ServiceKind::Detached),
             _ => None,
         },
         installed,

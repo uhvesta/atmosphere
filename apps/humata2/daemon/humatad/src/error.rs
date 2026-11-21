@@ -17,6 +17,12 @@ pub enum DaemonError {
         source: std::io::Error,
     },
 
+    #[error("couldn't detach humatad2 into the background")]
+    Daemonize {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "couldn't create {}; check that its parent exists and belongs to you",
         path.display()

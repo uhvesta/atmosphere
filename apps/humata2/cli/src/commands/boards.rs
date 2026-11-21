@@ -300,6 +300,7 @@ pub(super) async fn comment<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 session: Some(ctx.session(&session).await?),
                 ids: ids.into_iter().map(|value| pb::CommentId { value }).collect(),
+                overall_note: String::new(),
             };
             ctx.change(rpc::comment::SEND_COMMENTS, &request).await
         }

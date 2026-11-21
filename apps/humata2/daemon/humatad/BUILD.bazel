@@ -97,6 +97,7 @@ SHARED_DEPS = [
     "@crates//:hmac",
     "@crates//:http-body",
     "@crates//:hyper-util",
+    "@crates//:libc",
     "@crates//:notify",
     "@crates//:prost",
     "@crates//:rand",
@@ -1917,8 +1918,32 @@ NEED_ENV = {
             ] else []
         ),
     )
-    for src in glob(["tests/*.rs"])
+    for src in glob(["tests/*.rs"], exclude = ["tests/daemonize.rs"])
 ]
+
+rust_test(
+    name = "daemonize_test",
+    size = "medium",
+    srcs = ["tests/daemonize.rs"],
+    crate_root = "tests/daemonize.rs",
+    data = [
+        ":humatad2_test_power_cut",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "HUMATAD2": "$(rootpath :humatad2_test_power_cut)",
+    },
+    deps = [
+        ":grpc",
+        "@crates//:hyper-util",
+        "@crates//:rustix",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
 
 # TR-10: the round trip over a real `serve --stdio` link, printed as
 # percentiles. Manual: run it on a release build, with

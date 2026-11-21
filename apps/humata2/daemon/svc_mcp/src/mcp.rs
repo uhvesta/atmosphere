@@ -460,7 +460,6 @@ impl GrpcDaemon {
             vec![
                 pb::CommentStatus::Sent as i32,
                 pb::CommentStatus::Queued as i32,
-                pb::CommentStatus::Addressed as i32,
             ]
         } else {
             asked
@@ -469,10 +468,16 @@ impl GrpcDaemon {
                     "sent" => Some(pb::CommentStatus::Sent as i32),
                     "queued" => Some(pb::CommentStatus::Queued as i32),
                     "addressed" => Some(pb::CommentStatus::Addressed as i32),
+                    "resolved" => Some(pb::CommentStatus::Resolved as i32),
                     _ => None,
                 })
                 .collect()
         };
+        let compact = call
+            .arguments
+            .get("compact")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let session = self.own_session().await?;
         let mut listed: Vec<pb::Comment> = Vec::new();
         let mut page_token = String::new();
@@ -508,7 +513,7 @@ impl GrpcDaemon {
                         .is_some_and(|file| file.path == path)
                 })
             })
-            .map(review::comment_json)
+            .map(|comment| review::comment_json_with_options(comment, compact))
             .collect();
         Ok(applied(json!({ "comments": comments }), None))
     }
@@ -516,12 +521,18 @@ impl GrpcDaemon {
     /// `comment_reply`: a reply in the thread of a comment sent to the
     /// caller's session.
     async fn comment_reply(&self, call: Call) -> Result<Reply, ToolError> {
+        let resolve = call
+            .arguments
+            .get("resolve")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let request = self.request(pb::ReplyToCommentRequest {
             idempotency_key: Some(key(&call)),
             id: Some(pb::CommentId {
                 value: text(&call.arguments, "comment_id"),
             }),
             text: text(&call.arguments, "text"),
+            resolve,
         })?;
         let comment = self
             .comments()
@@ -2734,6 +2745,12 @@ mod review {
 
     /// One comment as `comments_list` shows it.
     pub(super) fn comment_json(comment: &pb::Comment) -> Value {
+        comment_json_with_options(comment, false)
+    }
+
+    /// One comment as `comments_list` shows it; when `compact` is true, omits
+    /// `quoted` code to save context tokens.
+    pub(super) fn comment_json_with_options(comment: &pb::Comment, compact: bool) -> Value {
         let mut out = Map::new();
         out.insert(
             "id".to_owned(),
@@ -2751,7 +2768,9 @@ mod review {
             if anchor.side != pb::DiffSide::Unspecified as i32 {
                 out.insert("side".to_owned(), json!(side_json(anchor.side)));
             }
-            out.insert("quoted".to_owned(), json!(anchor.quoted));
+            if !compact {
+                out.insert("quoted".to_owned(), json!(anchor.quoted));
+            }
         }
         out.insert("text".to_owned(), json!(comment.text));
         out.insert(
@@ -3110,5 +3129,32 @@ mod inbox_hook_tests {
             panic!("expected applied");
         };
         assert_eq!(result, json!({ "approved": true, "note": "looks good" }));
+    }
+
+    #[test]
+    fn comment_json_compact_omits_quoted_code() {
+        let comment = pb::Comment {
+            id: Some(pb::CommentId { value: "s1/c-7".to_owned() }),
+            anchor: Some(pb::CommentAnchor {
+                file: Some(pb::RepoPath {
+                    repo: Some(pb::RepoRef { owner: "acme".to_owned(), name: "api".to_owned() }),
+                    path: "src/lib.rs".to_owned(),
+                }),
+                lines: Some(pb::LineRange { first: 10, last: 12 }),
+                side: pb::DiffSide::New as i32,
+                quoted: "fn heavy() {}\n".to_owned(),
+                ..Default::default()
+            }),
+            text: "Simplify this".to_owned(),
+            status: pb::CommentStatus::Sent as i32,
+            ..Default::default()
+        };
+        let full = review::comment_json(&comment);
+        assert_eq!(full["quoted"], json!("fn heavy() {}\n"));
+
+        let compact = review::comment_json_with_options(&comment, true);
+        assert!(compact.get("quoted").is_none(), "compact should omit quoted: {compact}");
+        assert_eq!(compact["id"], json!("s1/c-7"));
+        assert_eq!(compact["text"], json!("Simplify this"));
     }
 }
