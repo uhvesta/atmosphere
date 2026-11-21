@@ -52,6 +52,11 @@ pub fn needs_you(workspace: &Workspace) -> NeedsYou<'_> {
         .iter()
         .filter(|request| request.answer.is_none() && !request.is_to_do_ask())
         .collect();
+    let has_pending_to_do_ask = |session_id: &humata2_clients::model::SessionId| {
+        workspace.requests.iter().any(|request| {
+            request.session == *session_id && request.answer.is_none() && request.is_to_do_ask()
+        })
+    };
     let shown: Vec<&Session> = workspace
         .sessions
         .iter()
@@ -60,22 +65,25 @@ pub fn needs_you(workspace: &Workspace) -> NeedsYou<'_> {
     let mut rows: Vec<NeedsRow<'_>> = shown
         .iter()
         .copied()
-        .filter(|session| {
-            matches!(
-                session.status,
-                Status::NeedsYou | Status::Exited { .. } | Status::Offline
-            )
-        })
-        .map(|session| NeedsRow::Session {
-            session,
-            request: (session.status == Status::NeedsYou)
-                .then(|| {
-                    pending
-                        .iter()
-                        .copied()
-                        .find(|request| request.session == session.id)
-                })
-                .flatten(),
+        .filter_map(|session| match session.status {
+            Status::NeedsYou => {
+                let request = pending
+                    .iter()
+                    .copied()
+                    .find(|request| request.session == session.id);
+                // NOTIFY2 (Fable ruling 5): a To-do ask is To-do-only even when
+                // its agent is blocked, so a session waiting only on a To-do ask
+                // stays off Home's "Needs you" group.
+                if request.is_none() && has_pending_to_do_ask(&session.id) {
+                    return None;
+                }
+                Some(NeedsRow::Session { session, request })
+            }
+            Status::Exited { .. } | Status::Offline => Some(NeedsRow::Session {
+                session,
+                request: None,
+            }),
+            _ => None,
         })
         .collect();
     rows.extend(

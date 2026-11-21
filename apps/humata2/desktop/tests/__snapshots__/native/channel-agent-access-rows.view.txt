@@ -42,6 +42,7 @@ Tab "To-do"
 Tab "Repos and machines"
 Tab "Agent access" selected
 Tab "Activity"
+Tab "Settings"
 RadioButton "Tick steps and edit items it made: Allow" selected
 RadioButton "Tick steps and edit items it made: Ask"
 RadioButton "Tick steps and edit items it made: Never"

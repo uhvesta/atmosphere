@@ -101,6 +101,8 @@ rust_binary(
         "tests/config.rs",
         "tests/diff.rs",
         "tests/help.rs",
+        "tests/import.rs",
+        "tests/parity.rs",
         "tests/prefix.rs",
         "tests/restack.rs",
         "tests/status.rs",

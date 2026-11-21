@@ -16,7 +16,9 @@ and clones (repo, path, branch). Use the names and ids it prints in other
 commands. If `humata` is not found, or `whoami` says you have no credential,
 you are not in a Humata session: say so and stop.
 
-The `humata` MCP server offers the same actions under the same checks.
+The `humata` MCP server offers the same actions under the same checks via
+three progressive-disclosure tools: `humata_list` (discover),
+`humata_describe` (inspect schemas/examples), and `humata_call` (run).
 These files document the CLI. An MCP tool is named only where the CLI has
 no command for something.
 
@@ -89,6 +91,9 @@ exits 12 with `pending`.
   for the same thing unless they tell you to.
 - You can never approve, deny or reply to a request yourself, and you
   cannot change the rules. Those are the owner's.
+- Settings edits (global, channel, or agent switches) are gated in the
+  owner's Inbox (`Ask me` or `Never`), not `user_only`: propose them
+  directly instead of asking the owner to run a terminal command.
 
 `humata access why <your-session> <capability> [target]` says in advance
 whether an action is allowed, asked or refused. The `humata-inbox` skill

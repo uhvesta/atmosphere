@@ -54,6 +54,19 @@ pub enum Method {
     /// and a copy or move between machines, such as a pull into its own
     /// `shared/` (D755).
     StartTransfer,
+    /// BROWSER (D891): a machine's agents query whether the host Mac's
+    /// browser extension is connected.
+    GetBrowserBridgeStatus,
+    /// BROWSER (D891): a machine's agents execute an Inbox-approved browser
+    /// action on the host Mac's connected browser extension.
+    ExecuteBrowserAction,
+    /// PROVIDERCLI (D906): a machine's callers list providers from the host.
+    ListProviders,
+    /// PROVIDERCLI (D906): a machine's callers read the host's providers file.
+    GetProvidersConfig,
+    /// PROVIDERCLI (D906): a machine's callers ask the host owner to import a
+    /// machine provider file via the host Inbox.
+    RequestProviderImport,
 }
 
 /// One row of the table.
@@ -162,8 +175,33 @@ static START_TRANSFER: Row = Row {
     name: "/humata.v1.TransferService/StartTransfer",
     journal: None,
 };
+static GET_BROWSER_BRIDGE_STATUS: Row = Row {
+    method: Method::GetBrowserBridgeStatus,
+    name: "/humata.v1.BrowserBridgeService/GetBrowserBridgeStatus",
+    journal: None,
+};
+static EXECUTE_BROWSER_ACTION: Row = Row {
+    method: Method::ExecuteBrowserAction,
+    name: "/humata.v1.BrowserBridgeService/ExecuteBrowserAction",
+    journal: None,
+};
+static LIST_PROVIDERS: Row = Row {
+    method: Method::ListProviders,
+    name: "/humata.v1.ProviderService/ListProviders",
+    journal: None,
+};
+static GET_PROVIDERS_CONFIG: Row = Row {
+    method: Method::GetProvidersConfig,
+    name: "/humata.v1.ProviderService/GetProvidersConfig",
+    journal: None,
+};
+static REQUEST_PROVIDER_IMPORT: Row = Row {
+    method: Method::RequestProviderImport,
+    name: "/humata.v1.ProviderService/RequestProviderImport",
+    journal: None,
+};
 
-static ROWS: [&Row; 18] = [
+static ROWS: [&Row; 23] = [
     &LIST_ITEMS,
     &GET_ITEM,
     &GET_ITEM_HISTORY,
@@ -182,6 +220,11 @@ static ROWS: [&Row; 18] = [
     &LIST_DIRECTORY,
     &STAT,
     &START_TRANSFER,
+    &GET_BROWSER_BRIDGE_STATUS,
+    &EXECUTE_BROWSER_ACTION,
+    &LIST_PROVIDERS,
+    &GET_PROVIDERS_CONFIG,
+    &REQUEST_PROVIDER_IMPORT,
 ];
 
 impl Row {
@@ -217,6 +260,11 @@ impl Method {
             Self::ListDirectory => &LIST_DIRECTORY,
             Self::Stat => &STAT,
             Self::StartTransfer => &START_TRANSFER,
+            Self::GetBrowserBridgeStatus => &GET_BROWSER_BRIDGE_STATUS,
+            Self::ExecuteBrowserAction => &EXECUTE_BROWSER_ACTION,
+            Self::ListProviders => &LIST_PROVIDERS,
+            Self::GetProvidersConfig => &GET_PROVIDERS_CONFIG,
+            Self::RequestProviderImport => &REQUEST_PROVIDER_IMPORT,
         }
     }
 }
@@ -685,6 +733,11 @@ mod tests {
             Method::ListDirectory,
             Method::Stat,
             Method::StartTransfer,
+            Method::GetBrowserBridgeStatus,
+            Method::ExecuteBrowserAction,
+            Method::ListProviders,
+            Method::GetProvidersConfig,
+            Method::RequestProviderImport,
         ] {
             assert_eq!(by_name(method.row().name).map(|row| row.method), Some(method));
         }

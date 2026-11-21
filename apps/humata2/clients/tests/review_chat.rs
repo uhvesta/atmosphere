@@ -31,6 +31,7 @@ fn refund_view() -> ReviewView {
         targets: vec![RepoDiffSpec {
             repo: "acme/api".to_owned(),
             base: RepoBase::Branch("main".to_owned()),
+            options: Default::default(),
         }],
         open: Some(Place {
             repo: "acme/api".to_owned(),

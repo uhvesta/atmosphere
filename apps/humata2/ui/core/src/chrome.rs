@@ -62,6 +62,7 @@ pub fn action(
         .justify_center()
         .cursor_pointer()
         .child(icon(glyph, color, 15.))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, _, cx| ui.send(event.clone(), cx))
         .test_support()
 }

@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use humata2_app::{App, AppAction as A, AppState, NewChannelAction as N, Overlay, Route};
-use humata2_clients::model::{ChannelId, ChannelSetup, SetupState};
+use humata2_clients::model::{
+    Channel, ChannelId, ChannelSetup, MachineId, SetupId, SetupState, SetupStep,
+};
 use humata2_clients::{Clients, Event, Fakes, fixture};
 use tca::{TestClock, TestStore};
 
@@ -157,4 +159,188 @@ fn a_late_create_reply_leaves_a_fresh_new_channel_sheet_open() {
         "the fresh sheet stays open"
     );
     assert_eq!(store.state().route, opened);
+}
+
+#[test]
+fn a_mixed_case_channel_name_matches_its_setup_and_closes_on_create_while_clones_run() {
+    let (mut store, _) = setup();
+    store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
+    store.send(A::NewChannel(N::Name("Q4 Billing".into())), |_| {});
+    store.send(A::NewChannel(N::ToggleRepo("acme/ledger".into())), |_| {});
+    store.send(A::NewChannel(N::Create), |_| {});
+
+    let running = ChannelSetup {
+        id: SetupId("setup-q4".into()),
+        name: "Q4 Billing".into(),
+        steps: vec![SetupStep {
+            machine: MachineId::new("this-mac"),
+            repo: Some("acme/ledger".into()),
+            state: SetupState::Running {
+                percent: 40,
+                detail: "Receiving objects".into(),
+            },
+        }],
+        cancellable: true,
+    };
+    store.send(A::Event(Event::ChannelSetup(running.clone())), |_| {});
+    assert_eq!(shown(&store), Some(running.clone()));
+    assert_eq!(store.state().workspace.setups, vec![running.clone()]);
+
+    let id = ChannelId::new("ch_q4");
+    store.send(A::ChannelCreated(Ok(id.clone())), |_| {});
+    assert!(
+        store.state().overlay().is_none(),
+        "the sheet closes immediately on create reply while clones still run"
+    );
+    assert_eq!(store.state().route, Route::Channel(id));
+    assert_eq!(
+        store.state().workspace.setups,
+        vec![running.clone()],
+        "running clone progress stays in the workspace after the sheet closes"
+    );
+
+    let done = ChannelSetup {
+        steps: vec![SetupStep {
+            machine: MachineId::new("this-mac"),
+            repo: Some("acme/ledger".into()),
+            state: SetupState::Done,
+        }],
+        cancellable: false,
+        ..running
+    };
+    store.send(A::Event(Event::ChannelSetup(done)), |_| {});
+    assert!(
+        store.state().workspace.setups.is_empty(),
+        "completed setup is cleared once clones finish"
+    );
+}
+
+#[test]
+fn a_running_setup_closes_the_sheet_as_soon_as_the_channel_is_listed_in_the_workspace() {
+    let (mut store, _) = setup();
+    store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
+    store.send(A::NewChannel(N::Name("Q4 Billing".into())), |_| {});
+    store.send(A::NewChannel(N::ToggleRepo("acme/ledger".into())), |_| {});
+    store.send(A::NewChannel(N::Create), |_| {});
+
+    let running = ChannelSetup {
+        id: SetupId("setup-q4".into()),
+        name: "Q4 Billing".into(),
+        steps: vec![SetupStep {
+            machine: MachineId::new("this-mac"),
+            repo: Some("acme/ledger".into()),
+            state: SetupState::Running {
+                percent: 25,
+                detail: "Receiving objects".into(),
+            },
+        }],
+        cancellable: true,
+    };
+    store.send(A::Event(Event::ChannelSetup(running.clone())), |_| {});
+    assert_eq!(shown(&store), Some(running.clone()));
+
+    let id = ChannelId::new("ch_q4");
+    let mut reloaded = fixture::design();
+    reloaded.channels.push(Channel {
+        id: id.clone(),
+        name: "q4-billing".into(),
+        repos: vec!["acme/ledger".into()],
+        machines: vec![MachineId::new("this-mac")],
+        purpose: String::new(),
+        default_agent: None,
+    });
+    reloaded.setups = vec![running.clone()];
+    store.send(A::Loaded(Ok(reloaded)), |_| {});
+
+    let running_more = ChannelSetup {
+        steps: vec![SetupStep {
+            machine: MachineId::new("this-mac"),
+            repo: Some("acme/ledger".into()),
+            state: SetupState::Running {
+                percent: 60,
+                detail: "Receiving objects".into(),
+            },
+        }],
+        ..running
+    };
+    store.send(A::Event(Event::ChannelSetup(running_more.clone())), |_| {});
+    assert!(
+        store.state().overlay().is_none(),
+        "the sheet closes once the slugged channel is listed, without waiting for Done"
+    );
+    assert_eq!(store.state().route, Route::Channel(id));
+    assert_eq!(store.state().workspace.setups, vec![running_more]);
+}
+
+#[test]
+fn loaded_workspace_mid_setup_does_not_strand_the_sheet() {
+    let (mut store, _) = setup();
+    store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
+    store.send(A::NewChannel(N::Name("Q4 Billing".into())), |_| {});
+    store.send(A::NewChannel(N::Create), |_| {});
+
+    let running = ChannelSetup {
+        id: SetupId("setup-q4".into()),
+        name: "q4-billing".into(),
+        steps: vec![SetupStep {
+            machine: MachineId::new("this-mac"),
+            repo: Some("acme/ledger".into()),
+            state: SetupState::Running {
+                percent: 50,
+                detail: "Receiving objects".into(),
+            },
+        }],
+        cancellable: true,
+    };
+    store.send(A::Event(Event::ChannelSetup(running)), |_| {});
+    assert!(shown(&store).is_some());
+
+    let id = ChannelId::new("ch_q4");
+    let mut reloaded = fixture::design();
+    reloaded.channels.push(Channel {
+        id: id.clone(),
+        name: "q4-billing".into(),
+        repos: vec!["acme/ledger".into()],
+        machines: vec![MachineId::new("this-mac")],
+        purpose: String::new(),
+        default_agent: None,
+    });
+    store.send(A::Loaded(Ok(reloaded)), |_| {});
+
+    store.send(A::ChannelCreated(Ok(id.clone())), |_| {});
+    assert!(
+        store.state().overlay().is_none(),
+        "a mid-setup workspace reload does not strand the New channel sheet"
+    );
+    assert_eq!(store.state().route, Route::Channel(id));
+}
+
+#[test]
+fn loaded_workspace_listing_the_new_channel_closes_the_sheet_immediately() {
+    let (mut store, _) = setup();
+    store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
+    store.send(A::NewChannel(N::Name("Q4 Billing".into())), |_| {});
+    store.send(A::NewChannel(N::Create), |_| {});
+
+    let id = ChannelId::new("ch_q4");
+    let mut reloaded = fixture::design();
+    reloaded.channels.push(Channel {
+        id: id.clone(),
+        name: "q4-billing".into(),
+        repos: vec!["acme/ledger".into()],
+        machines: vec![MachineId::new("this-mac")],
+        purpose: String::new(),
+        default_agent: None,
+    });
+    store.send(A::Loaded(Ok(reloaded)), |_| {});
+
+    assert!(
+        store.state().overlay().is_none(),
+        "the New channel sheet closes as soon as Loaded lists the channel"
+    );
+    assert_eq!(store.state().route, Route::Channel(id));
 }

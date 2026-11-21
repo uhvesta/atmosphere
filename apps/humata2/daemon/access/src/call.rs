@@ -119,6 +119,8 @@ pub enum Target {
     Network(NetworkTarget),
     /// A push or pull request for this repo and branch (IN-24).
     Push(RepoBranch),
+    /// A branch-only push for this repo and non-default branch (D920).
+    PushBranch(RepoBranch),
     /// One action on one machine (MP-24).
     Machine(MachineAction),
 }

@@ -9,11 +9,12 @@
 use humata2_access::{Capability, Tier};
 use serde_json::{Value, json};
 
-use crate::outcome::output_schema;
+use crate::outcome::{output_schema, tool_result};
 use crate::schema::{
     Property, Schema, any_object, array, boolean, integer, object, one_of, one_of_strings, opt,
     req, string,
 };
+use crate::user_only;
 
 macro_rules! operations {
     ($($(#[$meta:meta])* $variant:ident => $tool:literal, $id:literal;)*) => {
@@ -227,6 +228,20 @@ operations! {
     MachineReconnect => "machine_reconnect", "machine.reconnect";
     /// `ProviderService.RequestProviderImport` (MP-23, D792): always asks.
     ProviderImport => "provider_import", "provider.import";
+    /// Offline provider authoring guide (PROVIDERCLI, D906).
+    ProviderGuide => "provider_guide", "provider.guide";
+    /// Offline provider TOML & output schema (PROVIDERCLI, D906).
+    ProviderSchema => "provider_schema", "provider.schema";
+    /// Offline worked provider TOML examples (PROVIDERCLI, D906).
+    ProviderExample => "provider_example", "provider.example";
+    /// Offline provider TOML validator (PROVIDERCLI, D906).
+    ProviderCheck => "provider_check", "provider.check";
+    /// Offline provider action command renderer (PROVIDERCLI, D906).
+    ProviderRender => "provider_render", "provider.render";
+    /// Offline provider command output validator (PROVIDERCLI, D906).
+    ProviderParse => "provider_parse", "provider.parse";
+    /// `ProviderService.RequestProviderImport` (PROVIDERCLI, D906): always asks.
+    ProviderRequestImport => "provider_request_import", "provider.request_import";
     /// `SkillsService.PreviewSkillsSync` and `SyncSkills`.
     SkillsSync => "skills_sync", "skills.sync";
     /// `TrashService.RestoreFromTrash`.
@@ -326,35 +341,432 @@ fn reaching_out(mut definition: Definition) -> Definition {
     definition
 }
 
+impl Effect {
+    fn as_str(self) -> &'static str {
+        match self {
+            Effect::Read => "read",
+            Effect::Change => "change",
+            Effect::Create => "create",
+            Effect::Remove => "remove",
+        }
+    }
+}
+
+/// Every tool category returned by `humata_list`.
+pub(crate) const CATEGORIES: [&str; 13] = [
+    "board", "browser", "channel", "comment", "files", "inbox", "machine", "provider", "repo",
+    "review", "session", "todo", "view",
+];
+
+pub(crate) fn category(operation: Operation) -> &'static str {
+    use Operation as Op;
+    match operation {
+        Op::BoardItemsList
+        | Op::BoardItemGet
+        | Op::BoardItemHistory
+        | Op::BoardItemCreate
+        | Op::BoardItemUpdate
+        | Op::BoardItemMove
+        | Op::BoardItemDelete => "board",
+        Op::BrowserListTabs
+        | Op::BrowserReadTab
+        | Op::BrowserGuideHighlight
+        | Op::BrowserClick
+        | Op::BrowserType
+        | Op::BrowserNavigate => "browser",
+        Op::ChannelsList
+        | Op::ChannelCreate
+        | Op::ChannelRename
+        | Op::ChannelAddRepo
+        | Op::ChannelRemoveRepo
+        | Op::ChannelAddMachine
+        | Op::ChannelRemoveMachine => "channel",
+        Op::CommentsList | Op::CommentReply | Op::CommentResolve => "comment",
+        Op::FilesList
+        | Op::FileRead
+        | Op::FilesFind
+        | Op::FileWrite
+        | Op::FolderCreate
+        | Op::FileFetch
+        | Op::FilesCopyIn
+        | Op::DocVersionsList
+        | Op::DocVersionRead
+        | Op::TrashRestore => "files",
+        Op::InboxAsk
+        | Op::InboxRequest
+        | Op::InboxWait
+        | Op::InboxExplain
+        | Op::InboxWithdraw
+        | Op::InboxMine => "inbox",
+        Op::MachineAddSsh
+        | Op::MachineCreate
+        | Op::MachineStart
+        | Op::MachineStop
+        | Op::MachineReconnect
+        | Op::MachineRemove
+        | Op::MachineForget
+        | Op::MachineDelete
+        | Op::SkillsSync
+        | Op::NetworkConnect
+        | Op::NetworkClose => "machine",
+        Op::ProviderImport
+        | Op::ProviderRequestImport
+        | Op::ProviderGuide
+        | Op::ProviderSchema
+        | Op::ProviderExample
+        | Op::ProviderCheck
+        | Op::ProviderRender
+        | Op::ProviderParse => "provider",
+        Op::RepoSearch | Op::RepoLibrary => "repo",
+        Op::ReviewDraft
+        | Op::ReviewDraftEdit
+        | Op::ReviewDraftDrop
+        | Op::ReviewSummaryDraft
+        | Op::ReviewCommits
+        | Op::ReviewContext
+        | Op::ReviewFocus
+        | Op::ReviewNote
+        | Op::ReviewNoteEdit
+        | Op::ReviewNoteDrop
+        | Op::ReviewPrepare
+        | Op::PrReviewStart => "review",
+        Op::TodoNext
+        | Op::TodoAdd
+        | Op::TodoClose
+        | Op::TodoAskQuestion
+        | Op::TodoRequestAction
+        | Op::TodoRequestReview
+        | Op::TodoStepUpdate
+        | Op::TodoSetCheckpoint
+        | Op::TodoReportRun => "todo",
+        Op::ViewPrepare | Op::ViewRevise | Op::ViewMarkReady | Op::ViewsList => "view",
+        Op::Whoami
+        | Op::SessionInfo
+        | Op::TopologyGet
+        | Op::AccessExplain
+        | Op::JournalStatus
+        | Op::OperationGet
+        | Op::SessionsSearch
+        | Op::SessionRead
+        | Op::SessionAnswer
+        | Op::SessionNote
+        | Op::SessionAsk
+        | Op::SessionType
+        | Op::SessionStart
+        | Op::SessionFork
+        | Op::SessionContinueInChannel
+        | Op::SessionRename
+        | Op::SessionAddRepo
+        | Op::SessionDropRepo
+        | Op::SessionOwnCopy
+        | Op::SessionStop
+        | Op::SessionArchive
+        | Op::SessionDelete
+        | Op::SessionsDeleteMany
+        | Op::SessionMove
+        | Op::DeskSessionMoveToChannel
+        | Op::SessionPush
+        | Op::SessionRestore
+        | Op::SessionRebuild => "session",
+    }
+}
+
+/// Input schema for one of the 3 progressive-disclosure meta-tools.
+pub(crate) fn meta_input_schema(name: &str) -> Option<Schema> {
+    match name {
+        "humata_list" => Some(object(vec![
+            opt(
+                "category",
+                one_of_strings(CATEGORIES).describe("Filter by tool category"),
+            ),
+            opt(
+                "query",
+                string()
+                    .max_length(200)
+                    .describe("Case-insensitive substring filter on name, category, summary, or params"),
+            ),
+        ])),
+        "humata_describe" => Some(object(vec![req(
+            "names",
+            array(string())
+                .min_items(1)
+                .max_items(20)
+                .describe("Tool names from humata_list"),
+        )])),
+        "humata_call" => Some(object(vec![
+            req("name", string().describe("Tool name from humata_list")),
+            opt("arguments", any_object().describe("Tool arguments")),
+        ])),
+        _ => None,
+    }
+}
+
+/// The `tools/list` result: the 3 progressive-disclosure meta-tools
+/// (`humata_call`, `humata_describe`, `humata_list`).
+pub(crate) fn meta_list() -> Value {
+    let tools = vec![
+        json!({
+            "name": "humata_call",
+            "description": "Run any Humata tool by name (discover with humata_list, inspect with humata_describe).",
+            "inputSchema": meta_input_schema("humata_call").expect("schema").to_json(),
+            "outputSchema": output_schema(),
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true,
+            },
+        }),
+        json!({
+            "name": "humata_describe",
+            "description": "Return full input schemas, annotations, and examples for 1-20 Humata tools.",
+            "inputSchema": meta_input_schema("humata_describe").expect("schema").to_json(),
+            "outputSchema": {
+                "type": "object",
+                "required": ["tools", "unavailable"],
+                "properties": {
+                    "tools": { "type": "array" },
+                    "unavailable": { "type": "array" },
+                },
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+            },
+        }),
+        json!({
+            "name": "humata_list",
+            "description": "List available Humata tools as compact 1-line summaries. Filter by category or query.",
+            "inputSchema": meta_input_schema("humata_list").expect("schema").to_json(),
+            "outputSchema": {
+                "type": "object",
+                "required": ["tools", "categories", "count"],
+                "properties": {
+                    "tools": { "type": "array", "items": { "type": "string" } },
+                    "categories": { "type": "array", "items": { "type": "string" } },
+                    "count": { "type": "integer" },
+                },
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+            },
+        }),
+    ];
+    json!({ "tools": tools })
+}
+
+/// First sentence of `description`, kept compact on one line.
+fn short_summary(description: &str) -> &str {
+    match description.find(". ") {
+        Some(idx) => &description[..=idx],
+        None => description,
+    }
+}
+
+/// Formats one compact 1-line entry for `humata_list`:
+/// `<name> [<category>,<effect>](<req*>; <opt>): <summary>`
+fn format_list_entry(operation: Operation, definition: &Definition) -> String {
+    let cat = category(operation);
+    let effect = definition.effect.as_str();
+    let (req_params, opt_params) = definition.input.signature_params();
+    let params = match (req_params.is_empty(), opt_params.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => req_params.join(", "),
+        (true, false) => format!("; {}", opt_params.join(", ")),
+        (false, false) => format!("{}; {}", req_params.join(", "), opt_params.join(", ")),
+    };
+    format!(
+        "{} [{cat},{effect}]({params}): {}",
+        operation.tool_name(),
+        short_summary(definition.description)
+    )
+}
+
+/// Runs `humata_list({ category?, query? })`.
+pub(crate) fn run_humata_list(arguments: &Value, serves: impl Fn(Operation) -> bool) -> Value {
+    let filter_cat = arguments.get("category").and_then(Value::as_str);
+    let filter_query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    let mut entries = Vec::new();
+    let mut seen_cats = std::collections::BTreeSet::new();
+    for &operation in Operation::ALL {
+        if !serves(operation) {
+            continue;
+        }
+        let cat = category(operation);
+        seen_cats.insert(cat);
+        if let Some(wanted) = filter_cat
+            && cat != wanted
+        {
+            continue;
+        }
+        let def = definition(operation);
+        let line = format_list_entry(operation, &def);
+        if let Some(query) = &filter_query {
+            let matches = line.to_ascii_lowercase().contains(query)
+                || def.description.to_ascii_lowercase().contains(query);
+            if !matches {
+                continue;
+            }
+        }
+        entries.push(Value::String(line));
+    }
+    let categories: Vec<Value> = seen_cats.into_iter().map(Value::from).collect();
+    let count = entries.len();
+    tool_result(
+        json!({
+            "tools": entries,
+            "categories": categories,
+            "count": count,
+        }),
+        false,
+    )
+}
+
+/// Curated complex examples in addition to `Schema::minimal_example()`,
+/// validated by `schemas.rs` across `Operation::ALL`.
+fn examples_for(operation: Operation, schema: &Schema) -> Vec<Value> {
+    let mut out = vec![schema.minimal_example()];
+    let curated = match operation {
+        Operation::BoardItemCreate => Some(json!({
+            "board": "channel",
+            "title": "Add retry backoff",
+            "column": "to_do",
+            "description": "Use exponential backoff on transient failures"
+        })),
+        Operation::FileRead => Some(json!({
+            "location": { "root": "clone", "repo": "owner/repo", "path": "src/main.rs" },
+            "offset": 0,
+            "max_bytes": 4096
+        })),
+        Operation::FileWrite => Some(json!({
+            "location": { "root": "clone", "repo": "owner/repo", "path": "notes.md" },
+            "text": "Hello\n",
+            "replace": true
+        })),
+        Operation::ReviewPrepare => Some(json!({
+            "title": "Auth refactor review",
+            "spec": {
+                "repos": [{
+                    "repo": "owner/repo",
+                    "base": { "merge_base_with": "origin/main" }
+                }]
+            },
+            "order": [{ "repo": "owner/repo", "path": "src/auth.rs" }]
+        })),
+        Operation::InboxRequest => Some(json!({
+            "capability": "network_reach",
+            "target": { "network": { "host": "localhost", "port": 5432 } },
+            "reason": "Run integration tests against local Postgres"
+        })),
+        Operation::ViewPrepare => Some(json!({
+            "title": "Walkthrough",
+            "summary": "Key files to review first",
+            "content": {
+                "review": {
+                    "steps": [{
+                        "repo": "owner/repo",
+                        "path": "src/lib.rs",
+                        "lines": { "first": 1, "last": 25 },
+                        "note": "Entry point"
+                    }]
+                }
+            }
+        })),
+        Operation::SessionsDeleteMany => Some(json!({
+            "session_ids": ["se_1", "se_2"],
+            "delete_unpushed_work": false
+        })),
+        Operation::ProviderRender => Some(json!({
+            "toml": "[providers.lima]\nlabel = \"Lima\"\ncreate = 'limactl start {name}'\nconnect = 'limactl shell {name} -- {cmd}'\n",
+            "action": "connect",
+            "machine": "devbox"
+        })),
+        Operation::TodoAskQuestion => Some(json!({
+            "key": "PAY-3",
+            "question": "Which rollout strategy?",
+            "choices": ["canary", "blue-green"]
+        })),
+        _ => None,
+    };
+    if let Some(example) = curated {
+        out.push(example);
+    }
+    out
+}
+
+/// Runs `humata_describe({ names: [..] })`.
+pub(crate) fn run_humata_describe(arguments: &Value, serves: impl Fn(Operation) -> bool) -> Value {
+    let names = arguments
+        .get("names")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut described = Vec::new();
+    let mut unavailable = Vec::new();
+    for name in names {
+        if let Some(operation) = Operation::from_tool_name(name) {
+            if serves(operation) {
+                let def = definition(operation);
+                let examples = examples_for(operation, &def.input);
+                described.push(json!({
+                    "name": operation.tool_name(),
+                    "operation_id": operation.id(),
+                    "category": category(operation),
+                    "description": def.description,
+                    "inputSchema": def.input.to_json(),
+                    "annotations": {
+                        "readOnlyHint": def.effect == Effect::Read,
+                        "destructiveHint": def.effect == Effect::Remove,
+                        "idempotentHint": def.effect != Effect::Create,
+                        "openWorldHint": def.open_world,
+                    },
+                    "examples": examples,
+                }));
+            } else {
+                unavailable.push(json!({
+                    "name": name,
+                    "reason": "not_offered",
+                    "message": format!("{name} is not offered in this session"),
+                }));
+            }
+        } else if let Some(refusal) = user_only::refusal(name) {
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".to_owned(), json!(name));
+            entry.insert("reason".to_owned(), json!("user_only"));
+            entry.insert("message".to_owned(), json!(refusal.message));
+            entry.insert("fix".to_owned(), json!(refusal.fix));
+            if let Some(cap) = refusal.details.get("capability") {
+                entry.insert("capability".to_owned(), cap.clone());
+            }
+            unavailable.push(Value::Object(entry));
+        } else {
+            unavailable.push(json!({
+                "name": name,
+                "reason": "unknown",
+                "message": format!("there is no tool {name}; call humata_list to see available tools"),
+            }));
+        }
+    }
+    tool_result(
+        json!({
+            "tools": described,
+            "unavailable": unavailable,
+        }),
+        false,
+    )
+}
+
 /// The tool's input schema, which every call is checked against.
 pub(crate) fn input_schema(operation: Operation) -> Schema {
     definition(operation).input
-}
-
-/// The `tools/list` result: every tool the daemon runs (`serves`), never a
-/// user-only one.
-pub(crate) fn list(serves: impl Fn(Operation) -> bool) -> Value {
-    let output = output_schema();
-    let tools: Vec<Value> = Operation::ALL
-        .iter()
-        .filter(|operation| serves(**operation))
-        .map(|operation| {
-            let definition = definition(*operation);
-            json!({
-                "name": operation.tool_name(),
-                "description": definition.description,
-                "inputSchema": definition.input.to_json(),
-                "outputSchema": output.clone(),
-                "annotations": {
-                    "readOnlyHint": definition.effect == Effect::Read,
-                    "destructiveHint": definition.effect == Effect::Remove,
-                    "idempotentHint": definition.effect != Effect::Create,
-                    "openWorldHint": definition.open_world,
-                },
-            })
-        })
-        .collect();
-    json!({ "tools": tools })
 }
 
 /// The capability's name in `capabilities.proto`, lowercase without the
@@ -1748,13 +2160,21 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::SessionPush => reaching_out(define(
-            "Push your branches and open pull requests. Usually asks the user first; the card shows repos, branch, commits and PR title.",
+            "Push your session's branches and optionally open pull requests. Pushing a non-default session branch (open_pr omitted or false) runs without asking; opening a pull request or pushing a default branch asks the user first.",
             Effect::Create,
             asks(vec![
                 opt("repos", array(repo()).describe("Default: all of this session's repos")),
-                opt("open_pr", boolean()),
-                opt("title", string()),
-                opt("body", string()),
+                opt("open_pr", boolean().describe("Open a pull request after pushing; default: false")),
+                opt("title", string().describe("Pull request title (required when open_pr is true)")),
+                opt("body", string().describe("Pull request body")),
+                opt(
+                    "commit_message",
+                    string().describe("Commit uncommitted files with this message before pushing"),
+                ),
+                opt(
+                    "base_branch",
+                    string().describe("Base branch for a new pull request (e.g. release/2.4)"),
+                ),
             ]),
         )),
         Op::PrReviewStart => reaching_out(define(
@@ -1801,6 +2221,97 @@ fn definition(operation: Operation) -> Definition {
                 ),
                 opt("file_name", string().describe("A name for the Inbox card; no file is read")),
                 req("reason", string().describe("Why the task needs this provider")),
+            ]),
+        ),
+        Op::ProviderRequestImport => define(
+            "Ask the user to import a machine provider file. Always asks: the Inbox shows the whole file and every command it runs, and only the user's approval adds it. A file with problems is refused at once.",
+            Effect::Create,
+            asks(vec![
+                req(
+                    "file_text",
+                    string().describe("The provider TOML, at most 64 KiB, exactly as it should be imported"),
+                ),
+                opt("file_name", string().describe("A name for the Inbox card; no file is read")),
+                req("reason", string().describe("Why the task needs this provider")),
+            ]),
+        ),
+        Op::ProviderGuide => define(
+            "Read the plain-text guide to authoring a Humata machine provider (actions, reach modes, templates, env vars, interactive login, failure handling, and handing the file to the owner). Read-only and offline.",
+            Effect::Read,
+            object(vec![]),
+        ),
+        Op::ProviderSchema => define(
+            "Read the machine provider TOML schema, identity JSON format, status words, and discover format generated from Humata's real parser types. Read-only and offline.",
+            Effect::Read,
+            object(vec![opt(
+                "json",
+                boolean().describe("When true, omit the formatted plain-text rendering and return only the structured JSON schema"),
+            )]),
+        ),
+        Op::ProviderExample => define(
+            "List or read complete, validated machine provider TOML examples (lima, cloud-cli, terraform, ssh-fleet). Read-only and offline.",
+            Effect::Read,
+            object(vec![opt(
+                "kind",
+                string().describe("Example kind (e.g. lima, cloud-cli, terraform, ssh-fleet); omit to list available kinds"),
+            )]),
+        ),
+        Op::ProviderCheck => define(
+            "Validate a machine provider TOML string offline with Humata's real parser and report each bad field with how to fix it. Changes nothing.",
+            Effect::Read,
+            object(vec![req(
+                "toml",
+                string().describe("Provider TOML text to validate"),
+            )]),
+        ),
+        Op::ProviderRender => define(
+            "Render the exact program, arguments, environment variables, and target machine Humata would use for a provider action, without executing anything.",
+            Effect::Read,
+            object(vec![
+                req("toml", string().describe("Provider TOML text")),
+                req(
+                    "action",
+                    one_of_strings([
+                        "create", "connect", "identity", "list", "discover", "start", "stop",
+                        "wake", "refresh", "ssh", "delete", "status",
+                    ])
+                    .describe("Provider action to render"),
+                ),
+                req(
+                    "machine",
+                    string().describe("Machine name substituted for {name} and HUMATA_NAME"),
+                ),
+                opt(
+                    "provider",
+                    string().describe("Provider id when the TOML defines more than one provider"),
+                ),
+                opt(
+                    "params",
+                    any_object().describe("Map of declared param names to string values"),
+                ),
+                opt(
+                    "cmd",
+                    string().describe("Command for the `connect` action (default: `uname -sm`)"),
+                ),
+            ]),
+        ),
+        Op::ProviderParse => define(
+            "Validate stdout from a provider's `identity`, `status`, or `discover` (`list`) command against Humata's real parser and name each missing or bad field. Read-only and offline.",
+            Effect::Read,
+            object(vec![
+                req(
+                    "kind",
+                    one_of_strings(["identity", "status", "discover", "list"])
+                        .describe("Output format to validate"),
+                ),
+                req(
+                    "output",
+                    string().describe("Raw stdout produced by the provider command"),
+                ),
+                opt(
+                    "machine",
+                    string().describe("Expected machine name (used for `identity`)"),
+                ),
             ]),
         ),
         Op::MachineReconnect => machine_only(

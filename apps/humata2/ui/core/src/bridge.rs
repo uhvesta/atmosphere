@@ -105,6 +105,7 @@ pub fn focus_target(state: &AppState) -> FocusTarget {
                 .cloned()
                 .or_else(|| view.groups.is_empty().then_some(Tab::Terminal(view.tab)))
         }),
+        Route::Channel(_) if state.active_channel_desk().is_some() => Some(Tab::Terminal(0)),
         _ => None,
     };
     (state.route.clone(), tab, state.full_screen())
@@ -322,6 +323,7 @@ impl Ui {
     /// Starts reducing what effects send and redrawing what they change,
     /// then launches the app: loads the workspace and follows its events.
     pub fn start(self: &Rc<Self>, cx: &mut App) {
+        self.bind_font_zoom(cx);
         cx.foreground_executor().spawn(self.store.run()).detach();
         let ui = Rc::downgrade(self);
         let wake = self.wake.clone();
@@ -334,6 +336,24 @@ impl Ui {
         })
         .detach();
         self.send(AppAction::Launch, cx);
+    }
+
+    /// Wires app-wide `⌘+` / `⌘-` font zoom actions to `SettingsAction::SetFontSize`.
+    pub fn bind_font_zoom(self: &Rc<Self>, cx: &mut App) {
+        let zoom_in = Rc::downgrade(self);
+        cx.on_action(move |_: &crate::keys::ZoomIn, cx| {
+            if let Some(ui) = zoom_in.upgrade() {
+                let next = ui.read(|state| step_font_size(state.settings.preferences.font_size, 1));
+                ui.send(AppAction::Settings(humata2_app::SettingsAction::SetFontSize(next)), cx);
+            }
+        });
+        let zoom_out = Rc::downgrade(self);
+        cx.on_action(move |_: &crate::keys::ZoomOut, cx| {
+            if let Some(ui) = zoom_out.upgrade() {
+                let next = ui.read(|state| step_font_size(state.settings.preferences.font_size, -1));
+                ui.send(AppAction::Settings(humata2_app::SettingsAction::SetFontSize(next)), cx);
+            }
+        });
     }
 
     /// Reduces `action` now and redraws the panes it changed.
@@ -395,5 +415,29 @@ impl Ui {
                 cx.notify(id);
             }
         }
+    }
+}
+
+/// Steps `current` by `delta` (+1 or -1), clamped to `FONT_SIZES`.
+#[must_use]
+pub fn step_font_size(current: u8, delta: i8) -> u8 {
+    let min = i16::from(*humata2_app::FONT_SIZES.start());
+    let max = i16::from(*humata2_app::FONT_SIZES.end());
+    (i16::from(current) + i16::from(delta)).clamp(min, max) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_font_size;
+    use humata2_app::FONT_SIZES;
+
+    #[test]
+    fn step_font_size_moves_by_one_and_clamps_to_bounds() {
+        let min = *FONT_SIZES.start();
+        let max = *FONT_SIZES.end();
+        assert_eq!(step_font_size(12, 1), 13);
+        assert_eq!(step_font_size(12, -1), 11);
+        assert_eq!(step_font_size(max, 1), max);
+        assert_eq!(step_font_size(min, -1), min);
     }
 }

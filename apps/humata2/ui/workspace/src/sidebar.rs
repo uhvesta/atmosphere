@@ -787,18 +787,35 @@ impl Render for Sidebar {
                     })
                     .child(chrome::lights())
                     .child(div().flex_1())
-                    .child(chrome::action(
-                        ui,
-                        "sidebar-hide",
-                        "Hide sidebar",
-                        IconName::PanelLeft,
-                        if ui.read(|s| s.navigation_overlay) {
+                    .child({
+                        let mac = cx.platform_info().is_mac();
+                        let tip: SharedString =
+                            format!("Hide sidebar  {}", keys::label("⌘B", mac)).into();
+                        let ui = ui.clone();
+                        let action = if ui.read(|s| s.navigation_overlay) {
                             AppAction::CloseNavigationOverlay
                         } else {
                             AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar))
-                        },
-                        look.secondary,
-                    ))
+                        };
+                        div()
+                            .id("sidebar-hide")
+                            .role(Role::Button)
+                            .aria_label("Hide sidebar")
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                    .build(window, cx)
+                            })
+                            .size(px(15.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(chrome::icon(IconName::PanelLeft, look.secondary, 15.))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+                            .test_support()
+                    })
                     .child(if selecting {
                         div()
                             .id("sidebar-new-session")

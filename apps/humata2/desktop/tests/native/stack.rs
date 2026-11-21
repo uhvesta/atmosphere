@@ -13,7 +13,7 @@ fn ledger() -> SessionId {
 fn part(repo: &str, base: RepoBase, pull_request: &str, files: u32) -> LayerRepoView {
     LayerRepoView {
         repo: repo.to_owned(),
-        spec: RepoDiffSpec { repo: repo.to_owned(), base },
+        spec: RepoDiffSpec { repo: repo.to_owned(), base, options: Default::default() },
         pull_request: pull_request.to_owned(),
         files,
         drift: None,
@@ -407,7 +407,11 @@ fn frame_app_listing(listed: bool) -> App {
         changed("README.md", 0, 0, skim),
     ]);
     let range = |base: &str, head: &str| RepoBase::Range { base: base.to_owned(), head: head.to_owned() };
-    let main = |repo: &str| RepoDiffSpec { repo: repo.to_owned(), base: RepoBase::Branch("main".to_owned()) };
+    let main = |repo: &str| RepoDiffSpec {
+        repo: repo.to_owned(),
+        base: RepoBase::Branch("main".to_owned()),
+        options: Default::default(),
+    };
     let mut web_part = part("acme/web", range("w0", "w1"), "acme/web#88", 2);
     web_part.drift = Some(LayerDrift::Moved);
     let mut stack = StackView {

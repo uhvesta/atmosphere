@@ -6,13 +6,16 @@ use crate::{
     widgets::{col, row},
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{Sizable as _, button::Button};
+use gpui_kit::component::{Sizable as _, button::Button, input::Input};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::daemon::{IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode};
+use humata2_clients::daemon::{IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode, sample_branch};
 use humata2_clients::model::Agent;
 use humata2_settings::TodoAutomationAction as TodoAction;
-use humata2_settings::{AgentsAction, DeskRows, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
+use humata2_settings::{
+    AgentsAction, DeskRows, FONT_SIZES, GeneralAction as G, Row, Section, SettingsAction as A,
+    Theme,
+};
 use std::rc::Rc;
 
 use crate::settings_providers as providers;
@@ -565,6 +568,17 @@ pub fn button(
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }
 fn toggle(ui: &Rc<Ui>, id: &str, on: bool, action: A, look: Look) -> impl IntoElement {
+    toggle_enabled(ui, id, on, true, action, look)
+}
+
+fn toggle_enabled(
+    ui: &Rc<Ui>,
+    id: &str,
+    on: bool,
+    enabled: bool,
+    action: A,
+    look: Look,
+) -> impl IntoElement {
     let ui = ui.clone();
     div()
         .id(SharedString::from(id.to_owned()))
@@ -580,8 +594,10 @@ fn toggle(ui: &Rc<Ui>, id: &str, on: bool, action: A, look: Look) -> impl IntoEl
         .flex()
         .when(on, |x| x.justify_end())
         .child(div().size(px(12.)).rounded_full().bg(rgb(0xffffff)))
-        .cursor_pointer()
-        .on_click(move |_, _, cx| ui.send(AppAction::Settings(action.clone()), cx))
+        .when(enabled, |x| {
+            x.cursor_pointer()
+                .on_click(move |_, _, cx| ui.send(AppAction::Settings(action.clone()), cx))
+        })
 }
 /// Settings > Storage > Sessions (MASSDELETE, D875): Delete all sessions…
 /// opens the plan; deleting only some is done by ticking them.
@@ -663,6 +679,7 @@ pub fn page(
                 (Section::Machines, IconName::Server, "Machines"),
                 (Section::Layout, IconName::Columns2, "Layout"),
                 (Section::Access, IconName::ShieldCheck, "Agent access"),
+                (Section::Browser, IconName::Globe, "Browser"),
                 (Section::Storage, IconName::HardDrive, "Storage"),
                 (Section::Notifications, IconName::Bell, "Notifications"),
                 (Section::Keyboard, IconName::Keyboard, "Keyboard"),
@@ -808,23 +825,272 @@ pub fn page(
                         long_lines.into_any_element(),
                     )),
             );
+            let font_input = provider_inputs.text_input(
+                "settings-terminal-font",
+                "Menlo",
+                &state.settings.general.terminal_font_draft,
+                |text| AppAction::Settings(A::General(G::TerminalFontChanged(text))),
+                Some(AppAction::Settings(A::General(G::SaveTerminalFont))),
+                window,
+                cx,
+            );
+            let scrollback_input = provider_inputs.text_input(
+                "settings-terminal-scrollback",
+                "10000",
+                &state.settings.general.scrollback_draft,
+                |text| AppAction::Settings(A::General(G::ScrollbackChanged(text))),
+                Some(AppAction::Settings(A::General(G::SaveScrollback))),
+                window,
+                cx,
+            );
+            body = body.child(
+                card(look)
+                    .child(setting(
+                        look,
+                        "Terminal font family",
+                        "Synced with the daemon across clients.",
+                        row()
+                            .gap(px(8.))
+                            .items_center()
+                            .child(
+                                div().w(px(160.)).child(
+                                    Input::new(&font_input)
+                                        .small()
+                                        .min_h(px(26.))
+                                        .rounded(px(6.))
+                                        .bg(rgb(look.content))
+                                        .border_color(rgb(look.line))
+                                        .text_size(px(12.)),
+                                ),
+                            )
+                            .child(button(
+                                ui,
+                                "settings-terminal-font-save",
+                                "Save",
+                                AppAction::Settings(A::General(G::SaveTerminalFont)),
+                                look,
+                            ))
+                            .into_any_element(),
+                    ))
+                    .child(setting(
+                        look,
+                        "Scrollback lines",
+                        "Lines kept per terminal tab on each machine.",
+                        row()
+                            .gap(px(8.))
+                            .items_center()
+                            .child(
+                                div().w(px(100.)).child(
+                                    Input::new(&scrollback_input)
+                                        .small()
+                                        .min_h(px(26.))
+                                        .rounded(px(6.))
+                                        .bg(rgb(look.content))
+                                        .border_color(rgb(look.line))
+                                        .text_size(px(12.)),
+                                ),
+                            )
+                            .child(button(
+                                ui,
+                                "settings-scrollback-save",
+                                "Save",
+                                AppAction::Settings(A::General(G::SaveScrollback)),
+                                look,
+                            ))
+                            .into_any_element(),
+                    )),
+            );
         }
         Section::General => {
-            body = body.child(
-                card(look).child(setting(
+            let general = &state.settings.general;
+            let current = general.current();
+            let branch_prefix_input = provider_inputs.text_input(
+                "settings-branch-prefix",
+                "e.g. alice/",
+                &general.branch_prefix_draft,
+                |text| AppAction::Settings(A::General(G::BranchPrefixChanged(text))),
+                Some(AppAction::Settings(A::General(G::SaveBranchPrefix))),
+                window,
+                cx,
+            );
+            let pr_days_input = provider_inputs.text_input(
+                "settings-retention-pr-days",
+                "0",
+                &general.archive_pr_days_draft,
+                |text| AppAction::Settings(A::General(G::ArchivePrDaysChanged(text))),
+                Some(AppAction::Settings(A::General(G::SaveRetention))),
+                window,
+                cx,
+            );
+            let idle_days_input = provider_inputs.text_input(
+                "settings-retention-idle-days",
+                "0",
+                &general.archive_idle_days_draft,
+                |text| AppAction::Settings(A::General(G::ArchiveIdleDaysChanged(text))),
+                Some(AppAction::Settings(A::General(G::SaveRetention))),
+                window,
+                cx,
+            );
+            let preview = sample_branch(&general.branch_prefix_draft);
+            let reset_label = reset_branch_prefix_label(general.default_branch_prefix.as_deref());
+
+            body = body
+                .child(
+                    card(look)
+                        .p(px(14.))
+                        .gap(px(10.))
+                        .child(
+                            col()
+                                .child("Default branch prefix")
+                                .child(dim(
+                                    look,
+                                    if current.branch_prefix_is_default {
+                                        "Using your GitHub login as the default prefix for new session branches."
+                                    } else {
+                                        "Custom prefix used for new session branches unless a channel overrides it."
+                                    },
+                                )),
+                        )
+                        .child(
+                            row()
+                                .gap(px(8.))
+                                .items_center()
+                                .child(
+                                    div().w(px(220.)).child(
+                                        Input::new(&branch_prefix_input)
+                                            .small()
+                                            .min_h(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(look.content))
+                                            .border_color(rgb(look.line))
+                                            .text_size(px(12.)),
+                                    ),
+                                )
+                                .child(button(
+                                    ui,
+                                    "settings-branch-prefix-save",
+                                    "Save",
+                                    AppAction::Settings(A::General(G::SaveBranchPrefix)),
+                                    look,
+                                ))
+                                .when(!current.branch_prefix_is_default, |x| {
+                                    x.child(button(
+                                        ui,
+                                        "settings-branch-prefix-reset",
+                                        reset_label.clone(),
+                                        AppAction::Settings(A::General(G::ResetBranchPrefix)),
+                                        look,
+                                    ))
+                                })
+                                .child(button(
+                                    ui,
+                                    "settings-refresh-gh-login",
+                                    "Refresh GitHub login",
+                                    AppAction::Settings(A::General(G::RefreshGhLogin)),
+                                    look,
+                                )),
+                        )
+                        .child(
+                            row()
+                                .gap(px(6.))
+                                .child(dim(look, "Sample branch:"))
+                                .child(
+                                    div()
+                                        .id("settings-branch-prefix-preview")
+                                        .font_family("Menlo")
+                                        .text_size(px(11.5))
+                                        .text_color(rgb(look.text))
+                                        .child(preview),
+                                ),
+                        )
+                        .children(general.error.clone().map(|error| {
+                            div()
+                                .id("settings-general-error")
+                                .role(Role::Alert)
+                                .aria_label(error.clone())
+                                .text_size(px(11.5))
+                                .text_color(rgb(0xff453a))
+                                .child(error)
+                                .test_support()
+                        })),
+                )
+                .child(card(look).child(setting(
                     look,
-                    "Confirm bulk approvals",
-                    "Ask before approving requests that cannot be undone.",
+                    "Contain agents",
+                    "Security: restrict agents to their session clones. Applies when a session next launches or resumes.",
                     toggle(
                         ui,
-                        "settings-confirm",
-                        prefs.confirm_destructive,
-                        A::ToggleConfirm,
+                        "settings-contain-agents",
+                        current.security.contain_agents,
+                        A::General(G::ToggleContainAgents),
                         look,
                     )
                     .into_any_element(),
-                )),
-            )
+                )))
+                .child(
+                    card(look)
+                        .p(px(14.))
+                        .gap(px(10.))
+                        .child(
+                            col()
+                                .child("Retention defaults")
+                                .child(dim(
+                                    look,
+                                    "Days before auto-archiving PR reviews and idle sessions (0 = off).",
+                                )),
+                        )
+                        .child(
+                            row()
+                                .gap(px(10.))
+                                .items_center()
+                                .child(dim(look, "PR reviews (days):"))
+                                .child(
+                                    div().w(px(70.)).child(
+                                        Input::new(&pr_days_input)
+                                            .small()
+                                            .min_h(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(look.content))
+                                            .border_color(rgb(look.line))
+                                            .text_size(px(12.)),
+                                    ),
+                                )
+                                .child(dim(look, "Idle sessions (days):"))
+                                .child(
+                                    div().w(px(70.)).child(
+                                        Input::new(&idle_days_input)
+                                            .small()
+                                            .min_h(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(look.content))
+                                            .border_color(rgb(look.line))
+                                            .text_size(px(12.)),
+                                    ),
+                                )
+                                .child(button(
+                                    ui,
+                                    "settings-retention-save",
+                                    "Save",
+                                    AppAction::Settings(A::General(G::SaveRetention)),
+                                    look,
+                                )),
+                        ),
+                )
+                .child(
+                    card(look).child(setting(
+                        look,
+                        "Confirm bulk approvals",
+                        "Ask before approving requests that cannot be undone.",
+                        toggle(
+                            ui,
+                            "settings-confirm",
+                            prefs.confirm_destructive,
+                            A::ToggleConfirm,
+                            look,
+                        )
+                        .into_any_element(),
+                    )),
+                )
             .child(card(look).child(setting(
                 look,
                 Row::FreeHiddenTerminals.title(),
@@ -865,12 +1131,28 @@ pub fn page(
         }
         Section::Agents => {
             // AGENTSET (D725): the agents that are on, then the plain shell.
-            let default_agents: Vec<Agent> = state
-                .settings
-                .offered_agents()
-                .into_iter()
+            let offered = state.settings.offered_agents();
+            let default_agents: Vec<Agent> = offered
+                .iter()
+                .copied()
                 .chain([Agent::Shell])
                 .collect();
+            // AGENTOFF (D915 6): when the saved default is turned off, explain
+            // which agent new sessions fall back to (or Terminal when none is on).
+            let off_default_note = if !default_agents.contains(&prefs.default_agent) {
+                let saved = prefs.default_agent.name();
+                Some(match offered.first() {
+                    Some(fallback) => format!(
+                        "{saved}, your default, is off. New sessions start with {} until you turn {saved} back on or pick another.",
+                        fallback.name()
+                    ),
+                    None => format!(
+                        "{saved}, your default, is off, and so is every other agent. New sessions can only start Terminal until you turn an agent on."
+                    ),
+                })
+            } else {
+                None
+            };
             body = body
                 .child(agent_switches_block(ui, state, look))
                 .child(dim(look, "Default agent").font_weight(FontWeight::SEMIBOLD))
@@ -889,8 +1171,47 @@ pub fn page(
                             .when(agent == prefs.default_agent, |x| {
                                 x.bg(rgb(look.accent)).text_color(rgb(0xffffff))
                             })
-                        })),
+                        }))
+                        .when_some(off_default_note, |x, note| x.child(dim(look, note))),
                 )
+                .child({
+                    let model_input = provider_inputs.text_input(
+                        "settings-default-model",
+                        "Leave empty for agent default",
+                        &state.settings.general.default_model_draft,
+                        |text| AppAction::Settings(A::General(G::DefaultModelChanged(text))),
+                        Some(AppAction::Settings(A::General(G::SaveDefaultModel))),
+                        window,
+                        cx,
+                    );
+                    card(look).child(setting(
+                        look,
+                        "Default model",
+                        "Optional model name passed to the default agent (preserved when switching agents).",
+                        row()
+                            .gap(px(8.))
+                            .items_center()
+                            .child(
+                                div().w(px(200.)).child(
+                                    Input::new(&model_input)
+                                        .small()
+                                        .min_h(px(26.))
+                                        .rounded(px(6.))
+                                        .bg(rgb(look.content))
+                                        .border_color(rgb(look.line))
+                                        .text_size(px(12.)),
+                                ),
+                            )
+                            .child(button(
+                                ui,
+                                "settings-default-model-save",
+                                "Save",
+                                AppAction::Settings(A::General(G::SaveDefaultModel)),
+                                look,
+                            ))
+                            .into_any_element(),
+                    ))
+                })
                 .when(state.settings.codex_needs_trust, |x| {
                     x.child(card(look).child(setting(
                         look,
@@ -996,6 +1317,23 @@ pub fn page(
                             )
                             .into_any_element(),
                         ))
+                        .child(
+                            setting(
+                                look,
+                                Row::PlaySound.title(),
+                                PLAY_SOUND_DESCRIPTION,
+                                toggle_enabled(
+                                    ui,
+                                    "settings-play-sound",
+                                    prefs.notify.play_sound,
+                                    prefs.notify.enabled,
+                                    A::TogglePlaySound,
+                                    look,
+                                )
+                                .into_any_element(),
+                            )
+                            .when(!prefs.notify.enabled, |x| x.opacity(0.4)),
+                        )
                         .child(setting(
                             look,
                             Row::PermissionRequestAlerts.title(),
@@ -1009,7 +1347,83 @@ pub fn page(
                             )
                             .into_any_element(),
                         )),
-                );
+                )
+                .child({
+                    let general = &state.settings.general;
+                    let current = general.current();
+                    let quiet_from_input = provider_inputs.text_input(
+                        "settings-quiet-from",
+                        "22:00",
+                        &general.quiet_from_draft,
+                        |text| AppAction::Settings(A::General(G::QuietFromChanged(text))),
+                        Some(AppAction::Settings(A::General(G::SaveQuietHours))),
+                        window,
+                        cx,
+                    );
+                    let quiet_until_input = provider_inputs.text_input(
+                        "settings-quiet-until",
+                        "07:30",
+                        &general.quiet_until_draft,
+                        |text| AppAction::Settings(A::General(G::QuietUntilChanged(text))),
+                        Some(AppAction::Settings(A::General(G::SaveQuietHours))),
+                        window,
+                        cx,
+                    );
+                    card(look)
+                        .child(setting(
+                            look,
+                            "Quiet hours",
+                            "Local 24-hour times (HH:MM). Leave both empty to disable quiet hours.",
+                            row()
+                                .gap(px(8.))
+                                .items_center()
+                                .child(dim(look, "From"))
+                                .child(
+                                    div().w(px(76.)).child(
+                                        Input::new(&quiet_from_input)
+                                            .small()
+                                            .min_h(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(look.content))
+                                            .border_color(rgb(look.line))
+                                            .text_size(px(12.)),
+                                    ),
+                                )
+                                .child(dim(look, "Until"))
+                                .child(
+                                    div().w(px(76.)).child(
+                                        Input::new(&quiet_until_input)
+                                            .small()
+                                            .min_h(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(look.content))
+                                            .border_color(rgb(look.line))
+                                            .text_size(px(12.)),
+                                    ),
+                                )
+                                .child(button(
+                                    ui,
+                                    "settings-quiet-hours-save",
+                                    "Save",
+                                    AppAction::Settings(A::General(G::SaveQuietHours)),
+                                    look,
+                                ))
+                                .into_any_element(),
+                        ))
+                        .child(setting(
+                            look,
+                            "VIP breaks quiet hours",
+                            "Allow notifications from VIP sessions even during quiet hours.",
+                            toggle(
+                                ui,
+                                "settings-vip-breaks-quiet-hours",
+                                current.notifications.vip_breaks_quiet_hours,
+                                A::General(G::ToggleVipBreaksQuietHours),
+                                look,
+                            )
+                            .into_any_element(),
+                        ))
+                });
         }
         Section::Keyboard => {
             body = body
@@ -1039,6 +1453,10 @@ pub fn page(
         Section::Sync => {
             body = body.child(crate::sync::body(ui, state, look));
         }
+        // BROWSER: frame b1-settings-browser.
+        Section::Browser => {
+            body = body.child(crate::settings_browser::body(ui, state, look));
+        }
     }
     row()
         .size_full()
@@ -1063,4 +1481,57 @@ pub fn toolbar(look: Look) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Settings"),
         )
+}
+
+const PLAY_SOUND_DESCRIPTION: &str =
+    "A short, soft chime with each notification; one for the Inbox, another for the To-do.";
+
+fn reset_branch_prefix_label(default_prefix: Option<&str>) -> String {
+    match default_prefix.map(|p| p.trim_end_matches('/')).filter(|p| !p.is_empty()) {
+        Some(user) => format!("Reset to @{user} default"),
+        None => "Reset to default".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PLAY_SOUND_DESCRIPTION, reset_branch_prefix_label};
+    use humata2_clients::daemon::sample_branch;
+    use humata2_settings::{Row, Section};
+
+    #[core::prelude::v1::test]
+    fn sample_branch_preview_joins_prefix_with_fix_login() {
+        assert_eq!(sample_branch("alice/"), "alice/fix-login");
+        assert_eq!(sample_branch(""), "fix-login");
+    }
+
+    #[core::prelude::v1::test]
+    fn reset_button_names_the_github_user_when_known() {
+        assert_eq!(
+            reset_branch_prefix_label(Some("alice/")),
+            "Reset to @alice default"
+        );
+        assert_eq!(reset_branch_prefix_label(None), "Reset to default");
+    }
+
+    #[core::prelude::v1::test]
+    fn play_sound_row_sits_between_desktop_notifications_and_permission_alerts() {
+        let rows: Vec<Row> = Row::ALL
+            .into_iter()
+            .filter(|r| r.section() == Section::Notifications)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                Row::DesktopNotifications,
+                Row::PlaySound,
+                Row::PermissionRequestAlerts,
+            ]
+        );
+        assert_eq!(Row::PlaySound.title(), "Play a sound");
+        assert_eq!(
+            PLAY_SOUND_DESCRIPTION,
+            "A short, soft chime with each notification; one for the Inbox, another for the To-do."
+        );
+    }
 }

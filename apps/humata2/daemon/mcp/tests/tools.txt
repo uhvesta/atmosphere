@@ -51,7 +51,14 @@ network_close
 network_connect
 operation_get
 pr_review_start
+provider_check
+provider_example
+provider_guide
 provider_import
+provider_parse
+provider_render
+provider_request_import
+provider_schema
 repo_library
 repo_search
 review_commits

@@ -35,6 +35,7 @@ fn holder(tab: &str, session: Option<&str>, title: &str, agent: Agent, started: 
         machine: mac(),
         stopped: false,
         agent_tab: false,
+        archived: false,
         paused_for_move: false,
     }
 }

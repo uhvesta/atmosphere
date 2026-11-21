@@ -162,10 +162,12 @@ humata2_snapshot_test(
 )
 
 humata2_snapshot_test(
-    name = "native_test",
+    name = "native_cases",
     srcs = ["tests/native.rs"] + glob(["tests/native/*.rs"]),
     compile_data = ["Cargo.toml"],
     crate_root = "tests/native.rs",
+    # Run through native_test (sharded).
+    tags = ["manual"],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/clients",
@@ -173,6 +175,7 @@ humata2_snapshot_test(
         "//apps/humata2/features/app",
         "//apps/humata2/features/desk",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/inbox",
         "//apps/humata2/features/mass_delete",
         "//apps/humata2/features/palette",
         "//apps/humata2/features/pr_review",
@@ -186,6 +189,20 @@ humata2_snapshot_test(
         "@crates//:gpui-kit",
         "@crates//:tokio",
     ],
+)
+
+sh_test(
+    name = "native_test",
+    srcs = ["tests/rust_test_shard.sh"],
+    data = [":native_cases"],
+    env = {"RUST_TEST_BIN": "$(rootpath :native_cases)"},
+    shard_count = 3,
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+alias(
+    name = "native_test_record",
+    actual = ":native_cases_record",
 )
 
 # A session's terminals draw through the reusable replica, fed by each tab's
@@ -422,36 +439,23 @@ sh_test(
 #   bazel test //apps/humata2/desktop:live_flows_ssh_test \
 #     --test_env=TERMINAL_LAB_SSH_CONFIG="$HOME/.lima/h2-terminal-c1/ssh.config"
 # Each test makes and removes its own throwaway user on the VM (D691).
-rust_test(
+sh_test(
     name = "live_flows_ssh_test",
     size = "large",
-    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
+    srcs = ["tests/live_flows_run.sh"],
     # Only the real-VM tests, one at a time: the VM has 0.75 GiB.
-    args = [
-        "real_vm::",
-        "--test-threads=1",
-    ],
-    compile_data = ["Cargo.toml"],
-    crate_root = "tests/live_flows.rs",
+    args = ["--test-threads=1"],
     data = [
-        "//apps/humata2/cli:humata",
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        # SEAM (D397): devbox-1's own machine-role daemon (live_flows/away_box.rs).
-        "//apps/humata2/daemon/humatad:humatad2",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-        # SEAM: the multi-machine rig's fake ssh runs each link under setsid.
-        "//apps/humata2/daemon/humatad:setsid",
+        ":live_flows_cases",
         # The real tools the host installs on the VM (linux-aarch64).
         "//apps/humata2/daemon/humatad:tools",
-    ],
-    env = {
-        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATA2_SETSID": "$(rootpath //apps/humata2/daemon/humatad:setsid)",
-        "HUMATA2_TOOLS": "$(rootpath //apps/humata2/daemon/humatad:tools)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
-    },
+    ] + LIVE_FLOWS_DATA,
+    env = dict(
+        LIVE_FLOWS_ENV,
+        HUMATA2_TOOLS = "$(rootpath //apps/humata2/daemon/humatad:tools)",
+        LIVE_FLOWS_CASES = "$(rootpath :live_flows_cases)",
+        LIVE_FLOWS_FILTER = "real_vm::",
+    ),
     # Starts real daemons and holders, so it runs alone.
     tags = [
         "exclusive",
@@ -459,38 +463,6 @@ rust_test(
         "manual",
     ],
     target_compatible_with = ["@platforms//os:macos"],
-    deps = [
-        "//apps/humata2/clients",
-        "//apps/humata2/clients/live",
-        "//apps/humata2/daemon/humatad:grpc",
-        # SEAM: a host and boxes in one test (live_flows/remote.rs).
-        "//apps/humata2/daemon/humatad:remote_rig",
-        # SEAM (D397): devbox-1, a fake machine behind a fake ssh.
-        "//apps/humata2/daemon/machines:fake_machine",
-        "//apps/humata2/engine:engine_test_support",
-        "//apps/humata2/features/app",
-        "//apps/humata2/features/desk",
-        "//apps/humata2/features/files",
-        "//apps/humata2/features/hosts",
-        # SEAM: flow 26.17 drives the review dialog, follower, Submit and notices.
-        "//apps/humata2/features/pr_review",
-        "//apps/humata2/features/review",
-        "//apps/humata2/features/session",
-        "//apps/humata2/features/views",
-        "//apps/humata2/testing/flow",
-        "//apps/humata2/ui",
-        "//libs/tca-rust:tca",
-        "@crates//:gpui-kit",
-        "@crates//:hyper-util",
-        "@crates//:rustix",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-        "@crates//:tempfile",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tonic",
-        "@crates//:tower",
-    ],
 )
 
 # FUSEFSWIRE T13: the FUSE mount on real Lima remotes. Cases 1 to 5 run on
@@ -500,33 +472,22 @@ rust_test(
 #   bazel test //apps/humata2/desktop:live_flows_fuse_vm_test --strategy=TestRunner=local \
 #     --test_env=FUSE_VM_SSH_CONFIG="$HOME/.lima/h2-fuse-r1/ssh.config" \
 #     --test_env=TERMINAL_LAB_SSH_CONFIG="$HOME/.lima/h2-terminal-c1/ssh.config"
-rust_test(
+sh_test(
     name = "live_flows_fuse_vm_test",
     size = "enormous",
-    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
-    args = [
-        "fuse_vm::",
-        "--test-threads=1",
-    ],
-    compile_data = ["Cargo.toml"],
-    crate_root = "tests/live_flows.rs",
+    srcs = ["tests/live_flows_run.sh"],
+    args = ["--test-threads=1"],
     data = [
-        "//apps/humata2/cli:humata",
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-        "//apps/humata2/daemon/humatad:setsid",
+        ":live_flows_cases",
         # The real tools (linux-aarch64, with the FUSE helper) the host installs.
         "//apps/humata2/daemon/humatad:tools",
-    ],
-    env = {
-        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATA2_SETSID": "$(rootpath //apps/humata2/daemon/humatad:setsid)",
-        "HUMATA2_TOOLS": "$(rootpath //apps/humata2/daemon/humatad:tools)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
-    },
+    ] + LIVE_FLOWS_DATA,
+    env = dict(
+        LIVE_FLOWS_ENV,
+        HUMATA2_TOOLS = "$(rootpath //apps/humata2/daemon/humatad:tools)",
+        LIVE_FLOWS_CASES = "$(rootpath :live_flows_cases)",
+        LIVE_FLOWS_FILTER = "fuse_vm::",
+    ),
     tags = [
         "exclusive",
         "external",
@@ -534,35 +495,6 @@ rust_test(
         "slow",
     ],
     target_compatible_with = ["@platforms//os:macos"],
-    deps = [
-        "//apps/humata2/clients",
-        "//apps/humata2/clients/live",
-        "//apps/humata2/daemon/humatad:grpc",
-        "//apps/humata2/daemon/humatad:remote_rig",
-        "//apps/humata2/daemon/machines:fake_machine",
-        "//apps/humata2/engine:engine_test_support",
-        "//apps/humata2/features/app",
-        "//apps/humata2/features/desk",
-        "//apps/humata2/features/files",
-        "//apps/humata2/features/hosts",
-        "//apps/humata2/features/pr_review",
-        "//apps/humata2/features/review",
-        "//apps/humata2/features/session",
-        "//apps/humata2/features/views",
-        "//apps/humata2/testing/flow",
-        "//apps/humata2/ui",
-        "//libs/tca-rust:tca",
-        "@crates//:gpui-kit",
-        "@crates//:hyper-util",
-        "@crates//:rustix",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-        "@crates//:tempfile",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tonic",
-        "@crates//:tower",
-    ],
 )
 
 # The Inbox in the app on a real humatad2 (ASK T5.3, SPEC flow 26.4): an
@@ -625,7 +557,10 @@ rust_test(
         "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
     },
     # Starts a real daemon and a fake machine's daemon, so it runs alone.
-    tags = ["exclusive"],
+    tags = [
+        "exclusive",
+        "slow",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/clients",

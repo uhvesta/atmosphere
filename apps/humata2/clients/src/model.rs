@@ -740,6 +740,10 @@ pub enum RequestKind {
     /// Bring a machine's daemon, tools or holders to the host's release
     /// (UP-1). It comes from Humata, not a session.
     Migrate,
+    /// Read a tab or list tabs in the user's own browser (BROWSER).
+    BrowserRead,
+    /// Click, type or navigate in the user's own browser (BROWSER).
+    BrowserWrite,
 }
 
 impl RequestKind {
@@ -754,8 +758,111 @@ impl RequestKind {
             Self::Merge => "Merge",
             Self::Destroy => "Delete",
             Self::Migrate => "Migrate",
+            Self::BrowserRead => "Browser read",
+            Self::BrowserWrite => "Browser write",
         }
     }
+}
+
+/// What a browser read or write card shows, worked out by the daemon from
+/// the action (BROWSER).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrowserPreview {
+    /// The exact URL a write acts on, or the tab a read reads; may be empty
+    /// when a read lists tabs.
+    pub url: String,
+    /// One line: what the action does.
+    pub action_summary: String,
+    /// The target element (selector and visible text), the typed text, or
+    /// the tab; empty when there is none.
+    pub target_preview: String,
+    /// True only for reads; the server sets it, never the agent.
+    pub supports_30m_grant: bool,
+    /// The action's kind as the native host names it, e.g. `"click"`.
+    pub action: String,
+    /// Hex sha256 of the action's canonical JSON.
+    pub action_key: String,
+    /// The agent's reason.
+    pub reason: String,
+}
+
+/// A browser Humata can detect and install its native messaging host for (BROWSER).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BrowserKind {
+    Chrome,
+    Brave,
+    Edge,
+    Chromium,
+    Arc,
+    Vivaldi,
+    Firefox,
+}
+
+impl BrowserKind {
+    /// The browser's display name.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Chrome => "Chrome",
+            Self::Brave => "Brave",
+            Self::Edge => "Edge",
+            Self::Chromium => "Chromium",
+            Self::Arc => "Arc",
+            Self::Vivaldi => "Vivaldi",
+            Self::Firefox => "Firefox",
+        }
+    }
+
+    /// Stable lowercase slug for element ids.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Brave => "brave",
+            Self::Edge => "edge",
+            Self::Chromium => "chromium",
+            Self::Arc => "arc",
+            Self::Vivaldi => "vivaldi",
+            Self::Firefox => "firefox",
+        }
+    }
+}
+
+/// Browser extension family (BROWSER).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BrowserFamily {
+    Chromium,
+    Firefox,
+}
+
+/// One browser detected on this Mac and the state of Humata's native host for it (BROWSER).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedBrowser {
+    pub kind: BrowserKind,
+    pub family: BrowserFamily,
+    pub display_name: String,
+    pub binary_path: String,
+    pub native_messaging_dir: String,
+    pub manifest_path: String,
+    pub host_installed: bool,
+    pub host_matches_current: bool,
+    pub connected: bool,
+    pub extension_path: String,
+}
+
+/// One native messaging host currently connected to the daemon (BROWSER).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectedBrowserHost {
+    pub extension_origin: String,
+    pub host_pid: u32,
+    pub family: BrowserFamily,
+}
+
+/// Live status of the daemon's browser bridge (BROWSER).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrowserBridgeStatus {
+    pub connected: bool,
+    pub hosts: Vec<ConnectedBrowserHost>,
 }
 
 /// What the request would do, shown before it is answered (IN-8).
@@ -771,6 +878,8 @@ pub enum Preview {
     Migrate(MigrateCard),
     /// An agent's copy of files from one machine to another (IN-10, D467).
     CrossMachineCopy(CopyCard),
+    /// A browser read or write action (BROWSER).
+    Browser(BrowserPreview),
 }
 
 /// What an agent's cross-machine copy would do, measured at its source.
@@ -1006,13 +1115,24 @@ impl Request {
         }
     }
 
+    /// The browser preview, when this is a browser read or write request (BROWSER).
+    #[must_use]
+    pub const fn browser(&self) -> Option<&BrowserPreview> {
+        match &self.preview {
+            Preview::Browser(card) => Some(card),
+            _ => None,
+        }
+    }
+
     /// Whether Approve all and Deny all answer it. A Migrate item is
-    /// answered only with Migrate (D281), and an agent's provider import
-    /// only one by one (MP-23, D792). A card that offers only Dismiss (D798)
-    /// is not answered in bulk either.
+    /// answered only with Migrate (D281), a browser write is asked every
+    /// time (BROWSER), and an agent's provider import only one by one
+    /// (MP-23, D792). A card that offers only Dismiss (D798) is not answered
+    /// in bulk either.
     #[must_use]
     pub fn answered_in_bulk(&self) -> bool {
         self.kind != RequestKind::Migrate
+            && self.kind != RequestKind::BrowserWrite
             && !self.dismiss_only
             && self.operation != PROVIDER_IMPORT_OPERATION
     }
@@ -1027,6 +1147,9 @@ pub const PROVIDER_IMPORT_OPERATION: &str = "provider.request_import";
 pub enum Answer {
     /// Allowed once.
     Approved,
+    /// Allowed for this session's browser reads for 30 minutes (BROWSER).
+    /// Valid only on `RequestKind::BrowserRead`; rejected on writes.
+    AllowFor30Min,
     /// Allowed, and a rule made for next time.
     Always {
         /// The rule's words.
@@ -1374,6 +1497,9 @@ pub enum RepoBase {
     /// merge base with HEAD. A name that already starts with `origin/` is
     /// used as it is.
     Branch(String),
+    /// The merge base of HEAD and an exact branch or ref name, without
+    /// assuming an `origin/` prefix (e.g. a local branch in a review plan).
+    MergeBase(String),
     /// A branch, tag or commit as it is.
     Rev(String),
     /// What changed after the last Mark reviewed (RV-6).
@@ -1382,6 +1508,8 @@ pub enum RepoBase {
     ForkPoint,
     /// Only what isn't committed yet.
     Uncommitted,
+    /// What is staged in the git index, for "only my unstaged changes".
+    Index,
     /// This repository's pull request's base (PR-10); pull request reviews only.
     PullRequestBase,
     /// `base..head` as they are, whatever is checked out (D800): a stack
@@ -1403,13 +1531,84 @@ pub enum RepoBase {
     },
 }
 
-/// One repository's base in a [`DiffBase::Spec`].
+/// How far into the working tree a repository diff's new side reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DiffUpto {
+    /// HEAD's commit only.
+    Commits,
+    /// Plus the git index.
+    Staged,
+    /// Plus tracked files as they are on disk.
+    Unstaged,
+}
+
+/// Which untracked files a repository diff includes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DiffUntracked {
+    /// None.
+    None,
+    /// Every file git doesn't ignore.
+    All,
+    /// Only under `untracked_paths`.
+    Paths,
+}
+
+/// How whitespace differences are treated in a repository diff.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DiffWhitespace {
+    /// Whitespace counts.
+    #[default]
+    Default,
+    /// Ignore changes in amount of whitespace (`git -b`).
+    IgnoreChanges,
+    /// Ignore all whitespace (`git -w`).
+    IgnoreAll,
+}
+
+/// Per-repository diff filters and comparison bounds carried by a
+/// [`RepoDiffSpec`] (RV-31, RV-32).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RepoDiffOptions {
+    /// Git pathspecs to include; empty shows every path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_paths: Vec<String>,
+    /// Git pathspecs to exclude.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_paths: Vec<String>,
+    /// How much of the working tree counts on the new side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upto: Option<DiffUpto>,
+    /// Which untracked files count on the new side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untracked: Option<DiffUntracked>,
+    /// Pathspecs for [`DiffUntracked::Paths`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub untracked_paths: Vec<String>,
+    /// Explicit new-side commit, branch, or tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// Working-tree pathspecs laid over the new side.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktree_paths: Vec<String>,
+    /// How whitespace differences are handled.
+    #[serde(default)]
+    pub whitespace: DiffWhitespace,
+    /// Disable git rename detection (`-M`).
+    #[serde(default)]
+    pub no_renames: bool,
+}
+
+/// One repository's base and options in a [`DiffBase::Spec`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepoDiffSpec {
     /// The repository, as `owner/name`.
     pub repo: String,
     /// What its changes are compared with.
     pub base: RepoBase,
+    /// Per-repository path filters, compare bounds, whitespace, and rename options.
+    #[serde(default)]
+    pub options: RepoDiffOptions,
 }
 
 /// The branches one repository can be compared with, as its clone knew them
@@ -1450,6 +1649,7 @@ impl DiffTargets {
                 .map(|repo| RepoDiffSpec {
                     repo: repo.clone(),
                     base: self.of(repo),
+                    options: RepoDiffOptions::default(),
                 })
                 .collect(),
         )

@@ -587,8 +587,13 @@ async fn both_tools_are_listed_and_need_what_they_search_or_read() {
     let fixture = Fixture::start().await;
     let mut mcp = fixture.mcp().await;
 
-    let tools = mcp.request("tools/list", json!({})).await;
-    let tools = listed(&tools, "tools");
+    let described = mcp
+        .call(
+            "humata_describe",
+            json!({ "names": ["sessions_search", "session_read"] }),
+        )
+        .await;
+    let tools = listed(&described["structuredContent"], "tools");
 
     for (name, needed) in [("sessions_search", "query"), ("session_read", "session")] {
         let tool = tools

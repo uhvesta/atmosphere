@@ -1,0 +1,16 @@
+[package]
+name = "humata2-highlight"
+description = "Humata 2's shared language detector and syntax highlighter across diff, file preview, Markdown and review surfaces."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_highlight"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = { workspace = true, features = ["syntect"] }
+
+# Builds and tests run only in Bazel (BUILD.bazel).

@@ -16,6 +16,7 @@ rust_library(
     crate_name = "humata2_machines",
     rustc_env = {"HUMATA2_OWN_SKILLS": "$(execpath //apps/humata2/skills:bundle)"},
     visibility = [
+        "//apps/humata2/cli:__pkg__",
         "//apps/humata2/daemon:__subpackages__",
         # The desktop's install writes bundle.json and stages releases the
         # same way a machine's install does (UP-1).

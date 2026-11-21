@@ -11,6 +11,10 @@
 //! Left empty in each AgentDefinition, since the daemon doesn't know them:
 //! `variables`, `fork_arguments`, `models` and `revision`.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::agent_switches::{
     self, AgentSwitches, Change, OnChange, SwitchesError,
@@ -18,18 +22,42 @@ use humata2_daemon_runtime::agent_switches::{
 use crate::pb;
 use humata2_rpc_kit::{chain, failure, internal, invalid_field, missing};
 use humata2_sessions_core::{AgentKind, Agents, ConversationFormat, TurnEnd};
+use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
 use crate::agent_gate;
 use pb::invalid_field::Problem;
 
+/// Boxed future returned by [`AgentSettingsGate`] closures.
+pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// Narrow port letting `AgentSvc` route agent settings mutations through
+/// `Capability::SettingsChange` Inbox gating (`AskNoAllow`) without pulling
+/// `humatad_core` into `svc_catalog`.
+#[tonic::async_trait]
+pub trait AgentSettingsGate: Send + Sync {
+    async fn gate_settings_change(
+        &self,
+        caller: &Caller,
+        key: Option<String>,
+        scope: String,
+        changes: Vec<(String, String, String)>,
+        reason: String,
+        type_name: &'static str,
+        run: Box<dyn FnOnce() -> BoxFuture<Result<Vec<u8>, Status>> + Send>,
+    ) -> Result<Vec<u8>, Status>;
+}
+
 /// The agents the daemon runs, and whether they are its built-in list.
+#[derive(Clone)]
 pub struct AgentSvc {
     agents: Agents,
     /// Whether no agents file was given, so the kinds are the built-in ones.
     built_in: bool,
     /// Told after every switch it writes, so linked machines get the file.
     on_change: OnChange,
+    /// Optional `SettingsChange` Inbox gate wired by `humatad_plugin_catalog`.
+    gate: Option<Arc<dyn AgentSettingsGate>>,
 }
 
 impl AgentSvc {
@@ -38,7 +66,15 @@ impl AgentSvc {
             agents,
             built_in,
             on_change: OnChange::default(),
+            gate: None,
         }
+    }
+
+    /// Routes agent mutations through `gate` (`Capability::SettingsChange`
+    /// Inbox gating) instead of hard `UserOnly` refusal.
+    pub fn with_gate(mut self, gate: Arc<dyn AgentSettingsGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// The hook told after every switch this service writes.
@@ -161,7 +197,7 @@ impl pb::agent_service_server::AgentService for AgentSvc {
         request: Request<pb::ListAgentsRequest>,
     ) -> Result<Response<pb::ListAgentsResponse>, Status> {
         let all = request.into_inner().include_disabled;
-        let switches = self.switches();
+        let switches = agent_gate::read_switches(&self.agents).map_err(Status::from)?;
         Ok(Response::new(pb::ListAgentsResponse {
             agents: self
                 .agents
@@ -177,7 +213,10 @@ impl pb::agent_service_server::AgentService for AgentSvc {
         &self,
         request: Request<pb::SetAgentEnabledRequest>,
     ) -> Result<Response<pb::AgentDefinition>, Status> {
-        user_only(&caller(&request)?)?;
+        let who = caller(&request)?;
+        if self.gate.is_none() {
+            user_only(&who)?;
+        }
         let request = request.into_inner();
         let kind = request
             .agent
@@ -220,35 +259,126 @@ impl pb::agent_service_server::AgentService for AgentSvc {
                 },
             ));
         };
+        let mut changes = Vec::new();
+        let on_off = |b: bool| if b { "on" } else { "off" }.to_owned();
+        if let Some(enabled) = request.enabled {
+            let before = current.as_ref().is_none_or(|s| s.enabled(&kind));
+            changes.push(("enabled".to_owned(), on_off(before), on_off(enabled)));
+        }
+        if let Some(install) = request.install_when_missing {
+            let before = current.as_ref().is_some_and(|s| s.install_when_missing(&kind));
+            changes.push(("install_when_missing".to_owned(), on_off(before), on_off(install)));
+        }
+        if let Some(asks) = request.asks_in_inbox {
+            let before = current.as_ref().is_none_or(|s| s.asks_in_inbox(&kind));
+            changes.push(("asks_in_inbox".to_owned(), on_off(before), on_off(asks)));
+        }
         let path = path.to_owned();
         let change = Change {
             enabled: request.enabled,
             install_when_missing: request.install_when_missing,
             asks_in_inbox: request.asks_in_inbox,
         };
+        let svc = self.clone();
         let name = kind.clone();
-        let written = tokio::task::spawn_blocking(move || agent_switches::set(&path, &name, change))
-            .await
-            .map_err(|error| internal(format!("saving the agent switches stopped: {error}"), ""))?
-            .map_err(|error| switches_failed(&error))?;
-        self.on_change.tell();
-        let found = self.agents.get(&kind).map_err(|error| {
-            internal(format!("the agent {kind} went missing: {}", chain(&error)), "")
-        })?;
-        Ok(Response::new(self.definition(found, Some(&written))))
+        let apply = move || async move {
+            let write_name = name.clone();
+            let written =
+                tokio::task::spawn_blocking(move || agent_switches::set(&path, &write_name, change))
+                    .await
+                    .map_err(|error| internal(format!("saving the agent switches stopped: {error}"), ""))?
+                    .map_err(|error| switches_failed(&error))?;
+            svc.on_change.tell();
+            let found = svc.agents.get(&name).map_err(|error| {
+                internal(format!("the agent {name} went missing: {}", chain(&error)), "")
+            })?;
+            Ok(svc.definition(found, Some(&written)))
+        };
+        let Some(gate) = &self.gate else {
+            return apply().await.map(Response::new);
+        };
+        let bytes = gate
+            .gate_settings_change(
+                &who,
+                None,
+                format!("Agent settings ({kind})"),
+                changes,
+                format!("Update agent switches for {kind}"),
+                "humata.v1.AgentDefinition",
+                Box::new(move || {
+                    Box::pin(async move {
+                        let def = apply().await?;
+                        Ok(def.encode_to_vec())
+                    })
+                }),
+            )
+            .await?;
+        let def = pb::AgentDefinition::decode(bytes.as_slice())
+            .map_err(|error| internal(format!("decoding AgentDefinition failed: {error}"), ""))?;
+        Ok(Response::new(def))
     }
 
     async fn add_agent(
         &self,
-        _request: Request<pb::AddAgentRequest>,
+        request: Request<pb::AddAgentRequest>,
     ) -> Result<Response<pb::AgentDefinition>, Status> {
+        if let (Some(gate), Some(who)) = (&self.gate, request.extensions().get::<Caller>().cloned()) {
+            let req = request.into_inner();
+            let key = req.idempotency_key.as_ref().map(|k| k.value.clone());
+            let name = req
+                .agent
+                .as_ref()
+                .and_then(|a| a.id.as_ref())
+                .map(|id| id.value.clone())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| "custom".to_owned());
+            let bytes = gate
+                .gate_settings_change(
+                    &who,
+                    key,
+                    format!("Add agent ({name})"),
+                    vec![("agent".to_owned(), "none".to_owned(), name)],
+                    "Add custom agent definition".to_owned(),
+                    "humata.v1.AgentDefinition",
+                    Box::new(move || Box::pin(async move { Err(set_in_file("AddAgent")) })),
+                )
+                .await?;
+            let def = pb::AgentDefinition::decode(bytes.as_slice())
+                .map_err(|error| internal(format!("decoding AgentDefinition failed: {error}"), ""))?;
+            return Ok(Response::new(def));
+        }
         Err(set_in_file("AddAgent"))
     }
 
     async fn update_agent(
         &self,
-        _request: Request<pb::UpdateAgentRequest>,
+        request: Request<pb::UpdateAgentRequest>,
     ) -> Result<Response<pb::AgentDefinition>, Status> {
+        if let (Some(gate), Some(who)) = (&self.gate, request.extensions().get::<Caller>().cloned()) {
+            let req = request.into_inner();
+            let key = req.idempotency_key.as_ref().map(|k| k.value.clone());
+            let name = req
+                .agent
+                .as_ref()
+                .and_then(|a| a.id.as_ref())
+                .map(|id| id.value.clone())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| "custom".to_owned());
+            let bytes = gate
+                .gate_settings_change(
+                    &who,
+                    key,
+                    format!("Update agent ({name})"),
+                    vec![("agent".to_owned(), name.clone(), name)],
+                    "Update agent definition".to_owned(),
+                    "humata.v1.AgentDefinition",
+                    Box::new(move || Box::pin(async move { Err(set_in_file("UpdateAgent")) })),
+                )
+                .await?;
+            let def = pb::AgentDefinition::decode(bytes.as_slice())
+                .map_err(|error| internal(format!("decoding AgentDefinition failed: {error}"), ""))?;
+            return Ok(Response::new(def));
+        }
         Err(set_in_file("UpdateAgent"))
     }
 }
@@ -469,5 +599,48 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(refused.code(), Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn agent_set_agent_enabled_routes_through_settings_gate_with_diff() {
+        struct RecordingGate {
+            seen: std::sync::Mutex<Vec<(String, Vec<(String, String, String)>)>>,
+        }
+
+        #[tonic::async_trait]
+        impl AgentSettingsGate for RecordingGate {
+            async fn gate_settings_change(
+                &self,
+                _caller: &Caller,
+                _key: Option<String>,
+                scope: String,
+                changes: Vec<(String, String, String)>,
+                _reason: String,
+                _type_name: &'static str,
+                _run: Box<dyn FnOnce() -> BoxFuture<Result<Vec<u8>, Status>> + Send>,
+            ) -> Result<Vec<u8>, Status> {
+                self.seen.lock().unwrap().push((scope, changes));
+                Err(Status::failed_precondition("pending in inbox"))
+            }
+        }
+
+        let (svc, _dir) = with_switches("");
+        let gate = Arc::new(RecordingGate {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let svc = svc.with_gate(gate.clone());
+
+        let pending = svc
+            .set_agent_enabled(set("codex", Some(false), None, Caller::Peer))
+            .await
+            .unwrap_err();
+        assert_eq!(pending.code(), Code::FailedPrecondition);
+        let recorded = gate.seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "Agent settings (codex)");
+        assert_eq!(
+            recorded[0].1,
+            vec![("enabled".to_owned(), "on".to_owned(), "off".to_owned())]
+        );
     }
 }

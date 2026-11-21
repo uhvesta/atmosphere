@@ -1,5 +1,6 @@
 use crate::model::{
-    Answer, AskedBy, Capability, ChannelId, RuleSetting, DiffLine, LineKind, Preview, Request, RequestId, RequestKind, SessionId,
+    Answer, AskedBy, BrowserPreview, Capability, ChannelId, DiffLine, LineKind, Preview, Request,
+    RequestId, RequestKind, RuleSetting, SessionId,
 };
 
 pub(super) fn request(
@@ -232,4 +233,59 @@ pub(super) fn requests() -> Vec<Request> {
     answered.steps = steps(&["Planned the sign-in change", "pnpm add @simplewebauthn/browser"]);
     answered.why_you = "Installing packages changes the dependency lock file.".to_owned();
     vec![command, edit, network, question, merge, destroy, answered]
+}
+
+/// Fixture BrowserRead request matching frame `b2-inbox-browser-read`.
+#[must_use]
+pub fn browser_read_request(id: &str, session: &str, channel: &str) -> Request {
+    let mut read = request(
+        id,
+        session,
+        channel,
+        RequestKind::BrowserRead,
+        "Let Claude Code on devbox-1 read a tab in your browser?",
+    );
+    read.reason =
+        "I need the review comments on this pull request so I can answer them in the code."
+            .to_owned();
+    read.preview = Preview::Browser(BrowserPreview {
+        url: "https://code.example.test/acme/api/pull/482".to_owned(),
+        action_summary: "Read tab “Retry refunds with backoff #482”".to_owned(),
+        target_preview: "Retry refunds with backoff #482".to_owned(),
+        supports_30m_grant: true,
+        action: "read_tab".to_owned(),
+        action_key: "browser-read-482".to_owned(),
+        reason: read.reason.clone(),
+    });
+    read.operation = "browser.read_tab".to_owned();
+    read.undoable = false;
+    read.working_on = "PAY-3 Ledger schema v2".to_owned();
+    read
+}
+
+/// Fixture BrowserWrite request matching frame `b3-inbox-browser-write`.
+#[must_use]
+pub fn browser_write_request(id: &str, session: &str, channel: &str) -> Request {
+    let mut write = request(
+        id,
+        session,
+        channel,
+        RequestKind::BrowserWrite,
+        "Let Claude Code on devbox-1 click “Merge pull request” in your browser?",
+    );
+    write.reason = "All checks pass and you approved this pull request an hour ago. Merging lets me rebase the migration branch on main.".to_owned();
+    write.preview = Preview::Browser(BrowserPreview {
+        url: "https://code.example.test/acme/api/pull/482".to_owned(),
+        action_summary: "Click “Merge pull request”".to_owned(),
+        target_preview: "Merge pull request (button.merge-confirm[data-action=\"merge\"])"
+            .to_owned(),
+        supports_30m_grant: false,
+        action: "click".to_owned(),
+        action_key: "browser-write-482".to_owned(),
+        reason: write.reason.clone(),
+    });
+    write.operation = "browser.click".to_owned();
+    write.undoable = false;
+    write.working_on = "PAY-3 Ledger schema v2".to_owned();
+    write
 }

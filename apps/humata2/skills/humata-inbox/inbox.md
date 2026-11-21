@@ -36,6 +36,7 @@ Capabilities are written in lower case:
 | `git_push`, `pr_review_start`, `review_draft` | pushing, pull requests, review drafts |
 | `machine_provision`, `machine_destroy`, `machine_script_run`, `network_reach` | machines and the network |
 | `channel_create`, `channel_repo_add`, `channel_change` | channels |
+| `settings_change` | changing global, channel or agent settings (`Ask me` or `Never`, never `Allow`) |
 | `trash_restore`, `views_prepare`, `inbox_ask` | trash, prepared views, asking the owner |
 
 Check when the answer changes your plan, for example before you promise the
@@ -122,8 +123,11 @@ You can never do these, and must not try another way:
   `approve-all`, `deny-all`);
 - change rules or grants (`humata access set`, `access away`,
   `access revoke`, `access passphrase`);
-- `humata login`, `humata token ...`, `humata settings set`,
-  `humata agents add|edit`.
+- `humata login`, `humata token ...`.
+
+Settings changes (`humata settings set`, channel settings, agent switches)
+are **not** `user_only`: calling them puts an approval card in the owner's
+Inbox showing the exact `old -> new` diff (never "Always allow").
 
 When something is `user_only`, tell the owner the exact command to run in
 their own terminal (outside Humata's sessions), or where it is in the app.

@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::plan::{FileRef, Group, Importance, Tier};
-use crate::spec::{Base, Compare, DiffSpec, RepoSpec, Whitespace};
+use crate::spec::{Base, BaseContext, Compare, DiffSpec, RepoSpec, Whitespace};
 use crate::{Checkout, Clones, DiffError};
 
 const MAX_LAYERS: usize = 50;
@@ -77,6 +77,8 @@ pub enum Part {
 pub struct Resolved {
     pub base_commit: String,
     pub head_commit: String,
+    /// Number of files in this layer's diff of this repo.
+    pub files: u32,
 }
 
 /// Why a stack can't be shown.
@@ -364,19 +366,39 @@ impl Stack {
                         }
                     }
                     top_head = Some((head.clone(), head_commit.clone()));
+                    let mut spec = RepoSpec::new(
+                        repo,
+                        Base::Rev {
+                            rev: base_commit.clone(),
+                        },
+                        Compare::at(head_commit.clone()),
+                    );
+                    spec.whitespace = self.whitespace;
+                    spec.renames = self.renames;
+                    let files = count_files(checkout, &spec).map_err(git)?;
                     Resolved {
                         base_commit,
                         head_commit,
+                        files,
                     }
                 }
-                Part::Worktree { .. } => {
+                Part::Worktree { include_paths } => {
                     let head = commit_of(checkout, title, repo, "HEAD")?;
                     if worktree.is_none() {
                         worktree = Some((title.to_owned(), head.clone()));
                     }
+                    let mut spec = RepoSpec::new(
+                        repo,
+                        Base::Rev { rev: head.clone() },
+                        Compare::worktree(include_paths.clone()),
+                    );
+                    spec.whitespace = self.whitespace;
+                    spec.renames = self.renames;
+                    let files = count_files(checkout, &spec).map_err(git)?;
                     Resolved {
                         base_commit: head.clone(),
                         head_commit: head,
+                        files,
                     }
                 }
             };
@@ -513,6 +535,13 @@ fn commit_of(
     })
 }
 
+/// Number of files in `spec`'s diff of `checkout`.
+fn count_files(checkout: &Checkout, spec: &RepoSpec) -> Result<u32, DiffError> {
+    let trees = checkout.trees(spec, &BaseContext::default())?;
+    let files = checkout.files(&trees, spec)?;
+    Ok(u32::try_from(files.len()).unwrap_or(u32::MAX))
+}
+
 /// Whether `base` is `head` or one of its ancestors.
 fn is_ancestor(checkout: &Checkout, base: &str, head: &str) -> Result<bool, DiffError> {
     let args = ["merge-base", "--is-ancestor", base, head];
@@ -554,6 +583,21 @@ pub enum DriftKind {
 }
 
 impl CheckedStack {
+    /// Reconstructs a `CheckedStack` from a stored stack and its per-layer,
+    /// per-repo resolved commits. Returns `None` if the shapes don't match.
+    #[must_use]
+    pub fn from_resolved(stack: Stack, resolved: Vec<Vec<Resolved>>) -> Option<Self> {
+        if resolved.len() != stack.layers.len() {
+            return None;
+        }
+        for (layer, row) in stack.layers.iter().zip(&resolved) {
+            if row.len() != layer.repos.len() {
+                return None;
+            }
+        }
+        Some(Self { stack, resolved })
+    }
+
     /// The stack as sent.
     #[must_use]
     pub fn stack(&self) -> &Stack {

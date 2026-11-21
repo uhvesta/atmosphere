@@ -212,6 +212,8 @@ pub struct ArchiveConfirm {
     pub agent: String,
     /// The machine it runs on, "This Mac" for this one (D784).
     pub machine: String,
+    /// Whether archiving also ends the session's running agent and shells (D801 F).
+    pub end: bool,
 }
 
 /// Why the daemon refused a session action, in a form the page can act on
@@ -710,6 +712,7 @@ pub enum SessionAction {
     ArchivePlanned {
         session: SessionId,
         title: String,
+        end: bool,
         result: Result<ArchivePlan, DaemonError>,
     },
     /// Archive after the dialog: with `true`, commit, push and open pull
@@ -727,6 +730,13 @@ pub enum SessionAction {
     },
     /// Archive the open session.
     Archive,
+    /// Archive a named session without changing which session is open
+    /// (e.g. from the Machine page or Files). With `end`, also ends its
+    /// running agent and shells (D801 F).
+    ArchiveSession {
+        session: SessionId,
+        end: bool,
+    },
     /// A Desk session's End for good, which is the Desk's Close: Archive
     /// is for channel sessions only (D182.2), finished.
     DeskEnded {
@@ -944,11 +954,46 @@ impl Sessions {
         self.read_conversation(session, target, read, first, last)
     }
 
-    /// Archives `session`, then reports how it went.
-    fn archive(&self, session: SessionId, title: String, push_first: bool) -> Effect<SessionAction> {
+    /// Plans an archive for `id` (or closes it on the Desk when it is a Desk
+    /// session), carrying `end` through to the archive call.
+    fn start_archive(&self, state: &SessionState, id: SessionId, end: bool) -> Effect<SessionAction> {
+        let title = state
+            .workspace
+            .session(&id)
+            .map_or_else(String::new, |s| s.title.clone());
+        // A Desk session has no archive (D182.2): ending it for
+        // good closes it on the Desk, so its agent and shells
+        // stop and its folder stays (DK-11).
+        if state.workspace.session(&id).is_some_and(humata2_clients::desk::is_desk) {
+            let client = self.clients.desk.clone();
+            return Effect::future(async move {
+                let result = client.close(&id).await;
+                SessionAction::DeskEnded { session: id, title, result }
+            });
+        }
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
-            let result = daemon.archive(&session, push_first).await;
+            let result = daemon.plan_archive(&id).await;
+            SessionAction::ArchivePlanned {
+                session: id,
+                title,
+                end,
+                result,
+            }
+        })
+    }
+
+    /// Archives `session`, then reports how it went.
+    fn archive(
+        &self,
+        session: SessionId,
+        title: String,
+        push_first: bool,
+        end: bool,
+    ) -> Effect<SessionAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            let result = daemon.archive_with_end(&session, push_first, end).await;
             SessionAction::Archived {
                 session,
                 title,
@@ -1945,30 +1990,12 @@ impl Reducer for Sessions {
             },
             SessionAction::Archive => {
                 if let Some(id) = state.open.clone() {
-                    let title = state
-                        .workspace
-                        .session(&id)
-                        .map_or_else(String::new, |s| s.title.clone());
-                    // A Desk session has no archive (D182.2): ending it for
-                    // good closes it on the Desk, so its agent and shells
-                    // stop and its folder stays (DK-11).
-                    if state.workspace.session(&id).is_some_and(humata2_clients::desk::is_desk) {
-                        let client = self.clients.desk.clone();
-                        return Effect::future(async move {
-                            let result = client.close(&id).await;
-                            SessionAction::DeskEnded { session: id, title, result }
-                        });
-                    }
-                    let daemon = self.clients.daemon.clone();
-                    return Effect::future(async move {
-                        let result = daemon.plan_archive(&id).await;
-                        SessionAction::ArchivePlanned {
-                            session: id,
-                            title,
-                            result,
-                        }
-                    });
+                    let end = state.ending_for_good.as_ref() == Some(&id);
+                    return self.start_archive(state, id, end);
                 }
+            }
+            SessionAction::ArchiveSession { session, end } => {
+                return self.start_archive(state, session, end);
             }
             SessionAction::DeskEnded { session, title, result } => {
                 state.ending_for_good = None;
@@ -1988,10 +2015,11 @@ impl Reducer for Sessions {
             SessionAction::ArchivePlanned {
                 session,
                 title,
+                end,
                 result,
             } => match result {
                 Ok(plan) if plan.unpushed.is_empty() && plan.unsubmitted_drafts == 0 => {
-                    return self.archive(session, title, false);
+                    return self.archive(session, title, false, end);
                 }
                 Ok(plan) => {
                     let (agent, machine) = close::agent_and_machine(state, &session);
@@ -2002,6 +2030,7 @@ impl Reducer for Sessions {
                         sending: false,
                         agent,
                         machine,
+                        end,
                     });
                     state.error = None;
                 }
@@ -2019,8 +2048,9 @@ impl Reducer for Sessions {
                 }
                 confirm.sending = true;
                 state.error = None;
-                let (session, title) = (confirm.session.clone(), confirm.title.clone());
-                return self.archive(session, title, push_first);
+                let (session, title, end) =
+                    (confirm.session.clone(), confirm.title.clone(), confirm.end);
+                return self.archive(session, title, push_first, end);
             }
             SessionAction::CancelArchive => {
                 if state.archiving.as_ref().is_some_and(|confirm| !confirm.sending) {

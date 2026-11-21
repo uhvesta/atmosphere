@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use humata2_access::ChannelDeskSwitches;
 use humata2_grpc::humata::v1 as pb;
@@ -17,7 +18,7 @@ use humata2_sessions::DESK_CHANNEL;
 use humata2_store::{
     ChannelDeskRow, ChannelRecord, DeskFolderKind, DeskRow, SessionDetail, SessionRecord, StartStep, StoreError,
 };
-use tonic::{Request, Status};
+use tonic::{Code, Request, Status};
 
 use super::{DeskSvc, failed_precondition, now_ms, view};
 use crate::ports::blocking;
@@ -25,7 +26,7 @@ use crate::ports::CHANNEL_FOLDER;
 use humata2_daemon_ports::Caller;
 use crate::ports as identity;
 use crate::ports::Started;
-use crate::ports::{HostOp, RemoteWork};
+use crate::ports::{HostOp, RelayError, RemoteError, RemoteWork};
 use crate::ports::stuck_start;
 use crate::ports as status;
 
@@ -105,6 +106,30 @@ pub(super) fn failure_of(status: &Status) -> pb::Error {
         retry: None,
         kind: None,
     })
+}
+
+/// Whether `error` is an explicit pre-start refusal from the machine, meaning
+/// the machine never started the session and the host can safely delete its
+/// session row and drop the `Asked` journal. Transient or ambiguous errors
+/// (`Offline`, `Unavailable`, `Unknown`, `DeadlineExceeded`, `Cancelled`, etc.)
+/// return `false` so the host keeps the row and journal and re-asks under the
+/// same session id.
+pub(super) fn is_definitive_refusal(error: &RemoteError) -> bool {
+    let code = match error {
+        RemoteError::Relay(RelayError::Offline { .. }) => return false,
+        RemoteError::Relay(RelayError::Refused { answer }) | RemoteError::Failed { answer } => answer.code(),
+    };
+    matches!(
+        code,
+        Code::InvalidArgument
+            | Code::FailedPrecondition
+            | Code::PermissionDenied
+            | Code::Unimplemented
+            | Code::AlreadyExists
+            | Code::NotFound
+            | Code::Unauthenticated
+            | Code::OutOfRange
+    )
 }
 
 impl DeskSvc {
@@ -296,13 +321,25 @@ impl DeskSvc {
                 })
             }
             Err(error) => {
+                let definitive = is_definitive_refusal(&error);
                 let shown = Status::from(error);
-                if let Some(progress) = host.take() {
-                    progress.fail(failure_of(&shown));
+                if definitive {
+                    if let Some(progress) = host.take() {
+                        progress.fail(failure_of(&shown));
+                    }
+                    let (store, removing) = (self.starter.store.clone(), id.clone());
+                    let _ = blocking(move || store.remove_session(&removing)).await;
+                    self.drop_asked(&id).await;
+                } else if let Some(progress) = host.take() {
+                    // The call ended ambiguously (transport drop, timeout, etc.):
+                    // the machine may already have started the session. Keep the
+                    // host row and `Asked` journal and re-ask under the same id.
+                    let svc = self.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let _ = svc.ask_again(progress, &journal).await;
+                    });
                 }
-                let (store, removing) = (self.starter.store.clone(), id.clone());
-                let _ = blocking(move || store.remove_session(&removing)).await;
-                self.drop_asked(&id).await;
                 Err(shown)
             }
         }
@@ -448,5 +485,511 @@ mod tests {
         let done = start_operation("se_1", None, true, Some("stale"));
         assert_eq!(done.state, pb::OperationState::Succeeded as i32);
         assert!(done.error.is_none());
+    }
+
+    #[test]
+    fn definitive_refusal_classification_keeps_transient_and_ambiguous_codes() {
+        for transient in [
+            RemoteError::Relay(RelayError::Offline {
+                machine: "box-1".to_owned(),
+                answer: Status::unavailable("offline"),
+            }),
+            RemoteError::Failed { answer: Status::unavailable("link dropped") },
+            RemoteError::Failed { answer: Status::unknown("transport reset") },
+            RemoteError::Failed { answer: Status::deadline_exceeded("timed out") },
+            RemoteError::Failed { answer: Status::cancelled("cancelled") },
+        ] {
+            assert!(!is_definitive_refusal(&transient), "should not clean up on {transient:?}");
+        }
+        for refusal in [
+            RemoteError::Failed { answer: Status::invalid_argument("bad agent") },
+            RemoteError::Failed { answer: Status::failed_precondition("not ready") },
+            RemoteError::Failed { answer: Status::permission_denied("denied") },
+            RemoteError::Failed { answer: Status::unimplemented("old daemon") },
+            RemoteError::Failed { answer: Status::already_exists("duplicate") },
+        ] {
+            assert!(is_definitive_refusal(&refusal), "should clean up on {refusal:?}");
+        }
+    }
+
+    struct FakeProgress {
+        op: pb::Operation,
+        origin: crate::ports::Origin,
+        tx: tokio::sync::watch::Sender<pb::Operation>,
+    }
+
+    impl FakeProgress {
+        fn new(op: pb::Operation, origin: crate::ports::Origin) -> Arc<Self> {
+            let (tx, _) = tokio::sync::watch::channel(op.clone());
+            Arc::new(Self { op, origin, tx })
+        }
+    }
+
+    impl crate::ports::ProgressPort for FakeProgress {
+        fn id(&self) -> String {
+            self.op.id.as_ref().map_or_default(|id| id.value.clone())
+        }
+        fn operation(&self) -> pb::Operation {
+            self.op.clone()
+        }
+        fn origin(&self) -> crate::ports::Origin {
+            self.origin.clone()
+        }
+        fn set_step(&self, _key: &str, _state: pb::StepState, _output_tail: Option<String>) {}
+        fn succeed(&self, _result: Option<pb::operation::Result>) {}
+        fn fail(&self, _error: pb::Error) {}
+        fn end_cancelled(&self) {}
+        fn watch(&self) -> tokio::sync::watch::Receiver<pb::Operation> {
+            self.tx.subscribe()
+        }
+    }
+
+    struct FakeOps;
+
+    #[tonic::async_trait]
+    impl crate::ports::DeskOperationsPort for FakeOps {
+        fn existing(
+            &self,
+            _caller: &Caller,
+            _key: Option<&pb::IdempotencyKey>,
+        ) -> Result<Option<pb::Operation>, Status> {
+            Ok(None)
+        }
+        fn progress_of(&self, _caller: &Caller, _id: &str) -> Result<crate::ports::Progress, Status> {
+            Err(Status::not_found("none"))
+        }
+        fn restore(&self, op: pb::Operation, origin: &crate::ports::Origin) -> Option<crate::ports::Progress> {
+            Some(crate::ports::Progress::new(FakeProgress::new(op, origin.clone())))
+        }
+        fn start_steps(
+            &self,
+            _caller: &Caller,
+            kind: pb::OperationKind,
+            target: pb::EntityRef,
+            _steps: &[(String, String)],
+            _cancellable: bool,
+            _key: Option<pb::IdempotencyKey>,
+        ) -> Result<Started, Status> {
+            let op = pb::Operation {
+                id: Some(pb::OperationId { value: "op_1".to_owned() }),
+                kind: kind as i32,
+                target: Some(target),
+                ..pb::Operation::default()
+            };
+            let origin = crate::ports::Origin {
+                owner: "user".to_owned(),
+                scope: None,
+            };
+            Ok(Started::New(crate::ports::Progress::new(FakeProgress::new(op, origin))))
+        }
+    }
+
+    struct NoopGuard;
+    impl crate::ports::DeskGuardPort for NoopGuard {
+        fn check(&self, _caller: &Caller, _call: &humata2_access::Call) -> Result<crate::ports::Checked, Status> {
+            Ok(crate::ports::Checked::Allowed)
+        }
+        fn require(&self, _caller: &Caller, _call: &humata2_access::Call) -> Result<(), Status> {
+            Ok(())
+        }
+        fn end_grants_of(&self, _session: &humata2_access::SessionId) -> Vec<humata2_access::Grant> {
+            Vec::new()
+        }
+        fn channel_decision(
+            &self,
+            _channel: &humata2_access::ChannelId,
+            _capability: humata2_access::Capability,
+        ) -> Option<humata2_access::Decision> {
+            None
+        }
+        fn channel_rules(&self, _channel: &humata2_access::ChannelId) -> Option<humata2_access::ChannelRules> {
+            None
+        }
+        fn policy(&self) -> humata2_access::Policy {
+            humata2_access::Policy::default()
+        }
+    }
+
+    struct NoopIdentities;
+    impl crate::ports::DeskIdentityPort for NoopIdentities {
+        fn revoke(&self, _tab_id: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+    }
+
+    struct NoopTokens;
+    impl crate::ports::DeskTokensPort for NoopTokens {
+        fn env(&self, _tab: &humata2_store::TabRecord) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            Vec::new()
+        }
+    }
+
+    struct NoopInbox;
+    #[tonic::async_trait]
+    impl crate::ports::DeskInboxPort for NoopInbox {
+        async fn ask_read(
+            &self,
+            _caller: &Caller,
+            _asked: humata2_access::AccessRequest,
+            _operation: &str,
+            _run: Option<crate::ports::Run>,
+        ) -> Result<(), Status> {
+            Ok(())
+        }
+        async fn withdraw_pending_of(&self, _session: &str, _reason: pb::WithdrawReason) -> Result<(), Status> {
+            Ok(())
+        }
+        async fn revoked(&self, _id: &str, _at: std::time::SystemTime) -> Result<(), Status> {
+            Ok(())
+        }
+        async fn defer(
+            &self,
+            _caller: &Caller,
+            _asked: humata2_access::AccessRequest,
+            _key: Option<String>,
+            _run: crate::ports::Run,
+        ) -> Status {
+            Status::permission_denied("deferred")
+        }
+    }
+
+    struct NoopTell;
+    #[tonic::async_trait]
+    impl crate::ports::DeskTellPort for NoopTell {
+        async fn session(&self, _session_id: &str, _change: pb::Change, _by: Option<pb::Actor>) {}
+    }
+
+    struct NoopBin;
+    impl crate::ports::DeskTrashPort for NoopBin {
+        fn get(&self) -> Result<Arc<dyn crate::ports::TrashOps>, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+    }
+
+    struct NoopTerminals;
+    impl crate::ports::DeskTerminalPort for NoopTerminals {
+        fn forget_tab(&self, _tab_id: &str) {}
+    }
+
+    struct NoopMigrations;
+    #[tonic::async_trait]
+    impl crate::ports::DeskMigrationsPort for NoopMigrations {
+        fn machine_ready(&self, _machine: &pb::MachineId) -> Result<(), Status> {
+            Ok(())
+        }
+        async fn observe(
+            &self,
+            _thing: pb::MigrateThing,
+            _machine: &pb::MachineId,
+            _host: pb::BuildInfo,
+            _peer: pb::BuildInfo,
+        ) -> Result<(), Status> {
+            Ok(())
+        }
+        fn set_desk_folders(&self, _migrator: Arc<dyn crate::ports::FolderMigrator>) {}
+        async fn resolved(&self, _thing: pb::MigrateThing, _machine: &pb::MachineId) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    struct NoopChannels;
+    #[tonic::async_trait]
+    impl crate::ports::DeskChannelPort for NoopChannels {
+        async fn add_repo_to_channel(
+            &self,
+            _caller: &Caller,
+            _req: pb::AddRepoRequest,
+            _approved: bool,
+        ) -> Result<crate::ports::Gated<pb::Operation>, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+        fn record_added(&self, _owner: &str, _name: &str, _place: &humata2_repo_library::Place) {}
+        fn watch_aliases(&self) {}
+    }
+
+    struct NoopLiveEvents;
+    #[tonic::async_trait]
+    impl crate::ports::LiveEvents for NoopLiveEvents {
+        async fn recv(&mut self) -> Result<pb::Event, tokio::sync::broadcast::error::RecvError> {
+            Err(tokio::sync::broadcast::error::RecvError::Closed)
+        }
+        fn try_recv(&mut self) -> Result<pb::Event, tokio::sync::broadcast::error::TryRecvError> {
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        }
+    }
+
+    struct NoopFeed;
+    impl crate::ports::DeskFeedPort for NoopFeed {
+        fn publish_in(
+            &self,
+            _change: pb::Change,
+            _payload: pb::event::Payload,
+            _scope: crate::ports::Scope,
+            _by: Option<pb::Actor>,
+        ) {
+        }
+        fn subscribe(&self, _after: Option<u64>) -> (u64, crate::ports::Events) {
+            (0, crate::ports::Events::new(Vec::new(), Box::new(NoopLiveEvents)))
+        }
+    }
+
+    struct NoopSessions;
+    #[tonic::async_trait]
+    impl crate::ports::DeskSessionPort for NoopSessions {
+        async fn agent_ready(&self, _agents: &humata2_sessions::Agents, _agent: &str) -> Result<(), Status> {
+            Ok(())
+        }
+        fn agent_enabled(&self, _agents: &humata2_sessions::Agents, _agent: &str) -> Result<(), Status> {
+            Ok(())
+        }
+        fn pick_agent(
+            &self,
+            _agents: &humata2_sessions::Agents,
+            _preferred: &[String],
+        ) -> Result<String, Status> {
+            Ok("claude".to_owned())
+        }
+        fn watch_agent(&self, _session: String) {}
+        fn running_turn(&self, _session: &str, _holder_pid: u32) -> pb::SessionStatus {
+            pb::SessionStatus::Working
+        }
+        fn moving(&self, _session: &str, _to: &str, _operation: &str) -> crate::ports::Moving {
+            crate::ports::Moving::new(Box::new(()))
+        }
+        fn session_follows(
+            &self,
+            _store: &humata2_store::Store,
+            _agents: &humata2_sessions::Agents,
+            _home: &std::path::Path,
+            _channels: &std::path::Path,
+            _session: &str,
+            _from: &std::path::Path,
+            _to: &std::path::Path,
+        ) -> Result<Vec<humata2_revive::FollowStep>, StoreError> {
+            Ok(Vec::new())
+        }
+        async fn run_resume(
+            &self,
+            _by: pb::Actor,
+            _loaded: crate::ports::Loaded,
+            _progress: crate::ports::Progress,
+        ) {
+        }
+    }
+
+    struct ScriptedRemote {
+        outcomes: std::sync::Mutex<std::collections::VecDeque<Result<pb::StartDeskSessionResponse, RemoteError>>>,
+        seen_ids: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedRemote {
+        fn new(outcomes: Vec<Result<pb::StartDeskSessionResponse, RemoteError>>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: std::sync::Mutex::new(outcomes.into()),
+                seen_ids: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[tonic::async_trait]
+    impl crate::ports::DeskRemotePort for ScriptedRemote {
+        fn knows(&self, _machine: &str) -> bool {
+            true
+        }
+        fn machines_up(&self) -> Vec<String> {
+            vec!["box-1".to_owned()]
+        }
+        fn relayed(&self, _machine: &str) -> Result<Arc<dyn crate::ports::RelayedClients>, RelayError> {
+            Err(RelayError::Refused { answer: Status::unimplemented("unused") })
+        }
+        fn require_link(&self, _machine: &str) -> Result<Arc<dyn crate::ports::RelayedClients>, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+        async fn start_desk_on(
+            &self,
+            _machine: &str,
+            id: &str,
+            _req: pb::StartDeskSessionRequest,
+            _channel_folder: Option<&str>,
+            _host: Arc<HostOp>,
+        ) -> Result<pb::StartDeskSessionResponse, RemoteError> {
+            self.seen_ids.lock().unwrap().push(id.to_owned());
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(RemoteError::Failed { answer: Status::internal("exhausted") }))
+        }
+        async fn resume_session_on(
+            &self,
+            _machine: &str,
+            _id: &str,
+            _req: pb::ResumeSessionRequest,
+            _host: Arc<HostOp>,
+        ) -> Result<pb::Operation, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+        async fn wait_up(&self, _machine: &str) -> Result<(), RelayError> {
+            Ok(())
+        }
+        fn watch_links(&self) -> crate::ports::LinkWatch {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            crate::ports::LinkWatch::new(rx)
+        }
+    }
+
+    fn test_svc(dir: &std::path::Path, remote: Arc<dyn crate::ports::DeskRemotePort>) -> (DeskSvc, Arc<humata2_store::Store>) {
+        let store = Arc::new(humata2_store::Store::open(dir).unwrap());
+        let starter = humata2_sessions::Starter {
+            store: store.clone(),
+            layout: humata2_sessions::Layout::new(dir.join("channels")),
+            remote_template: String::new(),
+            agents: humata2_sessions::Agents::builtin(),
+            home: dir.to_path_buf(),
+            revive: humata2_revive::ReviveConfig {
+                holder: PathBuf::new(),
+                logs: dir.join("logs"),
+                scrollback_bytes: 1024,
+                shell: PathBuf::from("/bin/sh"),
+                shell_args: Vec::new(),
+                home: dir.to_path_buf(),
+                resume_timeout: Duration::from_secs(1),
+                settle: Duration::from_secs(1),
+                reports: humata2_revive::RestartReports {
+                    folder: dir.join("restarts"),
+                    version: String::new(),
+                    machine: "ma_host".to_owned(),
+                    os: String::new(),
+                    daemon_log: None,
+                },
+                contain: None,
+                builds: None,
+                versions: None,
+                gate: None,
+            },
+            holders: dir.join("holders"),
+            first_message: humata2_sessions::FirstMessage::default(),
+        };
+        let svc = DeskSvc {
+            guard: Arc::new(NoopGuard),
+            operations: Arc::new(FakeOps),
+            starter,
+            identities: Arc::new(NoopIdentities),
+            tokens: Arc::new(NoopTokens),
+            inbox: Arc::new(NoopInbox),
+            tell: Arc::new(NoopTell),
+            machine: "ma_host".to_owned(),
+            default_agent: "claude".to_owned(),
+            bin: Arc::new(NoopBin),
+            terminals: Arc::new(NoopTerminals),
+            state: dir.to_path_buf(),
+            locks: Arc::default(),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            cleaned: Arc::default(),
+            copied: Arc::default(),
+            remote: Some(remote),
+            migrations: Arc::new(NoopMigrations),
+            channels: Arc::new(NoopChannels),
+            restart: Arc::new(crate::ports::TestRestart::default()),
+            feed: Arc::new(NoopFeed),
+            sessions: Arc::new(NoopSessions),
+        };
+        (svc, store)
+    }
+
+    fn remote_plan(work: RemoteWork) -> Plan {
+        Plan {
+            machine: "box-1".to_owned(),
+            work,
+            kind: Kind::Plain {
+                access: pb::DeskAccess::default(),
+            },
+            title: "Notes".to_owned(),
+            agent: "claude".to_owned(),
+        }
+    }
+
+    /// SMB-051: a transient Unavailable error from the remote start must keep
+    /// the host session row and `Asked` journal so the retry under the same id
+    /// settles the session instead of losing it.
+    #[tokio::test(start_paused = true)]
+    async fn a_transient_remote_start_error_keeps_the_session_and_journal_and_recovers_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = ScriptedRemote::new(vec![
+            Err(RemoteError::Failed {
+                answer: Status::unavailable("link dropped after start"),
+            }),
+            Ok(pb::StartDeskSessionResponse {
+                desk: Some(pb::DeskSession {
+                    folder: Some(pb::DeskFolder {
+                        path: "/remote/desk/notes".to_owned(),
+                        kind: None,
+                    }),
+                    ..pb::DeskSession::default()
+                }),
+                ..pb::StartDeskSessionResponse::default()
+            }),
+        ]);
+        let (svc, store) = test_svc(dir.path(), remote.clone());
+        let caller = Caller::User(humata2_daemon_ports::UserVia::App);
+
+        let err = svc
+            .start_remote(&caller, remote_plan(remote.clone()), pb::StartDeskSessionRequest::default())
+            .await
+            .expect_err("first attempt returned Unavailable");
+        assert_eq!(err.code(), Code::Unavailable);
+
+        // Host row and Asked journal survive the transient failure.
+        let sessions = store.sessions().unwrap();
+        assert_eq!(sessions.len(), 1, "host session row must survive transient RPC error");
+        let id = sessions[0].id.clone();
+        let kept = super::super::remote_asked::read_all(&svc.asked_folder());
+        assert_eq!(kept.len(), 1, "Asked journal must survive transient RPC error");
+
+        // Let the spawned retry task register its timer, then advance paused
+        // time so `ask_again` wakes and settles immediately.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !super::super::remote_asked::read_all(&svc.asked_folder()).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background retry did not finish and drop the Asked journal in time"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let seen = remote.seen_ids.lock().unwrap().clone();
+        assert_eq!(seen, vec![id.clone(), id.clone()], "retry must re-ask under the same session id");
+        let saved = store.session(&id).unwrap().expect("session row exists after retry");
+        assert_eq!(saved.folder, PathBuf::from("/remote/desk/notes"));
+        assert!(
+            super::super::remote_asked::read_all(&svc.asked_folder()).is_empty(),
+            "journal is dropped once the retry succeeds"
+        );
+    }
+
+    /// SMB-051: an explicit pre-start refusal cleans up the host session row
+    /// and drops the `Asked` journal immediately.
+    #[tokio::test]
+    async fn a_definitive_remote_start_refusal_removes_the_session_and_drops_the_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = ScriptedRemote::new(vec![Err(RemoteError::Failed {
+            answer: Status::invalid_argument("unknown agent"),
+        })]);
+        let (svc, store) = test_svc(dir.path(), remote.clone());
+        let caller = Caller::User(humata2_daemon_ports::UserVia::App);
+
+        let err = svc
+            .start_remote(&caller, remote_plan(remote), pb::StartDeskSessionRequest::default())
+            .await
+            .expect_err("definitive refusal returns error");
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(store.sessions().unwrap().is_empty(), "host session row is removed on definitive refusal");
+        assert!(
+            super::super::remote_asked::read_all(&svc.asked_folder()).is_empty(),
+            "Asked journal is dropped on definitive refusal"
+        );
     }
 }

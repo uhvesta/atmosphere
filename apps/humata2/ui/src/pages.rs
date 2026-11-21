@@ -97,7 +97,21 @@ pub fn page(
             |channel| {
                 // The channel's To-do tab is the To-do list, narrowed to it (D874).
                 let todo = || todo_page(ui, state, todo_inputs, look).into_any_element();
-                crate::channel::page(ui, state, channel, channel_filter, &todo, look)
+                let desk_terminal = |session_id: &humata2_clients::model::SessionId, cx: &mut App| {
+                    terminals.body(session_id, 0, 0, None, cx)
+                };
+                crate::channel::page(
+                    ui,
+                    state,
+                    channel,
+                    channel_filter,
+                    &todo,
+                    &desk_terminal,
+                    providers_inputs,
+                    look,
+                    window,
+                    cx,
+                )
             },
         ),
         Route::Session(id) => state
@@ -277,25 +291,27 @@ pub(crate) fn session_header(
         .when(collapsed || terminal_full, |x| {
             x.child(chrome::lights()).child(div().w(px(4.)))
         })
-        // DS-58: the same ‹ Back as every other page's top bar.
+        // DS-58: the same ‹ Back as every other page's top bar, shown only
+        // when there is somewhere to go back to.
         // A true ghost button: no fill, no border, only the ‹.
-        .child({
+        .when(!state.trail.is_empty(), |bar| {
             let back = ui.clone();
-            Button::new("session-back")
-                .ghost()
-                .small()
-                .w(px(24.))
-                .h(px(24.))
-                .p_0()
-                .flex_shrink_0()
-                .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
-                .accessibility_label("Back")
-                .tooltip("Back  ⌘[")
-                .disabled(state.trail.is_empty())
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    back.send(AppAction::Back, cx);
-                })
+            bar.child(
+                Button::new("session-back")
+                    .ghost()
+                    .small()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .p_0()
+                    .flex_shrink_0()
+                    .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
+                    .accessibility_label("Back")
+                    .tooltip("Back  ⌘[")
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        back.send(AppAction::Back, cx);
+                    }),
+            )
         })
         .child(
             col()

@@ -95,6 +95,27 @@ pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -
                 inner.emit(Event::Request(request));
                 return Ok(());
             }
+            if matches!(found.kind, RequestKind::BrowserRead | RequestKind::BrowserWrite) {
+                if matches!(answer, Answer::Always { .. }) {
+                    return Err(DaemonError::Refused {
+                        what: format!("Answering “{}”", found.title),
+                        reason: "browser access is never allowed always".to_owned(),
+                    });
+                }
+                if found.kind == RequestKind::BrowserWrite
+                    && matches!(answer, Answer::AllowFor30Min)
+                {
+                    return Err(DaemonError::Refused {
+                        what: format!("Answering “{}”", found.title),
+                        reason: "browser writes are asked every time and can't be allowed for 30 minutes".to_owned(),
+                    });
+                }
+            } else if matches!(answer, Answer::AllowFor30Min) {
+                return Err(DaemonError::Refused {
+                    what: format!("Answering “{}”", found.title),
+                    reason: "30-minute allow only applies to browser read requests".to_owned(),
+                });
+            }
             found.answer = Some(answer);
             let request = found.clone();
             super::desk::used(inner, &request.session);

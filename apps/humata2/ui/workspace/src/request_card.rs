@@ -11,8 +11,8 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
 use humata2_clients::progress::OpProgress;
 use humata2_clients::model::{
-    Agent, Answer, CopyCard, HolderNote, HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateStep,
-    MigrateStepState, Preview, Request, RequestKind, Status,
+    Agent, Answer, BrowserPreview, CardEffect, CopyCard, HolderNote, HolderSession, HoldersMoved,
+    LineKind, MigrateCard, MigrateStep, MigrateStepState, Preview, Request, RequestKind, Status,
 };
 use humata2_inbox::{InboxAction, MigrateStatus, Offer};
 use gpui_kit::assets::IconName;
@@ -154,9 +154,9 @@ fn preview(request: &Request, look: Look) -> Div {
             };
             col().child(labelled(look, label, value.clone(), false))
         }
-        // A Migrate item is drawn whole by `migrate_card`, and a copy by
-        // `copy_lines`, never through here.
-        Preview::Migrate(_) | Preview::CrossMachineCopy(_) => col(),
+        // A Migrate item is drawn whole by `migrate_card`, a copy by
+        // `copy_lines`, and a browser card by `browser_facts_box`, never here.
+        Preview::Migrate(_) | Preview::CrossMachineCopy(_) | Preview::Browser(_) => col(),
         Preview::Diff(lines) => col().gap(px(1.)).children(lines.iter().map(|line| {
             let color = match line.kind {
                 LineKind::Added => GREEN,
@@ -1076,6 +1076,186 @@ fn answer_button(
         .when(muted, |button| button.text_color(rgb(look.secondary)))
 }
 
+/// Default side-effect rows for a browser request when the daemon didn't attach
+/// explicit `affects` rows (frames `b2` and `b3`).
+fn browser_default_effects(is_write: bool, supports_30m_grant: bool) -> Vec<CardEffect> {
+    if is_write {
+        vec![
+            CardEffect {
+                warn: true,
+                lead: "The action is made as you:".to_owned(),
+                rest: " the page sees your signed-in account, not the agent".to_owned(),
+            },
+            CardEffect {
+                warn: true,
+                lead: "Humata can\u{2019}t tell what the page does next.".to_owned(),
+                rest: " Check the URL and the target".to_owned(),
+            },
+            CardEffect {
+                warn: false,
+                lead: String::new(),
+                rest: "Only this one action: the next click, typed text or page is asked again"
+                    .to_owned(),
+            },
+        ]
+    } else {
+        let mut rows = vec![
+            CardEffect {
+                warn: false,
+                lead: String::new(),
+                rest: "Nothing is clicked, typed or opened: this only reads".to_owned(),
+            },
+            CardEffect {
+                warn: true,
+                lead: "The page is read as you see it, signed in:".to_owned(),
+                rest: " it can hold things only your account can open".to_owned(),
+            },
+        ];
+        if supports_30m_grant {
+            rows.push(CardEffect {
+                warn: true,
+                lead: "Allow 30 min is wider than this tab:".to_owned(),
+                rest: " this session can read any of your tabs, and list them, for 30 minutes. No other session can"
+                    .to_owned(),
+            });
+        }
+        rows
+    }
+}
+
+/// Default "CAN IT BE UNDONE?" text for a browser request when the daemon didn't
+/// send one (frames `b2` and `b3`).
+fn browser_default_undo(is_write: bool, supports_30m_grant: bool) -> &'static str {
+    if is_write {
+        "Not by Humata. What the action does is up to the page."
+    } else if supports_30m_grant {
+        "No. Once the agent has the text, it keeps it. Allow 30 min ends after 30 minutes, or sooner if Humata restarts."
+    } else {
+        "No. Once the agent has the text, it keeps it."
+    }
+}
+
+/// The grey facts box for a browser read or write card (frames `b2` and `b3`).
+/// For a write, the exact URL is highlighted in an amber box and the target
+/// preview is shown prominently.
+fn browser_facts_box(
+    state: &AppState,
+    request: &Request,
+    browser: &BrowserPreview,
+    is_write: bool,
+    agent: &str,
+    look: Look,
+) -> ObservedElement<Stateful<Div>> {
+    let session = state.workspace.session(&request.session);
+    let machine_name = session
+        .and_then(|s| state.workspace.machine(&s.machine))
+        .map_or_else(|| "This Mac".to_owned(), |m| m.name.clone());
+    let from_rest = match session {
+        Some(s) if !agent.is_empty() => format!(" \u{b7} {agent} in {}", s.title),
+        Some(s) => format!(" \u{b7} {}", s.title),
+        None => String::new(),
+    };
+    let fact_row = |label: &'static str, value: AnyElement| {
+        row()
+            .items_start()
+            .child(
+                div()
+                    .w(px(66.))
+                    .flex_shrink_0()
+                    .text_color(rgb(look.secondary))
+                    .child(label),
+            )
+            .child(div().flex_1().min_w_0().child(value))
+    };
+    let mut box_col = col()
+        .id(SharedString::from(format!("facts {}", request.id)))
+        .test_support()
+        .gap(px(4.))
+        .px(px(12.))
+        .py(px(9.))
+        .rounded(px(8.))
+        .bg(rgb(look.fill));
+
+    if is_write {
+        if !browser.action_summary.is_empty() {
+            box_col = box_col.child(fact_row(
+                "Action",
+                div()
+                    .child(rich(&browser.action_summary, ""))
+                    .into_any_element(),
+            ));
+        }
+        if !browser.url.is_empty() {
+            let waiting_border = tone(look, 0xf0b35a, 0xb9812f);
+            let url_box = div()
+                .id(SharedString::from(format!("browser url {}", request.id)))
+                .test_support()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(5.))
+                .bg(rgb(look.attention_bg))
+                .border_1()
+                .border_color(rgb(waiting_border))
+                .font_family("Menlo")
+                .text_size(px(12.))
+                .child(browser.url.clone())
+                .test_text(browser.url.clone());
+            box_col = box_col.child(fact_row("URL", url_box.into_any_element()));
+        }
+        if !browser.target_preview.is_empty() {
+            let target_box = div()
+                .id(SharedString::from(format!("browser target {}", request.id)))
+                .test_support()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(6.))
+                .bg(rgb(look.card))
+                .border_1()
+                .border_color(rgb(look.line))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(12.))
+                .child(browser.target_preview.clone())
+                .test_text(browser.target_preview.clone());
+            box_col = box_col.child(fact_row("Target", target_box.into_any_element()));
+        }
+    } else {
+        if !browser.target_preview.is_empty() {
+            box_col = box_col.child(fact_row(
+                "Tab",
+                div()
+                    .child(rich(&browser.target_preview, ""))
+                    .into_any_element(),
+            ));
+        }
+        if !browser.url.is_empty() {
+            let url_text = text(browser.url.clone())
+                .font_family("Menlo")
+                .text_size(px(12.));
+            box_col = box_col.child(fact_row("URL", url_text.into_any_element()));
+        }
+        if !browser.action_summary.is_empty() {
+            box_col = box_col.child(fact_row(
+                "Reads",
+                text(browser.action_summary.clone()).into_any_element(),
+            ));
+        }
+    }
+
+    box_col = box_col
+        .child(fact_row(
+            "Browser",
+            text("Your browser on This Mac").into_any_element(),
+        ))
+        .child(fact_row(
+            "From",
+            div()
+                .child(rich(&machine_name, &from_rest))
+                .into_any_element(),
+        ));
+
+    box_col
+}
+
 fn decision_card(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -1089,6 +1269,9 @@ fn decision_card(
     let ticked = state.inbox.always.contains(&request.id);
     let on_screen = request.on_screen.is_some();
     let is_question = request.kind == RequestKind::Question || on_screen;
+    let is_browser_read = request.kind == RequestKind::BrowserRead;
+    let is_browser_write = request.kind == RequestKind::BrowserWrite;
+    let is_browser = is_browser_read || is_browser_write;
     let copy = request.copy();
     let rich_card = !request.facts.is_empty() || !request.affects.is_empty();
     let id = request.id.clone();
@@ -1218,6 +1401,63 @@ fn decision_card(
                         )
                     }),
             );
+    } else if is_browser {
+        let mut l = col();
+        let mut r = col();
+        let fallback_preview = BrowserPreview {
+            url: String::new(),
+            action_summary: request.title.clone(),
+            target_preview: String::new(),
+            supports_30m_grant: is_browser_read,
+            action: String::new(),
+            action_key: String::new(),
+            reason: request.reason.clone(),
+        };
+        let browser = request.browser().unwrap_or(&fallback_preview);
+        if !request.facts.is_empty() && !is_browser_write {
+            l = l.child(facts_box(look, request));
+        } else {
+            l = l.child(browser_facts_box(
+                state,
+                request,
+                browser,
+                is_browser_write,
+                &agent,
+                look,
+            ));
+        }
+        let why_text = if !request.reason.is_empty() {
+            request.reason.as_str()
+        } else {
+            browser.reason.as_str()
+        };
+        if !why_text.is_empty() {
+            l = l
+                .child(section(look, "WHY", Some("the agent's reason"), false))
+                .child(text(format!("“{why_text}”")).line_height(relative(1.5)));
+        }
+        l = l.children(working);
+
+        let effects = if request.affects.is_empty() {
+            browser_default_effects(is_browser_write, browser.supports_30m_grant)
+        } else {
+            request.affects.clone()
+        };
+        r = r
+            .child(section(look, "WHAT ELSE IT AFFECTS", Some("worked out by Humata"), true))
+            .children(effects.iter().map(|effect| effect_row(look, effect)));
+
+        let undo = if request.undo_text.is_empty() {
+            browser_default_undo(is_browser_write, browser.supports_30m_grant).to_owned()
+        } else {
+            request.undo_text.clone()
+        };
+        r = r
+            .child(section(look, "CAN IT BE UNDONE?", None, false))
+            .child(text(undo));
+
+        left = l;
+        right = r;
     } else {
         let mut l = col();
         let mut r = col();
@@ -1374,6 +1614,7 @@ fn decision_card(
         && !pending
         && reply.is_none()
         && !is_question
+        && !is_browser
         && !request.dismiss_only
         && !(copy.is_some() && !rich_card);
     let footer = if !waiting {
@@ -1443,6 +1684,52 @@ fn decision_card(
                     false,
                 ))
             })
+    } else if is_browser {
+        // Frames b2 & b3:
+        // - Browser read: Allow once, Allow 30 min (only if supports_30m_grant), Deny.
+        // - Browser write: Allow once, Deny ONLY.
+        // No Ask why, no Always allow box, no rule link.
+        let offers = state.inbox.offers(&request.id);
+        let mut buttons = row().flex_wrap().gap(px(8.)).items_center();
+        for offer in offers {
+            match offer {
+                Offer::Allow => {
+                    buttons = buttons.child(answer_button(
+                        ui,
+                        SharedString::from(format!("allow {}", request.id)),
+                        "Allow once",
+                        InboxAction::Answer(id.clone(), Answer::Approved),
+                        look,
+                        true,
+                        false,
+                    ));
+                }
+                Offer::AllowFor30Min => {
+                    buttons = buttons.child(answer_button(
+                        ui,
+                        SharedString::from(format!("allow 30m {}", request.id)),
+                        "Allow 30 min",
+                        InboxAction::Answer(id.clone(), Answer::AllowFor30Min),
+                        look,
+                        false,
+                        false,
+                    ));
+                }
+                Offer::Deny => {
+                    buttons = buttons.child(answer_button(
+                        ui,
+                        SharedString::from(format!("deny {}", request.id)),
+                        "Deny",
+                        InboxAction::Answer(id.clone(), Answer::Denied { reply: None }),
+                        look,
+                        false,
+                        false,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        buttons
     } else if copy.is_some() && !rich_card {
         row()
             .gap(px(8.))
@@ -1478,7 +1765,35 @@ fn decision_card(
             )
             .when(!request.rule.is_empty(), |r| r.child(tick(ui, request, ticked, look)))
     };
-    let note = rule_note.filter(|_| waiting && !is_question);
+    let note = if is_browser && waiting {
+        if is_browser_write {
+            Some(
+                col()
+                    .items_end()
+                    .text_size(px(12.5))
+                    .text_color(rgb(look.secondary))
+                    .child(text(
+                        "Asked every time: clicks, typing and opening pages can\u{2019}t be allowed ahead",
+                    ))
+                    .child(text("Not part of Allow all")),
+            )
+        } else {
+            let stopped = if agent.is_empty() {
+                "The agent is stopped until you answer".to_owned()
+            } else {
+                format!("{agent} is stopped until you answer")
+            };
+            Some(
+                col()
+                    .items_end()
+                    .text_size(px(12.5))
+                    .text_color(rgb(look.secondary))
+                    .child(text(stopped)),
+            )
+        }
+    } else {
+        rule_note.filter(|_| waiting && !is_question)
+    };
     let reply_link = plain_decision.then(|| {
         link(
             ui,
@@ -1555,9 +1870,39 @@ fn answered_text(answer: Option<&Answer>) -> String {
     match answer {
         None => String::new(),
         Some(Answer::Approved) => "Answered: yes".to_owned(),
+        Some(Answer::AllowFor30Min) => "Answered: allowed for 30 min".to_owned(),
         Some(Answer::Always { .. }) => "Answered: yes, always for this session".to_owned(),
         Some(Answer::Denied { reply: None }) => "Answered: no".to_owned(),
         Some(Answer::Denied { reply: Some(note) }) => format!("Answered: no · {note}"),
         Some(Answer::Replied { text }) => format!("Answered: {text}"),
+    }
+}
+
+#[cfg(test)]
+mod browser_card_tests {
+    use super::*;
+
+    #[core::prelude::v1::test]
+    fn answered_text_formats_allow_for_30_min() {
+        assert_eq!(
+            answered_text(Some(&Answer::AllowFor30Min)),
+            "Answered: allowed for 30 min"
+        );
+    }
+
+    #[core::prelude::v1::test]
+    fn browser_default_effects_distinguish_read_and_write() {
+        let read_30m = browser_default_effects(false, true);
+        assert_eq!(read_30m.len(), 3);
+        assert!(read_30m.iter().any(|e| e.lead.contains("Allow 30 min")));
+
+        let read_once = browser_default_effects(false, false);
+        assert_eq!(read_once.len(), 2);
+        assert!(!read_once.iter().any(|e| e.lead.contains("Allow 30 min")));
+
+        let write = browser_default_effects(true, false);
+        assert_eq!(write.len(), 3);
+        assert!(write[0].warn && write[1].warn && !write[2].warn);
+        assert!(write[1].rest.contains("URL"));
     }
 }

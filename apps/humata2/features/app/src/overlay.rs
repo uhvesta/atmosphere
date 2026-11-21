@@ -29,6 +29,34 @@ pub enum Overlay {
 }
 
 impl AppState {
+    /// Conversation search hits shown in the command palette, paired with their
+    /// index in `self.find.hits`. Excludes hits from archived sessions unless
+    /// the user explicitly opted in (`Include archived` toggle or `archived:`
+    /// prefix), and returns none when a namespace prefix narrows the palette
+    /// away from conversations or while Move asks for a machine.
+    #[must_use]
+    pub fn visible_find_hits(&self) -> Vec<(usize, &humata2_clients::history::SearchHit)> {
+        if self.palette.asking.is_some()
+            || humata2_palette::parse_query(&self.palette.query).filter.is_some()
+        {
+            return Vec::new();
+        }
+        let show_archived = self.palette.shows_archived();
+        self.find
+            .hits
+            .iter()
+            .enumerate()
+            .filter(|(_, hit)| {
+                show_archived
+                    || self.workspace.sessions.is_empty()
+                    || self
+                        .workspace
+                        .session(&hit.session)
+                        .is_some_and(|session| !session.archived)
+            })
+            .collect()
+    }
+
     /// Whether something over the page holds the keyboard, so a terminal
     /// must not take focus from it: an overlay, a session's inline sheet,
     /// a Desk dialog or pop-up, the Add machine dialog, the Humata folder

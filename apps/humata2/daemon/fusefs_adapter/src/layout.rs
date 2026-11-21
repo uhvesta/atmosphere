@@ -340,7 +340,7 @@ impl HumataTreeProjector {
             for sid in &desk.session_ids {
                 if desk_links.insert((desk.desk_id.clone(), sid.clone())) {
                     let alias = format!("{desk_root}/{sid}");
-                    let target = format!("/s/{sid}");
+                    let target = relative_session_target(&alias, sid);
                     builder = builder.symlink(&alias, target).protect_root(&alias);
                 }
             }
@@ -421,45 +421,65 @@ impl HumataTreeProjector {
                 builder = builder.dir(&dir_path).file(&stub_file, stub_bytes);
             }
 
-            // Machine alias: /m/<machine_id>/s/<session_id> -> /s/<session_id>
+            // Machine alias: /m/<machine_id>/s/<session_id> -> ../../../s/<session_id>
             let m_root = format!("/m/{}", sess.machine_id);
             let m_s_dir = format!("{m_root}/s");
             let m_alias = format!("{m_s_dir}/{}", sess.session_id);
+            let m_target = relative_session_target(&m_alias, &sess.session_id);
             builder = builder
                 .dir(&m_root)
                 .protect_root(&m_root)
                 .dir(&m_s_dir)
                 .protect_root(&m_s_dir)
-                .symlink(&m_alias, &s_root)
+                .symlink(&m_alias, m_target)
                 .protect_root(&m_alias);
 
-            // Channel alias: /channels/<channel>/<session_id> -> /s/<session_id>
+            // Channel alias: /channels/<channel>/<session_id> -> ../../s/<session_id>
             if let Some(ch) = &sess.channel {
                 let ch_dir = format!("/channels/{ch}");
                 let ch_alias = format!("{ch_dir}/{}", sess.session_id);
+                let ch_target = relative_session_target(&ch_alias, &sess.session_id);
                 builder = builder
                     .dir(&ch_dir)
                     .protect_root(&ch_dir)
-                    .symlink(&ch_alias, &s_root)
+                    .symlink(&ch_alias, ch_target)
                     .protect_root(&ch_alias);
             }
 
-            // Desk alias: /desks/<desk>/<session_id> -> /s/<session_id>
+            // Desk alias: /desks/<desk>/<session_id> -> ../../s/<session_id>
             if let Some(desk) = &sess.desk
                 && desk_links.insert((desk.clone(), sess.session_id.clone()))
             {
                 let desk_dir = format!("/desks/{desk}");
                 let desk_alias = format!("{desk_dir}/{}", sess.session_id);
+                let desk_target = relative_session_target(&desk_alias, &sess.session_id);
                 builder = builder
                     .dir(&desk_dir)
                     .protect_root(&desk_dir)
-                    .symlink(&desk_alias, &s_root)
+                    .symlink(&desk_alias, desk_target)
                     .protect_root(&desk_alias);
             }
         }
 
         builder.build()
     }
+}
+
+/// Computes a mount-relative symlink target from `alias_path` (e.g.
+/// `/m/<machine>/s/<id>` or `/channels/<ch>/<id>`) to `/s/<session_id>`.
+fn relative_session_target(alias_path: &str, session_id: &str) -> String {
+    let depth = alias_path
+        .trim_matches('/')
+        .split('/')
+        .count()
+        .saturating_sub(1);
+    let mut target = String::new();
+    for _ in 0..depth {
+        target.push_str("../");
+    }
+    target.push_str("s/");
+    target.push_str(session_id);
+    target
 }
 
 /// Live connection status between `humata2_fusefs` and `humatad2`.
@@ -974,9 +994,13 @@ pub fn probe_mount_mode() -> FsMountMode {
             _ => FsMountMode::Degraded,
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         fusefs_linux::probe_mount_mode().mode.into()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        FsMountMode::Degraded
     }
 }
 

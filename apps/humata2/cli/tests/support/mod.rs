@@ -137,6 +137,10 @@ impl FakeDaemon {
             .any(|(path, _)| *path == rpc.path)
     }
 
+    pub fn all_calls(&self) -> Vec<&'static str> {
+        self.calls.borrow().iter().map(|(path, _)| *path).collect()
+    }
+
     pub fn reports(&self) -> Vec<ReportRequest> {
         self.reports.borrow().clone()
     }

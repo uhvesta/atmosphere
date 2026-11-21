@@ -417,3 +417,46 @@ fn the_agents_focus_stands_until_undone_or_the_person_moves() {
     rig.store.send(A::UserWentTo(place("src/mine.rs", 10)), |_| {});
     assert!(rig.state().focus.is_none());
 }
+
+#[test]
+fn a_review_plan_change_delegates_to_parent_and_undo_clears_it() {
+    use humata2_clients::views::PlanView;
+    let mut rig = Rig::following();
+    let plan = PlanView {
+        order: vec![("acme/api".to_owned(), "src/refund.rs".to_owned())],
+        ..PlanView::default()
+    };
+    let change = ReviewChange {
+        undo_id: "u-plan".to_owned(),
+        seq: 1,
+        tool: "review_prepare".to_owned(),
+        summary: "prepared plan".to_owned(),
+        change: Some(ReviewChangeKind::Plan(plan.clone())),
+        highlights: Vec::new(),
+        undid: String::new(),
+        at_unix_ms: 0,
+    };
+    rig.store.send(A::Changed(change), |_| {});
+    rig.store
+        .receive(A::Delegate(Delegate::Plan(Some(plan.clone()))), |_| {});
+    assert_eq!(rig.state().plan, Some(plan));
+
+    rig.store.send(
+        A::Undone {
+            undo_id: "u-plan".to_owned(),
+            result: Ok(ReviewChange {
+                undo_id: String::new(),
+                seq: 2,
+                tool: "undo".to_owned(),
+                summary: "undid".to_owned(),
+                change: None,
+                highlights: Vec::new(),
+                undid: "u-plan".to_owned(),
+                at_unix_ms: 0,
+            }),
+        },
+        |_| {},
+    );
+    rig.store.receive(A::Delegate(Delegate::Plan(None)), |_| {});
+    assert!(rig.state().plan.is_none());
+}

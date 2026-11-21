@@ -1,0 +1,27 @@
+agent: claude
+cli: 2.1.329
+script: bash
+label: after_answer
+expect: none
+cols: 200
+rows: 40
+---
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/screenparse-corpus-0100/claude/bash/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and prompt injection before executing, runs the ones it assesses as lower-risk, and
+▎ blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ Use your shell tool to run exactly this command and nothing else: echo screenparse > out.txt
+  ⎿  Not logged in · Please run /login
+
+❯ Please run that exact shell command now: echo screenparse > out.txt
+  ⎿  Not logged in · Please run /login
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Once fixed, resend your message
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)                                                                                                                                      Not logged in · run /login

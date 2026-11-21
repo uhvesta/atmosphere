@@ -1011,6 +1011,10 @@ impl ChannelSvc {
                         intent.channel,
                         error.message()
                     );
+                    // SMB-065: resume the agents the rename stopped even when
+                    // recovery couldn't finish the move, so they don't stay
+                    // stopped until a later start succeeds.
+                    self.resume_all(&intent.resume);
                     return;
                 }
             }

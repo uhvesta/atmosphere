@@ -85,18 +85,41 @@ pub fn back(send: &Send, state: &TodoState, session: &str, look: Look) -> Option
                     .test_support(),
             )
             .child(
-                div()
+                row()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
+                    .gap(px(4.))
                     .text_size(px(12.))
                     .text_color(rgb(look.secondary))
-                    .child(format!(
-                        "{}{}",
-                        e.todo.key,
-                        e.todo.channel.as_ref().map_or(String::new(), |c| format!(" · {c}"))
-                    )),
+                    .child(div().flex_shrink_0().child(e.todo.key.clone()))
+                    .children(e.todo.channel.as_deref().map(|channel_id| {
+                        let name = state.channel_name(channel_id).to_owned();
+                        let cid = channel_id.to_owned();
+                        let send = send.clone();
+                        row()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .child(div().flex_shrink_0().child("·"))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("todo-panel-channel-{}", e.todo.key)))
+                                    .role(Role::Link)
+                                    .aria_label(format!("Open channel {name}"))
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .px(px(4.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(move |x| x.bg(rgb(look.fill)).text_color(rgb(look.text)))
+                                    .child(name)
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        send(A::OpenChannel(cid.clone()), cx);
+                                    })
+                                    .test_support(),
+                            )
+                    })),
             ),
     )
 }

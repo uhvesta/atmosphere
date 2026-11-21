@@ -54,6 +54,64 @@ pub(crate) const LOGIN_HEADER: &str = "humata-cli-login";
 /// The gRPC metadata key a script token travels in.
 pub(crate) const SCRIPT_HEADER: &str = "humata-script-token";
 
+/// The gRPC metadata key the local native messaging browser host sends.
+pub(crate) const BROWSER_HOST_HEADER: &str = "humata-browser-host-token";
+
+/// The one gRPC method `BrowserHostCaller` is authorized to call.
+pub(crate) const CONNECT_BROWSER_HOST_PATH: &str =
+    "/humata.v1.BrowserBridgeService/ConnectBrowserHost";
+
+/// Humatad-local marker inserted by [`Authenticate`] when a call carries a
+/// valid `humata-browser-host-token` from the same UID outside every session
+/// targeting `ConnectBrowserHost`. Kept local to `humatad` so `daemon/ports`
+/// stays unchanged.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BrowserHostCaller;
+
+/// True when `Authenticate` verified this request as the local browser host.
+pub(crate) fn is_browser_host<T>(request: &Request<T>) -> bool {
+    request.extensions().get::<BrowserHostCaller>().is_some()
+}
+
+/// Ensures `<state>/browser-host.token` exists with mode `0o600` and returns
+/// its token string.
+pub(crate) fn ensure_browser_host_token(state: &Path) -> Result<String, DaemonError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let path = state.join(crate::browser_host::TOKEN_FILE);
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            return Ok(trimmed.to_owned());
+        }
+    }
+    let (token, _) = new_token();
+    let tmp = state.join(format!(
+        ".{}.{}.tmp",
+        crate::browser_host::TOKEN_FILE,
+        std::process::id()
+    ));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    })();
+    if let Err(source) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(DaemonError::BrowserHostToken { path, source });
+    }
+    Ok(token)
+}
+
 /// A token's random bytes: 32 hex characters.
 const TOKEN_BYTES: usize = 16;
 
@@ -237,9 +295,11 @@ const OPEN_TO_ANYONE: [(&str, &str); 5] = [
 /// still open on whether even these stay).
 ///
 /// Nothing that reads contents is here: conversations, turns, search,
-/// diffs, comments, Inbox requests, audit, access rules, settings, files
+/// diffs, comments, Inbox requests, audit, access rules, files
 /// and history all need `humata login`, as do every mutation, start, stop,
-/// approval and anything destructive or privileged.
+/// approval and anything destructive or privileged. Non-secret settings
+/// reads (`GetSettings`, `GetChannelSettings`) are included so external
+/// terminals can inspect settings without logging in first (SETTINGSFIX).
 const LOCAL_READ_ONLY: &[(&str, &str)] = &[
     (pb::daemon_service_server::SERVICE_NAME, "GetServerInfo"),
     (pb::channel_service_server::SERVICE_NAME, "ListChannels"),
@@ -248,6 +308,8 @@ const LOCAL_READ_ONLY: &[(&str, &str)] = &[
     (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
     (pb::agent_service_server::SERVICE_NAME, "ListAgents"),
     (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
+    (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
+    (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
 ];
 
 fn route_of(path: &str) -> Option<(&str, &str)> {
@@ -689,6 +751,8 @@ pub(crate) struct Authenticate {
     /// Admin mode: a call with no credential is the user. Test daemons
     /// only; release builds pass `None`.
     admin: Option<Admin>,
+    /// SHA-256 hex digest of `<state>/browser-host.token` for `ConnectBrowserHost`.
+    browser_host_token_hash: Option<String>,
 }
 
 pub use humata2_daemon_ports::Admin;
@@ -711,7 +775,15 @@ impl Authenticate {
             role,
             relay: None,
             admin: None,
+            browser_host_token_hash: None,
         }
+    }
+
+    /// Authorizes `ConnectBrowserHost` for same-UID callers outside every
+    /// session presenting `token` in `humata-browser-host-token`.
+    pub(crate) fn with_browser_host_token(mut self, token: &str) -> Self {
+        self.browser_host_token_hash = Some(digest(token));
+        self
     }
 
     /// Takes a call with no credential from `admin` for the user, as a test
@@ -857,7 +929,7 @@ impl Authenticate {
                 .get::<MethodPath>()
                 .map(|path| path.0.clone())
                 .unwrap_or_default();
-            let carries = [TOKEN_HEADER, LOGIN_HEADER, SCRIPT_HEADER]
+            let carries = [TOKEN_HEADER, LOGIN_HEADER, SCRIPT_HEADER, BROWSER_HOST_HEADER]
                 .iter()
                 .any(|header| request.metadata().contains_key(*header));
             if relay
@@ -868,6 +940,35 @@ impl Authenticate {
                 request.extensions_mut().insert(Caller::User(UserVia::Host));
                 return Ok(request);
             }
+        }
+        // BROWSER: native messaging host auth (same UID, outside every session,
+        // valid token, ConnectBrowserHost only).
+        if let Some(value) = request.metadata().get(BROWSER_HOST_HEADER) {
+            let method = request
+                .extensions()
+                .get::<MethodPath>()
+                .map(|path| path.0.as_str())
+                .unwrap_or_default();
+            if method != CONNECT_BROWSER_HOST_PATH {
+                return Err(Status::permission_denied(
+                    "the browser host token is only valid for ConnectBrowserHost",
+                ));
+            }
+            if !same_uid || self.in_a_session(pid) {
+                return Err(Status::permission_denied(
+                    "the browser host must run as the same user outside every Humata session",
+                ));
+            }
+            let valid = value
+                .to_str()
+                .ok()
+                .zip(self.browser_host_token_hash.as_deref())
+                .is_some_and(|(presented, expected)| digest(presented) == expected);
+            if !valid {
+                return Err(status::unauthenticated());
+            }
+            request.extensions_mut().insert(BrowserHostCaller);
+            return Ok(request);
         }
         let open = request.extensions().get::<OpenToAnyone>().is_some();
         let local_read_only = request.extensions().get::<LocalReadOnlyAllowed>().is_some();
@@ -1456,6 +1557,8 @@ mod tests {
             (pb::session_service_server::SERVICE_NAME, "ListSessions"),
             (pb::machine_service_server::SERVICE_NAME, "ListMachines"),
             (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
+            (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
+            (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
         ] {
             assert!(
                 is_local_read_only_route(allowed_route),
@@ -1467,7 +1570,8 @@ mod tests {
             (pb::session_service_server::SERVICE_NAME, "ReadConversation"),
             (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
             (pb::board_service_server::SERVICE_NAME, "ListItems"),
-            (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
+            (pb::settings_service_server::SERVICE_NAME, "UpdateSettings"),
+            (pb::settings_service_server::SERVICE_NAME, "UpdateChannelSettings"),
             (pb::channel_service_server::SERVICE_NAME, "CreateChannel"),
             (pb::session_service_server::SERVICE_NAME, "StartSession"),
             (pb::session_service_server::SERVICE_NAME, "DeleteSession"),
@@ -1483,6 +1587,59 @@ mod tests {
                 !is_local_read_only_route(gated_route),
                 "expected gated: {gated_route:?}"
             );
+        }
+    }
+
+    #[test]
+    fn external_same_uid_cli_can_read_settings_without_login_but_cannot_update_them() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
+
+        for path in [
+            "/humata.v1.SettingsService/GetSettings",
+            "/humata.v1.SettingsService/GetChannelSettings",
+        ] {
+            let http_req = mark_open(
+                http::Request::builder()
+                    .uri(path)
+                    .body(Body::default())
+                    .unwrap(),
+            );
+            assert!(
+                http_req.extensions().get::<LocalReadOnlyAllowed>().is_some(),
+                "expected LocalReadOnlyAllowed on {path}"
+            );
+            let mut grpc_req = Request::new(());
+            grpc_req.extensions_mut().insert(LocalReadOnlyAllowed);
+            let allowed = rig
+                .authenticate
+                .authenticate_with_uid(grpc_req, Some(41), false, true)
+                .unwrap();
+            assert!(matches!(
+                caller(&allowed).unwrap(),
+                Caller::User(UserVia::LocalReadOnly { on_host: true })
+            ));
+        }
+
+        for path in [
+            "/humata.v1.SettingsService/UpdateSettings",
+            "/humata.v1.SettingsService/UpdateChannelSettings",
+        ] {
+            let http_req = mark_open(
+                http::Request::builder()
+                    .uri(path)
+                    .body(Body::default())
+                    .unwrap(),
+            );
+            assert!(
+                http_req.extensions().get::<LocalReadOnlyAllowed>().is_none(),
+                "expected no LocalReadOnlyAllowed on {path}"
+            );
+            let refused = rig
+                .authenticate
+                .authenticate_with_uid(Request::new(()), Some(41), false, true)
+                .unwrap_err();
+            assert_eq!(refused.code(), tonic::Code::Unauthenticated);
         }
     }
 }

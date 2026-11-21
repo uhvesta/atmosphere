@@ -123,7 +123,7 @@ pub(crate) fn header_text(state: &TodoState) -> String {
         return "no items".to_owned();
     }
     match &state.view.filter.channel {
-        Some(ChannelPick::Channel(name)) => format!("{open} open in {name}"),
+        Some(ChannelPick::Channel(id)) => format!("{open} open in {}", state.channel_name(id)),
         Some(ChannelPick::NoChannel) => format!("{open} open with no channel"),
         None => {
             let unit = if channels == 1 { "channel" } else { "channels" };
@@ -148,8 +148,8 @@ pub(crate) fn preview_line(state: &TodoState) -> Option<String> {
 /// What the quick-add field asks for.
 pub(crate) fn add_placeholder(state: &TodoState) -> String {
     match &state.view.filter.channel {
-        Some(ChannelPick::Channel(name)) => {
-            format!("Add an item to {name}… try “fix login redirect fri #bug”")
+        Some(ChannelPick::Channel(id)) => {
+            format!("Add an item to {}… try “fix login redirect fri #bug”", state.channel_name(id))
         }
         _ => "Add an item… try “fix login redirect fri #bug”".to_owned(),
     }
@@ -279,6 +279,16 @@ pub(crate) fn row_click_action(key: &str, is_open: bool, shift: bool, toggle: bo
     } else {
         A::Open(key.to_owned())
     }
+}
+
+/// What clicking a linked session chip on a To-do row or drawer dispatches.
+pub(crate) fn session_link_action(session_id: &str) -> A {
+    A::OpenSession(session_id.to_owned())
+}
+
+/// What clicking a linked channel tag/name on a To-do row or drawer dispatches.
+pub(crate) fn channel_link_action(channel_id: Option<&str>) -> Option<A> {
+    channel_id.map(|id| A::OpenChannel(id.to_owned()))
 }
 
 /// Fields on an open item that are still unset, for subtle drawer highlights.
@@ -497,13 +507,34 @@ pub(crate) fn ask_rows(todo: &Todo, ask: &Ask) -> Vec<AskRow> {
     rows
 }
 
-/// What the "Ask why" button says: an ended session can't be asked.
-pub(crate) fn ask_why_label(todo: &Todo) -> &'static str {
-    if todo.ask_detail.session_ended {
-        "Resume the session to ask why"
+/// What the inline "Why?" toggle button says (NOTIFY2, Fable ruling 4).
+pub(crate) fn ask_why_label(open: bool) -> &'static str {
+    if open { "Hide why" } else { "Why?" }
+}
+
+/// The inline explanation shown when "Why?" is expanded on a To-do ask.
+pub(crate) fn ask_why_body(ask: &Ask) -> &str {
+    let reason = ask.reason.trim();
+    if reason.is_empty() {
+        "No reason was given."
     } else {
-        "Ask why"
+        reason
     }
+}
+
+/// "<agent> is waiting on this" when a session linked to `todo` is blocked
+/// waiting on the ask (NOTIFY2).
+pub(crate) fn ask_waiting_note(todo: &Todo, ask: &Ask) -> Option<String> {
+    let blocked = todo
+        .session_signals
+        .iter()
+        .any(|sig| matches!(sig.status.as_str(), "needs_you" | "waiting" | "blocked"));
+    if !blocked {
+        return None;
+    }
+    let agent = ask.by.split(" in ").next().unwrap_or(ask.by.as_str()).trim();
+    let who = if agent.is_empty() { "Agent" } else { agent };
+    Some(format!("{who} is waiting on this"))
 }
 
 /// Rows shown at first in a group other than Next; the rest wait behind
@@ -563,7 +594,9 @@ pub(crate) fn filter_count_text(state: &TodoState) -> String {
         })
         .count();
     match channel {
-        Some(ChannelPick::Channel(c)) => format!("{shown} of {of} items in {c}"),
+        Some(ChannelPick::Channel(id)) => {
+            format!("{shown} of {of} items in {}", state.channel_name(&id))
+        }
         _ => format!("{shown} of {of} items"),
     }
 }
@@ -942,7 +975,7 @@ pub fn page(
         })
         .child(header(send, state, inputs, look))
         .child(channel_bar(send, state, look))
-        .children(active_filter_chips_bar(send, state, look))
+        .children(active_filter_chips_bar(send, state, sessions, look))
         .child(
             row()
                 .flex_1()
@@ -1071,7 +1104,12 @@ fn sort_popover(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) -> 
         .test_support()
 }
 
-fn active_filter_chips_bar(send: &Send, state: &TodoState, look: Look) -> Option<impl IntoElement> {
+fn active_filter_chips_bar(
+    send: &Send,
+    state: &TodoState,
+    sessions: Sessions<'_>,
+    look: Look,
+) -> Option<impl IntoElement> {
     let chips = state.view.filter.active_chips();
     if chips.is_empty() {
         return None;
@@ -1085,7 +1123,11 @@ fn active_filter_chips_bar(send: &Send, state: &TodoState, look: Look) -> Option
             .px(px(20.))
             .pb(px(6.))
             .children(chips.into_iter().enumerate().map(|(i, chip)| {
-                let label = format!("{} ×", chip.label());
+                let chip_text = chip.label_with(
+                    |id| state.channel_name(id),
+                    |id| sessions(id).map(|s| s.name),
+                );
+                let label = format!("{chip_text} ×");
                 clickable(
                     send,
                     SharedString::from(format!("todo-filter-chip-{i}")),
@@ -1103,7 +1145,7 @@ fn bulk_action_bar(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) 
     let count = state.selected.len();
     let ch_toggle = inputs.bulk_channel_open.clone();
     let ch_open = inputs.bulk_channel_open.get();
-    let channels = state.channels();
+    let channels = state.all_channels();
     col()
         .id("todo-bulk-bar")
         .flex_shrink_0()
@@ -1157,10 +1199,10 @@ fn bulk_action_bar(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) 
                 .children(channels.into_iter().map(|ch| {
                     let send = send.clone();
                     let close = close.clone();
-                    let label = format!("# {ch}");
-                    let ch_val = ch.clone();
+                    let label = format!("# {}", ch.name);
+                    let ch_id = ch.id;
                     div()
-                        .id(SharedString::from(format!("todo-bulk-ch-{ch}")))
+                        .id(SharedString::from(format!("todo-bulk-ch-{ch_id}")))
                         .role(Role::Button)
                         .aria_label(label.clone())
                         .cursor_pointer()
@@ -1173,7 +1215,7 @@ fn bulk_action_bar(send: &Send, state: &TodoState, inputs: &Inputs, look: Look) 
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             close.set(false);
-                            send(A::BulkMoveChannel(Some(ch_val.clone())), cx);
+                            send(A::BulkMoveChannel(Some(ch_id.clone())), cx);
                             window.refresh();
                         })
                         .test_support()
@@ -1278,14 +1320,22 @@ fn channel_bar(send: &Send, state: &TodoState, look: Look) -> Div {
             A::SetFilter(ViewFilter { channel: None, ..filter.clone() }),
         ))
         .children(state.channel_counts().into_iter().map(|(channel, n)| {
-            let (name, pick) = match &channel {
-                Some(c) => (c.clone(), ChannelPick::Channel(c.clone())),
-                None => ("No channel".to_owned(), ChannelPick::NoChannel),
+            let (chip_id, label, pick) = match &channel {
+                Some(id) => (
+                    format!("todo-ch-{id}"),
+                    format!("{} {n}", state.channel_name(id)),
+                    ChannelPick::Channel(id.clone()),
+                ),
+                None => (
+                    "todo-ch-No channel".to_owned(),
+                    format!("No channel {n}"),
+                    ChannelPick::NoChannel,
+                ),
             };
             let on = filter.channel.as_ref() == Some(&pick);
             chip(
-                format!("todo-ch-{name}"),
-                format!("{name} {n}"),
+                chip_id,
+                label,
                 on,
                 A::SetFilter(ViewFilter { channel: Some(pick), ..filter.clone() }),
             )
@@ -1414,7 +1464,7 @@ fn quick_add(state: &TodoState, inputs: &Inputs, look: Look) -> Div {
                     )
                 }))
                 .children(d.tags.iter().map(|t| tag(t.clone(), look)))
-                .children(d.channel.as_ref().map(|c| tag(format!("# {c}"), look)))
+                .children(d.channel.as_ref().map(|c| tag(format!("# {}", state.channel_name(c)), look)))
                 .children(d.effort.map(|e| tag(effort_letter(e), look)))
                 .children(d.impact.map(|i| tag(impact_word(i), look)))
                 .child(div().flex_1())
@@ -1691,18 +1741,30 @@ fn item_row(
                     rgb(look.tertiary)
                 };
                 let nudge = idle_nudge(sig);
+                let sig_send = send.clone();
+                let sig_action = session_link_action(&sig.session);
                 row()
                     .gap(px(6.))
                     .child(
                         row()
+                            .id(SharedString::from(format!("todo-row-signal-{key}-{idx}")))
+                            .role(Role::Link)
+                            .aria_label(format!("Open session {}", sig.label))
                             .gap(px(5.))
                             .px(px(6.))
                             .py(px(1.))
                             .rounded(px(5.))
                             .bg(rgb(look.fill))
                             .text_size(px(11.5))
+                            .cursor_pointer()
+                            .hover(move |x| x.bg(rgb(look.line)))
                             .child(div().size(px(6.)).rounded_full().bg(dot_color))
-                            .child(sig.label.clone()),
+                            .child(sig.label.clone())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                sig_send(sig_action.clone(), cx);
+                            })
+                            .test_support(),
                     )
                     .children(nudge.map(|msg| {
                         row()
@@ -1744,8 +1806,16 @@ fn item_row(
             t.sessions
                 .iter()
                 .filter(|_| !t.suggested)
-                .filter_map(|s| sessions(s))
-                .map(|chip| session_chip(chip, look)),
+                .filter_map(|s| sessions(s).map(|chip| (s, chip)))
+                .map(|(s, chip)| {
+                    session_chip(
+                        send,
+                        SharedString::from(format!("todo-row-session-{key}-{s}")),
+                        s,
+                        chip,
+                        look,
+                    )
+                }),
         )
         .children(signals_ui)
         .children(t.watched_prs.iter().map(|pr| {
@@ -1786,7 +1856,35 @@ fn item_row(
                     },
                 ),
             )
-            .child(small(t.channel.clone().unwrap_or_else(|| "No channel".to_owned()), look).w(px(130.)))
+            .child(match (t.channel.as_deref(), channel_link_action(t.channel.as_deref())) {
+                (Some(channel_id), Some(action)) => {
+                    let name = state.channel_name(channel_id).to_owned();
+                    let ch_send = send.clone();
+                    div()
+                        .w(px(130.))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("todo-row-channel-{key}")))
+                                .role(Role::Link)
+                                .aria_label(format!("Open channel {name}"))
+                                .px(px(4.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .text_size(px(12.))
+                                .text_color(rgb(look.secondary))
+                                .cursor_pointer()
+                                .hover(move |x| x.bg(rgb(look.fill)).text_color(rgb(look.text)))
+                                .child(name)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    ch_send(action.clone(), cx);
+                                })
+                                .test_support(),
+                        )
+                        .into_any_element()
+                }
+                _ => small("No channel", look).w(px(130.)).into_any_element(),
+            })
             .child(small(t.key.clone(), look).w(px(52.)).text_right())
     });
     let actions = if t.suggested {
@@ -1858,16 +1956,36 @@ fn item_row(
         }))
 }
 
-fn session_chip(chip: SessionChip, look: Look) -> Div {
+fn session_chip(
+    send: &Send,
+    id: impl Into<ElementId>,
+    session_id: &str,
+    chip: SessionChip,
+    look: Look,
+) -> AnyElement {
+    let send = send.clone();
+    let action = session_link_action(session_id);
+    let label = format!("Open session {}", chip.name);
     row()
+        .id(id)
+        .role(Role::Link)
+        .aria_label(label)
         .gap(px(6.))
         .px(px(8.))
         .py(px(1.))
         .rounded(px(6.))
         .bg(rgb(look.fill))
         .text_size(px(12.))
+        .cursor_pointer()
+        .hover(move |x| x.bg(rgb(look.line)))
         .child(div().size(px(8.)).rounded_full().bg(rgb(chip.dot)))
         .child(chip.name)
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            send(action.clone(), cx);
+        })
+        .test_support()
+        .into_any_element()
 }
 
 fn closed_note(t: &Todo) -> String {
@@ -2258,21 +2376,56 @@ pub(crate) fn drawer(
         }))
         .children((!narrow).then(|| checkpoint_bar(send, &key, t, look)))
         .children((!narrow).then(|| {
-            field("Channel", div().child(t.channel.as_ref().map_or("No channel".to_owned(), |c| format!("# {c}"))))
+            field(
+                "Channel",
+                div().child(match (t.channel.as_deref(), channel_link_action(t.channel.as_deref())) {
+                    (Some(channel_id), Some(action)) => {
+                        let name = format!("# {}", state.channel_name(channel_id));
+                        let ch_send = send.clone();
+                        div()
+                            .id(SharedString::from(format!("todo-drawer-channel-{key}")))
+                            .role(Role::Link)
+                            .aria_label(format!("Open channel {}", state.channel_name(channel_id)))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .hover(move |x| x.bg(rgb(look.fill)).text_color(rgb(look.text)))
+                            .child(name)
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                ch_send(action.clone(), cx);
+                            })
+                            .test_support()
+                            .into_any_element()
+                    }
+                    _ => div().child("No channel").into_any_element(),
+                }),
+            )
         }))
         .children((!narrow).then(|| field(
             "Sessions",
-            row().gap(px(6.)).flex_wrap().children(t.sessions.iter().map(|s| match sessions(s) {
-                Some(chip) => row()
-                    .gap(px(6.))
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded(px(6.))
-                    .bg(rgb(look.fill))
-                    .text_size(px(12.))
-                    .child(div().size(px(8.)).rounded_full().bg(rgb(chip.dot)))
-                    .child(chip.name),
-                None => tag(s.clone(), look),
+            row().gap(px(6.)).flex_wrap().children(t.sessions.iter().map(|s| {
+                let id = SharedString::from(format!("todo-drawer-session-{key}-{s}"));
+                match sessions(s) {
+                    Some(chip) => session_chip(send, id, s, chip, look),
+                    None => {
+                        let sess_send = send.clone();
+                        let action = session_link_action(s);
+                        tag(s.clone(), look)
+                            .id(id)
+                            .role(Role::Link)
+                            .aria_label(format!("Open session {s}"))
+                            .cursor_pointer()
+                            .hover(move |x| x.bg(rgb(look.line)))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                sess_send(action.clone(), cx);
+                            })
+                            .test_support()
+                            .into_any_element()
+                    }
+                }
             })),
         )))
         .child(field_hint("Need", need_seg))
@@ -3682,74 +3835,91 @@ fn ask_card(
                 .test_support()
                 .into_any_element()
         }
-        AskKind::Close | AskKind::Edit { .. } | AskKind::Add => col()
-            .mt(px(6.))
-            .p(px(12.))
-            .gap(px(8.))
-            .rounded(px(10.))
-            .bg(amber_soft(look))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(ask_question(t, ask)))
-            .child(div().text_color(tone(look, 0x5c4a2a, 0xe0cfa8)).child(ask.reason.clone()))
-            .children(
-                matches!(ask.kind, AskKind::Close)
-                    .then(|| close_readiness_text(t))
-                    .flatten()
-                    .map(|summary| small(summary, look)),
-            )
-            .child(col().p(px(8.)).rounded(px(8.)).bg(rgb(look.card)).children(
-                ask_rows(t, ask).into_iter().map(|r| {
-                    let body = if r.label == "Evidence" {
-                        let mut line = row().flex_wrap().gap(px(4.));
-                        for (i, (text, action)) in evidence_links(t).into_iter().enumerate() {
-                            if i > 0 {
-                                line = line.child(muted("·", look));
+        AskKind::Close | AskKind::Edit { .. } | AskKind::Add => {
+            let why_open = state.expanded_why.contains(ask_id);
+            let waiting = ask_waiting_note(t, ask);
+            col()
+                .mt(px(6.))
+                .p(px(12.))
+                .gap(px(8.))
+                .rounded(px(10.))
+                .bg(amber_soft(look))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(ask_question(t, ask)))
+                .children(waiting.map(|note| {
+                    div()
+                        .id("todo-ask-waiting")
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tone(look, 0x7a4f00, 0xf2c97d))
+                        .child(note)
+                }))
+                .children(why_open.then(|| {
+                    div()
+                        .id("todo-ask-why-body")
+                        .p(px(8.))
+                        .rounded(px(8.))
+                        .bg(rgb(look.card))
+                        .text_color(tone(look, 0x5c4a2a, 0xe0cfa8))
+                        .child(ask_why_body(ask).to_owned())
+                        .test_support()
+                }))
+                .children(
+                    matches!(ask.kind, AskKind::Close)
+                        .then(|| close_readiness_text(t))
+                        .flatten()
+                        .map(|summary| small(summary, look)),
+                )
+                .child(col().p(px(8.)).rounded(px(8.)).bg(rgb(look.card)).children(
+                    ask_rows(t, ask).into_iter().map(|r| {
+                        let body = if r.label == "Evidence" {
+                            let mut line = row().flex_wrap().gap(px(4.));
+                            for (i, (text, action)) in evidence_links(t).into_iter().enumerate() {
+                                if i > 0 {
+                                    line = line.child(muted("·", look));
+                                }
+                                line = match action {
+                                    Some(act) => line.child(link(
+                                        &opens_evidence(send),
+                                        SharedString::from(format!("todo-evidence-{i}")),
+                                        text,
+                                        act,
+                                        look,
+                                    )),
+                                    None => line.child(div().child(text.to_owned())),
+                                };
                             }
-                            line = match action {
-                                Some(act) => line.child(link(
-                                    &opens_evidence(send),
-                                    SharedString::from(format!("todo-evidence-{i}")),
-                                    text,
-                                    act,
-                                    look,
-                                )),
-                                None => line.child(div().child(text.to_owned())),
-                            };
-                        }
-                        line.into_any_element()
-                    } else {
-                        div()
-                            .when(r.link, |d| d.text_color(rgb(look.accent)))
-                            .child(r.text)
-                            .into_any_element()
-                    };
-                    row()
-                        .items_start()
-                        .child(small(r.label, look).w(px(74.)).flex_shrink_0())
-                        .child(div().flex_1().min_w_0().child(body))
-                }),
-            ))
-            .child(
-                row()
-                    .gap(px(8.))
-                    .child(primary(send, "todo-yes", "Yes", A::Answer(ask_id.to_owned(), true), look))
-                    .child(quiet(send, "todo-no", "No", A::Answer(ask_id.to_owned(), false), look))
-                    .child(div().flex_1())
-                    .child(quiet(
-                        send,
-                        "todo-ask-why",
-                        ask_why_label(t),
-                        if t.ask_detail.session_ended {
-                            A::OpenSession(session.clone().unwrap_or_default())
+                            line.into_any_element()
                         } else {
-                            A::AskWhy(ask_id.to_owned())
-                        },
-                        look,
-                    ))
-                    .children(session.map(|s| {
-                        quiet(send, "todo-open-session", "Open session", A::OpenSession(s), look)
-                    })),
-            )
-            .into_any_element(),
+                            div()
+                                .when(r.link, |d| d.text_color(rgb(look.accent)))
+                                .child(r.text)
+                                .into_any_element()
+                        };
+                        row()
+                            .items_start()
+                            .child(small(r.label, look).w(px(74.)).flex_shrink_0())
+                            .child(div().flex_1().min_w_0().child(body))
+                    }),
+                ))
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(primary(send, "todo-yes", "Yes", A::Answer(ask_id.to_owned(), true), look))
+                        .child(quiet(send, "todo-no", "No", A::Answer(ask_id.to_owned(), false), look))
+                        .child(div().flex_1())
+                        .child(quiet(
+                            send,
+                            "todo-ask-why",
+                            ask_why_label(why_open),
+                            A::AskWhy(ask_id.to_owned()),
+                            look,
+                        ))
+                        .children(session.map(|s| {
+                            quiet(send, "todo-open-session", "Open session", A::OpenSession(s), look)
+                        })),
+                )
+                .into_any_element()
+        }
     }
 }
 
@@ -4006,11 +4176,32 @@ mod tests {
     }
 
     #[test]
-    fn an_ended_session_cannot_be_asked_why() {
-        let s = state();
-        let ended = s.items.iter().map(|e| &e.todo).find(|t| t.ask_detail.session_ended).expect("ended session");
-        let live = s.items.iter().map(|e| &e.todo).find(|t| t.ask.is_some() && !t.ask_detail.session_ended).expect("live");
-        assert_ne!(ask_why_label(ended), ask_why_label(live));
+    fn ask_why_toggles_inline_and_waiting_note_names_blocked_agent() {
+        assert_eq!(ask_why_label(false), "Why?");
+        assert_eq!(ask_why_label(true), "Hide why");
+
+        let ask = Ask {
+            kind: AskKind::Close,
+            by: "claude in Ledger entries".to_owned(),
+            reason: "All 3 commits merged and tests pass.".to_owned(),
+        };
+        assert_eq!(ask_why_body(&ask), "All 3 commits merged and tests pass.");
+        let empty = Ask { reason: "   ".to_owned(), ..ask.clone() };
+        assert_eq!(ask_why_body(&empty), "No reason was given.");
+
+        let mut t = Todo::new("PAY-9", "Close me", Day::from_ymd(2026, 11, 19).unwrap());
+        assert_eq!(ask_waiting_note(&t, &ask), None);
+        t.session_signals.push(SessionSignal {
+            session: "sess-1".to_owned(),
+            label: "Ledger entries".to_owned(),
+            status: "needs_you".to_owned(),
+            idle_days: 0,
+            active_turn: false,
+        });
+        assert_eq!(
+            ask_waiting_note(&t, &ask).as_deref(),
+            Some("claude is waiting on this")
+        );
     }
 
     #[test]
@@ -4273,5 +4464,42 @@ mod tests {
         };
         assert_eq!(ask_question(&t, &r), "Review (round 2): Check migration script");
         assert_eq!(ask_change(&t, &r).as_deref(), Some("Checkpoint: Defined"));
+    }
+
+    #[core::prelude::v1::test]
+    fn channel_display_uses_human_name_instead_of_generated_id() {
+        let mut s = state();
+        let ch_id = "ch_9f8a7b6c5d4e";
+        s.set_channels(vec![humata2_todo_feature::ChannelRef {
+            id: ch_id.to_owned(),
+            name: "Payments".to_owned(),
+        }]);
+        let mut item = Todo::new("PAY-99", "Fix checkout", s.today);
+        item.channel = Some(ch_id.to_owned());
+        s.items.push(Entry { todo: item, revision: 1, ask_id: None });
+        s.view.filter.channel = Some(ChannelPick::Channel(ch_id.to_owned()));
+
+        let header = header_text(&s);
+        let placeholder = add_placeholder(&s);
+        let filter_count = filter_count_text(&s);
+
+        assert!(header.contains("Payments"), "header should show channel name: {header}");
+        assert!(!header.contains(ch_id), "header should not leak channel id: {header}");
+
+        assert!(placeholder.contains("Payments"), "placeholder should show channel name: {placeholder}");
+        assert!(!placeholder.contains(ch_id), "placeholder should not leak channel id: {placeholder}");
+
+        assert!(filter_count.contains("Payments"), "filter count should show channel name: {filter_count}");
+        assert!(!filter_count.contains(ch_id), "filter count should not leak channel id: {filter_count}");
+    }
+
+    #[core::prelude::v1::test]
+    fn linked_session_and_channel_clicks_dispatch_navigation_actions() {
+        assert_eq!(session_link_action("se_42"), A::OpenSession("se_42".to_owned()));
+        assert_eq!(
+            channel_link_action(Some("ch_payments")),
+            Some(A::OpenChannel("ch_payments".to_owned()))
+        );
+        assert_eq!(channel_link_action(None), None);
     }
 }

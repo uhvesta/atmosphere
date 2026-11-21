@@ -328,11 +328,20 @@ pub(crate) async fn resume(
         Some(reason) => return failed(store, record, reason, None).await,
         None => {}
     }
+    let plain_shell = is_plain_shell(&record.launch);
     let before = Conversation::look(&record.launch.conversation_file);
     let mut line = match why {
+        Why::Interrupted if plain_shell => format!(
+            "[Humata] This terminal stopped: its machine restarted or its holder was killed. Programs that were running in it are gone, and output after this point wasn't saved. This is a new shell in {}.",
+            record.launch.folder.display()
+        ),
         Why::Interrupted => format!(
             "[Humata] This terminal stopped: its machine restarted or its holder was killed. Output after this point wasn't saved. Resuming the {} conversation {}.",
             record.launch.agent, record.launch.conversation_id
+        ),
+        Why::Asked if plain_shell => format!(
+            "[Humata] Starting a new shell in {}.",
+            record.launch.folder.display()
         ),
         Why::Asked => format!(
             "[Humata] Resuming the {} conversation {}.",
@@ -369,7 +378,7 @@ pub(crate) async fn resume(
             return Err(error);
         }
     };
-    let tell = matches!(why, Why::Interrupted) && already_told.is_none() && !seeded;
+    let tell = matches!(why, Why::Interrupted) && already_told.is_none() && !seeded && !plain_shell;
     match verify(store, config, &mut record, interruption.output_resumes_at, before, tell).await {
         Ok(Ok(())) => {
             point("revive.resume.verified");
@@ -514,6 +523,13 @@ async fn failed(
     Ok(Revived::ResumeFailed { reason, exit_code })
 }
 
+/// Whether `launch` is a D312 plain Terminal shell (`zsh` with no conversation
+/// file), which has no conversation to verify and resumes as a fresh shell in
+/// its folder.
+fn is_plain_shell(launch: &AgentLaunch) -> bool {
+    launch.agent == "zsh" && launch.conversation_file.as_os_str().is_empty()
+}
+
 /// Why `launch` can't be resumed before trying, if it can't.
 fn cannot_resume(launch: &AgentLaunch) -> Option<ResumeFailure> {
     if !launch.folder.is_dir() {
@@ -529,11 +545,12 @@ fn cannot_resume(launch: &AgentLaunch) -> Option<ResumeFailure> {
     if !installed(Path::new(program), &launch.folder) {
         return Some(ResumeFailure::AgentNotInstalled);
     }
-    let needs_file = !launch.conversation_file.as_os_str().is_empty()
-        || launch.resume_argv.len() <= 1
-        || launch.agent == "zsh";
-    if needs_file && !launch.conversation_file.is_file() {
-        return Some(ResumeFailure::ConversationFileMissing);
+    if !is_plain_shell(launch) {
+        let needs_file = !launch.conversation_file.as_os_str().is_empty()
+            || launch.resume_argv.len() <= 1;
+        if needs_file && !launch.conversation_file.is_file() {
+            return Some(ResumeFailure::ConversationFileMissing);
+        }
     }
     None
 }
@@ -974,7 +991,7 @@ mod conversation_unknown_tests {
     }
 
     #[test]
-    fn a_shell_or_agent_without_resume_args_still_needs_a_conversation_file() {
+    fn a_plain_shell_with_no_conversation_file_can_be_resumed() {
         let shell = AgentLaunch {
             agent: "zsh".to_owned(),
             folder: std::env::temp_dir(),
@@ -983,8 +1000,26 @@ mod conversation_unknown_tests {
             conversation_file: PathBuf::new(),
             ..AgentLaunch::default()
         };
-        assert_eq!(cannot_resume(&shell), Some(ResumeFailure::ConversationFileMissing));
+        assert_eq!(cannot_resume(&shell), None);
 
+        let bare_shell = AgentLaunch {
+            resume_argv: vec![OsString::from("/bin/sh")],
+            ..shell.clone()
+        };
+        assert_eq!(cannot_resume(&bare_shell), None);
+
+        let custom_shell = AgentLaunch {
+            conversation_file: std::env::temp_dir().join("missing-conv.jsonl"),
+            ..shell
+        };
+        assert_eq!(
+            cannot_resume(&custom_shell),
+            Some(ResumeFailure::ConversationFileMissing)
+        );
+    }
+
+    #[test]
+    fn an_agent_without_resume_args_still_needs_a_conversation_file() {
         let no_args = AgentLaunch {
             agent: "agy".to_owned(),
             folder: std::env::temp_dir(),

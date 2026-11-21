@@ -658,6 +658,37 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT;
     CREATE INDEX todo_runs_by_item ON todo_runs (item_key, started_unix_ms, id);
 ",
+    "
+    -- Step 34 (PROVIDERCLI, D906). Non-session Inbox requests (such as an owner
+    -- or script filing a provider import request) have session = NULL and
+    -- migrate_thing = NULL; drop the old CHECK requiring one of the two.
+    CREATE TABLE inbox_requests_v34 (
+        id TEXT PRIMARY KEY,
+        session TEXT REFERENCES sessions (id) ON DELETE CASCADE,
+        created_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL,
+        entry BLOB,
+        entry_file TEXT,
+        migrate_thing INTEGER,
+        migrate_machine TEXT,
+        migrate_pending INTEGER NOT NULL DEFAULT 0 CHECK (migrate_pending IN (0, 1)),
+        CHECK ((entry IS NULL) <> (entry_file IS NULL)),
+        CHECK ((migrate_thing IS NULL) = (migrate_machine IS NULL)),
+        CHECK (migrate_pending = 0 OR migrate_thing IS NOT NULL)
+    ) STRICT;
+    INSERT INTO inbox_requests_v34 (
+        id, session, created_unix_ms, updated_unix_ms, entry, entry_file,
+        migrate_thing, migrate_machine, migrate_pending
+    )
+        SELECT id, session, created_unix_ms, updated_unix_ms, entry, entry_file,
+               migrate_thing, migrate_machine, migrate_pending
+        FROM inbox_requests;
+    DROP TABLE inbox_requests;
+    ALTER TABLE inbox_requests_v34 RENAME TO inbox_requests;
+    CREATE INDEX inbox_requests_by_session ON inbox_requests (session);
+    CREATE UNIQUE INDEX inbox_requests_migrate_pending
+        ON inbox_requests (migrate_thing, migrate_machine) WHERE migrate_pending = 1;
+",
 ];
 
 /// The schema this build writes and reads.

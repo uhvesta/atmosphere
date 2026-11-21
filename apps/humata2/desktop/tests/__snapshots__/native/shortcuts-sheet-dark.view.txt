@@ -46,7 +46,7 @@ Dialog "Keyboard shortcuts" focused
     ListItem "Keyboard shortcuts: ⌘/"
     ListItem "Expand all, in the sidebar: ⌥⌘→"
     ListItem "Collapse all, in the sidebar: ⌥⌘←"
-    ListItem "Hide or show the sidebar: ⌘0"
+    ListItem "Hide or show the sidebar: ⌘B ⌘0"
     ListItem "Hide or show the side panel: ⌥⌘0"
     ListItem "Move the session to another machine: ⌥⌘M"
     ListItem "Terminal full screen: ⇧⌘↩"

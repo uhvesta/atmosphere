@@ -5,10 +5,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::model::{
-    Agent, ChannelId, FileTier, PreparedView, RepoBase, RepoDiffSpec, Scope, SessionId, ViewId, ViewState,
+    Agent, ChannelId, DiffUntracked, DiffUpto, DiffWhitespace, FileTier, PreparedView, RepoBase,
+    RepoDiffOptions, RepoDiffSpec, Scope, SessionId, ViewId, ViewState,
 };
 use humata2_clients::views::{
-    LayerDrift, LayerRepoView, LayerView, PlanGroup, PlanNote, PlanTier, PlanView, StackView, ViewContent, ViewEvents, ViewRecord, ViewsClient, WalkthroughStep,
+    LayerDrift, LayerRepoView, LayerView, PlanGroup, PlanNote, PlanTier, PlanView,
+    PullRequestDraftView, StackView, ViewContent, ViewEvents, ViewRecord, ViewsClient,
+    WalkthroughStep,
 };
 use humata2_clients::{DaemonError, Reply};
 use humata2_clients_live_core::map::{self, AgentNames};
@@ -117,16 +120,58 @@ pub(crate) fn repo_base(base: Option<&pb::DiffSpecBase>) -> RepoBase {
     match base.and_then(|base| base.base.as_ref()) {
         None => RepoBase::DefaultBranch,
         Some(Base::MergeBaseWith(branch)) if branch == "origin/HEAD" => RepoBase::DefaultBranch,
-        Some(Base::MergeBaseWith(branch)) => {
-            RepoBase::Branch(branch.strip_prefix("origin/").unwrap_or(branch.as_str()).to_owned())
-        }
+        Some(Base::MergeBaseWith(branch)) => match branch.strip_prefix("origin/") {
+            Some(short) => RepoBase::Branch(short.to_owned()),
+            None => RepoBase::MergeBase(branch.clone()),
+        },
         Some(Base::Rev(rev)) if rev == "HEAD" => RepoBase::Uncommitted,
         Some(Base::Rev(rev)) => RepoBase::Rev(rev.clone()),
         Some(Base::ReviewedSnapshot(_)) => RepoBase::LastReviewed,
         Some(Base::ForkPoint(_)) => RepoBase::ForkPoint,
-        Some(Base::Index(_)) => RepoBase::Uncommitted,
+        Some(Base::Index(_)) => RepoBase::Index,
         Some(Base::PullRequestBase(_)) => RepoBase::PullRequestBase,
     }
+}
+
+/// One repository's diff spec from the wire, preserving base, compare bounds,
+/// path filters, whitespace, and rename settings.
+pub(crate) fn repo_diff_spec(each: &pb::RepoDiffSpec) -> Option<RepoDiffSpec> {
+    use pb::diff_spec_compare::{Untracked, Upto};
+    let compare = each.compare.as_ref();
+    let upto = compare.and_then(|compare| match Upto::try_from(compare.upto) {
+        Ok(Upto::Commits) => Some(DiffUpto::Commits),
+        Ok(Upto::Staged) => Some(DiffUpto::Staged),
+        Ok(Upto::Unstaged) | Ok(Upto::Unspecified) | Err(_) => None,
+    });
+    let untracked = compare.and_then(|compare| match Untracked::try_from(compare.untracked) {
+        Ok(Untracked::None) => Some(DiffUntracked::None),
+        Ok(Untracked::Paths) => Some(DiffUntracked::Paths),
+        Ok(Untracked::All) | Ok(Untracked::Unspecified) | Err(_) => None,
+    });
+    let whitespace = match pb::DiffWhitespace::try_from(each.whitespace) {
+        Ok(pb::DiffWhitespace::IgnoreChanges) => DiffWhitespace::IgnoreChanges,
+        Ok(pb::DiffWhitespace::IgnoreAll) => DiffWhitespace::IgnoreAll,
+        _ => DiffWhitespace::Default,
+    };
+    Some(RepoDiffSpec {
+        repo: each.repo.as_ref().map(map::repo_text)?,
+        base: repo_base(each.base.as_ref()),
+        options: RepoDiffOptions {
+            include_paths: each.include_paths.clone(),
+            exclude_paths: each.exclude_paths.clone(),
+            upto,
+            untracked,
+            untracked_paths: compare
+                .map(|compare| compare.untracked_paths.clone())
+                .unwrap_or_default(),
+            head: compare.and_then(|compare| (!compare.head.is_empty()).then(|| compare.head.clone())),
+            worktree_paths: compare
+                .map(|compare| compare.worktree_paths.clone())
+                .unwrap_or_default(),
+            whitespace,
+            no_renames: each.no_renames,
+        },
+    })
 }
 
 /// The agent's tiers (D802); an entry without a file is dropped.
@@ -198,7 +243,11 @@ fn layer_repo(wire: &pb::ReviewLayerRepo) -> Option<LayerRepoView> {
     };
     Some(LayerRepoView {
         repo: repo.clone(),
-        spec: RepoDiffSpec { repo, base },
+        spec: RepoDiffSpec {
+            repo,
+            base,
+            options: RepoDiffOptions::default(),
+        },
         pull_request: wire.pull_request.clone(),
         files: wire.resolved.as_ref().map_or(0, |resolved| resolved.files),
         drift: wire.resolved.as_ref().and_then(layer_drift),
@@ -246,7 +295,11 @@ fn whole_stack(layers: &[LayerView]) -> Vec<RepoDiffSpec> {
                 (false, Some(head)) => RepoBase::Range { base, head },
                 (false, None) => return None,
             };
-            Some(RepoDiffSpec { repo, base })
+            Some(RepoDiffSpec {
+                repo,
+                base,
+                options: RepoDiffOptions::default(),
+            })
         })
         .collect()
 }
@@ -355,12 +408,7 @@ pub(crate) fn plan(wire: &pb::ReviewPlan) -> PlanView {
             .spec
             .iter()
             .flat_map(|spec| &spec.repos)
-            .filter_map(|each| {
-                Some(RepoDiffSpec {
-                    repo: each.repo.as_ref().map(map::repo_text)?,
-                    base: repo_base(each.base.as_ref()),
-                })
-            })
+            .filter_map(repo_diff_spec)
             .collect(),
         order: wire.order.iter().filter_map(|path| file(Some(path))).collect(),
         groups: wire.groups.iter().filter_map(plan_group).collect(),
@@ -418,7 +466,22 @@ fn content(wire: &pb::PreparedView) -> ViewContent {
                 .collect(),
         ),
         Some(Content::Board(offer)) => board(offer),
-        Some(Content::PullRequest(_)) => ViewContent::PullRequest,
+        Some(Content::PullRequest(draft)) => ViewContent::PullRequest(
+            draft
+                .repos
+                .iter()
+                .filter_map(|each| {
+                    let repo = each.repo.as_ref().map(map::repo_text)?;
+                    Some(PullRequestDraftView {
+                        repo,
+                        title: each.title.clone(),
+                        body: each.body.clone(),
+                        base_branch: each.base_branch.clone(),
+                        draft: each.draft,
+                    })
+                })
+                .collect(),
+        ),
         Some(Content::ReviewPlan(wire)) => ViewContent::ReviewPlan(plan(wire)),
         None => ViewContent::Summary,
     }
@@ -788,7 +851,8 @@ mod tests {
                 base: RepoBase::Overlay {
                     base: "m".to_owned(),
                     paths: vec!["src".to_owned()]
-                }
+                },
+                options: RepoDiffOptions::default(),
             }]
         );
     }
@@ -803,6 +867,7 @@ mod tests {
                     base: base.to_owned(),
                     head: head.to_owned(),
                 },
+                options: RepoDiffOptions::default(),
             },
             pull_request: String::new(),
             files: 0,
@@ -850,5 +915,103 @@ mod tests {
             offered(pb::board_view_offer::Scope::OneSession(id())),
             ViewContent::SessionBoard { session: SessionId::new("se_9"), with_forks: false }
         );
+    }
+
+    #[test]
+    fn a_pull_request_view_preserves_every_draft_field() {
+        let mut view = wire(pb::ViewState::Waiting);
+        view.content = Some(pb::prepared_view::Content::PullRequest(pb::PullRequestDraft {
+            repos: vec![
+                pb::pull_request_draft::PerRepo {
+                    repo: map::parse_repo("acme/api"),
+                    title: "Add health check".to_owned(),
+                    body: "Adds /healthz endpoint.".to_owned(),
+                    base_branch: "release/2.4".to_owned(),
+                    draft: true,
+                },
+                pb::pull_request_draft::PerRepo {
+                    repo: Some(pb::RepoRef {
+                        owner: String::new(),
+                        name: "web".to_owned(),
+                    }),
+                    title: "Show status".to_owned(),
+                    body: String::new(),
+                    base_branch: String::new(),
+                    draft: false,
+                },
+            ],
+        }));
+        let mapped = record(&view, &AgentNames::default()).expect("maps");
+        assert_eq!(
+            mapped.content,
+            ViewContent::PullRequest(vec![
+                PullRequestDraftView {
+                    repo: "acme/api".to_owned(),
+                    title: "Add health check".to_owned(),
+                    body: "Adds /healthz endpoint.".to_owned(),
+                    base_branch: "release/2.4".to_owned(),
+                    draft: true,
+                },
+                PullRequestDraftView {
+                    repo: "web".to_owned(),
+                    title: "Show status".to_owned(),
+                    body: String::new(),
+                    base_branch: String::new(),
+                    draft: false,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn a_review_plan_preserves_diff_spec_options_index_and_local_merge_base() {
+        use pb::diff_spec_base::Base;
+        use pb::diff_spec_compare::{Untracked, Upto};
+        let mut view = wire(pb::ViewState::Waiting);
+        view.content = Some(pb::prepared_view::Content::ReviewPlan(pb::ReviewPlan {
+            spec: Some(pb::DiffSpec {
+                repos: vec![
+                    pb::RepoDiffSpec {
+                        repo: map::parse_repo("acme/api"),
+                        base: Some(pb::DiffSpecBase {
+                            base: Some(Base::Index(pb::IndexBase {})),
+                        }),
+                        compare: Some(pb::DiffSpecCompare {
+                            upto: Upto::Staged as i32,
+                            untracked: Untracked::Paths as i32,
+                            untracked_paths: vec!["src/new.rs".to_owned()],
+                            head: String::new(),
+                            worktree_paths: Vec::new(),
+                        }),
+                        include_paths: vec!["src/".to_owned()],
+                        exclude_paths: vec!["src/gen/".to_owned()],
+                        whitespace: pb::DiffWhitespace::IgnoreChanges as i32,
+                        no_renames: true,
+                    },
+                    pb::RepoDiffSpec {
+                        repo: map::parse_repo("acme/web"),
+                        base: Some(pb::DiffSpecBase {
+                            base: Some(Base::MergeBaseWith("local-dev".to_owned())),
+                        }),
+                        ..pb::RepoDiffSpec::default()
+                    },
+                ],
+            }),
+            ..pb::ReviewPlan::default()
+        }));
+        let mapped = record(&view, &AgentNames::default()).expect("maps");
+        let ViewContent::ReviewPlan(plan) = mapped.content else {
+            panic!("expected ReviewPlan");
+        };
+        assert_eq!(plan.targets.len(), 2);
+        assert_eq!(plan.targets[0].base, RepoBase::Index);
+        assert_eq!(plan.targets[0].options.include_paths, vec!["src/".to_owned()]);
+        assert_eq!(plan.targets[0].options.exclude_paths, vec!["src/gen/".to_owned()]);
+        assert_eq!(plan.targets[0].options.upto, Some(DiffUpto::Staged));
+        assert_eq!(plan.targets[0].options.untracked, Some(DiffUntracked::Paths));
+        assert_eq!(plan.targets[0].options.untracked_paths, vec!["src/new.rs".to_owned()]);
+        assert_eq!(plan.targets[0].options.whitespace, DiffWhitespace::IgnoreChanges);
+        assert!(plan.targets[0].options.no_renames);
+        assert_eq!(plan.targets[1].base, RepoBase::MergeBase("local-dev".to_owned()));
     }
 }

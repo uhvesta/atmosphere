@@ -17,6 +17,7 @@ pub enum Tab {
     Repos,
     Access,
     Activity,
+    Settings,
 }
 /// Which sessions the tree table includes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

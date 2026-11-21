@@ -306,4 +306,30 @@ pub enum DaemonError {
         "this host isn't macOS or Linux on arm64 or x86_64, so humatad2 has no tools of its own to give machines; pass --tools with a bundle"
     )]
     UnknownHostPlatform,
+
+    #[error(
+        "couldn't read or write the browser host token at {}; check permissions on the state folder",
+        path.display()
+    )]
+    BrowserHostToken {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't connect the browser host to humatad2 on {}; check that Humata is running",
+        socket.display()
+    )]
+    BrowserHostConnect {
+        socket: PathBuf,
+        #[source]
+        source: tonic::transport::Error,
+    },
+
+    #[error("the browser host stream to humatad2 failed")]
+    BrowserHostStream {
+        #[source]
+        source: tonic::Status,
+    },
 }

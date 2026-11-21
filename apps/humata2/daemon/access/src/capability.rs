@@ -246,7 +246,10 @@ impl Capability {
             | Self::ChannelCreate
             | Self::ChannelRepoAdd
             | Self::SessionStopOther => Tier::AskMe,
-            Self::NetworkReach | Self::DeskMoveToChannel | Self::ProviderImport => Tier::AskNoAllow,
+            Self::NetworkReach
+            | Self::DeskMoveToChannel
+            | Self::ProviderImport
+            | Self::SettingsChange => Tier::AskNoAllow,
             Self::SessionDeleteOther
             | Self::SessionsDeleteMany
             | Self::MachineSessionsStop
@@ -255,7 +258,6 @@ impl Capability {
             | Self::MachineScriptRun => Tier::NeverByDefault,
             Self::InboxAnswer
             | Self::AccessChange
-            | Self::SettingsChange
             | Self::MarksChange
             | Self::PrSubmit
             | Self::UserReviewState
@@ -535,5 +537,17 @@ mod todo_rules_tests {
         assert_eq!(Capability::TodoClose.default_decision(), Some(Decision::Ask));
         assert!(Capability::ALL.contains(&Capability::TodoSuggest));
         assert!(Capability::ALL.contains(&Capability::TodoClose));
+    }
+
+    #[test]
+    fn settings_change_is_ask_no_allow_and_never_offers_always_let() {
+        assert_eq!(Capability::SettingsChange.tier(), Tier::AskNoAllow);
+        assert_eq!(Capability::SettingsChange.default_decision(), Some(Decision::Ask));
+        assert_eq!(
+            Capability::SettingsChange.settings(),
+            &[Decision::Ask, Decision::Never]
+        );
+        assert!(!Capability::SettingsChange.offers_always_let());
+        assert!(!Capability::SettingsChange.may_be_low_risk());
     }
 }

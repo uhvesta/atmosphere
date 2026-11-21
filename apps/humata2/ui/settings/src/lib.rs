@@ -6,7 +6,9 @@
 pub(crate) use humata2_ui_core::{bridge, chrome, theme, widgets};
 
 pub mod access;
+pub mod channel_settings;
 pub mod settings;
+pub mod settings_browser;
 pub mod settings_providers;
 pub mod settings_repositories;
 mod sync;

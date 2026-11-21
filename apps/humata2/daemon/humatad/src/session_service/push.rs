@@ -13,7 +13,9 @@ use humata2_access::{AccessRequest, Capability, RepoBranch, RepoRef, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::wire::spec_from_pb;
 use humata2_review_diff::{BaseContext, Checkout, DiffError, DiffSpec, RepoSpec};
-use humata2_sessions::{GitError, PushError, commit_all, push_branch, repo_work, totals};
+use humata2_sessions::{
+    GitError, PushError, commit_all, default_branch, push_branch, repo_work, totals,
+};
 use humata2_store::{SessionDetail, SessionRepo};
 use pb::invalid_field::Problem;
 use tonic::{Code, Status};
@@ -804,6 +806,36 @@ fn end_push(progress: Progress, machine: &str, ended: Result<pb::Operation, Stat
     }
 }
 
+/// True when `branch` is a default branch (`main`, `master`, `HEAD`, or the
+/// clone's `origin/HEAD` default branch when readable).
+fn is_default_branch(path: &Path, branch: &str, check_clone: bool) -> bool {
+    let trimmed = branch.trim();
+    let name = trimmed.strip_prefix("refs/heads/").unwrap_or(trimmed);
+    if name.is_empty()
+        || name.eq_ignore_ascii_case("main")
+        || name.eq_ignore_ascii_case("master")
+        || name == "HEAD"
+    {
+        return true;
+    }
+    if check_clone && let Ok(default) = default_branch(path) {
+        return default == name;
+    }
+    false
+}
+
+/// The access target for one push choice: `Target::PushBranch` for a
+/// branch-only push to a non-default branch (D920), else `Target::Push`
+/// (opening a PR or pushing a default branch).
+fn push_access_target(push: &RepoPush, check_clone: bool) -> Target {
+    let branch = push_target(&push.owner, &push.name, &push.branch);
+    if push.pull_request.is_none() && !is_default_branch(&push.path, &push.branch, check_clone) {
+        Target::PushBranch(branch)
+    } else {
+        Target::Push(branch)
+    }
+}
+
 impl SessionSvc {
     /// Checks each target's `GitPush` access: the first one that must be
     /// asked is returned.
@@ -813,10 +845,25 @@ impl SessionSvc {
         targets: Vec<RepoBranch>,
         approved: bool,
     ) -> Result<Option<Box<AccessRequest>>, Status> {
+        let targets = targets.into_iter().map(Target::Push).collect();
+        self.ask_for_push_targets(caller, targets, approved)
+    }
+
+    /// Checks each push target's `GitPush` access (`Target::Push` or
+    /// `Target::PushBranch`): the first one that must be asked is returned.
+    fn ask_for_push_targets(
+        &self,
+        caller: &Caller,
+        targets: Vec<Target>,
+        approved: bool,
+    ) -> Result<Option<Box<AccessRequest>>, Status> {
         for target in targets {
-            let (repo, branch) = (target.repo.clone(), target.branch.clone());
+            let (repo, branch) = match &target {
+                Target::Push(rb) | Target::PushBranch(rb) => (rb.repo.clone(), rb.branch.clone()),
+                _ => continue,
+            };
             if let Some(asked) = self
-                .gate(caller, Capability::GitPush, Target::Push(target), approved)
+                .gate(caller, Capability::GitPush, target, approved)
                 .map_err(|refused| status::with_push_target(refused, &repo, &branch))?
             {
                 return Ok(Some(asked));
@@ -904,11 +951,16 @@ impl SessionSvc {
             .cloned()
             .collect();
         let pushes = chosen_repos(&request.repos, &session_repos)?;
-        let targets = pushes
-            .iter()
-            .map(|push| push_target(&push.owner, &push.name, &push.branch))
-            .collect();
-        if let Some(asked) = self.ask_for_pushes(caller, targets, approved)? {
+        let local_clone = self.lives_elsewhere(&loaded.record).is_none();
+        let pushes_for_targets = pushes.clone();
+        let targets = blocking(move || {
+            pushes_for_targets
+                .iter()
+                .map(|push| push_access_target(push, local_clone))
+                .collect::<Vec<_>>()
+        })
+        .await?;
+        if let Some(asked) = self.ask_for_push_targets(caller, targets, approved)? {
             return Ok(Gated::Ask(asked));
         }
         if let Some(operation) = self
@@ -1104,5 +1156,46 @@ impl SessionSvc {
         self.tell
             .session(&id, pb::Change::Updated, Some(by))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_push(branch: &str, open_pr: bool) -> RepoPush {
+        RepoPush {
+            owner: "acme".to_owned(),
+            name: "api".to_owned(),
+            branch: branch.to_owned(),
+            path: PathBuf::new(),
+            commit_message: None,
+            pull_request: open_pr.then(|| PullRequestText {
+                title: "Fix bug".to_owned(),
+                body: String::new(),
+                base: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn non_default_branch_only_push_uses_push_branch_target_while_pr_and_default_use_push() {
+        assert!(matches!(
+            push_access_target(&repo_push("me/feat", false), false),
+            Target::PushBranch(_)
+        ));
+        assert!(matches!(
+            push_access_target(&repo_push("me/feat", true), false),
+            Target::Push(_)
+        ));
+        for default_name in ["main", "master", "HEAD", "refs/heads/main"] {
+            assert!(
+                matches!(
+                    push_access_target(&repo_push(default_name, false), false),
+                    Target::Push(_)
+                ),
+                "{default_name} should stay guarded"
+            );
+        }
     }
 }

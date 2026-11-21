@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Humata · To-do</title><link rel="icon" href="data:,">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#17181b;color:#dedfe3;font:13px system-ui}canvas{display:block}#loading{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:12px;padding:30px}#loading small{color:#98989e}</style>
+</head>
+<body><div id="loading">Starting Humata To-do…<small>Live view from your local host daemon.</small></div>
+<script type="module">
+const loading=document.getElementById('loading');
+window.webTodo={phase:'starting',errors:[]};
+const fail=error=>{window.webTodo.phase='failed';window.webTodo.errors.push(String(error));loading.style.display='grid';loading.textContent=`Could not start Humata To-do: ${error}.`;};
+window.addEventListener('error',e=>fail(e.error||e.message));window.addEventListener('unhandledrejection',e=>fail(e.reason));
+try{
+  const app=await import('./web_todo.js');await app.default();window.webTodoInspect=app.inspect;
+  let running=false,readyFrame=0;
+  const ready=()=>{if(!running||window.webTodo.phase==='failed')return;const canvas=document.querySelector('canvas');if(canvas&&canvas.width>1&&canvas.height>1){readyFrame=requestAnimationFrame(()=>{if(!running)return;readyFrame=requestAnimationFrame(()=>{if(!running)return;loading.style.display='none';window.webTodo.phase='running';});});}else readyFrame=requestAnimationFrame(ready);};
+  const start=()=>{if(running)return;running=true;loading.style.display='grid';window.webTodo.phase='starting';app.run();readyFrame=requestAnimationFrame(ready);};
+  const stop=()=>{if(!running)return;running=false;cancelAnimationFrame(readyFrame);app.shutdown();window.webTodo.phase='stopped';};
+  window.addEventListener('pagehide',stop);
+  window.addEventListener('pageshow',event=>{if(event.persisted)start();});
+  start();
+}catch(error){fail(error);}
+</script></body></html>

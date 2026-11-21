@@ -198,43 +198,64 @@ impl Git {
         Ok(commits)
     }
 
-    /// Copies `commit` onto `onto` without touching the work tree: the tree
-    /// from `git merge-tree --write-tree --merge-base=<commit's parent> <onto> <commit>`,
-    /// then `git commit-tree` with the commit's message, author and committer
-    /// (name, email and date), so the same input always gives the same sha.
-    /// A conflict is `GitError::Conflict` naming the files.
+    /// Copies `commit` onto `onto` without touching the work tree, keeping the
+    /// original commit message.
     pub(crate) fn copy_onto(&self, commit: &Commit, onto: &str) -> Result<String, GitError> {
         if onto == commit.parent {
             return Ok(commit.sha.clone());
         }
-        let merge_base = format!("--merge-base={}", commit.parent);
-        let args = [
-            "merge-tree",
-            "--write-tree",
-            "--name-only",
-            "--no-messages",
-            merge_base.as_str(),
-            onto,
-            commit.sha.as_str(),
-        ];
-        let merged = self.output(&args, None, &[])?;
-        let text = String::from_utf8_lossy(&merged.stdout);
-        let mut lines = text.lines();
-        let tree = lines.next().unwrap_or_default();
-        match merged.status.code() {
-            Some(0) if !tree.is_empty() => {}
-            Some(1) => {
-                let files: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
-                return Err(GitError::Conflict {
-                    commit: short_sha(&commit.sha),
-                    subject: commit.message.subject.clone(),
-                    onto: short_sha(onto),
-                    files: files.join(", "),
-                });
+        self.copy_onto_inner(commit, onto, None)
+    }
+
+    /// Copies `commit` onto `onto` without touching the work tree, replacing
+    /// its commit message with `new_message`.
+    pub(crate) fn copy_onto_with_message(
+        &self,
+        commit: &Commit,
+        onto: &str,
+        new_message: &str,
+    ) -> Result<String, GitError> {
+        self.copy_onto_inner(commit, onto, Some(new_message))
+    }
+
+    fn copy_onto_inner(
+        &self,
+        commit: &Commit,
+        onto: &str,
+        new_message: Option<&str>,
+    ) -> Result<String, GitError> {
+        let tree = if onto == commit.parent {
+            self.run(&["rev-parse", &format!("{}^{{tree}}", commit.sha)])?
+        } else {
+            let merge_base = format!("--merge-base={}", commit.parent);
+            let args = [
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "--no-messages",
+                merge_base.as_str(),
+                onto,
+                commit.sha.as_str(),
+            ];
+            let merged = self.output(&args, None, &[])?;
+            let text = String::from_utf8_lossy(&merged.stdout);
+            let mut lines = text.lines();
+            let tree = lines.next().unwrap_or_default();
+            match merged.status.code() {
+                Some(0) if !tree.is_empty() => tree.to_owned(),
+                Some(1) => {
+                    let files: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+                    return Err(GitError::Conflict {
+                        commit: short_sha(&commit.sha),
+                        subject: commit.message.subject.clone(),
+                        onto: short_sha(onto),
+                        files: files.join(", "),
+                    });
+                }
+                Some(0) => return Err(parse_error(&args, &text)),
+                _ => return Err(failed(&args, &merged)),
             }
-            Some(0) => return Err(parse_error(&args, &text)),
-            _ => return Err(failed(&args, &merged)),
-        }
+        };
 
         let log_meta = [
             "log",
@@ -256,7 +277,10 @@ impl Git {
         else {
             return Err(parse_error(&log_meta, &meta));
         };
-        let message = self.run(&["log", "-1", "--format=%B", commit.sha.as_str()])?;
+        let message = match new_message {
+            Some(msg) => msg.to_owned(),
+            None => self.run(&["log", "-1", "--format=%B", commit.sha.as_str()])?,
+        };
         let env = [
             ("GIT_AUTHOR_NAME", author_name),
             ("GIT_AUTHOR_EMAIL", author_email),
@@ -266,7 +290,7 @@ impl Git {
             ("GIT_COMMITTER_DATE", committer_date),
         ];
         let sha = self.run_with_input(
-            &["commit-tree", "--no-gpg-sign", tree, "-p", onto],
+            &["commit-tree", "--no-gpg-sign", tree.as_str(), "-p", onto],
             &message,
             &env,
         )?;
@@ -487,6 +511,38 @@ impl Git {
             old_range.as_str(),
             new_range.as_str(),
         ])
+    }
+
+    /// `git diff --no-color <from>..<to>`.
+    pub(crate) fn diff_range(&self, from: &str, to: &str) -> Result<String, GitError> {
+        let range = format!("{from}..{to}");
+        self.run(&["diff", "--no-color", range.as_str()])
+    }
+
+    /// `git checkout --quiet <target>`.
+    pub(crate) fn checkout(&self, target: &str) -> Result<(), GitError> {
+        self.run(&["checkout", "--quiet", target]).map(|_| ())
+    }
+
+    /// `git checkout --quiet -B <branch> [start_point]`.
+    pub(crate) fn checkout_branch(&self, branch: &str, start_point: Option<&str>) -> Result<(), GitError> {
+        let mut args = vec!["checkout", "--quiet", "-B", branch];
+        if let Some(start) = start_point {
+            args.push(start);
+        }
+        self.run(&args).map(|_| ())
+    }
+
+    /// Whether local branch `refs/heads/<branch>` exists.
+    pub(crate) fn branch_exists(&self, branch: &str) -> bool {
+        let reference = format!("refs/heads/{branch}");
+        self.output(&["show-ref", "--verify", "--quiet", reference.as_str()], None, &[])
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// `git update-ref <reference> <sha>`.
+    pub(crate) fn update_ref(&self, reference: &str, sha: &str) -> Result<(), GitError> {
+        self.run(&["update-ref", reference, sha]).map(|_| ())
     }
 }
 

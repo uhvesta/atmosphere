@@ -14,6 +14,7 @@ path = "src/lib.rs"
 gpui-kit = { workspace = true }
 humata2-app = { path = "../../features/app" }
 humata2-clients = { path = "../../clients" }
+humata2-highlight = { path = "../../highlight" }
 humata2-markdown = { path = "../../markdown" }
 humata2-pr-review = { path = "../../features/pr_review" }
 humata2-review = { path = "../../features/review" }

@@ -21,5 +21,5 @@ pub use model::{
     Todo, TodoComment, TodoOwner, WatchedPr, WordDiffKind, WordDiffSpan, format_cost_usd,
     word_diff,
 };
-pub use quick_add::{Draft, parse};
+pub use quick_add::{Draft, parse, parse_with_channels};
 pub use rank::{Ranked, Reason, Row, header, rank, rank_with};

@@ -11,7 +11,19 @@ filegroup(
         "assets/LICENSE-Inter.txt",
         "assets/LICENSE-JetBrainsMono.txt",
     ],
-    visibility = ["//apps/humata2/terminal/web:__pkg__"],
+    visibility = [
+        "//apps/humata2/terminal/web:__pkg__",
+        "//apps/humata2/web_todo/web:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "fonts",
+    srcs = [
+        "assets/Inter-Regular.ttf",
+        "assets/JetBrainsMono-Regular.ttf",
+    ],
+    visibility = ["//apps/humata2/web_todo/web:__pkg__"],
 )
 
 rust_test(

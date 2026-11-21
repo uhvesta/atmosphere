@@ -1,0 +1,48 @@
+agent: codex
+cli: 0.169.0
+script: bash
+label: bash_permission_again
+expect: none
+cols: 200
+rows: 40
+---
+
+  >_ OpenAI Codex (v0.169.0)
+     /private/tmp/screenparse-corpus-0100/codex/bash/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+›  that exact shell command now: echo screenparse > out.txt
+  Use your shell tool to run exactly this command and nothing else: echo screenparse > out.txt
+
+  GPT-6-Luna default · /private/tmp/screenparse-corpus-0100/codex/bash/work

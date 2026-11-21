@@ -665,8 +665,6 @@ impl Core {
                     "resume with the same destination, name, size and sha256 as the first upload, or start a new upload",
                 ));
             }
-        } else if let Some(found) = key.as_deref().and_then(|key| self.started_by(&engine, key)) {
-            return Ok(Began::Existing(found));
         }
         let folder = self.destination_folder(&destination)?;
         let id = resume
@@ -683,7 +681,7 @@ impl Core {
         };
         let request = tr::UploadRequest {
             id: id.clone(),
-            resume,
+            resume: resume.clone(),
             destination: tr::Item {
                 path: folder,
                 shown: destination.shown.clone(),
@@ -695,11 +693,21 @@ impl Core {
             caller_data: encode(&data),
             now_unix_ms: now_ms(),
         };
+        // SMB-060: hold `keys` across check, begin_upload and insert so two
+        // concurrent uploads with the same idempotency key never both start.
+        let mut keys = lock(&self.keys);
+        if resume.is_none()
+            && let Some(found) = key
+                .as_deref()
+                .and_then(|key| keys.get(key).cloned())
+                .and_then(|tracked_id| engine.get(&tracked_id))
+        {
+            return Ok(Began::Existing(self.view(&found)));
+        }
         let upload = engine
             .begin_upload(request)
             .map_err(|err| self.failure(&err))?;
         if let Some(key) = key {
-            let mut keys = lock(&self.keys);
             if keys.len() > KEYS_PRUNE_THRESHOLD {
                 keys.retain(|_, tracked_id| engine.get(tracked_id).is_some());
             }
@@ -1735,5 +1743,69 @@ mod tests {
             .await
             .expect_err("unknown transfer id must return NotFound");
         assert_eq!(missing_err.code(), Code::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_begin_upload_with_same_key_starts_only_one_transfer() {
+        // SMB-060: holding the idempotency key lock across check + begin_upload
+        // + insert ensures concurrent uploads with the same key never create
+        // two separate transfers.
+        let dir = tempfile::tempdir().unwrap();
+        let svc = Arc::new(test_svc(&dir));
+        // Initialize the engine on the tokio runtime first.
+        let _ = svc.core.engine().unwrap();
+        let handle = tokio::runtime::Handle::current();
+        let dest = pb::FileLocation {
+            machine: Some(pb::MachineId {
+                value: "local".to_owned(),
+            }),
+            root: Some(pb::file_location::Root::Home(Default::default())),
+            path: String::new(),
+        };
+        let header = |key: &str| pb::UploadHeader {
+            destination: Some(dest.clone()),
+            name: "dup.txt".to_owned(),
+            size: 4,
+            sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned(),
+            on_existing: pb::OnExisting::KeepBoth as i32,
+            idempotency_key: Some(pb::IdempotencyKey {
+                value: key.to_owned(),
+            }),
+            resume: None,
+        };
+        for round in 0..20 {
+            let key = format!("same-key-{round}");
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let svc = Arc::clone(&svc);
+                let barrier = Arc::clone(&barrier);
+                let handle = handle.clone();
+                let hdr = header(&key);
+                handles.push(std::thread::spawn(move || {
+                    let _entered = handle.enter();
+                    let who = Caller::User(UserVia::App);
+                    let by = pb::Actor::default();
+                    barrier.wait();
+                    svc.core.begin_upload(&who, hdr, by).unwrap()
+                }));
+            }
+            let r1 = handles.remove(0).join().unwrap();
+            let r2 = handles.remove(0).join().unwrap();
+            match (r1, r2) {
+                (Began::Upload(_, id1), Began::Existing(snap))
+                | (Began::Existing(snap), Began::Upload(_, id1)) => {
+                    assert_eq!(snap.id.as_ref().map(|i| i.value.as_str()), Some(id1.as_str()));
+                }
+                (Began::Upload(_, id1), Began::Upload(_, id2)) => {
+                    panic!("round {round}: race created two uploads: {id1} and {id2}");
+                }
+                (Began::Existing(_), Began::Existing(_)) => {
+                    panic!("round {round}: neither call created the upload");
+                }
+            }
+        }
+        let engine = svc.core.engine().unwrap();
+        assert_eq!(engine.list().len(), 20);
     }
 }

@@ -44,14 +44,12 @@ pub async fn main(args: Vec<OsString>) -> i32 {
         Err(error) => return usage(&console, &args, &error),
     };
     let environment = Environment::from_process();
+    if commands::works_offline(&cli.command) {
+        return run(cli, &commands::Offline, &console, &environment, ctrl_c()).await;
+    }
     let principal = principal(&environment);
     let daemon = match connect(&environment, &principal).await {
         Ok(daemon) => daemon,
-        // What only reads files (`humata doctor restarts --explain`) is for
-        // when the daemon is down.
-        Err(_) if commands::works_offline(&cli.command) => {
-            return run(cli, &commands::Offline, &console, &environment, ctrl_c()).await;
-        }
         Err(error) => {
             let operation = commands::operation(&cli.command);
             return output::finish(&console, &cli.global, operation, Err(error.into()), None);

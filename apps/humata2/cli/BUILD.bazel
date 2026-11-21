@@ -33,6 +33,7 @@ rust_library(
         "//apps/humata2/api/proto:humata2_rust",
         "//apps/humata2/chunk:humata2_chunk",
         "//apps/humata2/daemon/codex",
+        "//apps/humata2/daemon/machines",
         "//apps/humata2/daemon/opencode",
         "//apps/humata2/report",
         "@crates//:clap",

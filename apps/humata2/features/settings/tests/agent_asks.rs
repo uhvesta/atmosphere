@@ -22,6 +22,17 @@ fn loaded(store: &mut TestStore<Settings>) {
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
 }
 
 fn asks(store: &TestStore<Settings>, agent: Agent) -> Option<bool> {

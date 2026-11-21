@@ -24,7 +24,7 @@ use crate::plan::{Anchor, FileRef, Group, Importance, Note, NoteTarget, ReviewPl
 use crate::spec::{
     Base, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace, default_repo_spec,
 };
-use crate::stack::{CheckedStack, Layer, LayerRepo, Part, Stack};
+use crate::stack::{CheckedStack, Drift, DriftKind, Layer, LayerRepo, Part, Resolved, Stack};
 
 /// A message that can't be turned into a diff, plan or view: what is
 /// missing or wrong, for the caller to fix.
@@ -832,9 +832,14 @@ fn note_to_pb(note: &Note, outdated: bool) -> pb::ReviewNote {
 }
 
 /// A plan for the wire; `outdated` says per note whether it went outdated
-/// (RV-34), in the plan's note order.
+/// (RV-34), in the plan's note order. With `resolved`, any stack layers carry
+/// their resolved commits and file counts.
 #[must_use]
-pub fn plan_to_pb(plan: &ReviewPlan, outdated: &[bool]) -> pb::ReviewPlan {
+pub fn plan_to_pb(
+    plan: &ReviewPlan,
+    outdated: &[bool],
+    resolved: Option<&CheckedStack>,
+) -> pb::ReviewPlan {
     pb::ReviewPlan {
         spec: Some(spec_to_pb(&plan.spec)),
         order: plan.order.iter().map(repo_path).collect(),
@@ -845,7 +850,7 @@ pub fn plan_to_pb(plan: &ReviewPlan, outdated: &[bool]) -> pb::ReviewPlan {
             .enumerate()
             .map(|(index, note)| note_to_pb(note, outdated.get(index).copied().unwrap_or(false)))
             .collect(),
-        stack: plan.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+        stack: plan.stack.as_ref().map(|stack| stack_to_pb(stack, resolved)),
         from_stack: plan.from_stack.as_ref().map(from_stack_to_pb),
         importance: importance_to_pb(&plan.importance),
     }
@@ -977,9 +982,10 @@ pub fn view_from_pb(view: &pb::ReviewViewState) -> Result<ViewState, WireError> 
     })
 }
 
-/// A view for the wire, and for the store to persist (PR-26).
+/// A view for the wire, and for the store to persist (PR-26). With `resolved`,
+/// any stack layers carry their resolved commits and file counts.
 #[must_use]
-pub fn view_to_pb(view: &ViewState) -> pb::ReviewViewState {
+pub fn view_to_pb(view: &ViewState, resolved: Option<&CheckedStack>) -> pb::ReviewViewState {
     pb::ReviewViewState {
         spec: Some(spec_to_pb(&view.spec)),
         open: view.open.as_ref().map(place_to_pb),
@@ -994,7 +1000,7 @@ pub fn view_to_pb(view: &ViewState) -> pb::ReviewViewState {
             })
             .collect(),
         highlights: view.highlights.iter().map(highlight_to_pb).collect(),
-        stack: view.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+        stack: view.stack.as_ref().map(|stack| stack_to_pb(stack, resolved)),
         layer: view.layer.clone().unwrap_or_default(),
         importance: importance_to_pb(&view.importance),
     }
@@ -1108,9 +1114,13 @@ pub fn user_note_from_pb(comment: &pb::Comment, author: &str) -> Result<UserNote
 /// `review_context`'s answer. `selected_text` is the selection's lines,
 /// read by the caller from the open file.
 #[must_use]
-pub fn context_to_pb(context: &Context, selected_text: Vec<String>) -> pb::ReviewContext {
+pub fn context_to_pb(
+    context: &Context,
+    selected_text: Vec<String>,
+    resolved: Option<&CheckedStack>,
+) -> pb::ReviewContext {
     pb::ReviewContext {
-        view: Some(view_to_pb(&context.view)),
+        view: Some(view_to_pb(&context.view, resolved)),
         selected_text,
         notes: context.notes.iter().map(user_note_to_pb).collect(),
         switches: Some(switches_to_pb(context.switches)),
@@ -1119,7 +1129,11 @@ pub fn context_to_pb(context: &Context, selected_text: Vec<String>) -> pb::Revie
 
 /// A change for the chat line and the app's feed.
 #[must_use]
-pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
+pub fn change_to_pb(
+    change: &Change,
+    at: i64,
+    resolved: Option<&CheckedStack>,
+) -> pb::ReviewChange {
     use pb::review_change::Change as C;
     let (tool, undid) = match change.tool {
         ChangeTool::Tool(tool) => (tool.tool_name().to_owned(), String::new()),
@@ -1142,7 +1156,7 @@ pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
             order: order.iter().map(repo_path).collect(),
             groups: groups.iter().map(group_to_pb).collect(),
             notes: Vec::new(),
-            stack: stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+            stack: stack.as_ref().map(|stack| stack_to_pb(stack, resolved)),
             importance: importance_to_pb(importance),
             ..pb::ReviewPlan::default()
         })),
@@ -1174,9 +1188,11 @@ pub fn denied(error: &ChatError) -> Option<pb::Denied> {
 // Stacks (D800)
 
 /// A stack for the wire. With `resolved`, each layer repo carries the
-/// commits it resolved to when the stack was checked.
+/// commits and file counts it resolved to when the stack was checked
+/// (only applied when `resolved` matches `stack`).
 #[must_use]
 pub fn stack_to_pb(stack: &Stack, resolved: Option<&CheckedStack>) -> pb::ReviewStack {
+    let resolved = resolved.filter(|checked| checked.stack() == stack);
     pb::ReviewStack {
         layers: stack
             .layers
@@ -1184,6 +1200,71 @@ pub fn stack_to_pb(stack: &Stack, resolved: Option<&CheckedStack>) -> pb::Review
             .map(|layer| layer_to_pb(layer, resolved))
             .collect(),
     }
+}
+
+/// Applies `drift` findings onto a wire stack, marking drifted layer repos
+/// and zeroing their `files` count (review.proto: `files` is 0 when drifted).
+pub fn apply_drift_to_pb(stack: &mut pb::ReviewStack, drift: &[Drift]) {
+    for found in drift {
+        let kind = match found.kind {
+            DriftKind::Moved => pb::review_layer_resolved::Drift::Moved,
+            DriftKind::Missing => pb::review_layer_resolved::Drift::Missing,
+            DriftKind::HeadMoved => pb::review_layer_resolved::Drift::HeadMoved,
+        };
+        let resolved = stack
+            .layers
+            .iter_mut()
+            .filter(|layer| layer.title == found.layer)
+            .flat_map(|layer| layer.repos.iter_mut())
+            .filter(|part| {
+                part.repo.as_ref().map(repo_key).as_deref() == Some(found.repo.as_str())
+            })
+            .filter_map(|part| part.resolved.as_mut());
+        for resolved in resolved {
+            if resolved.drift == pb::review_layer_resolved::Drift::None as i32
+                || resolved.drift == pb::review_layer_resolved::Drift::Unspecified as i32
+            {
+                resolved.drift = kind as i32;
+                resolved.files = 0;
+            }
+        }
+    }
+}
+
+/// Reconstructs a `CheckedStack` from a stored wire stack's `resolved` fields
+/// so drift can be checked without losing stored commits. Returns `None` if
+/// the stack cannot be parsed or has no resolved entries.
+#[must_use]
+pub fn checked_stack_from_pb(wire: &pb::ReviewStack) -> Option<CheckedStack> {
+    let stack = stack_from_pb(wire).ok()?;
+    let mut any = false;
+    let resolved: Vec<Vec<Resolved>> = wire
+        .layers
+        .iter()
+        .map(|layer| {
+            layer
+                .repos
+                .iter()
+                .map(|part| match part.resolved.as_ref() {
+                    Some(found) => {
+                        any = true;
+                        Resolved {
+                            base_commit: found.base_commit.clone(),
+                            head_commit: found.head_commit.clone(),
+                            files: found.files,
+                        }
+                    }
+                    None => Resolved {
+                        base_commit: String::new(),
+                        head_commit: String::new(),
+                        files: 0,
+                    },
+                })
+                .collect()
+        })
+        .collect();
+    any.then(|| CheckedStack::from_resolved(stack, resolved))
+        .flatten()
 }
 
 fn layer_to_pb(layer: &Layer, resolved: Option<&CheckedStack>) -> pb::ReviewLayer {
@@ -1228,7 +1309,7 @@ fn layer_repo_to_pb(
                 head_commit: found.head_commit.clone(),
                 // Resolved and checked: no drift until the daemon finds some.
                 drift: pb::review_layer_resolved::Drift::None as i32,
-                ..Default::default()
+                files: found.files,
             }),
     }
 }
@@ -1668,5 +1749,103 @@ mod tests {
         let mut wire = stack_to_pb(&three_layer_stack(), None);
         wire.layers[0].repos[0].part = None;
         assert!(stack_from_pb(&wire).is_err());
+    }
+
+    #[test]
+    fn resolved_stack_threads_through_plan_view_and_change_with_files() {
+        let stack = three_layer_stack();
+        let resolved = vec![
+            vec![
+                Resolved {
+                    base_commit: "1111".to_owned(),
+                    head_commit: "2222".to_owned(),
+                    files: 3,
+                },
+                Resolved {
+                    base_commit: "aaaa".to_owned(),
+                    head_commit: "bbbb".to_owned(),
+                    files: 1,
+                },
+            ],
+            vec![Resolved {
+                base_commit: "2222".to_owned(),
+                head_commit: "2222".to_owned(),
+                files: 2,
+            }],
+        ];
+        let checked = CheckedStack::from_resolved(stack.clone(), resolved).expect("shape matches");
+
+        let plan = ReviewPlan {
+            spec: DiffSpec::default(),
+            order: Vec::new(),
+            groups: Vec::new(),
+            notes: Vec::new(),
+            stack: Some(stack.clone()),
+            from_stack: None,
+            importance: Vec::new(),
+        };
+        let pb_plan = plan_to_pb(&plan, &[], Some(&checked));
+        let pb_stack = pb_plan.stack.as_ref().expect("stack present");
+        let r0 = pb_stack.layers[0].repos[0]
+            .resolved
+            .as_ref()
+            .expect("resolved present on plan");
+        assert_eq!(r0.base_commit, "1111");
+        assert_eq!(r0.head_commit, "2222");
+        assert_eq!(r0.files, 3);
+        assert_eq!(r0.drift, pb::review_layer_resolved::Drift::None as i32);
+
+        let view = ViewState {
+            stack: Some(stack.clone()),
+            ..ViewState::default()
+        };
+        let pb_view = view_to_pb(&view, Some(&checked));
+        let vr1 = pb_view.stack.as_ref().unwrap().layers[1].repos[0]
+            .resolved
+            .as_ref()
+            .expect("resolved present on view");
+        assert_eq!(vr1.files, 2);
+
+        let change = Change {
+            seq: 1,
+            undo_id: "u1".to_owned(),
+            tool: ChangeTool::Diff,
+            summary: String::new(),
+            highlights: Vec::new(),
+            what: ChangeKind::Order {
+                order: Vec::new(),
+                groups: Vec::new(),
+                stack: Some(stack.clone()),
+                layer: None,
+                importance: Vec::new(),
+            },
+        };
+        let pb_change = change_to_pb(&change, 100, Some(&checked));
+        let Some(pb::review_change::Change::Plan(cp)) = pb_change.change else {
+            panic!("expected plan change");
+        };
+        let cr0 = cp.stack.as_ref().unwrap().layers[0].repos[1]
+            .resolved
+            .as_ref()
+            .expect("resolved present on change");
+        assert_eq!(cr0.files, 1);
+
+        // Round-trip via checked_stack_from_pb and apply_drift_to_pb.
+        let mut drifted_stack = pb_stack.clone();
+        let rebuilt = checked_stack_from_pb(&drifted_stack).expect("rebuilt");
+        assert_eq!(rebuilt.resolved("codec", "acme/api").unwrap().files, 3);
+        apply_drift_to_pb(
+            &mut drifted_stack,
+            &[Drift {
+                layer: "codec".to_owned(),
+                repo: "acme/api".to_owned(),
+                kind: DriftKind::Moved,
+            }],
+        );
+        let after = drifted_stack.layers[0].repos[0].resolved.as_ref().unwrap();
+        assert_eq!(after.drift, pb::review_layer_resolved::Drift::Moved as i32);
+        assert_eq!(after.files, 0);
+        // Untouched repo keeps its file count.
+        assert_eq!(drifted_stack.layers[0].repos[1].resolved.as_ref().unwrap().files, 1);
     }
 }

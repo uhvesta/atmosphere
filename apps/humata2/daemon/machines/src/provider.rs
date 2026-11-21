@@ -67,7 +67,7 @@ impl Action {
     }
 
     /// Long enough for a cloud VM to boot or a VM image to download.
-    fn timeout(self) -> Duration {
+    pub(crate) fn timeout(self) -> Duration {
         Duration::from_secs(match self {
             Self::Create => 30 * 60,
             Self::Identity | Self::List | Self::Refresh | Self::Status | Self::Ssh => 2 * 60,
@@ -406,24 +406,56 @@ impl Provider {
     }
 }
 
+/// Recognized status words grouped by canonical state. Shared with `spec` so
+/// the schema and [`parse_status_word`] stay in lockstep.
+pub(crate) const STATUS_WORD_GROUPS: [(&str, &[&str]); 5] = [
+    ("running", &["running", "active", "started", "up", "ready"]),
+    (
+        "sleeping",
+        &["sleeping", "suspended", "paused", "hibernated", "idle", "asleep"],
+    ),
+    (
+        "stopped",
+        &[
+            "stopped",
+            "off",
+            "terminated",
+            "shutoff",
+            "shut off",
+            "halted",
+            "exited",
+            "down",
+            "poweroff",
+            "deallocated",
+        ],
+    ),
+    (
+        "starting",
+        &["starting", "booting", "pending", "provisioning", "waking", "resuming"],
+    ),
+    (
+        "missing",
+        &["missing", "not_found", "not found", "deleted", "destroyed", "gone"],
+    ),
+];
+
 /// Maps a single status word (from plain text or JSON `state`) to [`MachineStatus`].
 pub(crate) fn parse_status_word(word: &str) -> MachineStatus {
     let trimmed = word.trim();
-    match trimmed.to_ascii_lowercase().as_str() {
-        "running" | "active" | "started" | "up" | "ready" => MachineStatus::Running,
-        "sleeping" | "suspended" | "paused" | "hibernated" | "idle" | "asleep" => {
-            MachineStatus::Sleeping
+    let lower = trimmed.to_ascii_lowercase();
+    for (canonical, words) in STATUS_WORD_GROUPS {
+        if words.contains(&lower.as_str()) {
+            return match canonical {
+                "running" => MachineStatus::Running,
+                "sleeping" => MachineStatus::Sleeping,
+                "stopped" => MachineStatus::Stopped,
+                "starting" => MachineStatus::Starting,
+                "missing" => MachineStatus::Missing,
+                _ => unreachable!(),
+            };
         }
-        "stopped" | "off" | "terminated" | "shutoff" | "shut off" | "halted" | "exited"
-        | "down" | "poweroff" | "deallocated" => MachineStatus::Stopped,
-        "starting" | "booting" | "pending" | "provisioning" | "waking" | "resuming" => {
-            MachineStatus::Starting
-        }
-        "missing" | "not_found" | "not found" | "deleted" | "destroyed" | "gone" => {
-            MachineStatus::Missing
-        }
-        _ => MachineStatus::Other(trimmed.chars().take(64).collect()),
     }
+    MachineStatus::Other(trimmed.chars().take(64).collect())
 }
 
 /// Reads what a `status` command printed: one word, or JSON with a `state`
@@ -668,6 +700,61 @@ struct RawParam {
     name: Spanned<String>,
     prompt: Option<String>,
     default: Option<String>,
+}
+
+/// Exact TOML keys of `[providers.<id>]`, derived from [`RawProvider`].
+/// Adding, removing or renaming a field on `RawProvider` fails to compile
+/// here so `humata provider schema` can never drift from the parser.
+pub(crate) const RAW_PROVIDER_KEYS: [&str; 17] = [
+    "label",
+    "create",
+    "connect",
+    "identity",
+    "list",
+    "start",
+    "stop",
+    "wake",
+    "refresh",
+    "ssh",
+    "delete",
+    "status",
+    "wake_on_demand",
+    "params",
+    "env",
+    "interactive",
+    "run_on",
+];
+
+/// Exact TOML keys of `params` entries, derived from [`RawParam`].
+pub(crate) const RAW_PARAM_KEYS: [&str; 3] = ["name", "prompt", "default"];
+
+#[allow(dead_code)]
+fn _assert_schema_exhaustive(file: RawFile, provider: RawProvider, param: RawParam) {
+    let RawFile { providers: _ } = file;
+    let RawProvider {
+        label: _,
+        create: _,
+        connect: _,
+        identity: _,
+        list: _,
+        start: _,
+        stop: _,
+        wake: _,
+        refresh: _,
+        ssh: _,
+        delete: _,
+        status: _,
+        wake_on_demand: _,
+        params: _,
+        env: _,
+        interactive: _,
+        run_on: _,
+    } = provider;
+    let RawParam {
+        name: _,
+        prompt: _,
+        default: _,
+    } = param;
 }
 
 fn line_of(text: &str, offset: usize) -> usize {

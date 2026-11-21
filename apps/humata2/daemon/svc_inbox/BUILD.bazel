@@ -1,9 +1,11 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # What svc_inbox is built on that has no fault-point build.
 SVC_INBOX_SHARED_DEPS = [
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/browser_copilot",
     "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
@@ -91,6 +93,43 @@ rust_binary(
 rust_test(
     name = "screenparse_unit_test",
     crate = ":screenparse",
+)
+
+# Fast-tier deterministic replay of the recorded CLI screen corpus through
+# `screen_question` and `ScreenAsk` (zero model calls, zero sleeps).
+rust_test(
+    name = "screen_replay_test",
+    srcs = ["tests/screen_replay.rs"],
+    data = glob(["tests/screens/**/*.txt"]),
+    deps = [
+        ":screenparse",
+        ":svc_inbox",
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/store",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+# Slow-tier live CLI screen recorder check: runs only on demand and skips
+# cleanly when agent logins are unavailable.
+sh_test(
+    name = "screenparse_live",
+    timeout = "long",
+    srcs = ["tests/screenparse/live_test.sh"],
+    data = [
+        ":screenparse_record",
+        "tests/screenparse/mcp_echo.py",
+        "tests/screenparse/record_corpus.sh",
+    ] + glob(["tests/screenparse/scripts/*.script"]),
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+        "slow",
+    ],
 )
 
 filegroup(

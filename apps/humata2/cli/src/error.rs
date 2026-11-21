@@ -141,6 +141,14 @@ pub enum CliError {
     /// `humata doctor restarts` couldn't read or write a restart report.
     #[error(transparent)]
     Doctor(#[from] crate::commands::DoctorError),
+    /// Offline provider authoring helper (`provider check|render|parse|example`)
+    /// found a problem with the input.
+    #[error("{message}")]
+    ProviderSpec {
+        message: String,
+        fix: String,
+        details: Value,
+    },
 }
 
 /// A failure as printed: `error` in `--json`, message and fix on stderr.
@@ -265,8 +273,8 @@ impl CliError {
                 ..plain(
                     "presence_required",
                     exit::NEEDS_USER,
-                    if *in_session {
-                        "Run it from a terminal outside Humata's sessions: anything typed in a session's terminal may come from its agent.".into()
+                    if *in_session || has_session_token_env() {
+                        session_terminal_fix().to_owned()
                     } else if accepted.contains(&"approval_passphrase") {
                         "Run `humata login` in this terminal and type the approval passphrase when it asks, then run this again.".into()
                     } else {
@@ -320,6 +328,18 @@ impl CliError {
                 let (kind, code, fix) = error.how();
                 plain(kind, code, fix)
             }
+            Self::ProviderSpec {
+                message,
+                fix,
+                details,
+            } => Failure {
+                kind: "invalid_field".to_owned(),
+                code: exit::USAGE,
+                message: message.clone(),
+                fix: fix.clone(),
+                details: details.clone(),
+                retry: None,
+            },
             Self::LoginNeedsHome => plain(
                 "invalid_field",
                 exit::USAGE,
@@ -470,7 +490,19 @@ fn daemon_failure(error: &DaemonError) -> Failure {
     }
 }
 
+fn has_session_token_env() -> bool {
+    std::env::var_os("HUMATA_SESSION_TOKEN").is_some_and(|value| !value.is_empty())
+}
+
+fn session_terminal_fix() -> &'static str {
+    "You are inside a Humata session terminal (HUMATA_SESSION_TOKEN is set), where commands run as the session's agent and can't use `humata login`. Do this in the Humata app UI, or open an external terminal outside Humata, run `humata login` (and approve the prompt in the Humata app), then run the command there."
+}
+
 fn refusal_failure(error: &pb::Error, code: i32) -> Failure {
+    refusal_failure_with_env(error, code, has_session_token_env())
+}
+
+fn refusal_failure_with_env(error: &pb::Error, code: i32, has_session_token: bool) -> Failure {
     if let Some(pb::error::Kind::ApprovalPending(pending)) = &error.kind {
         let request = pending
             .request
@@ -499,12 +531,78 @@ fn refusal_failure(error: &pb::Error, code: i32) -> Failure {
             });
         (after, retry.same_key)
     });
+    let in_session_refusal = matches!(
+        error.kind,
+        Some(pb::error::Kind::UserOnly(_))
+    ) || matches!(
+        error.kind,
+        Some(pb::error::Kind::PresenceRequired(ref needed)) if needed.caller_in_session_terminal
+    );
+    let fix = if has_session_token && in_session_refusal {
+        session_terminal_fix().to_owned()
+    } else {
+        error.fix.clone()
+    };
     Failure {
         kind: kind.to_owned(),
         code: exit,
         message: error.message.clone(),
-        fix: error.fix.clone(),
+        fix,
         details,
         retry,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_only_in_session_terminal_guides_to_app_ui_and_external_terminal_login() {
+        let error = pb::Error {
+            message: "only the user can change this".to_owned(),
+            fix: "do it yourself".to_owned(),
+            kind: Some(pb::error::Kind::UserOnly(pb::UserOnly { capability: 0 })),
+            retry: None,
+        };
+
+        let in_session = refusal_failure_with_env(&error, 7, true);
+        assert_eq!(in_session.kind, "user_only");
+        assert!(in_session.fix.contains("Humata app"));
+        assert!(in_session.fix.contains("external terminal"));
+        assert!(in_session.fix.contains("humata login"));
+
+        let outside = refusal_failure_with_env(&error, 7, false);
+        assert_eq!(outside.fix, "do it yourself");
+    }
+
+    #[test]
+    fn presence_required_in_session_terminal_guides_to_app_ui_and_external_terminal_login() {
+        let error = pb::Error {
+            message: "humata login can't run inside a Humata session's terminal".to_owned(),
+            fix: "run outside".to_owned(),
+            kind: Some(pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: Vec::new(),
+                caller_in_session_terminal: true,
+                tries_left: 0,
+            })),
+            retry: None,
+        };
+
+        let failure = refusal_failure_with_env(&error, 7, true);
+        assert_eq!(failure.kind, "presence_required");
+        assert!(failure.fix.contains("Humata app"));
+        assert!(failure.fix.contains("external terminal"));
+        assert!(failure.fix.contains("humata login"));
+
+        let no_presence = CliError::NoPresence {
+            accepted: Vec::new(),
+            in_session: true,
+        }
+        .failure();
+        assert_eq!(no_presence.kind, "presence_required");
+        assert!(no_presence.fix.contains("Humata app"));
+        assert!(no_presence.fix.contains("external terminal"));
+        assert!(no_presence.fix.contains("humata login"));
     }
 }

@@ -40,12 +40,19 @@ Splitter "Resize the sidebar"
   Button "Desk sessions in sidebar: 5"
   Tab "Wrap" selected
   Tab "Scroll"
+  #input
+    TextInput "Menlo" value="" placeholder="Menlo"
+  Button "Save"
+  #input
+    TextInput "10000" value="" placeholder="10000"
+  Button "Save"
 Tab "General"
 Tab "Agents"
 Tab "Sync"
 Tab "Machines"
 Tab "Layout" selected
 Tab "Agent access"
+Tab "Browser"
 Tab "Storage"
 Tab "Notifications"
 Tab "Keyboard"

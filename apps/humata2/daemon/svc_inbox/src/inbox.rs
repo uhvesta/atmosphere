@@ -93,6 +93,8 @@ pub struct Inbox {
     asking: Arc<dyn AskingGuardPort>,
     /// Reads per-agent permission switches.
     gate: std::sync::OnceLock<Arc<dyn AgentGatePort>>,
+    /// In-memory per-session 30-minute browser read grants and consumed approvals.
+    browser: std::sync::Mutex<browser::BrowserGrants>,
 }
 
 #[derive(Default)]
@@ -280,6 +282,7 @@ impl Inbox {
             agents: std::sync::OnceLock::new(),
             asking: Arc::new(NoopAsking),
             gate: std::sync::OnceLock::new(),
+            browser: std::sync::Mutex::new(browser::BrowserGrants::default()),
         }
     }
 
@@ -784,11 +787,16 @@ impl Inbox {
             return Err(refused);
         }
         let decided = self.decide(user, entry, &current, answer, at)?;
+        let allow_30m = matches!(
+            decided.answer,
+            pb::request_answer::Answer::AllowFor30Min(_)
+        );
         let by = answered_by(caller, user);
         let mut next = entry.request.borrow().clone();
         settle(&mut next, decided, by, at);
         self.commit(entry, next, Some(user), "save the answer")
             .await?;
+        self.record_browser_answer(entry, allow_30m, at);
         self.start(entry);
         Ok(self.tell_answer(entry))
     }
@@ -1066,8 +1074,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 continue;
             }
             let decided = if request.approve {
-                match &entry.access {
-                    Some(access) if !access.ahead => self
+                match (&entry.access, browser::is_read(&current)) {
+                    (Some(access), _) if !access.ahead => self
                         .approve(&user, &entry.id, access, &Answer::Once, at)
                         .ok()
                         .map(|grant| Decided {
@@ -1075,9 +1083,15 @@ impl pb::inbox_service_server::InboxService for Inbox {
                             answer: pb::request_answer::Answer::Approve(pb::Approve {}),
                             grant,
                         }),
-                    // A question needs a reply, and approving an ask-ahead
-                    // would make a grant.
-                    Some(_) | None => None,
+                    // BROWSER: Approve all allows browser reads once and skips browser writes.
+                    (_, Some(true)) => Some(Decided {
+                        state: pb::RequestState::Approved,
+                        answer: pb::request_answer::Answer::Approve(pb::Approve {}),
+                        grant: None,
+                    }),
+                    // A browser write requires per-action approval; a question
+                    // needs a reply; approving an ask-ahead would make a grant.
+                    _ => None,
                 }
             } else {
                 Some(Decided {
@@ -2370,13 +2384,13 @@ mod tests {
         }
     }
 
-    fn user_req<T>(msg: T) -> Request<T> {
+    pub(super) fn user_req<T>(msg: T) -> Request<T> {
         let mut req = Request::new(msg);
         req.extensions_mut().insert(Caller::User(UserVia::App));
         req
     }
 
-    fn test_inbox(dir: &tempfile::TempDir) -> Arc<Inbox> {
+    pub(super) fn test_inbox(dir: &tempfile::TempDir) -> Arc<Inbox> {
         let store = Arc::new(Store::open(dir.path().join("state")).expect("open store"));
         Arc::new(Inbox::new(
             Arc::new(TestGuard::new()),
@@ -2386,7 +2400,7 @@ mod tests {
         ))
     }
 
-    fn agent_req<T>(msg: T, session: &str) -> Request<T> {
+    pub(super) fn agent_req<T>(msg: T, session: &str) -> Request<T> {
         let mut req = Request::new(msg);
         req.extensions_mut().insert(Caller::Agent(AgentCaller {
             session: humata2_access::SessionRef {
@@ -2431,7 +2445,7 @@ mod tests {
         "rq_1".to_owned()
     }
 
-    fn id(value: &str) -> Option<pb::RequestId> {
+    pub(super) fn id(value: &str) -> Option<pb::RequestId> {
         Some(pb::RequestId { value: value.to_owned() })
     }
 

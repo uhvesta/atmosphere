@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Humata File System</string>
+	<key>CFBundleExecutable</key>
+	<string>HumataFS</string>
+	<key>CFBundleIdentifier</key>
+	<string>@EXTENSION_BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>HumataFS</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>HumataAppGroup</key>
+	<string>@APP_GROUP@</string>
+	<key>EXAppExtensionAttributes</key>
+	<dict>
+		<key>EXExtensionPointIdentifier</key>
+		<string>com.apple.fskit.fsmodule</string>
+		<key>FSShortName</key>
+		<string>humatafs</string>
+		<key>FSSupportsGenericURLs</key>
+		<true/>
+		<key>FSSupportedSchemes</key>
+		<array>
+			<string>humatafs</string>
+		</array>
+		<key>FSPersonalities</key>
+		<dict>
+			<key>HumataFS</key>
+			<dict>
+				<key>FSName</key>
+				<string>HumataFS</string>
+				<key>FSSubType</key>
+				<integer>0</integer>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

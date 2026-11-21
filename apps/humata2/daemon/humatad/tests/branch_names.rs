@@ -235,7 +235,9 @@ async fn a_pushed_branch_keeps_its_name_and_the_tick_is_refused_changing_nothing
     assert_eq!(head_of(&clone), "uhvesta/fix-refund-rounding");
 }
 
-/// D196: only the user changes the prefix; an agent is refused outright.
+/// SETTINGSFIX Slice 3: an agent proposing a branch prefix change gets an
+/// Inbox approval card (AskNoAllow) rather than a hard `user_only` refusal;
+/// nothing changes until the user approves it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_cannot_change_the_branch_prefix() {
     let (daemon, world) = start_world().await;
@@ -246,8 +248,7 @@ async fn an_agent_cannot_change_the_branch_prefix() {
 
     let mut request = tonic::Request::new(pb::UpdateSettingsRequest { branch_prefix: Some("agent/".to_owned()), ..Default::default() });
     request.metadata_mut().insert("humata-session-token", tonic::metadata::MetadataValue::try_from(token.as_str()).unwrap());
-    let refused = settings(&daemon).await.update_settings(request).await.expect_err("an agent can't change Settings");
-    assert_eq!(refused.code(), Code::PermissionDenied);
-    assert!(matches!(error_of(&refused).kind, Some(pb::error::Kind::UserOnly(_))));
+    let pending = settings(&daemon).await.update_settings(request).await.expect_err("an agent's Settings edit waits in the Inbox");
+    assert!(matches!(error_of(&pending).kind, Some(pb::error::Kind::ApprovalPending(_))));
     assert_eq!(preview(&daemon, &channel, "Next").await, ["next"]);
 }

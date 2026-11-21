@@ -42,6 +42,18 @@ fn an_items_session_opens_from_the_list() {
     store.finish();
 }
 
+#[test]
+fn an_items_channel_opens_from_the_list() {
+    let (mut store, _) = store();
+    let channel = store.state().workspace.channels[0].id.clone();
+    store.send(A::Switch(Route::Todo), |_| {});
+    store.send(A::Todo(TodoAction::OpenChannel(channel.as_str().to_owned())), |_| {});
+    assert_eq!(store.state().route, Route::Channel(channel));
+    store.skip_received();
+    store.skip_in_flight();
+    store.finish();
+}
+
 fn loaded() -> (TestStore<App>, humata2_clients::model::SessionId) {
     let (mut store, session) = store();
     store.send(A::Switch(Route::Todo), |_| {});

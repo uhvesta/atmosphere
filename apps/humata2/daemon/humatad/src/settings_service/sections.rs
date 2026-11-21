@@ -93,6 +93,8 @@ pub(super) struct File {
     #[serde(skip_serializing_if = "Option::is_none")]
     fusefs_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    web_todo_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     long_lines: Option<LongLines>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_agent: Option<Agent>,
@@ -282,6 +284,8 @@ impl Places {
         shown.retention_defaults = Some(retention_of(file.retention.unwrap_or_default()));
         // D895: the FUSE mount is off until Settings turns it on.
         shown.fusefs_enabled = file.fusefs_enabled.unwrap_or(false);
+        // D905: the loopback To-do web UI is off until Settings turns it on.
+        shown.web_todo_enabled = file.web_todo_enabled.unwrap_or(false);
         shown.long_lines = match file.long_lines {
             Some(LongLines::Scroll) => pb::LongLines::Scroll,
             Some(LongLines::Wrap) | None => pb::LongLines::Wrap,
@@ -417,6 +421,9 @@ impl Places {
         if let Some(enabled) = request.fusefs_enabled {
             file.fusefs_enabled = Some(enabled);
         }
+        if let Some(enabled) = request.web_todo_enabled {
+            file.web_todo_enabled = Some(enabled);
+        }
         if let Some(long_lines) = request.long_lines {
             file.long_lines = Some(match pb::LongLines::try_from(long_lines) {
                 Ok(pb::LongLines::Scroll) => LongLines::Scroll,
@@ -450,6 +457,7 @@ fn sets_file(request: &pb::UpdateSettingsRequest) -> bool {
         || request.long_lines.is_some()
         || request.notifications.is_some()
         || request.fusefs_enabled.is_some()
+        || request.web_todo_enabled.is_some()
         || request.todo_automation.is_some()
 }
 
@@ -458,6 +466,13 @@ fn sets_file(request: &pb::UpdateSettingsRequest) -> bool {
 pub(crate) fn fusefs_enabled_in(state: &Path) -> bool {
     let config = state.parent().unwrap_or(state).join("config").join("settings.toml");
     read_file(&config).ok().and_then(|file| file.fusefs_enabled).unwrap_or(false)
+}
+
+/// Whether the To-do web UI is saved as on in the settings file under the
+/// humata home `state` is in. False when unset or unreadable (D905).
+pub(crate) fn web_todo_enabled_in(state: &Path) -> bool {
+    let config = state.parent().unwrap_or(state).join("config").join("settings.toml");
+    read_file(&config).ok().and_then(|file| file.web_todo_enabled).unwrap_or(false)
 }
 
 fn read_file(path: &Path) -> Result<File, SectionsError> {

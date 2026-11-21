@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Shared language detector and syntax highlighter, once per engine (D49):
+# `highlight` on ordinary GPUI from @crates, `highlight_fast` on GPUI Fast
+# from @crates_gpui_fast.
+GPUI_KIT = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+[
+    rust_library(
+        name = "highlight" + engine,
+        srcs = glob(["src/**/*.rs"]),
+        compile_data = ["Cargo.toml"],
+        crate_name = "humata2_highlight",
+        visibility = [
+            "//apps/humata2:__subpackages__",
+        ],
+        deps = [
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+rust_test(
+    name = "highlight_test",
+    crate = ":highlight",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

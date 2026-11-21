@@ -104,6 +104,9 @@ enum Rejection {
         "request `{id}` already stands as state {first}, so the later state {later} is left out; the first recorded stands"
     )]
     Conflict { id: String, first: i32, later: i32 },
+
+    #[error("browser request `{id}` carried an answer kind that isn't allowed for it")]
+    InvalidBrowserAnswer { id: String },
 }
 
 /// What one entry brings, with what the host already holds.
@@ -203,6 +206,9 @@ fn decide(arrival: &Arrival<'_>, known: &Known<'_>) -> Result<Option<pb::InboxRe
             ) {
                 return Err(disagrees());
             }
+            if !super::browser::valid_replayed_answer(request) {
+                return Err(Rejection::InvalidBrowserAnswer { id: id.to_owned() });
+            }
             let credit = Some(credited(arrival));
             let Some(held) = existing else {
                 // A request never seen is made already settled.
@@ -261,6 +267,7 @@ fn mirrored(arrival: &Arrival<'_>, session: &SessionRecord) -> pb::InboxRequest 
     request.channel = Some(pb::ChannelId {
         value: session.channel.clone(),
     });
+    super::browser::clamp_preview(&mut request);
     request
 }
 
@@ -526,14 +533,21 @@ impl Inbox {
             }
             return Err(error);
         }
+        let allow_30m = entry.operation == JOURNAL_ANSWER
+            && matches!(
+                held.request.answer.as_ref().and_then(|a| a.answer.as_ref()),
+                Some(pb::request_answer::Answer::AllowFor30Min(_))
+            );
         match position {
             Some(at) => {
                 state.requests[at].request.send_replace(held);
+                self.record_browser_answer(&state.requests[at], allow_30m, SystemTime::now());
                 self.tell_answer(&state.requests[at]);
             }
             None => {
                 let told = held.request.clone();
                 let made = Entry::new(id, session_id.clone(), None, asked, None, held);
+                self.record_browser_answer(&made, allow_30m, SystemTime::now());
                 self.tell_grant(&made);
                 state.add(made);
                 self.tell(pb::Change::Created, &session_id, &told);

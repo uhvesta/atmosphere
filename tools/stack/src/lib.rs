@@ -14,10 +14,13 @@ mod gh;
 mod git;
 mod guide;
 mod history;
+mod import;
 mod local;
+mod parity;
 mod pins;
 mod plan;
 mod restack;
+mod state;
 mod status;
 mod trailers;
 mod upload;
@@ -62,6 +65,20 @@ fn run(command: &Command, dir: &std::path::Path) -> Result<(), Error> {
         Command::Diff(args) => diff::run(args, dir),
         Command::Config(ConfigCommand::Show(args)) => commands::config_show(args),
         Command::Commands(args) => commands::run(args),
+        Command::Import(args) => import::run(args, dir),
+        Command::Init(args) => parity::init(args, dir),
+        Command::Add(args) => parity::add(args, dir),
+        Command::View(args) => status::run(args, dir),
+        Command::Up => parity::navigate(parity::Nav::Up, dir),
+        Command::Down => parity::navigate(parity::Nav::Down, dir),
+        Command::Top => parity::navigate(parity::Nav::Top, dir),
+        Command::Bottom => parity::navigate(parity::Nav::Bottom, dir),
+        Command::Trunk(args) => parity::trunk(args, dir),
+        Command::Submit(args) => upload::run_submit(args, dir),
+        Command::Push(args) => upload::run_push(args, dir),
+        Command::Sync(args) => upload::run_sync(args, dir),
+        Command::Rebase(args) => parity::rebase(args, dir),
+        Command::Link(args) => parity::link(args, dir),
     }
 }
 

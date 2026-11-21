@@ -31,6 +31,7 @@ enum Kind {
     Boolean,
     Array {
         items: Box<Schema>,
+        min_items: Option<usize>,
         max_items: Option<usize>,
     },
     Object(Object),
@@ -106,6 +107,7 @@ pub(crate) fn boolean() -> Schema {
 pub(crate) fn array(items: Schema) -> Schema {
     of(Kind::Array {
         items: Box::new(items),
+        min_items: None,
         max_items: None,
     })
 }
@@ -161,6 +163,13 @@ impl Schema {
     pub(crate) fn default_value(mut self, value: i64) -> Self {
         if let Kind::Integer { default, .. } = &mut self.kind {
             *default = Some(value);
+        }
+        self
+    }
+
+    pub(crate) fn min_items(mut self, limit: usize) -> Self {
+        if let Kind::Array { min_items, .. } = &mut self.kind {
+            *min_items = Some(limit);
         }
         self
     }
@@ -242,10 +251,17 @@ impl Schema {
                 out.insert("type".to_owned(), json!("boolean"));
                 out
             }
-            Kind::Array { items, max_items } => {
+            Kind::Array {
+                items,
+                min_items,
+                max_items,
+            } => {
                 let mut out = Map::new();
                 out.insert("type".to_owned(), json!("array"));
                 out.insert("items".to_owned(), items.to_json());
+                if let Some(limit) = min_items {
+                    out.insert("minItems".to_owned(), json!(limit));
+                }
                 if let Some(limit) = max_items {
                     out.insert("maxItems".to_owned(), json!(limit));
                 }
@@ -359,12 +375,21 @@ impl Schema {
                     }))
                 }
             }
-            Kind::Array { items, max_items } => {
+            Kind::Array {
+                items,
+                min_items,
+                max_items,
+            } => {
                 let Some(entries) = value.as_array() else {
                     return Err(violation(Problem::WrongType {
                         expected: "an array",
                     }));
                 };
+                if let Some(limit) = min_items
+                    && entries.len() < *limit
+                {
+                    return Err(violation(Problem::TooFewItems { limit: *limit }));
+                }
                 if let Some(limit) = max_items
                     && entries.len() > *limit
                 {
@@ -432,21 +457,38 @@ impl Schema {
                 for choice in choices {
                     match choice.check(value, path) {
                         Ok(()) => matched += 1,
-                        Err(failure) => failures.push(failure),
+                        Err(failure) => failures.push((choice, failure)),
                     }
                 }
                 match matched {
                     1 => Ok(()),
                     0 => {
-                        // The choice that got furthest names the real
-                        // problem: `{root: "clone"}` without `repo` says
-                        // `/location/repo` is missing.
-                        let deepest = failures
-                            .into_iter()
-                            .max_by_key(|failure| failure.path.len());
-                        match deepest {
-                            Some(failure) if failure.path.len() > path.len().max(1) => {
-                                Err(failure)
+                        // Prefer the branch whose discriminator(s) matched (e.g.
+                        // `root: "session_folder"` beats `root: "clone"` even on
+                        // equal-depth failures), then known keys, then failure depth.
+                        let best = failures.into_iter().max_by_key(|(choice, failure)| {
+                            let (disc_matched, disc_mismatched, known_keys) =
+                                shape_score(choice, value);
+                            let segments = failure.path.bytes().filter(|&b| b == b'/').count();
+                            (
+                                disc_matched,
+                                !disc_mismatched,
+                                known_keys,
+                                segments,
+                                failure.path.len(),
+                            )
+                        });
+                        match best {
+                            Some((choice, failure))
+                                if failure.path.len() > path.len().max(1) =>
+                            {
+                                let (disc_matched, disc_mismatched, _) =
+                                    shape_score(choice, value);
+                                if disc_matched > 0 || !disc_mismatched {
+                                    Err(failure)
+                                } else {
+                                    Err(violation(Problem::NoChoiceFits))
+                                }
                             }
                             _ => Err(violation(Problem::NoChoiceFits)),
                         }
@@ -456,6 +498,209 @@ impl Schema {
             }
         }
     }
+
+    /// Generates a minimal valid example value matching this schema.
+    pub(crate) fn minimal_example(&self) -> Value {
+        match &self.kind {
+            Kind::String { values: Some(values), .. } => {
+                json!(values.first().copied().unwrap_or("example"))
+            }
+            Kind::String { max_length, values: None } => {
+                let sample = "example";
+                match max_length {
+                    Some(limit) if *limit < sample.len() => json!(&sample[..*limit]),
+                    _ => json!(sample),
+                }
+            }
+            Kind::Integer { minimum, default, .. } => {
+                json!(default.or(*minimum).unwrap_or(0))
+            }
+            Kind::Boolean => json!(false),
+            Kind::Array { items, min_items, .. } => {
+                let count = min_items.unwrap_or(0);
+                Value::Array((0..count).map(|_| items.minimal_example()).collect())
+            }
+            Kind::AnyObject => json!({}),
+            Kind::OneOf(choices) => choices
+                .first()
+                .map(Schema::minimal_example)
+                .unwrap_or_else(|| json!({})),
+            Kind::Object(object) => {
+                let mut out = Map::new();
+                for property in &object.properties {
+                    if property.required {
+                        out.insert(property.name.to_owned(), property.schema.minimal_example());
+                    }
+                }
+                if !object.exactly_one_of.is_empty()
+                    && !object
+                        .exactly_one_of
+                        .iter()
+                        .any(|name| out.contains_key(*name))
+                    && let Some(first_name) = object.exactly_one_of.first()
+                    && let Some(property) = object
+                        .properties
+                        .iter()
+                        .find(|property| property.name == *first_name)
+                {
+                    out.insert(property.name.to_owned(), property.schema.minimal_example());
+                }
+                Value::Object(out)
+            }
+        }
+    }
+
+    /// Returns `(required, optional)` parameter labels for compact 1-line tool
+    /// summaries in `humata_list`.
+    pub(crate) fn signature_params(&self) -> (Vec<String>, Vec<String>) {
+        let Kind::Object(object) = &self.kind else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut req_names = Vec::new();
+        let mut opt_names = Vec::new();
+        for property in &object.properties {
+            if property.required {
+                req_names.push(format!("{}*", property.name));
+            } else if !object.exactly_one_of.contains(&property.name) {
+                opt_names.push(property.name.to_owned());
+            }
+        }
+        if !object.exactly_one_of.is_empty() {
+            req_names.push(format!("{}*", object.exactly_one_of.join("|")));
+        }
+        (req_names, opt_names)
+    }
+
+    /// Compact inline schema string for error self-correction, focused along
+    /// `violation_path` (a JSON Pointer such as `"/location/repo"`).
+    pub(crate) fn to_compact_focused(&self, violation_path: &str) -> String {
+        let focus: Vec<&str> = violation_path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        self.format_compact(&focus, 0)
+    }
+
+    fn format_compact(&self, focus: &[&str], depth: usize) -> String {
+        match &self.kind {
+            Kind::String { values: Some(values), .. } => {
+                const MAX_ENUM: usize = 8;
+                if values.len() <= MAX_ENUM {
+                    values
+                        .iter()
+                        .map(|v| format!("\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                } else {
+                    let head = values[..5]
+                        .iter()
+                        .map(|v| format!("\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    format!("{head}|...({} values)", values.len())
+                }
+            }
+            Kind::String { max_length: Some(limit), values: None } => format!("string(<={limit})"),
+            Kind::String { max_length: None, values: None } => "string".to_owned(),
+            Kind::Integer { minimum, maximum, .. } => match (minimum, maximum) {
+                (Some(low), Some(high)) => format!("int({low}..{high})"),
+                (Some(low), None) => format!("int(>={low})"),
+                (None, Some(high)) => format!("int(<={high})"),
+                (None, None) => "int".to_owned(),
+            },
+            Kind::Boolean => "bool".to_owned(),
+            Kind::Array {
+                items,
+                min_items,
+                max_items,
+            } => {
+                let next_focus = match focus.first() {
+                    Some(seg) if seg.chars().all(|c| c.is_ascii_digit()) => &focus[1..],
+                    _ => &[],
+                };
+                let inner = if depth >= 2 && focus.is_empty() {
+                    match &items.kind {
+                        Kind::Object(_) | Kind::OneOf(_) => "object".to_owned(),
+                        _ => items.format_compact(next_focus, depth + 1),
+                    }
+                } else {
+                    items.format_compact(next_focus, depth + 1)
+                };
+                match (min_items, max_items) {
+                    (Some(lo), Some(hi)) => format!("[{inner}]({lo}..{hi})"),
+                    (Some(lo), None) => format!("[{inner}](>={lo})"),
+                    (None, Some(hi)) => format!("[{inner}](<={hi})"),
+                    (None, None) => format!("[{inner}]"),
+                }
+            }
+            Kind::AnyObject => "object".to_owned(),
+            Kind::OneOf(choices) => choices
+                .iter()
+                .map(|choice| choice.format_compact(focus, depth))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            Kind::Object(object) => {
+                if depth >= 2 && focus.is_empty() && object.properties.len() > 4 {
+                    let keys: Vec<String> = object
+                        .properties
+                        .iter()
+                        .map(|p| {
+                            if p.required {
+                                format!("{}*", p.name)
+                            } else {
+                                format!("{}?", p.name)
+                            }
+                        })
+                        .collect();
+                    return format!("{{{}}}", keys.join(", "));
+                }
+                let mut parts = Vec::with_capacity(object.properties.len() + 1);
+                for property in &object.properties {
+                    let marker = if property.required { "*" } else { "?" };
+                    let child_focus = match focus.first() {
+                        Some(seg) if *seg == property.name => &focus[1..],
+                        _ => &[],
+                    };
+                    let ty = property.schema.format_compact(child_focus, depth + 1);
+                    parts.push(format!("{}{marker}: {ty}", property.name));
+                }
+                if !object.exactly_one_of.is_empty() {
+                    parts.push(format!("oneOf({})", object.exactly_one_of.join(", ")));
+                }
+                format!("{{{}}}", parts.join(", "))
+            }
+        }
+    }
+}
+
+/// Scores how closely an object `value` matches an object `choice` in a `oneOf`:
+/// `(discriminators_matched, discriminator_mismatched, known_keys)`.
+fn shape_score(choice: &Schema, value: &Value) -> (usize, bool, usize) {
+    let (Kind::Object(object), Some(fields)) = (&choice.kind, value.as_object()) else {
+        return (0, false, 0);
+    };
+    let mut disc_matched = 0;
+    let mut disc_mismatched = false;
+    let mut known_keys = 0;
+    for property in &object.properties {
+        if let Some(given) = fields.get(property.name) {
+            known_keys += 1;
+            if let Kind::String {
+                values: Some(values),
+                ..
+            } = &property.schema.kind
+                && values.len() == 1
+            {
+                if given.as_str() == Some(values[0]) {
+                    disc_matched += 1;
+                } else {
+                    disc_mismatched = true;
+                }
+            }
+        }
+    }
+    (disc_matched, disc_mismatched, known_keys)
 }
 
 /// An integer, from a JSON number with no fraction.
@@ -492,6 +737,7 @@ pub(crate) enum Problem {
     UnknownValue { allowed: Vec<&'static str> },
     BelowMinimum { minimum: i64 },
     AboveMaximum { maximum: i64 },
+    TooFewItems { limit: usize },
     TooManyItems { limit: usize },
     Missing,
     Unexpected,
@@ -509,7 +755,9 @@ impl Problem {
             }
             Problem::TooLong { .. } | Problem::TooManyItems { .. } => "too_long",
             Problem::UnknownValue { .. } => "unknown_value",
-            Problem::BelowMinimum { .. } | Problem::AboveMaximum { .. } => "out_of_range",
+            Problem::BelowMinimum { .. }
+            | Problem::AboveMaximum { .. }
+            | Problem::TooFewItems { .. } => "out_of_range",
             Problem::Missing => "missing",
             Problem::Unexpected => "not_allowed_here",
         }
@@ -529,18 +777,19 @@ impl fmt::Display for Violation {
             }
             Problem::BelowMinimum { minimum } => write!(f, "{path} must be at least {minimum}"),
             Problem::AboveMaximum { maximum } => write!(f, "{path} must be at most {maximum}"),
+            Problem::TooFewItems { limit } => write!(f, "{path} needs at least {limit} item(s)"),
             Problem::TooManyItems { limit } => write!(f, "{path} takes at most {limit} items"),
             Problem::Missing => write!(f, "{path} is required"),
             Problem::Unexpected => write!(
                 f,
-                "{path} isn't a field of this tool; tools/list gives each tool's fields"
+                "{path} isn't a field of this tool; humata_describe gives each tool's fields"
             ),
             Problem::NotExactlyOne { names } => {
                 write!(f, "{path} takes exactly one of {}", names.join(", "))
             }
             Problem::NoChoiceFits => write!(
                 f,
-                "{path} fits none of the shapes this field takes; tools/list gives them"
+                "{path} fits none of the shapes this field takes; humata_describe gives them"
             ),
         }
     }

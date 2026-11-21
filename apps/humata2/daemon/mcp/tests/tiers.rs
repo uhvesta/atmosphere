@@ -12,7 +12,7 @@ use support::{Client, FakeDaemon, Rule, minimal, structured, tool_error};
 /// `wait_seconds`, a wait of 0 so an Ask returns at once.
 async fn every_tool(client: &mut Client) -> Vec<(String, Value, bool)> {
     client
-        .tools()
+        .all_described_tools()
         .await
         .into_iter()
         .filter(|tool| tool["name"] != "inbox_wait")

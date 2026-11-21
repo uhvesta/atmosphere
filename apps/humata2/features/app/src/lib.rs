@@ -79,7 +79,8 @@ use humata2_pr_review::submit::{Submit, SubmitAction, SubmitState};
 use humata2_review::comments::{Comments, CommentsAction, CommentsDelegate, CommentsState};
 use humata2_review::{Review, ReviewAction, ReviewState};
 use humata2_session::{Panel, SessionAction, SessionState, Sessions};
-use humata2_settings::{Settings, SettingsAction, SettingsState};
+pub use humata2_settings::{FONT_SIZES, SettingsAction};
+use humata2_settings::{Settings, SettingsState};
 use humata2_sidebar::{Sidebar, SidebarAction, SidebarState};
 use humata2_views::{Views, ViewsAction, ViewsState};
 use tca::{Effect, Reducer, StreamEnd};
@@ -205,6 +206,10 @@ pub struct AppState {
     pub window_active: bool,
     /// Desktop notification deduplication and burst-collapsing state (NOTIFY, D889).
     pub notify_burst: humata2_notify::BurstState,
+    /// Pending `humata login` requests waiting for approval in the app (SETTINGSFIX).
+    pub pending_cli_logins: Vec<humata2_clients::PendingCliLogin>,
+    /// Pending CLI login ids whose Approve/Deny RPC is currently in flight (SETTINGSFIX).
+    pub answering_cli_logins: std::collections::BTreeSet<String>,
     next_toast: u64,
     /// Sessions whose file list was asked for, once, when the palette first
     /// opened with them; events keep those lists current.
@@ -212,6 +217,9 @@ pub struct AppState {
     last_saved: SavedUi,
     save_generation: u64,
     save_due: bool,
+    /// Consecutive event-stream reconnect attempts (SMB-003); reset to 0 on
+    /// the first event received.
+    reconnect_attempts: u32,
 }
 
 impl AppState {
@@ -316,11 +324,14 @@ impl AppState {
             mass_delete: MassDeleteState::default(),
             window_active: true,
             notify_burst: humata2_notify::BurstState::default(),
+            pending_cli_logins: Vec::new(),
+            answering_cli_logins: std::collections::BTreeSet::new(),
             next_toast: 0,
             files_asked: std::collections::BTreeSet::new(),
             last_saved: saved.clone(),
             save_generation: 0,
             save_due: false,
+            reconnect_attempts: 0,
         };
         state.sidebar.folding = saved.folding;
         state.session.views = saved.sessions;
@@ -352,6 +363,20 @@ impl AppState {
             state.session.open = Some(id.clone());
         }
         state
+    }
+
+    /// Keeps `todo.known_channels` in sync with `workspace.channels`.
+    pub(crate) fn sync_todo_channels(&mut self) {
+        let channels = self
+            .workspace
+            .channels
+            .iter()
+            .map(|c| humata2_todo_feature::ChannelRef {
+                id: c.id.as_str().to_owned(),
+                name: c.name.clone(),
+            })
+            .collect();
+        self.todo.set_channels(channels);
     }
 
     /// The top overlay.
@@ -440,6 +465,8 @@ pub enum AppAction {
     Event(Event),
     /// The event stream ended.
     EventsEnded(StreamEnd<DaemonError>),
+    /// Backoff timer elapsed; re-subscribe to the daemon event stream (SMB-003).
+    ReconnectEvents,
     /// Try loading again after a failure.
     Retry,
     /// Show a screen; the current one goes on the trail.
@@ -541,8 +568,12 @@ pub enum AppAction {
     PrHeads(HeadsAction),
     /// Review a pull request: the Info panel's switches.
     PrInfo(InfoAction),
-    /// New desk session was clicked.
+    /// Start a new Desk session.
     StartNewDeskSession,
+    /// Ensure a channel's persistent primary Desk session is running (CHANNELDESK).
+    EnsureChannelDesk(ChannelId),
+    /// Open Settings › Agents (e.g. from the inline Channel Desk no-agent notice).
+    OpenAgentSettings,
     /// The Desk.
     Desk(DeskAction),
     /// After a host restarts: what the person can do about what it found.
@@ -557,6 +588,18 @@ pub enum AppAction {
     WindowActive(bool),
     /// A desktop notification was clicked (NOTIFY, D889).
     NotificationClicked(humata2_clients::NotifyTarget),
+    /// Refresh pending `humata login` prompts from the daemon (SETTINGSFIX).
+    LoadPendingCliLogins,
+    /// Pending `humata login` prompts returned by the daemon (SETTINGSFIX).
+    PendingCliLoginsLoaded(Result<Vec<humata2_clients::PendingCliLogin>, DaemonError>),
+    /// Approve (`allow = true`) or deny (`allow = false`) a pending `humata login` (SETTINGSFIX).
+    AnswerCliLogin { id: String, allow: bool },
+    /// Result of answering a pending `humata login` (SETTINGSFIX).
+    CliLoginAnswered {
+        id: String,
+        allow: bool,
+        result: Result<(), DaemonError>,
+    },
 }
 
 /// Today in UTC, for ranking by due date.
@@ -628,6 +671,14 @@ impl App {
         let daemon = self.clients.daemon.clone();
         Effect::stream(daemon.events(), AppAction::Event, AppAction::EventsEnded)
             .cancellable("events", true)
+    }
+
+    fn load_pending_cli_logins(&self) -> Effect<AppAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            AppAction::PendingCliLoginsLoaded(daemon.list_pending_cli_logins().await)
+        })
+        .cancellable("pending-cli-logins", true)
     }
 
     /// Runs a feature's reducer on its part of the state.
@@ -815,6 +866,14 @@ impl App {
                     self.leave(state, &gone, back)
                 }
             },
+            AppAction::Session(
+                SessionAction::ArchivePlanned { result: Err(error), .. }
+                | SessionAction::Archived { result: Err(error), .. }
+                | SessionAction::DeskEnded { result: Err(error), .. },
+            ) if matches!(state.route, Route::Machine(_)) => {
+                state.machine_page.running.error = Some(error.to_string());
+                Effect::none()
+            }
             AppAction::Inbox(InboxAction::Delegate(delegate)) => match delegate {
                 I::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 I::OpenRequest { session, request } => {
@@ -906,7 +965,13 @@ impl App {
             }
             AppAction::Palette(PaletteAction::Delegate(delegate)) => match delegate {
                 P::Run(command) => self.run(state, command.clone()),
-                P::Hit(index) => self.child(state, AppAction::Find(FindAction::Open(*index))),
+                P::Hit(index) => {
+                    if let Some((raw, _)) = state.visible_find_hits().get(*index).copied() {
+                        self.child(state, AppAction::Find(FindAction::Open(raw)))
+                    } else {
+                        Effect::none()
+                    }
+                }
                 P::MoreHits => self.child(state, AppAction::Find(FindAction::More)),
                 P::Closed => {
                     state
@@ -953,7 +1018,10 @@ impl Reducer for App {
         }
         // Show pinned may have changed: the Pinned section follows it.
         state.pinned.shown = state.settings.preferences.show_pinned;
-        let (count, more) = (state.find.hits.len(), !state.find.next_page.is_empty());
+        let count = state.visible_find_hits().len();
+        let more = !state.find.next_page.is_empty()
+            && state.palette.asking.is_none()
+            && humata2_palette::parse_query(&state.palette.query).filter.is_none();
         let hits = if (state.palette.hits, state.palette.more_hits) == (count, more) {
             Effect::none()
         } else {
@@ -1087,9 +1155,41 @@ impl App {
                         humata2_settings::AgentsAction::Load,
                     )),
                 );
-                Effect::merge([restore, self.load(), self.follow(), pinned, agents])
+                // NOTIFY2: when notifications are already on at launch, ask macOS
+                // for permission once so authorization is registered with the OS.
+                let notify_permission = if state.settings.preferences.notify.enabled {
+                    let notifier = self.clients.notifier.clone();
+                    Effect::run(move |_send| async move {
+                        notifier.request_permission();
+                    })
+                } else {
+                    Effect::none()
+                };
+                Effect::merge([
+                    restore,
+                    self.load(),
+                    self.follow(),
+                    self.load_pending_cli_logins(),
+                    pinned,
+                    agents,
+                    notify_permission,
+                ])
             }
             AppAction::StartNewDeskSession => self.start_new_desk_session(state),
+            AppAction::EnsureChannelDesk(id) => {
+                state.desk.channel_status.remove(&id);
+                self.ensure_channel_desk(state, &id, true)
+            }
+            AppAction::OpenAgentSettings => {
+                let go = self.navigate(state, Route::Settings);
+                let section = self.child(
+                    state,
+                    AppAction::Settings(SettingsAction::Section(
+                        humata2_settings::Section::Agents,
+                    )),
+                );
+                Effect::merge([go, section])
+            }
             // AGENTOFF (D915): the form's agent is checked once the Desk opened it.
             AppAction::Desk(action @ (DeskAction::StartNew { .. } | DeskAction::StartChannelNew { .. })) => {
                 let delegated = self.delegate(state, &AppAction::Desk(action.clone()));
@@ -1113,6 +1213,7 @@ impl App {
                 let before = state.workspace.restarts.clone();
                 state.workspace = Arc::new(workspace);
                 state.session.keep_agent_tabs(Arc::make_mut(&mut state.workspace));
+                state.sync_todo_channels();
                 let mut effects = vec![self.show(state), self.loaded_restarts(state, &before)];
                 // Comments older builds saved go to the daemon once the
                 // diffs are known, which tell which repository each is in.
@@ -1135,6 +1236,7 @@ impl App {
                     ));
                 }
                 effects.push(self.arrive(state));
+                effects.push(self.loaded_new_channel(state));
                 // The daemon keeps each view's state: read the offers and
                 // follow them once, however often the workspace reloads.
                 if !state.views.watching {
@@ -1143,21 +1245,69 @@ impl App {
                 if !state.pr_heads.watching {
                     effects.push(self.child(state, AppAction::PrHeads(HeadsAction::Start)));
                 }
+                effects.push(self.load_pending_cli_logins());
                 Effect::merge(effects)
             }
             AppAction::Loaded(Err(error)) => {
                 state.load = Load::Failed(error.to_string());
                 Effect::none()
             }
-            AppAction::Event(event) => self.apply(state, event),
+            AppAction::Event(event) => {
+                state.reconnect_attempts = 0;
+                self.apply(state, event)
+            }
             AppAction::EventsEnded(end) => self.events_ended(state, end),
+            AppAction::ReconnectEvents => Effect::merge([self.load(), self.follow()]),
             AppAction::Report(action) => self.report(state, action),
             AppAction::UndoToast(id) => self.undo_toast(state, id),
             AppAction::Undone { toast, result } => self.toast_undone(state, toast, result),
             AppAction::Retry => {
                 state.load = Load::Loading;
                 let pinned = self.child(state, AppAction::Pinned(PinnedAction::Start));
-                Effect::merge([self.load(), self.follow(), pinned])
+                Effect::merge([
+                    self.load(),
+                    self.follow(),
+                    self.load_pending_cli_logins(),
+                    pinned,
+                ])
+            }
+            AppAction::LoadPendingCliLogins => self.load_pending_cli_logins(),
+            AppAction::PendingCliLoginsLoaded(Ok(logins)) => {
+                state.pending_cli_logins = logins;
+                state
+                    .answering_cli_logins
+                    .retain(|id| state.pending_cli_logins.iter().any(|login| &login.id == id));
+                Effect::none()
+            }
+            AppAction::PendingCliLoginsLoaded(Err(_)) => Effect::none(),
+            AppAction::AnswerCliLogin { id, allow } => {
+                if !state.answering_cli_logins.insert(id.clone()) {
+                    return Effect::none();
+                }
+                let daemon = self.clients.daemon.clone();
+                Effect::future(async move {
+                    let result = daemon.answer_cli_login(id.clone(), allow).await;
+                    AppAction::CliLoginAnswered { id, allow, result }
+                })
+            }
+            AppAction::CliLoginAnswered { id, allow, result } => {
+                state.answering_cli_logins.remove(&id);
+                match result {
+                    Ok(()) => {
+                        state.pending_cli_logins.retain(|login| login.id != id);
+                        let text = if allow {
+                            "Approved CLI login.".to_owned()
+                        } else {
+                            "Denied CLI login.".to_owned()
+                        };
+                        state.toast(text, &clock)
+                    }
+                    Err(DaemonError::NotFound { .. }) => {
+                        state.pending_cli_logins.retain(|login| login.id != id);
+                        state.toast("That CLI login is no longer waiting.".to_owned(), &clock)
+                    }
+                    Err(error) => state.toast(error.to_string(), &clock),
+                }
             }
             AppAction::Navigate(route) => {
                 let nav = self.navigate(state, route);
@@ -1251,6 +1401,11 @@ impl App {
             }
             AppAction::NewDeskSessionFor(id) => self.new_desk_session_for(state, &id),
             AppAction::OpenChannelDesk(id) => {
+                if state.desk.channel_status.get(&id)
+                    == Some(&humata2_desk::ChannelDeskStatus::Closed)
+                {
+                    state.desk.channel_status.remove(&id);
+                }
                 state.channel_pages.entry(id.clone()).or_default().tab = channel::Tab::Desk;
                 self.switch(state, Route::Channel(id))
             }
@@ -1309,15 +1464,13 @@ impl App {
             AppAction::Todo(TodoAction::OpenSession(id)) => {
                 self.switch(state, Route::Session(SessionId::new(id)))
             }
+            AppAction::Todo(TodoAction::OpenChannel(id)) => {
+                self.switch(state, Route::Channel(ChannelId::new(id)))
+            }
+            // NOTIFY2 (Fable ruling 4): "Why?" on a To-do ask expands the reason
+            // inline on the item instead of jumping to the Inbox.
             AppAction::Todo(TodoAction::AskWhy(ask_id)) => {
-                let go = self.switch(state, Route::Inbox);
-                Effect::merge([
-                    go,
-                    self.child(
-                        state,
-                        AppAction::Inbox(InboxAction::Select(RequestId::new(ask_id))),
-                    ),
-                ])
+                self.child(state, AppAction::Todo(TodoAction::AskWhy(ask_id)))
             }
             // The drawer already shows the item's history; nothing more to route.
             AppAction::Todo(TodoAction::ShowHistory(_)) => Effect::none(),
@@ -1449,6 +1602,7 @@ impl App {
                         state.deleting_channel = None;
                         state.channel_menu = false;
                         state.channel_pages.remove(&channel);
+                        state.desk.channel_status.remove(&channel);
                         let workspace = Arc::make_mut(&mut state.workspace);
                         workspace.channels.retain(|c| c.id != channel);
                         workspace.sessions.retain(|s| s.channel != channel);
@@ -1492,9 +1646,19 @@ impl App {
                 let Route::Channel(id) = state.route.clone() else {
                     return Effect::none();
                 };
+                let clicked_desk = action == channel::Action::Tab(channel::Tab::Desk);
                 let view = state.channel_pages.entry(id.clone()).or_default();
                 view.change(action, &state.workspace, &id);
                 match view.tab {
+                    channel::Tab::Desk => {
+                        if clicked_desk
+                            && state.desk.channel_status.get(&id)
+                                == Some(&humata2_desk::ChannelDeskStatus::Closed)
+                        {
+                            state.desk.channel_status.remove(&id);
+                        }
+                        self.ensure_channel_desk(state, &id, false)
+                    }
                     channel::Tab::Inbox => {
                         let filter = self.child(
                             state,
@@ -1506,6 +1670,12 @@ impl App {
                         Effect::merge([filter, cleared])
                     }
                     channel::Tab::Board => Effect::merge(self.channel_todo(state, id)),
+                    channel::Tab::Settings => self.child(
+                        state,
+                        AppAction::Settings(humata2_settings::SettingsAction::ChannelSettings(
+                            humata2_settings::ChannelSettingsAction::Load(id),
+                        )),
+                    ),
                     _ => Effect::none(),
                 }
             }
@@ -1612,7 +1782,12 @@ impl App {
                         }
                         state.layout.panel.collapsed = false;
                     }
-                    PaneAction::Toggle(pane) => state.layout.toggle(pane),
+                    PaneAction::Toggle(pane) => {
+                        state.layout.toggle(pane);
+                        if pane == PaneId::Sidebar {
+                            state.navigation_overlay = false;
+                        }
+                    }
                     PaneAction::Reset(pane) => state.layout.reset(pane),
                 }
                 Effect::none()
@@ -1691,10 +1866,12 @@ impl App {
                 answer.and(tab).and(resume)
             }
             AppAction::Palette(PaletteAction::Query(query)) => {
-                // The palette's query is search's too (KP-1, LD-23).
+                // The palette's query is search's too (KP-1, LD-23), unless a
+                // namespace prefix narrows the palette away from conversations.
+                let find_query = humata2_palette::conversation_query(&query);
                 let palette =
-                    self.child(state, AppAction::Palette(PaletteAction::Query(query.clone())));
-                palette.and(self.child(state, AppAction::Find(FindAction::Query(query))))
+                    self.child(state, AppAction::Palette(PaletteAction::Query(query)));
+                palette.and(self.child(state, AppAction::Find(FindAction::Query(find_query))))
             }
             // REPOS (RL-5): a repo search.
             // REPOS (CH-21): Add repo to this session.
@@ -1713,6 +1890,30 @@ impl App {
                 let delegated = self.delegate(state, &action);
                 let effect = self.child(state, action);
                 effect.and(delegated).and(repos)
+            }
+            // CHANNELDESK: if agent switches load or an agent is re-enabled
+            // while viewing a channel's Desk tab that was waiting on NoAgent,
+            // ensure its primary Desk now.
+            action @ AppAction::Settings(SettingsAction::Agents(
+                humata2_settings::AgentsAction::Loaded(_)
+                | humata2_settings::AgentsAction::Saved { .. },
+            )) => {
+                let delegated = self.delegate(state, &action);
+                let effect = self.child(state, action);
+                let ensure = if let Route::Channel(id) = state.route.clone()
+                    && state
+                        .channel_pages
+                        .get(&id)
+                        .is_some_and(|view| view.tab == channel::Tab::Desk)
+                    && state.desk.channel_status.get(&id)
+                        == Some(&humata2_desk::ChannelDeskStatus::NoAgent)
+                    && state.default_agent(Some(&id)).is_ok()
+                {
+                    self.ensure_channel_desk(state, &id, false)
+                } else {
+                    Effect::none()
+                };
+                effect.and(delegated).and(ensure)
             }
             AppAction::Restart(change) => self.change_restart(state, change),
             AppAction::AddMachine(change) => self.add_machine(state, change),

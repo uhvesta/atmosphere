@@ -1083,7 +1083,7 @@ pub async fn finished(daemon: &Daemon, operation: &pb::Operation) -> pb::Operati
             "operation {:?} never finished",
             operation.id
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1136,7 +1136,7 @@ pub async fn last_start(daemon: &Daemon) -> pb::LastStart {
             Instant::now() < deadline,
             "the daemon never finished bringing sessions back"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1215,7 +1215,7 @@ pub async fn wait_running(daemon: &Daemon, id: &pb::SessionId) -> pb::Session {
             session.exit_code,
             session.resume_failed
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1237,7 +1237,7 @@ pub async fn wait_status(
             id.value,
             session.status()
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1351,7 +1351,7 @@ pub async fn wait_for_path(path: &Path) {
             "{} never appeared",
             path.display()
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1390,7 +1390,7 @@ pub async fn shell_token(daemon: &Daemon, session: &pb::SessionId) -> (String, A
             Instant::now() < deadline,
             "the shell never wrote its session token"
         );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1476,7 +1476,7 @@ pub async fn first_pending(daemon: &Daemon) -> pb::RequestId {
             return id;
         }
         assert!(Instant::now() < deadline, "no request reached the Inbox");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 

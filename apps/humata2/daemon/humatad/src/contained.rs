@@ -269,6 +269,11 @@ fn own_state(
     // and nothing flows back; the real auth files stay read-only.
     if let Some((kind, dir)) = composed {
         own.env = vec![(OsString::from(kind.config_env_var()), dir.clone().into_os_string())];
+        // SMB-078: keep macOS Keychain login working when CLAUDE_CONFIG_DIR
+        // points at a composed home, matching the plain Claude copy path.
+        if *kind == AgentKind::Claude && login == Login::Keychain {
+            own.env.push((OsString::from("CLAUDE_SECURESTORAGE_CONFIG_DIR"), OsString::new()));
+        }
         own.agent_state = vec![dir.clone()];
         own.read_only = auth_sources(*kind, home);
         return Ok(own);
@@ -392,7 +397,13 @@ mod tests {
         let found = composed_home(&machine_root, "se_a", Agent::ClaudeCode);
         let own = own_state(Agent::ClaudeCode, &home, &state, &folder, Login::Keychain, found.as_ref()).unwrap();
 
-        assert_eq!(own.env, vec![("CLAUDE_CONFIG_DIR".into(), composed.clone().into_os_string())]);
+        assert_eq!(
+            own.env,
+            vec![
+                ("CLAUDE_CONFIG_DIR".into(), composed.clone().into_os_string()),
+                ("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), OsString::new()),
+            ]
+        );
         assert_eq!(own.agent_state, vec![composed]);
         assert!(own.read_only.contains(&home.join(".claude/.credentials.json")));
         assert!(!folder.join(".humata/claude").exists(), "nothing is seeded");
@@ -530,5 +541,55 @@ mod tests {
         put_channel(&store, "acme", None, 2).unwrap();
         assert_eq!(channel(&store, "acme").unwrap(), None);
         assert!(applies(&store, "acme").unwrap());
+    }
+
+    #[test]
+    fn composed_claude_home_preserves_keychain_login_setting() {
+        // SMB-078: a composed Claude config home with Keychain login must
+        // carry CLAUDE_SECURESTORAGE_CONFIG_DIR="" just like the plain copy
+        // path, so macOS Claude Code stays logged in.
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let folder = directory.path().join("channels/acme/fix-login");
+        std::fs::create_dir_all(&folder).unwrap();
+        let composed_dir = directory.path().join("machine/.sessions/se_1/config/claude");
+        std::fs::create_dir_all(&composed_dir).unwrap();
+        let state = directory.path().join("state");
+
+        let keychain = own_state(
+            Agent::ClaudeCode,
+            &home,
+            &state,
+            &folder,
+            Login::Keychain,
+            Some(&(AgentKind::Claude, composed_dir.clone())),
+        )
+        .unwrap();
+        assert!(
+            keychain.env.contains(&("CLAUDE_CONFIG_DIR".into(), composed_dir.clone().into_os_string())),
+            "env: {:?}",
+            keychain.env
+        );
+        assert!(
+            keychain.env.contains(&("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), OsString::new())),
+            "keychain composed Claude home must set CLAUDE_SECURESTORAGE_CONFIG_DIR=\"\", got {:?}",
+            keychain.env
+        );
+
+        let token = own_state(
+            Agent::ClaudeCode,
+            &home,
+            &state,
+            &folder,
+            Login::Token,
+            Some(&(AgentKind::Claude, composed_dir)),
+        )
+        .unwrap();
+        assert!(
+            !token.env.iter().any(|(k, _)| k == "CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+            "token login should not set CLAUDE_SECURESTORAGE_CONFIG_DIR, got {:?}",
+            token.env
+        );
     }
 }

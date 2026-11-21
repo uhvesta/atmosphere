@@ -1,7 +1,9 @@
 use humata2_clients::DaemonError;
 // REPOS (RL-5): the picker is the one repo search.
 use crate::repo_search::{self, PickRow, RepoPicker, RepoSearchAction, RepoSearchState};
-use humata2_clients::model::{ChannelId, ChannelSetup, Machine, MachineId, MachineKind, SetupState};
+use humata2_clients::model::{
+    Channel, ChannelId, ChannelSetup, Machine, MachineId, MachineKind, SetupState,
+};
 use std::sync::Arc;
 use tca::Effect;
 
@@ -39,20 +41,7 @@ impl NewChannel {
     /// end. "  # Q4 / Billing!! " gives "q4-billing".
     #[must_use]
     pub fn folder(&self) -> String {
-        let mut folder = String::new();
-        let mut pending = false;
-        for c in self.name.chars() {
-            if c.is_ascii_alphanumeric() {
-                if pending && !folder.is_empty() {
-                    folder.push('-');
-                }
-                pending = false;
-                folder.push(c.to_ascii_lowercase());
-            } else {
-                pending = true;
-            }
-        }
-        folder
+        slug(&self.name)
     }
 
     /// The names of the ticked machines in tick order, joined as
@@ -255,8 +244,10 @@ impl App {
         Effect::none()
     }
 
-    /// A channel setup moved on: keep it in the workspace and in the sheet;
-    /// when every step is done the sheet closes and the channel opens.
+    /// A channel setup moved on: keep it in the workspace while running and in
+    /// the sheet until the channel is listed; once the channel is in the
+    /// workspace the sheet closes right away and the channel opens while any
+    /// remaining clone steps carry on in `workspace.setups`.
     pub(super) fn heard_setup(
         &self,
         state: &mut AppState,
@@ -268,9 +259,13 @@ impl App {
                 .steps
                 .iter()
                 .all(|step| step.state == SetupState::Done);
-        match workspace.setups.iter_mut().find(|found| found.id == setup.id) {
-            Some(found) => *found = setup.clone(),
-            None => workspace.setups.push(setup.clone()),
+        if done {
+            workspace.setups.retain(|found| found.id != setup.id);
+        } else {
+            match workspace.setups.iter_mut().find(|found| found.id == setup.id) {
+                Some(found) => *found = setup.clone(),
+                None => workspace.setups.push(setup.clone()),
+            }
         }
         let sheet = state
             .overlays
@@ -284,31 +279,25 @@ impl App {
             return Effect::none();
         };
         // The sheet's own setup: the one it already shows, or the one named
-        // as the sheet's channel.
+        // as the sheet's channel (matching either slug or display name).
         let mine = match &sheet.setup {
             Some(shown) => shown.id == setup.id,
-            None => sheet.folder() == setup.name,
+            None => matches_sheet(sheet, &setup.name),
         };
         if !mine {
             return Effect::none();
         }
-        // Done opens the channel once it is listed. A live channel's id isn't
-        // its name, so a channel not listed yet is opened by the create's
-        // reply (`channel_created`) instead.
-        let listed = done
-            .then(|| {
-                state
-                    .workspace
-                    .channels
-                    .iter()
-                    .find(|channel| channel.name == setup.name)
-                    .map(|channel| channel.id.clone())
-            })
-            .flatten();
+        // Once the channel is listed in the workspace, close the sheet and
+        // open it immediately without waiting for clone steps to reach Done.
+        // A live channel's id isn't its name, so a channel not listed yet is
+        // opened by the create's reply (`channel_created`) instead.
+        let listed = state
+            .workspace
+            .channels
+            .iter()
+            .find(|channel| channel_matches_name(channel, &setup.name))
+            .map(|channel| channel.id.clone());
         if let Some(id) = listed {
-            Arc::make_mut(&mut state.workspace)
-                .setups
-                .retain(|found| found.id != setup.id);
             state
                 .overlays
                 .retain(|overlay| !matches!(overlay, Overlay::NewChannel(_)));
@@ -317,6 +306,39 @@ impl App {
         sheet.error = None;
         sheet.setup = Some(setup);
         Effect::none()
+    }
+
+    /// After a workspace reload, if a New channel sheet is creating a channel
+    /// that is now listed in the workspace, close the sheet and open it right
+    /// away without waiting for clone steps to reach `Done`.
+    pub(super) fn loaded_new_channel(&self, state: &mut AppState) -> Effect<AppAction> {
+        let listed = state
+            .overlays
+            .iter()
+            .rev()
+            .find_map(|overlay| match overlay {
+                Overlay::NewChannel(sheet) if sheet.creating || sheet.setup.is_some() => Some(sheet),
+                _ => None,
+            })
+            .and_then(|sheet| {
+                let setup_name = sheet.setup.as_ref().map(|setup| setup.name.as_str());
+                state
+                    .workspace
+                    .channels
+                    .iter()
+                    .find(|channel| {
+                        matches_sheet(sheet, &channel.name)
+                            || setup_name.is_some_and(|name| channel_matches_name(channel, name))
+                    })
+                    .map(|channel| channel.id.clone())
+            });
+        let Some(id) = listed else {
+            return Effect::none();
+        };
+        state
+            .overlays
+            .retain(|overlay| !matches!(overlay, Overlay::NewChannel(_)));
+        self.navigate(state, Route::Channel(id))
     }
 
     pub(super) fn channel_created(
@@ -354,11 +376,53 @@ impl App {
                     if sheet.setup.is_none() {
                         sheet.error = Some(error.to_string());
                     }
+                    Effect::none()
+                } else {
+                    // SMB-004: surface late create failure when sheet was dismissed.
+                    let clock = self.clients.clock.clone();
+                    state.toast(error.to_string(), &clock)
                 }
-                Effect::none()
             }
         }
     }
+}
+
+/// The folder slug for a channel name (CH-2): lowercase, every run of
+/// characters that are not ASCII letters or digits as one `-`, and none at
+/// either end. "  # Q4 / Billing!! " gives "q4-billing".
+fn slug(name: &str) -> String {
+    let mut folder = String::new();
+    let mut pending = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending && !folder.is_empty() {
+                folder.push('-');
+            }
+            pending = false;
+            folder.push(c.to_ascii_lowercase());
+        } else {
+            pending = true;
+        }
+    }
+    folder
+}
+
+/// Whether `name` (either a display name like "Q4 Billing" or a slug like
+/// "q4-billing") matches the channel the sheet is creating.
+fn matches_sheet(sheet: &NewChannel, name: &str) -> bool {
+    let folder = sheet.folder();
+    let trimmed = sheet.name.trim().trim_start_matches('#');
+    let setup_slug = slug(name);
+    (!folder.is_empty() && folder == setup_slug)
+        || (!trimmed.is_empty() && trimmed == name.trim())
+}
+
+/// Whether `channel` matches a setup's `name` (either as typed or as slug).
+fn channel_matches_name(channel: &Channel, name: &str) -> bool {
+    let setup_slug = slug(name);
+    channel.name == name
+        || (!setup_slug.is_empty()
+            && (channel.name == setup_slug || slug(&channel.name) == setup_slug))
 }
 
 /// Takes `item` out of `items` when it is there, and adds it at the end when

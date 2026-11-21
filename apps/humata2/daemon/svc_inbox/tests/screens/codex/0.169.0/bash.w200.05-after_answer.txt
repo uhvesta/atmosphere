@@ -1,0 +1,48 @@
+agent: codex
+cli: 0.169.0
+script: bash
+label: after_answer
+expect: none
+cols: 200
+rows: 40
+---
+
+  >_ OpenAI Codex (v0.169.0)
+     /private/tmp/screenparse-corpus-0100/codex/bash/work
+
+
+› that exact shell command now: echo screenparse > out.txt
+  Use your shell tool to run exactly this command and nothing else: echo screenparse > out.txt
+
+
+• I’ll run the exact command in the current workspace.
+
+• The exact command ran, but the shell couldn’t write out.txt because filesystem access is read-only.
+
+  Worked for 5s • 12:33 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-6-Luna default · /private/tmp/screenparse-corpus-0100/codex/bash/work · Write screenparse to out.txt
+  ← for agents · ? for shortcuts

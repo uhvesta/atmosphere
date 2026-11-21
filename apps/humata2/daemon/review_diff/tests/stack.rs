@@ -438,3 +438,21 @@ fn head_leaving_the_top_drifts_the_worktree_layer() {
         "{drift:?}"
     );
 }
+
+#[test]
+fn checked_stack_counts_files_per_layer_and_repo() {
+    let fixture = fixture();
+    let checked = three_layers()
+        .check_blocking(&clones(&fixture))
+        .expect("the stack is valid");
+    let codec_api = checked.resolved("codec", "api").expect("codec/api resolved");
+    let codec_web = checked.resolved("codec", "web").expect("codec/web resolved");
+    let journal_api = checked.resolved("journal", "api").expect("journal/api resolved");
+    let wip_api = checked
+        .resolved("Not committed yet", "api")
+        .expect("wip/api resolved");
+    assert!(codec_api.files > 0, "expected non-zero files for codec/api");
+    assert!(codec_web.files > 0, "expected non-zero files for codec/web");
+    assert!(journal_api.files > 0, "expected non-zero files for journal/api");
+    assert!(wip_api.files > 0, "expected non-zero files for wip/api");
+}

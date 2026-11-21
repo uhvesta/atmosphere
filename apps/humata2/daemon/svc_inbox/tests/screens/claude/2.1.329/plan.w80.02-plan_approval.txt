@@ -1,0 +1,23 @@
+agent: claude
+cli: 2.1.329
+script: plan
+label: plan_approval
+expect: none
+cols: 80
+rows: 40
+---
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/screenparse-corpus-0100/claude/plan/work
+
+
+❯ Make a two-step plan to add a README.md with one line, then present the plan
+  for my approval. Do not write anything yet.
+  ⎿  Not logged in · Please run /login
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Once fixed, resend your message
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ plan mode on (shift+tab to cycle) · ← for agents
+                                                    Not logged in · run /login
+                                                            ◐ medium · /effort

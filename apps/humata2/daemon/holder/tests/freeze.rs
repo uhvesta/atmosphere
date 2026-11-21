@@ -3,6 +3,7 @@
 //! typing, and runs again once thawed. Every holder here is the test's own,
 //! in its own temp folder.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -79,7 +80,7 @@ impl Holder {
                 return pid;
             }
             assert!(std::time::Instant::now() < deadline, "the program never started");
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 }
@@ -109,7 +110,7 @@ async fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + WAIT;
     while !check() {
         assert!(std::time::Instant::now() < deadline, "never happened: {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -174,6 +175,9 @@ async fn a_frozen_holder_can_be_attached_to_and_shows_its_screen() {
         while let Ok(Some(event)) = events.next().await {
             if let Event::Output { data, .. } = event {
                 seen.extend(data);
+                if String::from_utf8_lossy(&seen).contains("before-42") {
+                    break;
+                }
             }
         }
     })
@@ -212,6 +216,9 @@ async fn typing_into_a_frozen_program_is_refused_and_nothing_is_typed() {
         while let Ok(Some(event)) = events.next().await {
             if let Event::Output { data, .. } = event {
                 seen.extend(data);
+                if String::from_utf8_lossy(&seen).contains("typed-while-frozen") {
+                    break;
+                }
             }
         }
     })
@@ -278,4 +285,94 @@ async fn a_holder_too_old_to_freeze_says_so() {
     let frozen = freeze(&socket).await;
     assert!(matches!(frozen, Err(HolderError::TooOldToFreeze { .. })), "{frozen:?}");
     old.abort();
+}
+
+#[tokio::test]
+async fn thawing_during_a_freeze_leaves_the_program_running() {
+    let dir = short_dir();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let real_ps = ["/bin/ps", "/usr/bin/ps"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .expect("ps binary on system");
+    let entered = dir.path().join("ps.entered");
+    let release = dir.path().join("ps.release");
+    let fake_ps = bin.join("ps");
+    std::fs::write(
+        &fake_ps,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nexec '{}' \"$@\"\n",
+            entered.display(),
+            release.display(),
+            real_ps,
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fake_ps).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_ps, perms).unwrap();
+
+    let path_env = match std::env::var("PATH") {
+        Ok(existing) => format!("{}:{existing}", bin.display()),
+        Err(_) => bin.display().to_string(),
+    };
+    let script = format!(
+        "echo $$ > {d}/program.pid; exec 2>&1; \
+         while IFS= read -r line; do eval \"$line\"; done",
+        d = dir.path().display()
+    );
+    let spec = HolderSpec {
+        holder: holder_binary(),
+        socket: dir.path().join("t.sock"),
+        program: PathBuf::from("/bin/sh"),
+        args: vec!["-c".into(), script.into()],
+        cwd: dir.path().to_owned(),
+        env: vec![
+            ("PATH".into(), path_env.into()),
+            ("PS1".into(), "$ ".into()),
+            ("ENV".into(), "/dev/null".into()),
+        ],
+        cols: 80,
+        rows: 24,
+        scrollback_bytes: 1 << 20,
+        log: dir.path().join("holder.log"),
+    };
+    let spawned = spawn(&spec).unwrap();
+    let holder = Holder {
+        socket: spec.socket,
+        pid: spawned.pid,
+        dir,
+    };
+    let program = holder.program_pid();
+
+    let attached = attach(&holder.socket, u64::MAX).await.unwrap();
+    let mut events = attached.events;
+    let mut control = attached.control;
+
+    let socket = holder.socket.clone();
+    let freezing = tokio::spawn(async move { freeze(&socket).await });
+
+    let deadline = std::time::Instant::now() + WAIT;
+    while !entered.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fake ps was never entered during freeze"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    thaw(&holder.socket).await.unwrap();
+    std::fs::write(&release, b"go").unwrap();
+
+    freezing.await.unwrap().unwrap();
+
+    assert!(!is_frozen(&holder.socket).await.unwrap());
+    assert!(!stopped(program));
+
+    control.input(1, b"echo alive-after-thaw\n").await.unwrap();
+    assert!(
+        wait_for(&mut events, "alive-after-thaw").await,
+        "program did not echo typed input after thaw raced freeze"
+    );
 }

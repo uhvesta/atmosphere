@@ -12,6 +12,7 @@ rust_library(
         "//apps/humata2/ui:__subpackages__",
     ],
     deps = [
+        "//apps/humata2/highlight",
         "@crates//:gpui-kit",
         "@crates//:image",
         "@crates//:serde",

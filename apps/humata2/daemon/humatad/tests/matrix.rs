@@ -209,11 +209,11 @@ impl Mcp {
     }
 
     async fn tool_names(&mut self) -> Vec<String> {
-        self.request("tools/list", json!({})).await["tools"]
+        self.call("humata_list", json!({})).await["structuredContent"]["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .filter_map(|entry| entry.as_str()?.split_whitespace().next().map(str::to_owned))
             .collect()
     }
 }

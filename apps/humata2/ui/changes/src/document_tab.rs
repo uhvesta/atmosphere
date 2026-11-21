@@ -303,6 +303,8 @@ pub struct Documents {
     /// The Diff panel's code (DS-40): a click on a line gives it the focus,
     /// so ⌥Z flips Wrap there and no longer types into a comment box.
     pub diff_code: FocusHandle,
+    /// Active drag of the full-screen Diff file list splitter: `(start_x, start_width)`.
+    pub diff_list_drag: Rc<Cell<Option<(f32, f32)>>>,
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
@@ -593,6 +595,7 @@ impl Documents {
             diff_list: cx.focus_handle(),
             diff_stack: cx.focus_handle(),
             diff_code: cx.focus_handle(),
+            diff_list_drag: Rc::new(Cell::new(None)),
         }
     }
 
@@ -1030,6 +1033,13 @@ impl Documents {
         let fold_count = comment_cards::all_done(by_line.values().flatten().copied()).filter(|_| read.is_none());
         let folded = fold_count.is_some() && !self.unfolded.borrow().contains(&fold_key);
         let fold_at = by_line.keys().next().copied().map(|n| n.min(total));
+        let dark = ((look.term >> 8) & 0xff) < 0x80;
+        let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let syntax = humata2_highlight::highlight_lines_cached(
+            humata2_highlight::Language::Markdown,
+            &line_refs,
+            dark,
+        );
         let mut children: Vec<AnyElement> = Vec::new();
         let mut child_lines: Vec<u32> = Vec::new();
         for (index, line) in lines.iter().enumerate() {
@@ -1042,6 +1052,7 @@ impl Documents {
             } else {
                 look.term_text
             };
+            let line_spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
             let click = target.clone();
             let gutter = div()
                 .id(SharedString::from(if read.is_some() {
@@ -1097,16 +1108,22 @@ impl Documents {
                     .when(lit, |row| row.bg(rgb(lit_color)))
                     .when(!wrap, |row| row.min_w(px(min_width)))
                     .child(gutter)
-                    .child(
-                        div()
+                    .child({
+                        let text_cell = div()
                             .flex_1()
                             .min_w_0()
                             .pr(px(8.))
                             .text_color(rgb(tint))
-                            .when(!wrap, |text| text.whitespace_nowrap())
-                            .child(line.clone())
-                            .test_text(line.clone()),
-                    )
+                            .when(!wrap, |text| text.whitespace_nowrap());
+                        let text_cell = if line_spans.is_empty() {
+                            text_cell.child(line.clone())
+                        } else {
+                            text_cell.child(
+                                StyledText::new(line.clone()).with_highlights(line_spans.to_vec()),
+                            )
+                        };
+                        text_cell.test_text(line.clone())
+                    })
                     .into_any_element(),
             );
             child_lines.push(n);

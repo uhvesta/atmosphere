@@ -8,6 +8,7 @@ use crate::cli::DiffArgs;
 use crate::config::{Config, ConfigError};
 use crate::git::{Git, GitError};
 use crate::pins;
+use crate::state::StackState;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DiffError {
@@ -86,19 +87,12 @@ pub(crate) fn run(args: &DiffArgs, dir: &Path) -> Result<(), crate::error::Error
     };
 
     let prefix = match args.prefix.clone().or_else(|| config.prefix.value.clone()) {
-        Some(prefix) => prefix,
+        Some(prefix) => Some(prefix),
         None => {
             let mut found = pins::prefixes_with(&git, &remote, topic).map_err(git_error)?;
             match found.len() {
-                0 => {
-                    return Err(DiffError::NoPins {
-                        topic: topic.to_owned(),
-                        prefix: None,
-                        remote,
-                    }
-                    .into());
-                }
-                1 => found.remove(0),
+                0 => None,
+                1 => Some(found.remove(0)),
                 _ => {
                     return Err(DiffError::AmbiguousPrefix {
                         topic: topic.to_owned(),
@@ -108,6 +102,29 @@ pub(crate) fn run(args: &DiffArgs, dir: &Path) -> Result<(), crate::error::Error
                 }
             }
         }
+    };
+
+    // If no pins exist, fall back to diffing an imported layer directly.
+    let Some(prefix) = prefix else {
+        if let Ok(Some(state)) = StackState::load(&git)
+            && let Some(layer) = state.layer_by_topic(topic)
+            && let (Some(base), Some(head)) = (&layer.remote_base, &layer.remote_head)
+        {
+            let text = git.diff_range(base, head).map_err(git_error)?;
+            println!("{topic}: {}..{} (imported layer)", &base[..8.min(base.len())], &head[..8.min(head.len())]);
+            if text.trim().is_empty() {
+                println!("No changes.");
+            } else {
+                println!("{text}");
+            }
+            return Ok(());
+        }
+        return Err(DiffError::NoPins {
+            topic: topic.to_owned(),
+            prefix: None,
+            remote,
+        }
+        .into());
     };
 
     let pinned: BTreeMap<u32, String> = pins::on_remote(&git, &remote, &prefix, topic).map_err(git_error)?;

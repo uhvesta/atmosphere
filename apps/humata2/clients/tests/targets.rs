@@ -1,12 +1,13 @@
 //! The base a session's changes are compared with, as the Diff panel picks
 //! it: one preset for every repository, with per-repository overrides.
 
-use humata2_clients::model::{DiffBase, DiffTargets, RepoBase, RepoDiffSpec, SessionId};
+use humata2_clients::model::{DiffBase, DiffTargets, RepoBase, RepoDiffOptions, RepoDiffSpec, SessionId};
 
 fn spec(repo: &str, base: RepoBase) -> RepoDiffSpec {
     RepoDiffSpec {
         repo: repo.to_owned(),
         base,
+        options: RepoDiffOptions::default(),
     }
 }
 

@@ -393,3 +393,64 @@ async fn inbox_wait_cancelled_leaves_the_request_answerable() {
     assert!(served.is_ok());
     assert!(daemon.withdrawals().is_empty());
 }
+
+/// MCPCOMPRESS: `humata_call` preserves `_meta.progressToken`,
+/// `notifications/cancelled`, `inbox_wait`, and idempotency keys.
+#[tokio::test]
+async fn humata_call_preserves_progress_cancellation_and_idempotency() {
+    let daemon = asking();
+    let mut client = Client::start(&daemon);
+
+    // 1. Progress token through humata_call.
+    client
+        .start_call(
+            json!(10),
+            "humata_call",
+            json!({
+                "arguments": { "name": "board_item_create", "arguments": item(None) },
+                "_meta": { "progressToken": "tok-meta" },
+            }),
+        )
+        .await;
+    let wait = daemon.next_wait().await;
+    for event in [WaitEvent::Keepalive, applied(json!({ "id": "item-10" }))] {
+        wait.events.send(event).await.expect("the server waits");
+    }
+    let reply = client.reply_to(&json!(10)).await;
+    assert_eq!(structured(&reply["result"])["outcome"], "applied");
+    assert!(client.notifications.iter().any(|msg| {
+        msg["method"] == "notifications/progress" && msg["params"]["progressToken"] == "tok-meta"
+    }));
+
+    // 2. Idempotency key deduplication through humata_call.
+    let first = client
+        .humata_call(json!(11), "board_item_create", item(Some(0)))
+        .await;
+    let retry = client
+        .humata_call(json!(11), "board_item_create", item(Some(0)))
+        .await;
+    assert_eq!(
+        structured(&first)["request_id"],
+        structured(&retry)["request_id"]
+    );
+
+    // 3. Cancellation through humata_call withdraws the open request.
+    client
+        .start_call(
+            json!(12),
+            "humata_call",
+            json!({ "arguments": { "name": "board_item_create", "arguments": item(None) } }),
+        )
+        .await;
+    let cancel_wait = daemon.next_wait().await;
+    client
+        .send(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": 12 },
+        }))
+        .await;
+    let (served, _) = client.close().await;
+    assert!(served.is_ok());
+    assert_eq!(daemon.withdrawals(), vec![cancel_wait.request]);
+}

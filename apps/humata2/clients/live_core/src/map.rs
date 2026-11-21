@@ -66,10 +66,15 @@ pub fn parse_repo(text: &str) -> Option<pb::RepoRef> {
     })
 }
 
-/// A repository reference written `owner/name`.
+/// A repository reference written `owner/name`, or just `name` when the
+/// owner is empty.
 #[must_use]
 pub fn repo_text(repo: &pb::RepoRef) -> String {
-    format!("{}/{}", repo.owner, repo.name)
+    if repo.owner.is_empty() {
+        repo.name.clone()
+    } else {
+        format!("{}/{}", repo.owner, repo.name)
+    }
 }
 
 #[must_use]
@@ -748,6 +753,24 @@ mod tests {
             title: id.to_owned(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn repo_text_omits_leading_slash_when_owner_is_empty() {
+        assert_eq!(
+            repo_text(&pb::RepoRef {
+                owner: String::new(),
+                name: "api".to_owned(),
+            }),
+            "api"
+        );
+        assert_eq!(
+            repo_text(&pb::RepoRef {
+                owner: "acme".to_owned(),
+                name: "api".to_owned(),
+            }),
+            "acme/api"
+        );
     }
 
     #[test]

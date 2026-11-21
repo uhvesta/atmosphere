@@ -31,6 +31,7 @@ fn holder(tab: Option<&str>, session: Option<&str>, title: &str, agent: Agent, s
         machine: mac(),
         stopped,
         agent_tab: false,
+        archived: false,
         paused_for_move: false,
     }
 }
@@ -219,4 +220,32 @@ fn stopping_a_shell_sessions_own_terminal_stops_its_session() {
     store.receive_matching("stopped", |a| matches!(a, A::Done(Ok(()))), |_| {});
     let status = daemon.workspace().session(&session).map(|found| found.status);
     assert_eq!(status, Some(Status::AgentStopped));
+}
+
+#[test]
+fn an_archived_sessions_leftover_shell_offers_only_end_for_good_and_ends_it() {
+    let (mut store, daemon, _) = seeded(false);
+    let stopped_leftover = RunningHolder {
+        archived: true,
+        ..holder(Some("archived-shell-stopped"), Some("se-old"), "Old work", Agent::Shell, true)
+    };
+    let running_leftover = RunningHolder {
+        archived: true,
+        ..holder(Some("archived-shell-live"), Some("se-old"), "Old work", Agent::Shell, false)
+    };
+    daemon.set_running_holders(vec![stopped_leftover.clone(), running_leftover.clone()]);
+    loaded(&mut store);
+
+    assert_eq!(store.state().row_actions(&stopped_leftover), vec![RowAction::EndForGood]);
+    assert_eq!(store.state().row_actions(&running_leftover), vec![RowAction::EndForGood]);
+
+    store.send(A::Row(stopped_leftover.clone(), RowAction::EndForGood), |_| {});
+    assert_eq!(store.state().confirm_end, Some(stopped_leftover.clone()));
+    store.send(A::ConfirmEnd, |_| {});
+    store.receive_matching("ended", |a| matches!(a, A::Done(Ok(()))), |_| {});
+    store.receive_matching("listed again", |a| matches!(a, A::Loaded(_, Ok(_))), |_| {});
+    assert!(
+        !daemon.running_holders_now().contains(&stopped_leftover),
+        "ending the leftover shell removes it from the machine"
+    );
 }

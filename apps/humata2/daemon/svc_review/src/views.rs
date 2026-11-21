@@ -462,9 +462,11 @@ impl Review {
         caller: &Caller,
         record: &SessionRecord,
         session: &SessionRef,
-        content: pb::prepared_view::Content,
+        mut content: pb::prepared_view::Content,
     ) -> Result<pb::prepared_view::Content, Status> {
         use pb::prepared_view::Content;
+        let owners = super::unique_repo_owners(&self.inner, record)?;
+        super::normalize_content_repos(&mut content, &owners);
         match content {
             Content::Review(walkthrough) => {
                 check_walkthrough(&walkthrough)?;
@@ -479,8 +481,12 @@ impl Review {
                 Ok(Content::PullRequest(draft))
             }
             Content::ReviewPlan(plan) => {
-                let (plan, _) = self.checked_plan(caller, record, session, &plan).await?;
-                Ok(Content::ReviewPlan(wire::plan_to_pb(&plan, &[])))
+                let (plan, _, checked) = self.checked_plan(caller, record, session, &plan).await?;
+                Ok(Content::ReviewPlan(wire::plan_to_pb(
+                    &plan,
+                    &[],
+                    checked.as_ref(),
+                )))
             }
         }
     }
@@ -718,54 +724,498 @@ impl Review {
         session: &SessionRef,
         plan: &pb::ReviewPlan,
     ) -> Result<pb::ReviewPlan, Status> {
-        if plan.notes.is_empty() {
+        if plan.notes.is_empty() && plan.stack.is_none() {
             return Ok(plan.clone());
+        }
+        if let Some((machine, remote)) = super::pull_requests::relayed_for(&record.id) {
+            return self
+                .rechecked_plan_remote(caller, record, session, plan, &machine, remote)
+                .await;
         }
         let mut stored = wire::stored_plan_from_pb(plan)
             .map_err(|error| ports::internal(format!("a stored review plan didn't read back: {error}"), ""))?;
-        let asked: Vec<pb::RepoRef> = stored.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
-        let keys = super::repo_keys(&self.inner, record, &asked).await?;
-        self.require_read(caller, session, &keys)?;
-        let clones = super::clones(record, &keys).await?;
-        let diffs = clones
-            .diff(&stored.spec, &super::context_of(record))
-            .await
-            .map_err(|error| super::diff_failed(&error))?;
-        let mut states: Vec<Option<NoteState>> = vec![None; stored.notes.len()];
-        for diff in &diffs {
-            let checkout = clones.get(&diff.repo).map_err(|error| super::diff_failed(&error))?.clone();
-            let found = checkout
-                .note_states(diff.clone(), stored.notes.clone())
-                .await
-                .map_err(|error| super::diff_failed(&error))?;
-            for (state, found) in states.iter_mut().zip(found) {
-                if state.is_none() {
-                    *state = found;
+        let mut asked: Vec<pb::RepoRef> = stored.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
+        if let Some(stack) = &stored.stack {
+            for layer in &stack.layers {
+                for part in &layer.repos {
+                    let repo = wire::repo_ref(&part.repo);
+                    if !asked.contains(&repo) {
+                        asked.push(repo);
+                    }
                 }
             }
         }
-        let mut outdated = Vec::with_capacity(states.len());
-        for (note, state) in stored.notes.iter_mut().zip(&states) {
-            outdated.push(match state {
-                Some(NoteState::Current { first, last }) => {
-                    match &mut note.target {
-                        NoteTarget::Lines {
-                            first: was_first,
-                            last: was_last,
-                            ..
-                        } => {
-                            *was_first = *first;
-                            *was_last = *last;
-                        }
-                        NoteTarget::Hunk { line, .. } => *line = *first,
-                        NoteTarget::File => {}
+        let keys = super::repo_keys(&self.inner, record, &asked).await?;
+        self.require_read(caller, session, &keys)?;
+        let clones = super::clones(record, &keys).await?;
+        let mut outdated = Vec::new();
+        if !stored.notes.is_empty() {
+            let diffs = clones
+                .diff(&stored.spec, &super::context_of(record))
+                .await
+                .map_err(|error| super::diff_failed(&error))?;
+            let mut states: Vec<Option<NoteState>> = vec![None; stored.notes.len()];
+            for diff in &diffs {
+                let checkout = clones.get(&diff.repo).map_err(|error| super::diff_failed(&error))?.clone();
+                let found = checkout
+                    .note_states(diff.clone(), stored.notes.clone())
+                    .await
+                    .map_err(|error| super::diff_failed(&error))?;
+                for (state, found) in states.iter_mut().zip(found) {
+                    if state.is_none() {
+                        *state = found;
                     }
-                    false
                 }
-                Some(NoteState::Outdated | NoteState::Gone) => true,
-                Some(NoteState::OnFile) | None => false,
-            });
+            }
+            outdated.reserve(states.len());
+            for (note, state) in stored.notes.iter_mut().zip(&states) {
+                outdated.push(match state {
+                    Some(NoteState::Current { first, last }) => {
+                        match &mut note.target {
+                            NoteTarget::Lines {
+                                first: was_first,
+                                last: was_last,
+                                ..
+                            } => {
+                                *was_first = *first;
+                                *was_last = *last;
+                            }
+                            NoteTarget::Hunk { line, .. } => *line = *first,
+                            NoteTarget::File => {}
+                        }
+                        false
+                    }
+                    Some(NoteState::Outdated | NoteState::Gone) => true,
+                    Some(NoteState::OnFile) | None => false,
+                });
+            }
         }
-        Ok(wire::plan_to_pb(&stored, &outdated))
+        let (resolved, drift) = if let Some(stack) = stored.stack.clone() {
+            let kept = plan.stack.as_ref().and_then(wire::checked_stack_from_pb);
+            let from = stored.from_stack.clone();
+            let runner = self.inner.stack_status.clone();
+            blocking(move || {
+                let mut drift = Vec::new();
+                let checked = match stack.check_blocking(&clones) {
+                    Ok(now) => {
+                        if let Some(kept) = &kept {
+                            for found in kept.drift_blocking(&clones) {
+                                if found.kind == humata2_review_diff::DriftKind::HeadMoved {
+                                    drift.push(found);
+                                }
+                            }
+                        }
+                        if let Some(from) = from
+                            && let Ok(checkout) = clones.get(&from.repo)
+                            && let Ok(read) = from.read_blocking(checkout, runner.as_ref())
+                        {
+                            drift.extend(humata2_review_diff::FromStack::drift(
+                                &now.stack().layers,
+                                &read,
+                            ));
+                        }
+                        Some(now)
+                    }
+                    Err(_) => {
+                        if let Some(kept) = kept {
+                            drift = kept.drift_blocking(&clones);
+                            if let Some(from) = from
+                                && let Ok(checkout) = clones.get(&from.repo)
+                                && let Ok(read) = from.read_blocking(checkout, runner.as_ref())
+                            {
+                                drift.extend(humata2_review_diff::FromStack::drift(
+                                    &kept.stack().layers,
+                                    &read,
+                                ));
+                            }
+                            Some(kept)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                (checked, drift)
+            })
+            .await?
+        } else {
+            (None, Vec::new())
+        };
+        let mut out = wire::plan_to_pb(&stored, &outdated, resolved.as_ref());
+        if let Some(stack) = out.stack.as_mut() {
+            wire::apply_drift_to_pb(stack, &drift);
+        }
+        Ok(out)
+    }
+
+    async fn rechecked_plan_remote(
+        &self,
+        caller: &Caller,
+        record: &SessionRecord,
+        session: &SessionRef,
+        plan: &pb::ReviewPlan,
+        machine: &str,
+        remote: std::sync::Arc<dyn super::ReviewRemote>,
+    ) -> Result<pb::ReviewPlan, Status> {
+        let Some(stack) = &plan.stack else {
+            return Ok(plan.clone());
+        };
+        let mut asked: Vec<pb::RepoRef> = Vec::new();
+        for layer in &stack.layers {
+            for part in &layer.repos {
+                if let Some(repo) = &part.repo
+                    && !asked.contains(repo)
+                {
+                    asked.push(repo.clone());
+                }
+            }
+        }
+        let keys = super::repo_keys(&self.inner, record, &asked).await?;
+        self.require_read(caller, session, &keys)?;
+        let mut out = plan.clone();
+        if let Some(out_stack) = out.stack.as_mut() {
+            recheck_stack_via_remote(out_stack, &record.id, machine, remote.as_ref()).await?;
+        }
+        Ok(out)
+    }
+}
+
+async fn run_remote_git(
+    remote: &dyn super::ReviewRemote,
+    machine: &str,
+    session_id: &str,
+    repo_folder: &str,
+    args: Vec<String>,
+) -> Result<pb::RunReviewGitResponse, Status> {
+    remote
+        .run_review_git(
+            machine,
+            pb::RunReviewGitRequest {
+                session: Some(pb::SessionId {
+                    value: session_id.to_owned(),
+                }),
+                repo: repo_folder.to_owned(),
+                args,
+                stdin: Vec::new(),
+            },
+        )
+        .await
+}
+
+async fn remote_rev_commit(
+    remote: &dyn super::ReviewRemote,
+    machine: &str,
+    session_id: &str,
+    repo_folder: &str,
+    rev: &str,
+) -> Result<Option<String>, Status> {
+    let response = run_remote_git(
+        remote,
+        machine,
+        session_id,
+        repo_folder,
+        vec![
+            "rev-parse".to_owned(),
+            "--verify".to_owned(),
+            format!("{rev}^{{commit}}"),
+        ],
+    )
+    .await?;
+    if response.exit_code != 0 {
+        return Ok(None);
+    }
+    let commit = String::from_utf8_lossy(&response.stdout).trim().to_owned();
+    Ok((!commit.is_empty()).then_some(commit))
+}
+
+async fn recheck_stack_via_remote(
+    stack: &mut pb::ReviewStack,
+    session_id: &str,
+    machine: &str,
+    remote: &dyn super::ReviewRemote,
+) -> Result<(), Status> {
+    use pb::review_layer_repo::Part as P;
+    use pb::review_layer_resolved::Drift;
+    let mut repo_keys: Vec<String> = Vec::new();
+    for layer in &stack.layers {
+        for part in &layer.repos {
+            if let Some(repo) = &part.repo {
+                let key = wire::repo_key(repo);
+                if !repo_keys.contains(&key) {
+                    repo_keys.push(key);
+                }
+            }
+        }
+    }
+    for key in repo_keys {
+        let folder = super::folder_name(&key);
+        let mut below: Option<String> = None;
+        let mut top: Option<String> = None;
+        for layer in &mut stack.layers {
+            let Some(part) = layer
+                .repos
+                .iter_mut()
+                .find(|part| part.repo.as_ref().map(wire::repo_key).as_deref() == Some(key.as_str()))
+            else {
+                continue;
+            };
+            let kept = part.resolved.clone();
+            match &part.part {
+                Some(P::Range(range)) => {
+                    let base_now =
+                        remote_rev_commit(remote, machine, session_id, folder, &range.base).await?;
+                    let head_now =
+                        remote_rev_commit(remote, machine, session_id, folder, &range.head).await?;
+                    let (Some(base_now), Some(head_now)) = (base_now, head_now) else {
+                        below = None;
+                        top = None;
+                        let mut resolved = kept.unwrap_or_default();
+                        resolved.drift = Drift::Missing as i32;
+                        resolved.files = 0;
+                        part.resolved = Some(resolved);
+                        continue;
+                    };
+                    let ancestor_resp = run_remote_git(
+                        remote,
+                        machine,
+                        session_id,
+                        folder,
+                        vec![
+                            "merge-base".to_owned(),
+                            "--is-ancestor".to_owned(),
+                            base_now.clone(),
+                            head_now.clone(),
+                        ],
+                    )
+                    .await?;
+                    let ancestor = ancestor_resp.exit_code == 0;
+                    let chains = below.as_ref().is_none_or(|b| *b == base_now);
+                    if !(ancestor && chains) {
+                        let mut resolved = kept.unwrap_or(pb::ReviewLayerResolved {
+                            base_commit: base_now.clone(),
+                            head_commit: head_now.clone(),
+                            drift: Drift::Moved as i32,
+                            files: 0,
+                        });
+                        resolved.drift = Drift::Moved as i32;
+                        resolved.files = 0;
+                        part.resolved = Some(resolved);
+                    } else {
+                        let diff_resp = run_remote_git(
+                            remote,
+                            machine,
+                            session_id,
+                            folder,
+                            vec![
+                                "diff-tree".to_owned(),
+                                "-r".to_owned(),
+                                "--name-only".to_owned(),
+                                "--no-ext-diff".to_owned(),
+                                base_now.clone(),
+                                head_now.clone(),
+                            ],
+                        )
+                        .await?;
+                        let files = if diff_resp.exit_code == 0 {
+                            let count = String::from_utf8_lossy(&diff_resp.stdout)
+                                .lines()
+                                .filter(|line| !line.is_empty())
+                                .count();
+                            u32::try_from(count).unwrap_or(u32::MAX)
+                        } else {
+                            kept.as_ref().map_or(0, |r| r.files)
+                        };
+                        part.resolved = Some(pb::ReviewLayerResolved {
+                            base_commit: base_now,
+                            head_commit: head_now.clone(),
+                            drift: Drift::None as i32,
+                            files,
+                        });
+                    }
+                    below = Some(head_now.clone());
+                    top = Some(head_now);
+                }
+                Some(P::Worktree(wt)) => {
+                    let head_now =
+                        remote_rev_commit(remote, machine, session_id, folder, "HEAD").await?;
+                    let kept_head = kept
+                        .as_ref()
+                        .map(|r| r.head_commit.as_str())
+                        .filter(|h| !h.is_empty());
+                    let holds = head_now.as_ref().is_some_and(|head| {
+                        kept_head.is_none_or(|kept| kept == head)
+                            && top.as_ref().is_none_or(|top| top == head)
+                    });
+                    if !holds {
+                        let mut resolved = kept.unwrap_or_default();
+                        resolved.drift = Drift::HeadMoved as i32;
+                        resolved.files = 0;
+                        part.resolved = Some(resolved);
+                    } else if let Some(head_now) = head_now {
+                        let mut args = vec![
+                            "status".to_owned(),
+                            "--porcelain".to_owned(),
+                            "-uall".to_owned(),
+                            "--".to_owned(),
+                        ];
+                        args.extend(wt.include_paths.iter().cloned());
+                        let status_resp =
+                            run_remote_git(remote, machine, session_id, folder, args).await?;
+                        let files = if status_resp.exit_code == 0 {
+                            let count = String::from_utf8_lossy(&status_resp.stdout)
+                                .lines()
+                                .filter(|line| !line.is_empty())
+                                .count();
+                            u32::try_from(count).unwrap_or(u32::MAX)
+                        } else {
+                            kept.as_ref().map_or(0, |r| r.files)
+                        };
+                        part.resolved = Some(pb::ReviewLayerResolved {
+                            base_commit: head_now.clone(),
+                            head_commit: head_now,
+                            drift: Drift::None as i32,
+                            files,
+                        });
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockRemote {
+        responses: HashMap<Vec<String>, (i32, Vec<u8>)>,
+    }
+
+    #[tonic::async_trait]
+    impl super::super::ReviewRemote for MockRemote {
+        async fn run_review_git(
+            &self,
+            _machine: &str,
+            request: pb::RunReviewGitRequest,
+        ) -> Result<pb::RunReviewGitResponse, Status> {
+            let (exit_code, stdout) = self
+                .responses
+                .get(&request.args)
+                .cloned()
+                .unwrap_or((1, Vec::new()));
+            Ok(pb::RunReviewGitResponse {
+                exit_code,
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+
+        async fn type_terminal(&self, _machine: &str, _request: pb::TypeRequest) -> Result<(), Status> {
+            Ok(())
+        }
+
+        async fn get_diff(
+            &self,
+            _machine: &str,
+            _request: pb::GetDiffRequest,
+        ) -> Result<pb::GetDiffResponse, Status> {
+            Ok(pb::GetDiffResponse::default())
+        }
+
+        async fn get_file_diff(
+            &self,
+            _machine: &str,
+            _request: pb::GetFileDiffRequest,
+        ) -> Result<pb::FileDiff, Status> {
+            Ok(pb::FileDiff::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn recheck_stack_via_remote_resolves_commits_files_and_drift() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            vec!["rev-parse".into(), "--verify".into(), "main^{commit}".into()],
+            (0, b"1111\n".to_vec()),
+        );
+        responses.insert(
+            vec!["rev-parse".into(), "--verify".into(), "feat^{commit}".into()],
+            (0, b"2222\n".to_vec()),
+        );
+        responses.insert(
+            vec!["merge-base".into(), "--is-ancestor".into(), "1111".into(), "2222".into()],
+            (0, Vec::new()),
+        );
+        responses.insert(
+            vec![
+                "diff-tree".into(),
+                "-r".into(),
+                "--name-only".into(),
+                "--no-ext-diff".into(),
+                "1111".into(),
+                "2222".into(),
+            ],
+            (0, b"src/a.rs\nsrc/b.rs\n".to_vec()),
+        );
+        let remote = MockRemote { responses };
+
+        let mut stack = pb::ReviewStack {
+            layers: vec![
+                pb::ReviewLayer {
+                    title: "L1".to_owned(),
+                    repos: vec![pb::ReviewLayerRepo {
+                        repo: Some(pb::RepoRef {
+                            owner: "acme".to_owned(),
+                            name: "api".to_owned(),
+                        }),
+                        part: Some(pb::review_layer_repo::Part::Range(pb::ReviewLayerRange {
+                            base: "main".to_owned(),
+                            head: "feat".to_owned(),
+                        })),
+                        resolved: None,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                pb::ReviewLayer {
+                    title: "L2".to_owned(),
+                    repos: vec![pb::ReviewLayerRepo {
+                        repo: Some(pb::RepoRef {
+                            owner: "acme".to_owned(),
+                            name: "api".to_owned(),
+                        }),
+                        part: Some(pb::review_layer_repo::Part::Range(pb::ReviewLayerRange {
+                            base: "feat".to_owned(),
+                            head: "gone".to_owned(),
+                        })),
+                        resolved: Some(pb::ReviewLayerResolved {
+                            base_commit: "2222".to_owned(),
+                            head_commit: "3333".to_owned(),
+                            drift: pb::review_layer_resolved::Drift::None as i32,
+                            files: 4,
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        };
+
+        recheck_stack_via_remote(&mut stack, "s1", "m2", &remote)
+            .await
+            .unwrap();
+
+        let r1 = stack.layers[0].repos[0].resolved.as_ref().unwrap();
+        assert_eq!(r1.base_commit, "1111");
+        assert_eq!(r1.head_commit, "2222");
+        assert_eq!(r1.files, 2);
+        assert_eq!(r1.drift, pb::review_layer_resolved::Drift::None as i32);
+
+        let r2 = stack.layers[1].repos[0].resolved.as_ref().unwrap();
+        assert_eq!(r2.base_commit, "2222");
+        assert_eq!(r2.head_commit, "3333");
+        assert_eq!(r2.files, 0);
+        assert_eq!(r2.drift, pb::review_layer_resolved::Drift::Missing as i32);
     }
 }

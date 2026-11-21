@@ -13,12 +13,12 @@
 
 use humata2_daemon_ports::Caller;
 use humata2_grpc::humata::v1 as pb;
-use humata2_rpc_kit::{blocking, chain, internal, invalid_field, missing};
+use humata2_rpc_kit::{blocking, chain, internal, invalid_field, missing, timestamp_ms};
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, ReviewPr, Store, StoreError};
 use tonic::Status;
 
 use super::PullRequests;
-use crate::ports::{ReviewStarter, store_error};
+use crate::ports::{ReviewStarter, Scope, actor, store_error};
 
 /// The folder of the PR reviews channel under the channels folder, which is
 /// also how a channel is known as it (`Channel.is_pr_reviews`).
@@ -79,14 +79,14 @@ fn slug(owner: &str, name: &str) -> String {
 
 /// The PR reviews channel with `wanted` among its repositories. Made on first
 /// use; a repository is added the first time a pull request of it is reviewed.
-/// Blocking.
+/// Returns `(channel, created, updated)`. Blocking.
 fn prepare_channel(
     store: &Store,
     starter: &dyn ReviewStarter,
     machine: &str,
     default_agent: &str,
     wanted: &[(String, String)],
-) -> Result<ChannelRecord, StartReviewError> {
+) -> Result<(ChannelRecord, bool, bool), StartReviewError> {
     let store_failed =
         |doing: &'static str| move |source: StoreError| StartReviewError::Store { doing, source };
     let existing = store
@@ -94,6 +94,7 @@ fn prepare_channel(
         .map_err(store_failed("list the channels"))?
         .into_iter()
         .find(|channel| channel.folder == PR_REVIEWS_FOLDER);
+    let created = existing.is_none();
     let mut channel = match existing {
         Some(channel) => channel,
         None => starter
@@ -148,7 +149,43 @@ fn prepare_channel(
         .channel(&channel.id)
         .map_err(store_failed("read the PR reviews channel"))?
         .unwrap_or(channel);
-    Ok(channel)
+    Ok((channel, created, changed))
+}
+
+fn channel_pb(channel: &ChannelRecord) -> pb::Channel {
+    pb::Channel {
+        id: Some(pb::ChannelId {
+            value: channel.id.clone(),
+        }),
+        name: channel.name.clone(),
+        folder: channel.folder.clone(),
+        repos: channel
+            .repos
+            .iter()
+            .map(|repo| pb::RepoRef {
+                owner: repo.owner.clone(),
+                name: repo.name.clone(),
+            })
+            .collect(),
+        machines: channel
+            .machines
+            .iter()
+            .map(|machine| pb::MachineId {
+                value: machine.clone(),
+            })
+            .collect(),
+        branch_prefix: channel.branch_prefix.clone(),
+        default_agent: Some(pb::AgentId {
+            value: channel.default_agent.clone(),
+        }),
+        live_sessions: 0,
+        revision: Some(pb::Revision {
+            value: channel.revision,
+        }),
+        created_at: Some(timestamp_ms(channel.created_unix_ms)),
+        is_pr_reviews: channel.folder == PR_REVIEWS_FOLDER,
+        ..pb::Channel::default()
+    }
 }
 
 /// The review session's title: the pull request's own title for one, else
@@ -255,11 +292,24 @@ impl PullRequests {
             self.inner.machine.clone(),
             self.inner.default_agent.clone(),
         );
-        let channel = blocking(move || {
+        let (channel, created, updated) = blocking(move || {
             prepare_channel(&store, starter.as_ref(), &machine, &agent, &wanted)
         })
         .await?
         .map_err(|error| error.into_status(&self.inner.machine))?;
+        if created || updated {
+            let change = if created {
+                pb::Change::Created
+            } else {
+                pb::Change::Updated
+            };
+            self.inner.feed.send(
+                Scope::Channel(channel.id.clone()),
+                change,
+                pb::event::Payload::Channel(channel_pb(&channel)),
+                Some(actor(caller)),
+            );
+        }
 
         let sessions = self.inner.sessions.get().ok_or_else(|| {
             internal(
@@ -281,5 +331,93 @@ impl PullRequests {
             )
             .await?;
         Ok(started.operation.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+
+    struct FakeStarter {
+        store: Arc<Store>,
+    }
+
+    impl ReviewStarter for FakeStarter {
+        fn channels_root(&self) -> PathBuf {
+            PathBuf::from("/tmp/humata-test-channels")
+        }
+
+        fn remote_template(&self) -> String {
+            String::new()
+        }
+
+        fn create_pr_reviews_channel(
+            &self,
+            machine: &str,
+            default_agent: &str,
+        ) -> Result<ChannelRecord, Status> {
+            let record = ChannelRecord {
+                id: "ch_pr_reviews".to_owned(),
+                name: "PR Reviews".to_owned(),
+                folder: PR_REVIEWS_FOLDER.to_owned(),
+                branch_prefix: None,
+                default_agent: default_agent.to_owned(),
+                repos: Vec::new(),
+                machines: vec![machine.to_owned()],
+                revision: 1,
+                created_unix_ms: 1_700_000_000_000,
+            };
+            self.store
+                .put_channel(&record)
+                .map_err(|e| Status::internal(e.to_string()))?;
+            Ok(record)
+        }
+    }
+
+    #[test]
+    fn prepare_channel_creates_pr_reviews_channel_on_first_use_and_builds_pb() {
+        let dir = std::env::temp_dir().join(format!(
+            "humata-svc-review-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store::open(&dir.join("humata.db")).unwrap());
+        let starter = FakeStarter {
+            store: store.clone(),
+        };
+        let wanted = vec![("acme".to_owned(), "api".to_owned())];
+        let (channel, created, updated) =
+            prepare_channel(&store, &starter, "this-mac", "claude", &wanted).unwrap();
+        assert!(created);
+        assert!(updated);
+        assert_eq!(channel.folder, PR_REVIEWS_FOLDER);
+        assert_eq!(channel.repos.len(), 1);
+
+        let proto = channel_pb(&channel);
+        assert!(proto.is_pr_reviews);
+        assert_eq!(proto.folder, PR_REVIEWS_FOLDER);
+        assert_eq!(proto.name, "PR Reviews");
+        assert_eq!(proto.repos.len(), 1);
+
+        // Second review of the same repo reuses the channel without recreating or updating.
+        let (again, created2, updated2) =
+            prepare_channel(&store, &starter, "this-mac", "claude", &wanted).unwrap();
+        assert!(!created2);
+        assert!(!updated2);
+        assert_eq!(again.id, channel.id);
+
+        // A new repo updates the existing channel.
+        let more = vec![("acme".to_owned(), "web".to_owned())];
+        let (expanded, created3, updated3) =
+            prepare_channel(&store, &starter, "this-mac", "claude", &more).unwrap();
+        assert!(!created3);
+        assert!(updated3);
+        assert_eq!(expanded.repos.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

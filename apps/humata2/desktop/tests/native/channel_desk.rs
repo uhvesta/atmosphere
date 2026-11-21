@@ -34,11 +34,59 @@ fn the_desk_tab_lists_the_sessions_and_the_sidebar_has_its_row() {
 }
 
 #[test]
-fn a_channel_with_no_desk_session_shows_the_empty_state_with_its_button() {
+fn a_fresh_channel_desk_tab_auto_starts_and_embeds_its_primary_terminal() {
     let mut app = App::new(fixture::design());
     app.send(AppAction::OpenChannelDesk(payments()));
+    assert!(app.contains("channel-desk-primary"));
+    assert!(app.contains("channel-desk-primary-bar"));
+    assert!(app.contains("terminal-area"));
     assert!(app.contains("channel-desk-new"));
-    assert!(!app.contains("sidebar-channel-desk-payments-rewrite"));
+    assert!(app.contains("sidebar-channel-desk-payments-rewrite"));
+    let first_id = app.ui.read(|state| state.active_channel_desk());
+    assert!(first_id.is_some());
+
+    // Revisiting the channel's Desk tab reuses the same session without duplicates.
+    app.send(AppAction::Channel(humata2_app::channel::Action::Tab(
+        humata2_app::channel::Tab::Sessions,
+    )));
+    app.send(AppAction::Channel(humata2_app::channel::Action::Tab(
+        humata2_app::channel::Tab::Desk,
+    )));
+    assert_eq!(app.ui.read(|state| state.active_channel_desk()), first_id);
+    assert_eq!(
+        app.ui
+            .read(|state| state.desk.channel_rows(&payments()).len()),
+        1
+    );
+}
+
+#[test]
+fn switching_between_channels_keeps_each_channels_desk_scoped_and_embedded() {
+    let mut app = App::new(fixture::design());
+    let infra = ChannelId::new("infra");
+
+    app.send(AppAction::OpenChannelDesk(payments()));
+    let payments_desk = app.ui.read(|state| state.active_channel_desk());
+    assert!(payments_desk.is_some());
+    assert!(app.contains("channel-desk-primary"));
+    assert!(app.contains("terminal-area"));
+
+    app.send(AppAction::OpenChannelDesk(infra.clone()));
+    let infra_desk = app.ui.read(|state| state.active_channel_desk());
+    assert!(infra_desk.is_some());
+    assert_ne!(payments_desk, infra_desk);
+    assert!(app.contains("channel-desk-primary"));
+    assert!(app.contains("terminal-area"));
+
+    app.send(AppAction::OpenChannelDesk(payments()));
+    assert_eq!(
+        app.ui.read(|state| state.active_channel_desk()),
+        payments_desk
+    );
+    assert_eq!(
+        app.fakes.daemon.workspace().desk.channel_sessions.len(),
+        2
+    );
 }
 
 #[test]

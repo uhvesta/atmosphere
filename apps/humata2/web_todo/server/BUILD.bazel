@@ -1,0 +1,40 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Loopback HTTP + WebSocket server for Humata's browser To-do UI (WEBTODO, D905).
+# Isolated leaf crate per D74: serves the GPUI Wasm bundle and pushes live
+# BoardSnapshot updates from the host daemon's Store + Feed (never polls).
+rust_library(
+    name = "server",
+    srcs = [
+        "src/controller.rs",
+        "src/lib.rs",
+        "src/server.rs",
+    ],
+    crate_name = "humata2_web_todo_server",
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        "//apps/humata2/todo",
+        "//apps/humata2/web_todo/wire",
+        "@crates//:axum",
+        "@crates//:futures-util",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "server_test",
+    crate = ":server",
+    deps = [
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

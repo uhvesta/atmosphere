@@ -7,7 +7,9 @@ rust_library(
     crate_name = "humata2_svc_mcp",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = [
+        "//apps/humata2/daemon/browser_copilot",
         "//apps/humata2/daemon/humatad:grpc",
+        "//apps/humata2/daemon/machines",
         "//apps/humata2/daemon/mcp",
         "//apps/humata2/daemon/ports",
         "//apps/humata2/daemon/rpc_kit",

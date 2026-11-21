@@ -24,6 +24,7 @@ pub(crate) fn put_row(
 ) -> Result<(), StoreError> {
     let encoded = blob::encode(blob::Type::InboxEntry, ENTRY_VERSION, &request.entry)?;
     let placed = blob::place(&inner.blobs, encoded)?;
+    let session = (!request.session.is_empty()).then_some(request.session.as_str());
     transaction
         .execute(
             "INSERT INTO inbox_requests
@@ -37,7 +38,7 @@ pub(crate) fn put_row(
                  migrate_thing = NULL, migrate_machine = NULL, migrate_pending = 0",
             params![
                 request.id,
-                request.session,
+                session,
                 request.created_unix_ms,
                 request.updated_unix_ms,
                 placed.inline(),
@@ -151,24 +152,33 @@ fn migrate_stored(row: &Row<'_>) -> rusqlite::Result<MigrateStored> {
 }
 
 impl Store {
-    /// Saves an Inbox request, replacing one with its id. Its session must
-    /// be saved.
+    /// Saves an Inbox request, replacing one with its id. When `session` is
+    /// non-empty, that session must be saved; an empty `session` stores NULL
+    /// for non-session requests (such as user- or script-filed provider import
+    /// requests, PROVIDERCLI D906).
     pub fn put_inbox_request(&self, request: &InboxRecord) -> Result<(), StoreError> {
         check_id(&request.id)?;
-        check_id(&request.session)?;
         let inner = self.inner();
-        inner.write_for_session("inbox.put", DOING, Some(&request.session), |transaction| {
-            put_row(inner, transaction, request)
-        })
+        if request.session.is_empty() {
+            inner.write_with("inbox.put", DOING, |transaction| {
+                put_row(inner, transaction, request)
+            })
+        } else {
+            check_id(&request.session)?;
+            inner.write_for_session("inbox.put", DOING, Some(&request.session), |transaction| {
+                put_row(inner, transaction, request)
+            })
+        }
     }
 
-    /// Every saved Inbox request of a session, oldest first. Migrate items
-    /// belong to no session: [`Store::pending_migrate_requests`] lists them.
+    /// Every saved non-Migrate Inbox request, oldest first. Migrate items
+    /// belong to no session and have `migrate_thing` set:
+    /// [`Store::pending_migrate_requests`] lists them.
     pub fn inbox_requests(&self) -> Result<Vec<InboxRecord>, StoreError> {
         let rows = self.inner().read("list the Inbox requests", |connection| {
             let mut statement = connection.prepare(
-                "SELECT id, session, created_unix_ms, updated_unix_ms, entry, entry_file
-                 FROM inbox_requests WHERE session IS NOT NULL ORDER BY created_unix_ms, id",
+                "SELECT id, COALESCE(session, ''), created_unix_ms, updated_unix_ms, entry, entry_file
+                 FROM inbox_requests WHERE migrate_thing IS NULL ORDER BY created_unix_ms, id",
             )?;
             statement
                 .query_map([], stored)?

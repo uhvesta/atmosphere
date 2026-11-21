@@ -31,13 +31,22 @@ impl ScreenQuestion {
     }
 }
 
-/// What each question says on the screen, as `plain` leaves it: Copilot CLI
-/// 1.0.113's "Confirm folder trust", as recorded in VERIFY, and Claude Code
-/// 2.1.328's auto-mode offer, as recorded in AGENTS2's live check O1.
-/// Codex's first-run questions wait for a recorded screen (D762).
+/// What each question says on the screen, as `plain` leaves it:
+/// - Copilot CLI 1.0.113 / 1.0.115-1 "Confirm folder trust"
+/// - Claude Code 2.1.329 workspace "Quick safety check" folder trust
+/// - Codex 0.169.0 "Folder access" / "Trust this folder?"
+/// - Claude Code 2.1.328's auto-mode offer, as recorded in AGENTS2's live check O1.
 const ASKED: &[(&str, ScreenQuestion)] = &[
     (
         "Do you trust the files in this folder?",
+        ScreenQuestion::FolderTrust,
+    ),
+    (
+        "Quick safety check: Is this a project you created or one you trust?",
+        ScreenQuestion::FolderTrust,
+    ),
+    (
+        "Trust this folder? Codex can read, edit, and run files here",
         ScreenQuestion::FolderTrust,
     ),
     (
@@ -64,10 +73,49 @@ pub fn asked_on(screen: &str) -> Option<ScreenQuestion> {
         .map(|(_, question)| *question)
 }
 
-/// Active interactive prompt phrases shown on the live TUI screen of supported
-/// agent CLIs (`claude`, `codex`, `copilot`, `agy`) when waiting for user
-/// approval, a question answer, or explicit confirmation.
-const ACTIVE_PROMPT_PHRASES: &[&str] = &[
+/// The kind of interactive prompt visibly shown on an agent CLI's screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    /// Folder trust / workspace safety check (Claude, Codex, Copilot).
+    FolderTrust,
+    /// Tool or shell command permission approval.
+    Permission,
+    /// MCP server tool permission approval.
+    Mcp,
+    /// Plan approval prompt.
+    Plan,
+    /// Interactive multiple-choice or confirmation question.
+    Question,
+    /// CLI sign-in / authentication choice prompt (e.g., Codex login).
+    Login,
+    /// First-run CLI onboarding / setup picker (e.g., Claude theme picker).
+    Onboarding,
+}
+
+impl PromptKind {
+    /// Canonical snapshot `expect: prompt:<kind>` label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FolderTrust => "folder_trust",
+            Self::Permission => "permission",
+            Self::Mcp => "mcp",
+            Self::Plan => "plan",
+            Self::Question => "question",
+            Self::Login => "login",
+            Self::Onboarding => "onboarding",
+        }
+    }
+}
+
+/// An active interactive prompt parsed from an agent CLI's live screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenPrompt {
+    pub kind: PromptKind,
+    pub choices: Vec<String>,
+}
+
+/// Permission approval phrases shown on supported agent CLI screens.
+const PERMISSION_PHRASES: &[&str] = &[
     "do you want to proceed?",
     "do you want to make this edit",
     "do you want to create",
@@ -76,6 +124,7 @@ const ACTIVE_PROMPT_PHRASES: &[&str] = &[
     "allow once",
     "allow for this session",
     "allow always",
+    "always allow",
     "allow this tool",
     "yes, and don't ask again",
     "approve command?",
@@ -85,42 +134,92 @@ const ACTIVE_PROMPT_PHRASES: &[&str] = &[
     "permission required",
     "waiting for your approval",
     "waiting for approval",
+    "yes, proceed",
+];
+
+/// Plan approval phrases shown on supported agent CLI screens.
+const PLAN_PHRASES: &[&str] = &[
+    "approve this plan",
+    "proceed with this plan",
+    "ready to code?",
+];
+
+/// General interactive prompt phrases (questions / confirmation footers).
+const QUESTION_PHRASES: &[&str] = &[
     "waiting for input",
     "enter to confirm",
     "esc to cancel",
     "press enter to confirm",
     "select an option",
     "choose an option",
-    "yes, proceed",
 ];
 
-/// Returns `true` when `screen` visibly shows an active interactive prompt
-/// (permission approval, question, folder trust, or input confirmation) for a
-/// supported agent CLI (`claude`, `codex`, `copilot`, `agy`).
+/// Parses the active interactive prompt on `screen`, returning its kind and
+/// any visible choices.
 ///
 /// Offers that do not hold `Needs you` (such as Claude's post-turn auto-mode
-/// tip) return `false`.
-pub fn has_active_prompt(screen: &str) -> bool {
+/// tip) return `None`.
+pub fn prompt_on(screen: &str) -> Option<ScreenPrompt> {
     if let Some(question) = asked_on(screen) {
-        return question.needs_you();
+        return if question.needs_you() {
+            Some(ScreenPrompt {
+                kind: PromptKind::FolderTrust,
+                choices: extract_choices(screen),
+            })
+        } else {
+            None
+        };
     }
     let shown = plain(screen);
     if shown.is_empty() {
-        return false;
+        return None;
     }
     let lower = shown.to_ascii_lowercase();
-    if ACTIVE_PROMPT_PHRASES
+
+    let kind = if lower.contains("mcp server to run tool")
+        || (lower.contains("mcp")
+            && PERMISSION_PHRASES
+                .iter()
+                .any(|phrase| lower.contains(phrase)))
+    {
+        Some(PromptKind::Mcp)
+    } else if lower.contains("choose how you want to use codex")
+        || (lower.contains("sign in with chatgpt") && lower.contains("sign in"))
+    {
+        Some(PromptKind::Login)
+    } else if lower.contains("choose the text style that looks best with your terminal") {
+        Some(PromptKind::Onboarding)
+    } else if PLAN_PHRASES.iter().any(|phrase| lower.contains(phrase)) {
+        Some(PromptKind::Plan)
+    } else if PERMISSION_PHRASES
         .iter()
         .any(|phrase| lower.contains(phrase))
     {
-        return true;
-    }
-    // Interactive choice selector: focused first choice (`❯ 1.` or `› 1.`)
-    // paired with a second numbered choice (`2. `).
-    if (shown.contains("❯ 1.") || shown.contains("› 1.")) && shown.contains(" 2. ") {
-        return true;
-    }
-    // Confirmation prompt suffix at the end of the visible screen.
+        Some(PromptKind::Permission)
+    } else if QUESTION_PHRASES.iter().any(|phrase| lower.contains(phrase))
+        || has_numbered_choice_selector(&shown)
+        || has_confirmation_suffix(&lower)
+    {
+        Some(PromptKind::Question)
+    } else {
+        None
+    };
+
+    kind.map(|kind| ScreenPrompt {
+        kind,
+        choices: extract_choices(screen),
+    })
+}
+
+/// Interactive choice selector: focused first choice (`❯ 1.`, `› 1.`, or `> 1.`)
+/// paired with a second numbered choice (`2. `).
+fn has_numbered_choice_selector(shown: &str) -> bool {
+    (shown.contains("❯ 1.") || shown.contains("› 1.") || shown.contains("> 1."))
+        && shown.contains(" 2. ")
+}
+
+/// Confirmation prompt suffix at the end of the visible screen.
+fn has_confirmation_suffix(lower: &str) -> bool {
     let trimmed = lower.trim_end();
     [
         "(y/n)",
@@ -132,6 +231,132 @@ pub fn has_active_prompt(screen: &str) -> bool {
     ]
     .iter()
     .any(|suffix| trimmed.ends_with(suffix))
+}
+
+/// Returns `true` when `screen` visibly shows an active interactive prompt
+/// (permission approval, question, folder trust, login, onboarding, or input
+/// confirmation) for a supported agent CLI (`claude`, `codex`, `copilot`, `agy`).
+///
+/// Offers that do not hold `Needs you` (such as Claude's post-turn auto-mode
+/// tip) return `false`.
+pub fn has_active_prompt(screen: &str) -> bool {
+    prompt_on(screen).is_some()
+}
+
+/// Extracts visible interactive menu choices from `screen`, handling both
+/// numbered menus (`❯ 1. Yes`, `› 1. Allow`, `> 1. Sign in ...`) and
+/// unnumbered cursor lists (such as Claude Code's `❯ No, exit` / `Yes, I trust
+/// this folder` or its theme picker).
+fn extract_choices(screen: &str) -> Vec<String> {
+    let numbered = extract_numbered_choices(screen);
+    if numbered.len() >= 2 {
+        return numbered;
+    }
+    let unnumbered = extract_cursor_choices(screen);
+    if unnumbered.len() >= 2 {
+        return unnumbered;
+    }
+    Vec::new()
+}
+
+fn unbox_line(line: &str) -> &str {
+    line.trim_matches(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{257f}').contains(&c))
+}
+
+fn collapse_spaces(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_focus_marker(line: &str) -> (bool, &str) {
+    for marker in ["❯ ", "› ", "> "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return (true, rest.trim_start());
+        }
+    }
+    (false, line)
+}
+
+fn parse_numbered_item(line: &str) -> Option<(usize, String)> {
+    let (_, rest) = strip_focus_marker(line);
+    let (digits, after) = rest.split_once(". ")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let num = digits.parse::<usize>().ok()?;
+    let label = collapse_spaces(after);
+    if label.is_empty() {
+        return None;
+    }
+    Some((num, label))
+}
+
+fn extract_numbered_choices(screen: &str) -> Vec<String> {
+    let mut best: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut expected_num = 1usize;
+
+    for raw in screen.lines() {
+        let line = unbox_line(raw);
+        if let Some((num, label)) = parse_numbered_item(line) {
+            if num == 1 {
+                if current.len() > best.len() {
+                    best = std::mem::take(&mut current);
+                } else {
+                    current.clear();
+                }
+                current.push(label);
+                expected_num = 2;
+            } else if num == expected_num && !current.is_empty() {
+                current.push(label);
+                expected_num += 1;
+            }
+        }
+    }
+    if current.len() > best.len() {
+        best = current;
+    }
+    best
+}
+
+fn is_choice_footer(lower: &str) -> bool {
+    lower.starts_with("enter to ")
+        || lower.starts_with("press enter")
+        || lower.starts_with("↑/↓")
+        || lower.starts_with("esc to ")
+        || lower.starts_with("enter continue")
+        || lower.starts_with("syntax theme:")
+}
+
+fn extract_cursor_choices(screen: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    for (idx, raw) in lines.iter().enumerate() {
+        let trimmed = unbox_line(raw);
+        let Some(after_cursor) = trimmed.strip_prefix("❯ ") else {
+            continue;
+        };
+        let first = collapse_spaces(after_cursor.trim_start_matches('✔').trim());
+        if first.is_empty() {
+            continue;
+        }
+        let mut choices = vec![first];
+        for next_raw in &lines[idx + 1..] {
+            let next = unbox_line(next_raw);
+            if next.is_empty()
+                || next.chars().all(|c| c == '╌' || c == '─' || c == '-')
+                || is_choice_footer(&next.to_ascii_lowercase())
+            {
+                break;
+            }
+            let cleaned = collapse_spaces(next.trim_start_matches('✔').trim());
+            if !cleaned.is_empty() {
+                choices.push(cleaned);
+            }
+        }
+        if choices.len() >= 2 {
+            return choices;
+        }
+    }
+    Vec::new()
 }
 
 /// `text` without box drawing, with each run of white space, line breaks
@@ -268,5 +493,110 @@ mod tests {
             "Compiling humata2_svc_inbox v0.1.0\nRunning 24 tests...\nAll tests passed."
         ));
         assert!(!has_active_prompt(""));
+    }
+
+    #[test]
+    fn real_recorded_cli_prompts_parse_kind_and_choices() {
+        // Claude Code 2.1.329 workspace folder trust.
+        let claude_trust = "\
+ Accessing workspace:
+ /tmp/work
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team).
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel";
+        assert_eq!(asked_on(claude_trust), Some(ScreenQuestion::FolderTrust));
+        let p = prompt_on(claude_trust).expect("claude trust prompt");
+        assert_eq!(p.kind, PromptKind::FolderTrust);
+        assert_eq!(p.choices, vec!["No, exit", "Yes, I trust this folder"]);
+
+        // Codex 0.169.0 folder trust.
+        let codex_trust = "\
+  Folder access
+  /tmp/work
+  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
+› 1. Trust and continue
+  2. Back to Agent Command Center
+  enter continue · esc back";
+        assert_eq!(asked_on(codex_trust), Some(ScreenQuestion::FolderTrust));
+        let p = prompt_on(codex_trust).expect("codex trust prompt");
+        assert_eq!(p.kind, PromptKind::FolderTrust);
+        assert_eq!(
+            p.choices,
+            vec!["Trust and continue", "Back to Agent Command Center"]
+        );
+
+        // Codex 0.169.0 MCP tool permission.
+        let codex_mcp = "\
+  Field 1/1
+  Allow the screenparse MCP server to run tool \"echo\"?
+  text: hi
+  › 1. Allow                   Run the tool and continue
+    2. Allow for this session  Run the tool and remember this choice for this session
+    3. Always allow            Run the tool and remember this choice for future tool calls
+    4. Cancel                  Cancel this tool call
+  enter to submit | esc to cancel";
+        let p = prompt_on(codex_mcp).expect("codex mcp prompt");
+        assert_eq!(p.kind, PromptKind::Mcp);
+        assert_eq!(p.choices.len(), 4);
+
+        // Codex 0.169.0 command permission.
+        let codex_cmd = "\
+  Would you like to run the following command?
+  $ sed -i '' 's/hello/goodbye/' notes.txt
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `sed` (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel";
+        let p = prompt_on(codex_cmd).expect("codex cmd prompt");
+        assert_eq!(p.kind, PromptKind::Permission);
+        assert_eq!(p.choices.len(), 3);
+
+        // Codex 0.169.0 sign-in prompt (uses ASCII `> 1.`).
+        let codex_login = "\
+  Welcome to Codex, OpenAI's command-line coding agent
+  Choose how you want to use Codex.
+> 1. Sign in with ChatGPT
+  2. Sign in with Device Code
+  3. Sign in another way
+  Press enter to continue";
+        let p = prompt_on(codex_login).expect("codex login prompt");
+        assert_eq!(p.kind, PromptKind::Login);
+        assert_eq!(
+            p.choices,
+            vec![
+                "Sign in with ChatGPT",
+                "Sign in with Device Code",
+                "Sign in another way",
+            ]
+        );
+
+        // Claude Code 2.1.329 first-run theme picker.
+        let claude_theme = "\
+ Let's get started.
+ Choose the text style that looks best with your terminal
+ ❯ ✔ Auto (match terminal)
+     Dark mode
+     Light mode
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌";
+        let p = prompt_on(claude_theme).expect("claude theme onboarding");
+        assert_eq!(p.kind, PromptKind::Onboarding);
+        assert_eq!(
+            p.choices,
+            vec!["Auto (match terminal)", "Dark mode", "Light mode"]
+        );
+
+        // Copilot 1.0.115-1 folder trust.
+        let p = prompt_on(COPILOT_TRUST).expect("copilot trust prompt");
+        assert_eq!(p.kind, PromptKind::FolderTrust);
+        assert_eq!(
+            p.choices,
+            vec![
+                "Yes",
+                "Yes, and remember this folder for future sessions",
+                "No (Esc)",
+            ]
+        );
     }
 }

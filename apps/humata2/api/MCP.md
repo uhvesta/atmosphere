@@ -33,9 +33,27 @@ the same thing under the same check.
   starts) binds the same way and acts as that session's agent, so the CLI is
   never a way around MCP's checks (BOUNDARIES.md §2.2).
 
-## 2. Names
+## 2. Progressive disclosure and names
 
-Tool names are `<area>_<verb>`, because many agents' function-calling
+`tools/list` exposes three progressive-disclosure meta-tools instead of every
+underlying schema up front (~98% smaller initial payload):
+
+- **`humata_list({ category?, query? })`** — returns compact 1-line entries
+  `<name> [<category>,<effect>](<req*>; <opt>): <summary>`, dynamically
+  filtered to the operations this session offers.
+- **`humata_describe({ names: [...] })`** — batchable (`1..=20` names),
+  returning full `inputSchema`, annotations, and validated `examples`, plus
+  structured `unavailable` entries for `user_only`, `not_offered`, or
+  `unknown` names.
+- **`humata_call({ name, arguments? })`** — validates and runs any offered
+  operation (preserving `user_only` refusals, `_meta.progressToken`,
+  `notifications/cancelled`, `inbox_wait`, and idempotency keys). On a
+  `-32602` validation error, both `error.message` and `error.data.schema`
+  include a compact inline schema focused on the failing field for 1-turn
+  self-correction. Direct `tools/call` by underlying operation name also
+  remains accepted for backward compatibility.
+
+Underlying tool names are `<area>_<verb>`, because many agents' function-calling
 formats reject dots. The operation id, used in audit, history, the Inbox card
 and the journal, is `<area>.<verb>`. The spec's `humata.review.draft` is the
 tool `review_draft` on server `humata` with operation id `review.draft`;
@@ -275,7 +293,13 @@ rule named until the user changes the rule (IN-18).
 | `session_push` | `session.push` / PlanPush + PushAndOpenPullRequests | GIT_PUSH (Ask, IN-24); review sessions follow PR-7 and PR-8 instead | `{repos?: string[], open_pr?: bool, title?, body?}` → `{operation_id}` | pushes and opens PRs; the card shows repos, branch, commits and PR title. An uncontained agent pushing with its own git credentials is not stopped (SEC-5) | host |
 | `pr_review_start` | `review.start` / StartReview | PR_REVIEW_START (Ask) | `{prs: string[], machine, agent?}` → `{operation_id, session}` | a PR review session, read-only (PR-7) | host |
 | `machine_add_ssh`, `machine_create`, `machine_start`, `machine_stop`, `machine_reconnect`, `skills_sync` | `machine.*`, `skills.sync` | MACHINE_PROVISION (Ask) | `{ssh_host, name}`, `{provider, name, params}`, `{machine}`… → `{operation_id}` | as in Hosts | host |
-| `provider_import` | `provider.import` / RequestProviderImport | PROVIDER_IMPORT (Ask me or Never; no Allow, no Always allow, never in Approve all; D792) | `{file_text (at most 64 KiB), file_name?, reason, wait_seconds?}` → `{decision, imported, revision}` | MP-23: the card shows the file whole, every command each provider runs (on the Mac, or `run_on`, when a machine is made with it) and the ids it replaces; approving writes it, or fails `plan_stale` when the providers file changed since the ask. A file with problems is refused at once (`invalid_argument`) and nothing is asked. No path is read | host; a machine's daemon doesn't forward it yet |
+| `provider_guide` | `provider.guide` (offline) | none (read-only) | `{}` → `{guide}` | PROVIDERCLI (D906): plain-text guide to authoring a machine provider (actions, reach modes, templates, env vars, interactive login, failure handling, and handing the file to the owner) | host and machines |
+| `provider_schema` | `provider.schema` (offline) | none (read-only) | `{json?: boolean}` → `{schema, text?}` | PROVIDERCLI (D906): provider TOML schema, identity JSON format, status words, and discover format generated from Humata's real parser types | host and machines |
+| `provider_example` | `provider.example` (offline) | none (read-only) | `{kind?: string}` → `{examples}` or `{kind, summary, toml}` | PROVIDERCLI (D906): lists or returns complete, validated provider TOML examples (`lima`, `cloud-cli`, `terraform`, `ssh-fleet`) | host and machines |
+| `provider_check` | `provider.check` (offline) | none (read-only) | `{toml}` → `{ok, providers, problems, text}` | PROVIDERCLI (D906): validates provider TOML offline with the real parser and names each bad field with how to fix it | host and machines |
+| `provider_render` | `provider.render` (offline) | none (read-only) | `{toml, action, machine, provider?, params?, cmd?}` → `{provider, action, machine, run_on, program, args, env, baseline_env, timeout_seconds?, text}` | PROVIDERCLI (D906): renders the exact command, arguments, environment, and target machine Humata would use for `action` without running anything | host and machines |
+| `provider_parse` | `provider.parse` (offline) | none (read-only) | `{kind: "identity"\|"status"\|"discover"\|"list", output, machine?}` → `{kind, ..., text}` | PROVIDERCLI (D906): validates stdout from a provider's `identity`, `status`, or `discover` command against Humata's real parsers | host and machines |
+| `provider_import`, `provider_request_import` | `provider.import`, `provider.request_import` / RequestProviderImport | PROVIDER_IMPORT (Ask me or Never; no Allow, no Always allow, never in Approve all; D792) | `{file_text (at most 64 KiB), file_name?, reason, wait_seconds?}` → `{decision, imported, revision}` | MP-23, D906: the card shows the file whole, every command each provider runs (on the Mac, or `run_on`, when a machine is made with it) and the ids it replaces; approving writes it, or fails `plan_stale` when the providers file changed since the ask. A file with problems is refused at once (`invalid_argument`) and nothing is asked. No path is read | host and machines (forwarded to host) |
 | `trash_restore` | `trash.restore` / RestoreFromTrash | TRASH_RESTORE (Ask) | `{trash_item_id}` → `{restored}` | | host |
 | `channel_create` | `channel.create` / CreateChannel | CHANNEL_CREATE (Ask) | `{name, repos, machines}` → `{channel}` | | host |
 | `session_stop`, `session_archive` of another session | `session.*` | SESSION_STOP_OTHER (**Ask me**, D306; archive joins this row, D21) | `{session}` | | waits for the user |

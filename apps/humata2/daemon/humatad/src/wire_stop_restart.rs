@@ -290,8 +290,14 @@ impl ComposeEnv {
         let existing = crate::config_sync::composed_home_of(self.sync.machine_root(), &session.id, agent).map(|(_, dir)| dir);
         let mut env = Vec::new();
         if existing.is_some() || !records_conversations(kind) {
-            let dir = match self.sync.compose(&session.id, kind, self.protected.clone()) {
-                Ok(report) => report.session_config_dir,
+            match self.sync.compose(&session.id, kind, self.protected.clone()) {
+                Ok(report) => {
+                    // SMB-078: apply the full composed env_plan (including
+                    // CLAUDE_SECURESTORAGE_CONFIG_DIR="" on macOS).
+                    for (k, v) in report.env_plan.env_vars {
+                        env.push((OsString::from(k), OsString::from(v)));
+                    }
+                }
                 Err(error) => match existing {
                     Some(dir) => {
                         crate::log::say!(
@@ -299,12 +305,14 @@ impl ComposeEnv {
                             session.id,
                             status::chain(&error)
                         );
-                        dir
+                        env.push((OsString::from(kind.config_env_var()), dir.into_os_string()));
+                        if kind == AgentKind::Claude && cfg!(target_os = "macos") {
+                            env.push((OsString::from("CLAUDE_SECURESTORAGE_CONFIG_DIR"), OsString::new()));
+                        }
                     }
                     None => return Err(status::chain(&error)),
                 },
-            };
-            env.push((OsString::from(kind.config_env_var()), dir.into_os_string()));
+            }
         }
         env.extend(self.place_env());
         Ok(env)
@@ -801,5 +809,22 @@ mod compose_tests {
 
         assert!(again.starts_with(&session_home), "{again:?}");
         assert_eq!(value(&env, "CODEX_HOME"), Some(&session_home.into_os_string()));
+    }
+
+    #[test]
+    fn composed_claude_env_includes_keychain_setting_on_macos() {
+        // SMB-078: ComposeEnv::env must apply env_plan so composed Claude
+        // homes receive CLAUDE_SECURESTORAGE_CONFIG_DIR="" on macOS.
+        let rig = rig();
+        rig.compose.plan_home("se_a", "claude");
+        let env = rig.compose.env(&session("box", "claude"), "claude").unwrap();
+        assert!(value(&env, "CLAUDE_CONFIG_DIR").is_some());
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                value(&env, "CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+                Some(&OsString::new()),
+                "composed Claude env must include CLAUDE_SECURESTORAGE_CONFIG_DIR=\"\", got {env:?}"
+            );
+        }
     }
 }

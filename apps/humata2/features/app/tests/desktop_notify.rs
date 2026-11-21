@@ -407,3 +407,19 @@ fn clicking_a_todo_notification_lands_on_the_todo() {
     store.skip_received();
     assert_eq!(store.state().route, Route::Todo);
 }
+
+#[test]
+fn launch_requests_permission_once_when_notifications_were_saved_enabled() {
+    let (mut store, notifier, _) = setup();
+    assert_eq!(notifier.permission_requests(), 0);
+
+    store.send(A::Settings(SettingsAction::ToggleDesktopNotifications), |_| {});
+    store.skip_received();
+    assert_eq!(notifier.permission_requests(), 1);
+
+    // Simulating a launch with notifications already enabled requests permission again.
+    store.send(A::Launch, |_| {});
+    store.skip_received();
+    store.skip_in_flight();
+    assert_eq!(notifier.permission_requests(), 2);
+}

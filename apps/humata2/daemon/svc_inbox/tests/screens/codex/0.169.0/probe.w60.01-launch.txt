@@ -2,13 +2,13 @@ agent: codex
 cli: 0.169.0
 script: probe
 label: launch
-expect: unknown
+expect: none
 cols: 60
 rows: 40
 ---
 
   >_ OpenAI Codex (v0.169.0)
-     /private/tmp/claude-501/screenparse-rec/…/probe/work
+     /private/tmp/screenparse-corpus-0100/codex/probe/work
 
 
 

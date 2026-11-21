@@ -22,6 +22,17 @@ fn trusted_or_unused_hooks_show_no_step() {
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
     store.finish();
 }
 
@@ -34,6 +45,17 @@ fn hooks_not_yet_heard_show_the_step_until_the_daemon_hears_one() {
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
     // The user trusted them in Codex and a hook came in: reopening clears it.
     daemon.set_codex_needs_trust(false);
     store.send(A::Section(Section::Agents), |_| {});
@@ -41,6 +63,11 @@ fn hooks_not_yet_heard_show_the_step_until_the_daemon_hears_one() {
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
+    store.receive_matching(
+        "general reloaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |_| {},
+    );
     store.finish();
 }
 

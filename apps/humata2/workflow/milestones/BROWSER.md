@@ -171,7 +171,7 @@ Owned files:
 4. Commit with explicit `git add -- <paths>`. No AI attribution trailers.
 
 ## Lane
-**State: resumed 2026-11-20 (0.9.0 shipped at 5e86d620); release target 0.10.0. A1 compiled (api, svc_inbox, humatad, desktop; svc_inbox:all and live_daemon:all wait on FUSEFSWIRE's vfs fix). A2 and B1 written, awaiting build.** b2 re-signed by Fable for the per-session grant (D897). Fable signed off b1–b3 in `workflow/milestones/mockups/browser/` (FRAMES.md). Picks logged as D896–D899.
+**State: resumed 2026-11-20 (0.9.0 shipped at 5e86d620); release target 0.10.0. A1 compiled; A2, B1, A3, A4, A5, B2, B3 and loopback integration tests (`browser_host_test`, `browser_mcp_test`) are written and awaiting build.** b2 re-signed by Fable for the per-session grant (D897). Fable signed off b1–b3 in `workflow/milestones/mockups/browser/` (FRAMES.md). Picks logged as D896–D899.
 
 **Goal / exit:** the outcome sentence above holds, and the verification gate's targets pass.
 
@@ -179,17 +179,51 @@ Owned files:
 - **New `api/proto/humata/v1/browser.proto`**, added to `inbox_proto` srcs (one-line seam in `api/proto/BUILD.bazel` for main). It holds `BrowserBridgeService` with `ConnectBrowserHost`, `ExecuteBrowserAction`, `GetBrowserBridgeStatus` and also `ListDetectedBrowsers` / `InstallBrowserHost` / `UninstallBrowserHost` (user-only), plus `DetectedBrowser`, `BrowserKind`, `BrowserFamily`. So `SettingsService` and `settings_service.rs` stay untouched (no hand-over wait). settings.proto is not edited.
 - **inbox.proto (additive):** kinds 9/10, `BrowserPreview`, preview 18/19, `AllowFor30Min` answer 7, `RequestBrowserApproval`. The request carries the action itself (`action_json`); the server derives preview, `is_write` and the action key, so a card can't show a different action than the one that runs.
 - **No bypass:** `ExecuteBrowserAction` from an agent needs an approval id the inbox approved for that session with a matching action key (one use), or an active read grant for a read action. Read grants are per session, in memory, 30 min; lost on daemon restart.
-- **No `Caller::BrowserHost` in `daemon/ports`** (shared, many exhaustive matches): identity.rs checks the `humata-browser-host-token` header (token file 0o600, same uid, `!in_a_session`, method == ConnectBrowserHost only) and inserts a humatad-local marker the bridge service checks.
+- **No `Caller::BrowserHost` in `daemon/ports`** (shared, many exhaustive matches): identity.rs checks the `humata-browser-host-token` header (token file 0o600, same uid, `!in_a_session`, method == ConnectBrowserHost only) and inserts a humatad-local marker (`BrowserHostCaller`) the bridge service checks.
 - **Core crate fixes:** `HighlightGuide` classifies as Read (brief's table); drop `expect`/`unreachable!` in `policy.rs`; add a stable action key.
 - **svc_mcp:** browser tools in new `svc_mcp/src/mcp/browser.rs`; only a registration hunk in `mcp.rs` (FUSEFSWIRE owns mcp.rs).
 - **Remote (D891):** after local works, a machine daemon forwards bridge execute/status to the host over the peer link; card raised on the machine and mirrored as today.
 
-**Tasks (planned, none started):**
+**Tasks:**
 - A1 proto — **compiled** (manager). Files: `api/proto/humata/v1/inbox.proto` (additive), `api/proto/humata/v1/browser.proto` (new), `api/proto/BUILD.bazel` (`inbox_proto` srcs line), `daemon/svc_inbox/src/inbox.rs` (mod line, `request_browser_approval` trait method, browser arms in `decide`/`fits_card`, `approving`), `daemon/svc_inbox/src/inbox/browser.rs` (new: stub RPC, `is_read`, `decide`), `daemon/svc_inbox/src/inbox/permission.rs` (AllowFor30Min in two refusal arms), `clients/live_daemon/src/inbox.rs` (kind/preview/answer arms, placeholder until Lane C).
-- A2 browser_copilot fixes (haiku) — **done, awaiting build**. Files: `daemon/browser_copilot/{BUILD.bazel (+sha2), src/policy.rs (HighlightGuide is a read; resolve_ask without expect/unreachable), src/protocol.rs (action_key = hex sha256 of canonical JSON, from_json, kind), src/mcp_tools.rs, src/lib.rs}`. Target `//apps/humata2/daemon/browser_copilot:browser_copilot_test`. Note: the crate's gate keys read grants per agent; the real per-session grant lives in svc_inbox (B3).
-- B1 `daemon/mcp` 6 browser Operations + tools.txt + schemas (haiku) — **done, awaiting build**. Files: `daemon/mcp/src/tools.rs` (seam: operations after RepoLibrary, 4 schema helpers, 6 define arms), `daemon/mcp/tests/tools.txt`, `daemon/mcp/tests/schemas.rs`. Not in svc_mcp `serves()` yet, so not listed (B2 adds them, for supported agents only). Effects: list/read/guide Read, click/type Create, navigate Change. Target `//apps/humata2/daemon/mcp:all`.
-- A5 agy MCP launch wiring (sonnet; check `agy --help`, never touch ~/.gemini).
-- After A1 builds: A3 browser_service.rs (+install with fake home), A4 browser_host.rs + main.rs argv0 + identity.rs + serve.rs hunks, B2 svc_mcp browser.rs, B3 svc_inbox browser.rs + decide/fits_card/replay/deferred/answer_all; tests browser_host_test, browser_mcp_test.
-- Lane C (clients/features/ui) after Fable signs off the frames.
+- A2 browser_copilot fixes — **done, awaiting build**. Files: `daemon/browser_copilot/{BUILD.bazel, src/policy.rs, src/protocol.rs, src/mcp_tools.rs, src/lib.rs}`.
+- B1 `daemon/mcp` 6 browser Operations + tools.txt + schemas — **done, awaiting build**. Files: `daemon/mcp/src/tools.rs`, `daemon/mcp/tests/tools.txt`, `daemon/mcp/tests/schemas.rs`.
+- A3 + A4 + A5 + B2 + B3 (daemon local browser wiring) — **done, awaiting build**:
+  - A3: `daemon/humatad/src/browser_service.rs` (new: `BrowserBridgeSvc`, fake home via `HUMATA2_BROWSER_HOME`, atomic symlink, `request_id` oneshot correlation w/ 30 s timeout, approval verification via `Inbox::consume_browser_approval`, unit tests).
+  - A4: `daemon/humatad/src/browser_host.rs` (new: `argv[0]` `humata2-browser-host` detection, `Command::BrowserHost`, 4-byte native-endian JSON frame pump), minimal hunks in `daemon/humatad/src/{main.rs,identity.rs,serve.rs,lib.rs,error.rs}` and `daemon/humatad/BUILD.bazel` (`browser_copilot` dep + `browser_host` in `POWER_CUT_SCOPED_TESTS`).
+  - A5: `daemon/agent_hooks/src/{mcp.rs,lib.rs}`, `daemon/agent_hooks/tests/mcp.rs`, `daemon/sessions_core/src/agents.rs` (`Builtin::Agy` via `--settings=<state>/humata-mcp-agy.json`, never touching `~/.gemini`), `daemon/humatad/src/session_service/hooks.rs`.
+  - B2: `daemon/svc_mcp/src/mcp/browser.rs` (new: `browser_offered`, `GetBrowserBridgeStatus`, `RequestBrowserApproval` + `WaitForAnswer` with `WithdrawOnDrop`, `ExecuteBrowserAction`, unit tests), minimal registration hunks in `daemon/svc_mcp/src/mcp.rs`, `daemon/svc_mcp/BUILD.bazel`.
+  - B3: `daemon/svc_inbox/src/inbox/browser.rs` (per-session 30-min in-memory read grants, server-clamped `supports_30m_grant`, `consume_browser_approval`, unit tests), `daemon/svc_inbox/src/inbox.rs` (`browser` field, `record_browser_answer`, `answer_all` skips `BrowserWrite`), `daemon/svc_inbox/src/inbox/replay.rs` (browser answer validation & preview clamping), `daemon/svc_inbox/BUILD.bazel`.
+  - Loopback tests: `daemon/humatad/tests/browser_host.rs` (`browser_host_test`, scoped `PC_BASE`), `daemon/humatad/tests/browser_mcp.rs` (`browser_mcp_test`, `BASE` for `svc_mcp`).
+- Lane C (clients, features, desktop UI) — **done, awaiting build**:
+  - Clients: `clients/src/{model.rs,daemon.rs,daemon/fake.rs,daemon/fake/browser.rs (new),daemon/fake/inbox.rs,fixture.rs,fixture/requests.rs}`, `clients/live_daemon/src/{state.rs,inbox.rs,settings.rs,daemon.rs}` (`BrowserBridgeService` RPCs wired to `browser_bridge()`, `RequestKind::{BrowserRead, BrowserWrite}`, `BrowserPreview`, `Answer::AllowFor30Min`, `DetectedBrowser`, `BrowserKind`, `BrowserFamily`, `BrowserBridgeStatus`, unit tests in `fake/browser.rs`, `live_daemon/src/inbox.rs`, `live_daemon/src/settings.rs`).
+  - Features: `features/notify/src/lib.rs`, `features/inbox/src/lib.rs` (`Offer::AllowFor30Min` only for `BrowserRead` with `supports_30m_grant`, `ApproveAll` skips `BrowserWrite`), `features/inbox/tests/browser.rs (new)`, `features/settings/src/{lib.rs,browser.rs (new)}`, `features/settings/tests/browser.rs (new)`, `features/app/{src/events.rs,tests/every_action.rs}`.
+  - UI: `ui/core/src/lib.rs` (added `Globe` icon asset), `ui/workspace/src/request_card.rs` (frames `b2`/`b3` Browser read & write cards + unit tests), `ui/settings/src/{lib.rs,settings.rs,settings_browser.rs (new)}` (frame `b1` Settings › Browser + unit tests). Note: `29-settings` snapshot will need re-recording because the Settings sidebar now includes the `Browser` row after `Agent access`.
+  - Desktop native tests: `desktop/tests/{native.rs,native/browser_settings.rs (new)}`.
+- Targets to build & test:
+  - `//apps/humata2/daemon/browser_copilot:browser_copilot_test`
+  - `//apps/humata2/daemon/mcp:all`
+  - `//apps/humata2/daemon/agent_hooks:mcp_test`
+  - `//apps/humata2/daemon/sessions_core:all`
+  - `//apps/humata2/daemon/svc_inbox:svc_inbox_unit_test`
+  - `//apps/humata2/daemon/svc_mcp:svc_mcp_unit_test`
+  - `//apps/humata2/daemon/humatad:humatad2_unit_test`
+  - `//apps/humata2/daemon/humatad:browser_host_test`
+  - `//apps/humata2/daemon/humatad:browser_mcp_test`
+  - `//apps/humata2/clients:clients_unit_test`
+  - `//apps/humata2/clients/live_daemon:live_daemon_unit_test`
+  - `//apps/humata2/features/notify:all`
+  - `//apps/humata2/features/inbox:all`
+  - `//apps/humata2/features/settings:all`
+  - `//apps/humata2/features/app:every_action_test`
+  - `//apps/humata2/ui/settings:settings_unit_test`
+  - `//apps/humata2/ui/workspace:workspace_unit_test`
+  - `//apps/humata2/desktop:native_test`
+- Remote (D891) — **done, awaiting build**:
+  - Forwarded call table & host dispatch: `daemon/svc_away/src/registry.rs` (`GetBrowserBridgeStatus`, `ExecuteBrowserAction`), `daemon/svc_board/src/{ports.rs,replay.rs}` (`HostBrowser` in `HostCalls`), `daemon/humatad/src/{lib.rs,plugins.rs,wire_board.rs,serve.rs}`.
+  - Machine-role bridge: `daemon/humatad/src/browser_service.rs` (`BrowserBridgeOnMachine`: 4-agent scope, local `consume_browser_approval` after reachability check, Uplink forwarding for `GetBrowserBridgeStatus`/`ExecuteBrowserAction`, `FailedPrecondition` host-only refusal for `ConnectBrowserHost`/`ListDetectedBrowsers`/`InstallBrowserHost`/`UninstallBrowserHost`).
+  - Host-side mirrored approval & race-free replay: `daemon/svc_inbox/src/inbox/replay.rs` (records 30-min read grants on replayed `AllowFor30Min`) and `daemon/svc_inbox/src/inbox/browser.rs` (waits on mirrored pending watch channel when `ExecuteBrowserAction` races ahead of `JOURNAL_ANSWER`, plus unit test).
+  - Tests: `daemon/humatad/tests/browser_mcp.rs` (two-daemon `remote_rig` test proving remote `codex` session reads/clicks host Mac's browser with Inbox machine attribution, 30-min read grant reuse, and strict per-action write), `daemon/humatad/tests/away_forward.rs` (machine-role host-only & 4-agent scope checks), `daemon/humatad/BUILD.bazel` (`TEST_NEEDS["browser_mcp"]`).
+- Next: build & test Lanes A/B/C + Remote (D891), update `29-settings` snapshot if needed.
 
 **Workers:** Fable frames (running). No others spawned.

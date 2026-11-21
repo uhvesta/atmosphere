@@ -247,6 +247,81 @@ pub enum Group {
     Machines,
 }
 
+/// A leading prefix that narrows the palette to one kind of entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filter {
+    /// `>`: commands only.
+    Commands,
+    /// `#`: channels only (unless `#<digits>` names a pull request).
+    Channels,
+    /// `@`: sessions and their terminals only.
+    Sessions,
+    /// `/`: files only.
+    Files,
+    /// `!`: machines only.
+    Machines,
+}
+
+/// A parsed palette query with optional namespace filter and archive opt-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParsedQuery<'a> {
+    /// Narrowing prefix (`>`, `#`, `@`, `/`, `!`), if any.
+    pub filter: Option<Filter>,
+    /// The query text after stripping prefixes and leading spaces.
+    pub text: &'a str,
+    /// Whether the query explicitly opted into archived sessions (`archived:`).
+    pub include_archived: bool,
+}
+
+/// Parses optional `archived:` and namespace prefixes (`>`, `#`, `@`, `/`, `!`)
+/// from a raw palette query.
+#[must_use]
+pub fn parse_query(raw: &str) -> ParsedQuery<'_> {
+    let mut rest = raw.trim();
+    let mut include_archived = false;
+    if let Some(prefix) = rest.get(..9)
+        && prefix.eq_ignore_ascii_case("archived:")
+    {
+        include_archived = true;
+        rest = rest[9..].trim_start();
+    }
+    let (filter, text) = if let Some(after) = rest.strip_prefix('>') {
+        (Some(Filter::Commands), after.trim_start())
+    } else if let Some(after) = rest.strip_prefix('#') {
+        if pull_number(rest).is_some() {
+            (None, rest)
+        } else {
+            (Some(Filter::Channels), after.trim_start())
+        }
+    } else if let Some(after) = rest.strip_prefix('@') {
+        (Some(Filter::Sessions), after.trim_start())
+    } else if let Some(after) = rest.strip_prefix('/') {
+        (Some(Filter::Files), after.trim_start())
+    } else if let Some(after) = rest.strip_prefix('!') {
+        (Some(Filter::Machines), after.trim_start())
+    } else {
+        (None, rest)
+    };
+    ParsedQuery {
+        filter,
+        text,
+        include_archived,
+    }
+}
+
+/// The query string forwarded to full-text conversation search (`Find`).
+/// Returns an empty string when a namespace prefix narrows the palette away
+/// from conversations (e.g. `>sidebar`, `#billing`, `@refund`, `/diff.rs`).
+#[must_use]
+pub fn conversation_query(raw: &str) -> String {
+    let parsed = parse_query(raw);
+    if parsed.filter.is_some() {
+        String::new()
+    } else {
+        parsed.text.to_owned()
+    }
+}
+
 /// The palette's state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PaletteState {
@@ -256,6 +331,8 @@ pub struct PaletteState {
     pub open: bool,
     /// What was typed.
     pub query: String,
+    /// Whether archived sessions and conversations are included (OFF by default).
+    pub include_archived: bool,
     /// The entries that match, best first.
     pub entries: Arc<Vec<Entry>>,
     /// The highlighted entry.
@@ -321,6 +398,8 @@ pub enum PaletteAction {
     Escape,
     /// The query changed.
     Query(String),
+    /// Toggle whether archived sessions and conversations are included.
+    ToggleArchived,
     /// ↑ or ↓.
     Move(i32),
     /// Enter: run the highlighted entry.
@@ -361,6 +440,7 @@ impl Reducer for Palette {
                 state.open = true;
                 state.in_session = in_session;
                 state.asking = None;
+                state.include_archived = false;
                 state.query.clear();
                 state.refresh();
             }
@@ -386,6 +466,10 @@ impl Reducer for Palette {
             },
             PaletteAction::Query(query) => {
                 state.query = query;
+                state.refresh();
+            }
+            PaletteAction::ToggleArchived => {
+                state.include_archived = !state.include_archived;
                 state.refresh();
             }
             PaletteAction::Move(delta) => {
@@ -416,6 +500,12 @@ impl Reducer for Palette {
 }
 
 impl PaletteState {
+    /// Whether archived sessions and conversations are currently included.
+    #[must_use]
+    pub fn shows_archived(&self) -> bool {
+        self.include_archived || parse_query(&self.query).include_archived
+    }
+
     /// Whether Move is asking for a machine and none can take the session:
     /// no other machine it may go to is online, whatever is typed (MV-1).
     #[must_use]
@@ -614,39 +704,54 @@ impl PaletteState {
 
     /// Every command, channel, session and file the query matches, with
     /// its score; the pull request entries come first when the query is one.
-    fn command_entries(&self, query: &str) -> Vec<(i64, Entry)> {
+    fn command_entries(&self, raw_query: &str) -> Vec<(i64, Entry)> {
+        let parsed = parse_query(raw_query);
+        let query = parsed.text;
+        let show_archived = self.include_archived || parsed.include_archived;
         let mut scored: Vec<(i64, Entry)> = Vec::new();
-        // PR-1 (reverses D197): a pasted pull request offers Review this PR at
-        // once, from the parsed text. The app opens the session already
-        // reviewing it, else the Review a pull request dialog.
-        if let Some(pull) = pull_ref(query) {
-            let title = format!(
-                "Review this PR \u{b7} {}/{} #{}",
-                pull.owner, pull.repo, pull.number
-            );
-            scored.push((
-                i64::MAX,
-                Entry {
-                    command: Command::ReviewPull(pull),
-                    title,
-                    hint: "Pull request".to_owned(),
-                },
-            ));
+        if parsed.filter.is_none() {
+            // PR-1 (reverses D197): a pasted pull request offers Review this PR at
+            // once, from the parsed text. The app opens the session already
+            // reviewing it, else the Review a pull request dialog.
+            if let Some(pull) = pull_ref(query) {
+                let title = format!(
+                    "Review this PR \u{b7} {}/{} #{}",
+                    pull.owner, pull.repo, pull.number
+                );
+                scored.push((
+                    i64::MAX,
+                    Entry {
+                        command: Command::ReviewPull(pull),
+                        title,
+                        hint: "Pull request".to_owned(),
+                    },
+                ));
+            }
+            scored.extend(self.repo_entries(query));
+            if let Some(number) = pull_number(query) {
+                scored.push((
+                    i64::MAX,
+                    Entry {
+                        command: Command::Pull(number),
+                        title: format!("Open pull request #{number}"),
+                        hint: "Pull request".to_owned(),
+                    },
+                ));
+            }
         }
-        scored.extend(self.repo_entries(query));
-        if let Some(number) = pull_number(query) {
-            scored.push((
-                i64::MAX,
-                Entry {
-                    command: Command::Pull(number),
-                    title: format!("Open pull request #{number}"),
-                    hint: "Pull request".to_owned(),
-                },
-            ));
-        }
-        for entry in self.all() {
+        for entry in self.all_entries(show_archived) {
+            if let Some(filter) = parsed.filter
+                && !matches_filter(filter, &entry.command)
+            {
+                continue;
+            }
             // A terminal is searched on its title and machine (its hint),
             // never its session's status word.
+            let title_target = if parsed.filter == Some(Filter::Channels) {
+                entry.title.trim_start_matches('#')
+            } else {
+                entry.title.as_str()
+            };
             let search = if matches!(
                 entry.command,
                 Command::Session(_)
@@ -656,16 +761,18 @@ impl PaletteState {
             ) {
                 format!("{} {}", entry.title, entry.hint)
             } else {
-                entry.title.clone()
+                title_target.to_owned()
             };
-            let contextual = matches!(
-                entry.command,
-                Command::TogglePanel | Command::TerminalFullScreen | Command::PanelFullScreen
-            ) && self
-                .context
-                .as_ref()
-                .and_then(|id| self.workspace.session(id))
-                .is_some_and(|session| fuzzy(query, &session.title).is_some());
+            let contextual = parsed.filter.is_none()
+                && matches!(
+                    entry.command,
+                    Command::TogglePanel | Command::TerminalFullScreen | Command::PanelFullScreen
+                )
+                && self
+                    .context
+                    .as_ref()
+                    .and_then(|id| self.workspace.session(id))
+                    .is_some_and(|session| fuzzy(query, &session.title).is_some());
             // Delete all sessions… appears only when the query names it, and
             // ranks below every other match.
             if entry.command == Command::DeleteAllSessions && query.is_empty() {
@@ -678,7 +785,7 @@ impl PaletteState {
                     .iter()
                     .position(|command| command == &entry.command)
                     .map_or(0, |at| 1_000 - i64::try_from(at).unwrap_or(0));
-                let direct = fuzzy(query, &entry.title).is_some();
+                let direct = fuzzy(query, title_target).is_some();
                 // A session's terminals sit just below the session (D784).
                 let terminal = if matches!(entry.command, Command::Terminal { .. }) { 100 } else { 0 };
                 scored.push((score + recent + if direct { 10_000 } else { 0 } - terminal - last, entry));
@@ -706,7 +813,7 @@ impl PaletteState {
     /// Whether `entry` is one of the session actions the query asks for by
     /// name, so it sorts ahead of the sessions it would otherwise follow.
     fn promoted(&self, entry: &Entry) -> bool {
-        let query = self.query.trim();
+        let query = parse_query(&self.query).text;
         matches!(
             entry.command,
             Command::MoveSession
@@ -805,7 +912,7 @@ impl PaletteState {
             .collect()
     }
 
-    fn all(&self) -> Vec<Entry> {
+    fn all_entries(&self, include_archived: bool) -> Vec<Entry> {
         let mut entries: Vec<Entry> = [
             (Command::Home, "Go to Home", "⌘1"),
             (Command::Inbox, "Go to Inbox", "⌘2"),
@@ -818,7 +925,7 @@ impl PaletteState {
             (Command::NewChannel, "New channel…", "⇧⌘N"),
             (Command::ExpandAll, "Expand all", "⌥⌘→"),
             (Command::CollapseAll, "Collapse all", "⌥⌘←"),
-            (Command::ToggleSidebar, "Toggle sidebar", "⌘0"),
+            (Command::ToggleSidebar, "Toggle sidebar", "⌘B"),
             (Command::TogglePanel, "Toggle side panel", "⌥⌘0"),
             (Command::Back, "Go back", "⌘["),
             (Command::ShowShortcuts, "Keyboard shortcuts", "⌘/"),
@@ -1004,29 +1111,33 @@ impl PaletteState {
             .workspace
             .sessions
             .iter()
-            .filter(|session| !session.archived)
+            .filter(|session| include_archived || !session.archived)
         {
+            let mut hint = session
+                .parent
+                .as_ref()
+                .and_then(|id| self.workspace.session(id))
+                .map_or_else(
+                    || {
+                        format!(
+                            "{} · {}",
+                            if humata2_clients::desk::is_desk(session) {
+                                "Desk".to_owned()
+                            } else {
+                                format!("# {}", session.channel)
+                            },
+                            session.status.label().to_lowercase()
+                        )
+                    },
+                    |parent| format!("fork of {}", parent.title),
+                );
+            if session.archived {
+                hint.push_str(" · archived");
+            }
             entries.push(Entry {
                 command: Command::Session(session.id.clone()),
                 title: session.title.clone(),
-                hint: session
-                    .parent
-                    .as_ref()
-                    .and_then(|id| self.workspace.session(id))
-                    .map_or_else(
-                        || {
-                            format!(
-                                "{} · {}",
-                                if humata2_clients::desk::is_desk(session) {
-                                    "Desk".to_owned()
-                                } else {
-                                    format!("# {}", session.channel)
-                                },
-                                session.status.label().to_lowercase()
-                            )
-                        },
-                        |parent| format!("fork of {}", parent.title),
-                    ),
+                hint,
             });
         }
         // D784: every terminal tab of a session, hidden or not, so a tab
@@ -1078,6 +1189,27 @@ impl PaletteState {
             }
         }
         entries
+    }
+}
+
+fn matches_filter(filter: Filter, command: &Command) -> bool {
+    match filter {
+        Filter::Commands => !matches!(
+            command,
+            Command::Session(_)
+                | Command::Terminal { .. }
+                | Command::File { .. }
+                | Command::Channel(_)
+                | Command::Machine(_)
+                | Command::ReviewPull(_)
+                | Command::Pull(_)
+                | Command::AddRepoToChannel { .. }
+                | Command::MoveTo { .. }
+        ),
+        Filter::Channels => matches!(command, Command::Channel(_)),
+        Filter::Sessions => matches!(command, Command::Session(_) | Command::Terminal { .. }),
+        Filter::Files => matches!(command, Command::File { .. }),
+        Filter::Machines => matches!(command, Command::Machine(_)),
     }
 }
 

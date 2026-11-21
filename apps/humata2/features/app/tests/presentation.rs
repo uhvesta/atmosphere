@@ -101,6 +101,45 @@ fn half_screen_and_wide_again_restore_sizes_without_saving_automatic_folds() {
 }
 
 #[test]
+fn side_panel_can_resize_up_to_half_the_window_width_while_keeping_main_min() {
+    use humata2_app::layout::{MAIN_MIN, PaneId, panel_max_width};
+
+    let mut layout = Layout::default();
+    // On a 1600px window, 50% is 800px; dragging there should not clamp at 420px.
+    layout.drag(PaneId::Panel, 800.);
+    assert_eq!(layout.panel.width, 800.);
+    let cols = layout.columns(1600., true, true);
+    assert!(!cols.panel_hidden);
+    assert_eq!(cols.panel, 800.);
+    let main = 1600. - 64. - cols.sidebar - 2. - cols.panel;
+    assert!(main >= MAIN_MIN, "main pane kept at least MAIN_MIN: {main}");
+
+    // Dragging beyond 50% of a 1440px window is clamped to 50% (720px) in columns().
+    layout.drag(PaneId::Panel, 1200.);
+    assert_eq!(panel_max_width(1440.), 720.);
+    let cols_1440 = layout.columns(1440., true, true);
+    assert_eq!(cols_1440.panel, 720.);
+    let main_1440 = 1440. - 64. - cols_1440.sidebar - 2. - cols_1440.panel;
+    assert!(main_1440 >= MAIN_MIN, "main pane kept at least MAIN_MIN: {main_1440}");
+
+    // On a narrower 1280px window with sidebar open, panel scales so main >= MAIN_MIN.
+    let cols_1280 = layout.columns(1280., true, true);
+    assert!(cols_1280.panel <= 640.);
+    let main_1280 = 1280. - 64. - cols_1280.sidebar - 2. - cols_1280.panel;
+    assert!(
+        main_1280 >= MAIN_MIN - 0.5,
+        "main pane never collapses below MAIN_MIN: {main_1280}"
+    );
+
+    // With sidebar collapsed on 1280px, panel reaches full 50% (640px).
+    layout.sidebar.collapsed = true;
+    let cols_collapsed = layout.columns(1280., true, true);
+    assert_eq!(cols_collapsed.panel, 640.);
+    let main_collapsed = 1280. - 64. - 14. - 1. - cols_collapsed.panel;
+    assert!(main_collapsed >= MAIN_MIN);
+}
+
+#[test]
 fn a_restart_restores_both_tab_groups_and_the_selected_file() {
     use humata2_session::{Tab, TabGroup};
     let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));

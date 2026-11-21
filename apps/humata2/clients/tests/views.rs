@@ -195,10 +195,12 @@ fn an_offered_view_keeps_what_it_holds_and_who_prepared_it() {
                 RepoDiffSpec {
                     repo: "acme/api".to_owned(),
                     base: RepoBase::Branch("release/2.4".to_owned()),
+                    options: Default::default(),
                 },
                 RepoDiffSpec {
                     repo: "acme/web".to_owned(),
                     base: RepoBase::Uncommitted,
+                    options: Default::default(),
                 },
             ],
             order: vec![("acme/api".to_owned(), "src/client.rs".to_owned())],

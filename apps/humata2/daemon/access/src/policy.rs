@@ -150,6 +150,12 @@ impl Policy {
             Resolved::Refuse(refusal) => return Ok(Verdict::Refused(refusal)),
             Resolved::Owned => return Ok(allowed_now(Source::Owned)),
             Resolved::ReviewPush => return Ok(allowed_now(Source::ReviewPushSetting)),
+            Resolved::BranchPush => {
+                if rules.decision(C::GitPush) == Some(Decision::Never) {
+                    return Ok(never(channel, C::GitPush));
+                }
+                return Ok(allowed_now(Source::Rule));
+            }
             Resolved::Need(need) => need,
         };
         let decision = match rules.decision(need.capability) {
@@ -199,6 +205,12 @@ impl Policy {
                     context,
                     away,
                 ));
+            }
+            Resolved::BranchPush => {
+                if rules.decision(C::GitPush) == Some(Decision::Never) {
+                    return Ok(never(channel, C::GitPush));
+                }
+                return Ok(carry_out(Source::Rule, Reach::Host, context, away));
             }
             Resolved::Need(need) => need,
         };
@@ -586,6 +598,8 @@ enum Resolved {
     Need(Need),
     /// A review session's push the user allowed (PR-8).
     ReviewPush,
+    /// A branch-only push to a non-default session branch (D920).
+    BranchPush,
     /// Refused whatever the rules say.
     Refuse(Refusal),
 }
@@ -769,7 +783,7 @@ fn copy_files(agent: &Agent, from: &Place, into: &Place) -> Resolved {
     }
     match read_place(agent, from) {
         Resolved::Refuse(refusal) => refuse(refusal),
-        Resolved::Owned | Resolved::ReviewPush => landing,
+        Resolved::Owned | Resolved::ReviewPush | Resolved::BranchPush => landing,
         Resolved::Need(need) => match need.capability {
             C::FilesReadOtherSession | C::FilesReadOtherMachine => need_files(C::FilesCopyIn, from),
             _ => Resolved::Need(need),
@@ -948,6 +962,35 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
                 need_exactly(C::GitPush, GrantTarget::RepoBranch(branch.clone()))
             }
         },
+        // D920: pushing a non-default session branch without opening a PR
+        // runs without asking, while Review { push_allowed: false } stays
+        // refused, Decision::Never stays honored, and default branches ask.
+        (C::GitPush, Target::PushBranch(branch)) => match agent.kind {
+            SessionKind::Review { push_allowed: true } => Resolved::ReviewPush,
+            SessionKind::Review { push_allowed: false } => refuse(Refusal::ReviewSessionPush {
+                session: me.id.clone(),
+            }),
+            SessionKind::Ordinary
+            | SessionKind::ContextOnlyFork { .. }
+            | SessionKind::Desk(_)
+            | SessionKind::ChannelDesk(_) => {
+                if is_default_branch_name(&branch.branch) {
+                    need_exactly(C::GitPush, GrantTarget::RepoBranch(branch.clone()))
+                } else {
+                    Resolved::BranchPush
+                }
+            }
+        },
+        // SETTINGSFIX Slice 3: SettingsChange is AskNoAllow (always asks,
+        // never offers Always allow).
+        (C::SettingsChange, Target::Global) => need(C::SettingsChange),
+        (C::SettingsChange, Target::Channel(channel)) => {
+            if matches!(agent.kind, SessionKind::Desk(_)) {
+                need(C::SettingsChange)
+            } else {
+                in_channel(agent, channel, need(C::SettingsChange))
+            }
+        }
         // HO-11: a forward opens from the requester's own machine.
         (C::NetworkReach, Target::Network(network)) if network.machine == me.machine => {
             need_exactly(C::NetworkReach, GrantTarget::Network(network.clone()))
@@ -963,6 +1006,16 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         _ => return Err(CheckError::TargetDoesNotFit { capability }),
     };
     Ok(resolved)
+}
+
+/// True when `branch` is a default/protected branch name that stays gated.
+fn is_default_branch_name(branch: &str) -> bool {
+    let trimmed = branch.trim();
+    let name = trimmed.strip_prefix("refs/heads/").unwrap_or(trimmed);
+    name.is_empty()
+        || name.eq_ignore_ascii_case("main")
+        || name.eq_ignore_ascii_case("master")
+        || name == "HEAD"
 }
 
 /// The refusal for a capability that has no rule.
@@ -1059,9 +1112,11 @@ fn reach(call: &Call, capability: Option<Capability>, here: &MachineId) -> Reach
                 machine,
                 action: MachineActionKind::StopSessions | MachineActionKind::StartSessions,
             }) => local_if(machine, Reach::Host),
-            Target::Global | Target::Network(_) | Target::Push(_) | Target::Machine(_) => {
-                Reach::Host
-            }
+            Target::Global
+            | Target::Network(_)
+            | Target::Push(_)
+            | Target::PushBranch(_)
+            | Target::Machine(_) => Reach::Host,
             Target::Channel(_) if capability == Some(C::ChannelRead) => Reach::ChannelRead,
             Target::Channel(_) => Reach::ChannelWrite,
             Target::Session(session) => local_if(&session.machine, Reach::Host),
@@ -1268,7 +1323,11 @@ fn check_script(token: &ScriptToken, call: &Call, context: &Context) -> Verdict 
             let channel = match target {
                 Target::Channel(channel) | Target::Start { channel, .. } => Some(channel),
                 Target::Session(session) => Some(&session.channel),
-                Target::Global | Target::Network(_) | Target::Push(_) | Target::Machine(_) => None,
+                Target::Global
+                | Target::Network(_)
+                | Target::Push(_)
+                | Target::PushBranch(_)
+                | Target::Machine(_) => None,
             };
             (*capability, channel)
         }

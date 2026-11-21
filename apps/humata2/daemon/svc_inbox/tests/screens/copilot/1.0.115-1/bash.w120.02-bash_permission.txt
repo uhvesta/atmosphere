@@ -1,0 +1,48 @@
+agent: copilot
+cli: 1.0.115-1
+script: bash
+label: bash_permission
+expect: none
+cols: 120
+rows: 40
+---
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                    │
+│  ╭─╮╭─╮                               │  Getting started                                                           │
+│  ╰─╯╰─╯  Copilot v1.0.115-1 uses AI.  │  Use the tabs above to explore your sessions and pull requests             │
+│  █ ▘▝ █  Check for mistakes.          │  /init — Initialize Copilot instructions for this repository               │
+│   ▔▔▔▔                                │  /model — Switch models across providers, or use Auto                      │
+│                                                                                                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ● No Copilot instructions found for this repository. Run /init to generate them.
+
+ ● MCP Servers reloaded: 0 servers connected
+
+ ✗ You must be logged in to send messages. Please run /login
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Please use /login to sign in to use Copilot
+ /private/tmp/screenparse-corpus-0100/copilot/bash/work [⎇ main%]       Run on: This computer ctrl+e change environment
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ← open sidebar · Interactive · Manual Approval · / commands · ? help · tab next tab                   mai-code-2-flash

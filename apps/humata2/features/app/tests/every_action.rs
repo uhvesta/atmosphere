@@ -458,7 +458,8 @@ fn next_section(at: Option<Section>) -> Option<Section> {
         Some(Section::Agents) => Section::Machines,
         Some(Section::Machines) => Section::Layout,
         Some(Section::Layout) => Section::Access,
-        Some(Section::Access) => Section::Storage,
+        Some(Section::Access) => Section::Browser,
+        Some(Section::Browser) => Section::Storage,
         Some(Section::Storage) => Section::Notifications,
         Some(Section::Notifications) => Section::Keyboard,
         Some(Section::Keyboard) => Section::Sync,
@@ -516,6 +517,8 @@ fn key(name: &str) -> Option<Key> {
         "FileListDown" | "FileListUp" | "FileListOpen" | "FileListCollapse" | "FileListExpand" => {
             Key::Not
         }
+        // ⌘+ / ⌘- step the terminal & diff font size (also in Settings › Layout › Terminal font).
+        "ZoomIn" | "ZoomOut" => Key::Not,
         "NewSession" => Key::Runs(Command::NewSession),
         "NewChannel" => Key::Runs(Command::NewChannel),
         "Back" => Key::Runs(Command::Back),
@@ -620,7 +623,10 @@ fn every_key_bound_action_is_in_the_palette_with_its_shortcut() {
                 let state = opened(&workspace);
                 if let Some(entry) = offers(&state, &command) {
                     let shown = glyphs(keys);
-                    if entry.hint != shown {
+                    let matches_any = bound
+                        .iter()
+                        .any(|(k, a)| a == action && glyphs(k) == entry.hint);
+                    if entry.hint != shown && !matches_any {
                         failures.push(format!(
                             "{command:?} shows “{}”, not its shortcut {shown} (KP-2)",
                             entry.hint

@@ -77,17 +77,19 @@ enum Builtin {
     Claude,
     Codex,
     Copilot,
+    Agy,
 }
 
 /// Where Humata's MCP server is for this daemon's agents (D748), as
 /// `install_mcp_configs` wrote it into the state folder: the config files
-/// Claude Code and Copilot load, and the value of Codex's `-c
-/// mcp_servers.humata=…`. None holds the session's token.
+/// Claude Code, Copilot and Antigravity (`agy`) load, and the value of
+/// Codex's `-c mcp_servers.humata=…`. None holds the session's token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HumataTools {
     pub claude_mcp: PathBuf,
     pub copilot_mcp: PathBuf,
     pub codex_mcp: String,
+    pub agy_mcp: PathBuf,
 }
 
 impl Builtin {
@@ -96,9 +98,10 @@ impl Builtin {
     /// command, as each CLI's `--help` names them: Claude Code 2.1
     /// (`--mcp-config`, never `--strict-mcp-config`; `--allowedTools`),
     /// Copilot 1.0 (`--additional-mcp-config`, `--allow-tool`), Codex 0.169
-    /// (`-c mcp_servers.humata=…`, its tools approved). Each flag and its
-    /// value are one argument: the flags take many values, so a value
-    /// after a space would take the next argument too.
+    /// (`-c mcp_servers.humata=…`, its tools approved), and Antigravity
+    /// (`--settings=<file>`, session-only, never touching `~/.gemini`).
+    /// Each flag and its value are one argument: the flags take many values,
+    /// so a value after a space would take the next argument too.
     fn args(self, tools: &HumataTools) -> Vec<String> {
         match self {
             Self::Claude => vec![
@@ -111,6 +114,7 @@ impl Builtin {
                 "--allow-tool=humata".into(),
                 "--allow-tool=shell(humata:*)".into(),
             ],
+            Self::Agy => vec![format!("--settings={}", tools.agy_mcp.to_string_lossy())],
         }
     }
 
@@ -119,7 +123,14 @@ impl Builtin {
     /// before taking this daemon's ([`Agents::with_tools_in`]).
     fn arg_at(argv: &[OsString], at: usize) -> usize {
         let text = |at: usize| argv.get(at).and_then(|arg| arg.to_str()).unwrap_or_default();
-        let one = ["--mcp-config=", "--allowedTools=mcp__humata,", "--additional-mcp-config=", "--allow-tool=humata", "--allow-tool=shell(humata:"];
+        let one = [
+            "--mcp-config=",
+            "--allowedTools=mcp__humata,",
+            "--additional-mcp-config=",
+            "--allow-tool=humata",
+            "--allow-tool=shell(humata:",
+            "--settings=",
+        ];
         if one.iter().any(|prefix| text(at).starts_with(prefix)) {
             return 1;
         }
@@ -783,7 +794,7 @@ fn agy() -> AgentKind {
         version_args: Some(vec!["--version".into()]),
         conversation_id: ConversationId::Pinned,
         model_args: model_flag(),
-        builtin: None,
+        builtin: Some(Builtin::Agy),
         tools_args: Vec::new(),
     }
 }
@@ -2136,6 +2147,7 @@ mod tests {
             claude_mcp: PathBuf::from("/state dir/humata-mcp-claude.json"),
             copilot_mcp: PathBuf::from("/state dir/humata-mcp-copilot.json"),
             codex_mcp: "{ command = \"/opt/humatad2\" }".into(),
+            agy_mcp: PathBuf::from("/state dir/humata-mcp-agy.json"),
         }
     }
 
@@ -2148,7 +2160,7 @@ mod tests {
     fn every_builtin_cli_starts_and_resumes_with_humatas_mcp_server_and_its_tools_allowed() {
         let agents = Agents::builtin().with_humata_tools(&tools());
         let (home, folder) = (Path::new("/home/me"), Path::new("/home/me/Humata/ch/sessions/s.1"));
-        let want: [(&str, &[&str]); 3] = [
+        let want: [(&str, &[&str]); 4] = [
             (
                 "claude",
                 &["--mcp-config=/state dir/humata-mcp-claude.json", "--allowedTools=mcp__humata,Bash(humata:*)"],
@@ -2162,6 +2174,7 @@ mod tests {
                     "--allow-tool=shell(humata:*)",
                 ],
             ),
+            ("agy", &["--settings=/state dir/humata-mcp-agy.json"]),
         ];
         for (name, args) in want {
             let plan = agents.get(name).unwrap().launch_with_model(home, folder, "abc", Some("m"));
@@ -2203,7 +2216,7 @@ mod tests {
         let (home, folder) = (Path::new("/home/me"), Path::new("/work"));
         let before = Agents::builtin();
         let now = Agents::builtin().with_humata_tools(&tools());
-        for name in ["claude", "codex", "copilot"] {
+        for name in ["claude", "codex", "copilot", "agy"] {
             let mut launch = launch_of(&before, name, home, folder);
             let fresh = launch_of(&now, name, home, folder);
             assert!(now.with_tools_in(&mut launch), "{name}");
@@ -2215,6 +2228,7 @@ mod tests {
                 claude_mcp: PathBuf::from("/new/c.json"),
                 copilot_mcp: PathBuf::from("/new/p.json"),
                 codex_mcp: "{ command = \"/new/humatad2\" }".into(),
+                agy_mcp: PathBuf::from("/new/a.json"),
             });
             assert!(moved.with_tools_in(&mut launch), "{name}");
             assert_eq!(launch.resume_argv, launch_of(&moved, name, home, folder).resume_argv, "{name}");

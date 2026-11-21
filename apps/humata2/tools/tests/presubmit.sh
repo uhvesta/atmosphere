@@ -80,8 +80,12 @@ else
         p="tests(set($(tr '\n' ' ' < "$tmp/pkgs")))"
         expr="${expr:+$expr + }$p"
     fi
+    exclude="attr(tags, 'manual', //apps/humata2/...)"
+    if [ "$keep_slow" = 0 ]; then
+        exclude="$exclude + attr(tags, 'slow', //apps/humata2/...)"
+    fi
     bazel query --keep_going --output=label \
-        "tests($expr) except attr(tags, 'manual', //apps/humata2/...)" \
+        "tests($expr) except ($exclude)" \
         2>/dev/null > "$tmp/targets" || true
 fi
 
@@ -89,6 +93,7 @@ if [ "$keep_slow" = 0 ]; then
     grep -v '^#' "$slow" | grep -vxF -f - "$tmp/targets" > "$tmp/run" || true
     skipped=$(($(wc -l < "$tmp/targets") - $(wc -l < "$tmp/run")))
     [ "$skipped" -gt 0 ] && echo "presubmit: skipping $skipped slow target(s); they run in --full" >&2
+    flags="$flags --test_tag_filters=-slow"
 else
     cp "$tmp/targets" "$tmp/run"
 fi

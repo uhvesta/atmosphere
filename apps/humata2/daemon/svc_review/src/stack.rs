@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use humata2_daemon_ports::Caller;
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
-    CheckedStack, Clones, DiffSpec, DriftKind, FromStack, FromStackError, Note, ReviewPlan, Stack,
+    CheckedStack, Clones, DiffSpec, FromStack, FromStackError, Note, ReviewPlan, Stack,
     StackError, StackStatus, wire,
 };
 use humata2_store::SessionRecord;
@@ -173,26 +173,12 @@ impl Review {
                 )
             })?;
         }
-        let joined = plan.order.is_empty() && plan.groups.is_empty() && plan.importance.is_empty();
         let context = context_of(record);
         let diffs = clones
             .diff(&plan.spec, &context)
             .await
             .map_err(|err| diff_failed(&err))?;
-        if joined {
-            let shown = |file: &humata2_review_diff::FileRef| {
-                diffs.iter().any(|diff| {
-                    diff.repo == file.repo && diff.files.iter().any(|each| each.path == file.path)
-                })
-            };
-            let whole = checked.whole_plan();
-            plan.order = whole.order.into_iter().filter(|file| shown(file)).collect();
-            plan.importance = whole
-                .importance
-                .into_iter()
-                .filter(|entry| shown(&entry.file))
-                .collect();
-        }
+        apply_whole_plan(&mut plan, &checked, &diffs);
         plan.check(&diffs).map_err(|err| plan_failed(&err))?;
         let notes = std::mem::take(&mut plan.notes);
         plan.notes = anchored_notes(&clones, &checked, &plan, &context, &diffs, notes).await?;
@@ -239,29 +225,7 @@ impl Review {
         .ok()??;
         lock(&review.stacked).checked = Some(checked.clone());
         let mut told = wire::stack_to_pb(stack, Some(&checked));
-        for found in drift {
-            let kind = match found.kind {
-                DriftKind::Moved => pb::review_layer_resolved::Drift::Moved,
-                DriftKind::Missing => pb::review_layer_resolved::Drift::Missing,
-                DriftKind::HeadMoved => pb::review_layer_resolved::Drift::HeadMoved,
-            };
-            let resolved = told
-                .layers
-                .iter_mut()
-                .filter(|layer| layer.title == found.layer)
-                .flat_map(|layer| layer.repos.iter_mut())
-                .filter(|part| {
-                    part.repo.as_ref().map(wire::repo_key).as_deref() == Some(found.repo.as_str())
-                })
-                .filter_map(|part| part.resolved.as_mut());
-            for resolved in resolved {
-                if resolved.drift == pb::review_layer_resolved::Drift::None as i32
-                    || resolved.drift == pb::review_layer_resolved::Drift::Unspecified as i32
-                {
-                    resolved.drift = kind as i32;
-                }
-            }
-        }
+        wire::apply_drift_to_pb(&mut told, &drift);
         Some(told)
     }
 
@@ -340,6 +304,34 @@ async fn anchored_notes(
     Ok(done.into_iter().flatten().collect())
 }
 
+pub(super) fn apply_whole_plan(
+    plan: &mut ReviewPlan,
+    checked: &CheckedStack,
+    diffs: &[humata2_review_diff::RepoDiff],
+) {
+    let join_order = plan.order.is_empty() && plan.groups.is_empty();
+    let join_importance = plan.importance.is_empty();
+    if !join_order && !join_importance {
+        return;
+    }
+    let shown = |file: &humata2_review_diff::FileRef| {
+        diffs.iter().any(|diff| {
+            diff.repo == file.repo && diff.files.iter().any(|each| each.path == file.path)
+        })
+    };
+    let whole = checked.whole_plan();
+    if join_order {
+        plan.order = whole.order.into_iter().filter(|file| shown(file)).collect();
+    }
+    if join_importance {
+        plan.importance = whole
+            .importance
+            .into_iter()
+            .filter(|entry| shown(&entry.file))
+            .collect();
+    }
+}
+
 pub(super) fn layer_asked(
     request: &pb::FocusReviewRequest,
 ) -> Result<Option<Option<String>>, Status> {
@@ -353,5 +345,107 @@ pub(super) fn layer_asked(
         (false, false) => Ok(Some(Some(request.layer.clone()))),
         (true, true) => Ok(Some(None)),
         (true, false) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use humata2_review_diff::{
+        FileRef, FileStatus, FileSummary, Group, Importance, Layer, LayerRepo, Part, RepoDiff,
+        Resolved, Tier, Trees,
+    };
+
+    use super::*;
+
+    #[test]
+    fn layer_importance_aggregates_even_when_top_level_order_or_groups_is_non_empty() {
+        let file = |p: &str| FileRef {
+            repo: "acme/api".to_owned(),
+            path: p.to_owned(),
+        };
+        let stack = Stack::new(vec![Layer {
+            title: "L1".to_owned(),
+            repos: vec![LayerRepo {
+                repo: "acme/api".to_owned(),
+                part: Part::Range {
+                    base: "main".to_owned(),
+                    head: "feat".to_owned(),
+                },
+                pull_request: None,
+            }],
+            order: vec![file("src/a.rs"), file("src/b.rs")],
+            importance: vec![
+                Importance {
+                    file: file("src/a.rs"),
+                    tier: Tier::Key,
+                },
+                Importance {
+                    file: file("src/b.rs"),
+                    tier: Tier::Skim,
+                },
+            ],
+            ..Layer::default()
+        }]);
+        let checked = CheckedStack::from_resolved(
+            stack.clone(),
+            vec![vec![Resolved {
+                base_commit: "111".to_owned(),
+                head_commit: "222".to_owned(),
+                files: 2,
+            }]],
+        )
+        .unwrap();
+        let summary = |p: &str| FileSummary {
+            path: p.to_owned(),
+            status: FileStatus::Modified,
+            added: 1,
+            removed: 0,
+            binary: false,
+            old_blob: None,
+            new_blob: None,
+            old_mode: 0,
+            new_mode: 0,
+        };
+        let diffs = vec![RepoDiff {
+            repo: "acme/api".to_owned(),
+            branch: None,
+            head: None,
+            label: "main".to_owned(),
+            trees: Trees {
+                old: "111".to_owned(),
+                new: "222".to_owned(),
+            },
+            files: vec![summary("src/a.rs"), summary("src/b.rs")],
+        }];
+        let mut plan = ReviewPlan {
+            spec: DiffSpec::default(),
+            order: vec![file("src/b.rs"), file("src/a.rs")],
+            groups: vec![Group {
+                title: "First".to_owned(),
+                note: String::new(),
+                first: file("src/b.rs"),
+            }],
+            notes: Vec::new(),
+            stack: Some(stack),
+            from_stack: None,
+            importance: Vec::new(),
+        };
+        apply_whole_plan(&mut plan, &checked, &diffs);
+        // Top-level order is preserved.
+        assert_eq!(plan.order, vec![file("src/b.rs"), file("src/a.rs")]);
+        // Layer importance is aggregated into plan.importance despite non-empty order/groups!
+        assert_eq!(
+            plan.importance,
+            vec![
+                Importance {
+                    file: file("src/a.rs"),
+                    tier: Tier::Key,
+                },
+                Importance {
+                    file: file("src/b.rs"),
+                    tier: Tier::Skim,
+                },
+            ]
+        );
     }
 }

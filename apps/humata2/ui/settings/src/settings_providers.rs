@@ -41,6 +41,7 @@ pub struct ProvidersInputs {
     variables: RefCell<HashMap<String, Entity<InputState>>>,
     add_repo: RefCell<Option<Entity<InputState>>>,
     add_repo_echo: Rc<RefCell<Option<String>>>,
+    text_fields: RefCell<HashMap<String, (Entity<InputState>, Rc<RefCell<Option<String>>>)>>,
     subscriptions: RefCell<Vec<Subscription>>,
 }
 
@@ -74,6 +75,7 @@ impl ProvidersInputs {
             variables: RefCell::new(HashMap::new()),
             add_repo: RefCell::new(None),
             add_repo_echo: Rc::new(RefCell::new(None)),
+            text_fields: RefCell::new(HashMap::new()),
             subscriptions: RefCell::new(vec![typing]),
         }
     }
@@ -120,6 +122,56 @@ impl ProvidersInputs {
         };
         if field.read(cx).value().as_ref() != text {
             *self.add_repo_echo.borrow_mut() = Some(text.to_owned());
+            let owned = text.to_owned();
+            field.update(cx, |input, cx| input.set_value(owned, window, cx));
+        }
+        field
+    }
+
+    /// A keyed single-line text input for Settings and Channel Settings forms.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn text_input(
+        &self,
+        key: &str,
+        placeholder: &'static str,
+        text: &str,
+        on_change: impl Fn(String) -> AppAction + 'static,
+        on_enter: Option<AppAction>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<InputState> {
+        let (field, echo) = if let Some(existing) = self.text_fields.borrow().get(key) {
+            (existing.0.clone(), existing.1.clone())
+        } else {
+            let field = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+            let echo = Rc::new(RefCell::new(None::<String>));
+            let (ui, echo_cb) = (self.ui.clone(), echo.clone());
+            self.subscriptions.borrow_mut().push(cx.subscribe(
+                &field,
+                move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| match event {
+                    InputEvent::Change => {
+                        let value = input.read(cx).value().to_string();
+                        if echo_cb.borrow().as_deref() == Some(value.as_str()) {
+                            *echo_cb.borrow_mut() = None;
+                            return;
+                        }
+                        ui.send(on_change(value), cx);
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        if let Some(action) = &on_enter {
+                            ui.send(action.clone(), cx);
+                        }
+                    }
+                    InputEvent::Focus | InputEvent::Blur => {}
+                },
+            ));
+            self.text_fields
+                .borrow_mut()
+                .insert(key.to_owned(), (field.clone(), echo.clone()));
+            (field, echo)
+        };
+        if field.read(cx).value().as_ref() != text {
+            *echo.borrow_mut() = Some(text.to_owned());
             let owned = text.to_owned();
             field.update(cx, |input, cx| input.set_value(owned, window, cx));
         }

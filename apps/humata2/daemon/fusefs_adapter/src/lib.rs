@@ -18,6 +18,8 @@ pub mod access;
 pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod linux_mount;
+#[cfg(target_os = "macos")]
+pub mod macos_mount;
 pub mod materialize;
 pub mod transport;
 
@@ -151,16 +153,16 @@ mod tests {
             assert!(names.contains(&expected), "missing top-level dir {expected}");
         }
 
-        // Verify aliases point to canonical /s/<id>.
+        // Verify mount-relative aliases point to canonical s/<id>.
         let ch_link = vol.resolve_path(&caller, "/channels/eng-main/sess-a").unwrap();
         assert_eq!(ch_link.kind, FileKind::Symlink);
-        assert_eq!(vol.readlink(&caller, ch_link.ino).unwrap(), "/s/sess-a");
+        assert_eq!(vol.readlink(&caller, ch_link.ino).unwrap(), "../../s/sess-a");
 
         let m_link = vol.resolve_path(&caller, "/m/mac-local/s/sess-a").unwrap();
-        assert_eq!(vol.readlink(&caller, m_link.ino).unwrap(), "/s/sess-a");
+        assert_eq!(vol.readlink(&caller, m_link.ino).unwrap(), "../../../s/sess-a");
 
         let desk_link = vol.resolve_path(&caller, "/desks/desk-1/sess-a").unwrap();
-        assert_eq!(vol.readlink(&caller, desk_link.ino).unwrap(), "/s/sess-a");
+        assert_eq!(vol.readlink(&caller, desk_link.ino).unwrap(), "../../s/sess-a");
 
         // Verify stable-by-id native placement in meta.json.
         let meta_attr = vol.resolve_path(&caller, "/s/sess-a/meta.json").unwrap();
@@ -606,11 +608,11 @@ mod tests {
             .unwrap();
         assert_eq!(updated, 1);
 
-        // New channel alias points to /s/sess-a; canonical path & holder_pid unchanged!
+        // New channel alias points to ../../s/sess-a; canonical path & holder_pid unchanged!
         let new_alias = host
             .resolve_path(&caller, "/channels/eng-platform/sess-a")
             .unwrap();
-        assert_eq!(host.readlink(&caller, new_alias.ino).unwrap(), "/s/sess-a");
+        assert_eq!(host.readlink(&caller, new_alias.ino).unwrap(), "../../s/sess-a");
         assert!(host.resolve_path(&caller, "/channels/eng-main/sess-a").is_err());
         assert_eq!(host.holder_record("sess-a").unwrap().holder_pid, 4242);
         assert_eq!(

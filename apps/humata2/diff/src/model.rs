@@ -137,10 +137,20 @@ impl FileDiff {
         totals
     }
 
-    /// The language the path's extension names, for highlighting.
+    /// The language the path or content names, for highlighting.
     #[must_use]
     pub fn language(&self) -> Language {
-        Language::from_path(&self.path)
+        let first_line = self
+            .new_lines
+            .as_ref()
+            .and_then(|lines| lines.first().map(String::as_str))
+            .or_else(|| {
+                self.hunks
+                    .first()
+                    .and_then(|hunk| hunk.lines.first())
+                    .map(|line| line.text.as_str())
+            });
+        Language::detect(Some(&self.path), first_line)
     }
 }
 
@@ -277,41 +287,9 @@ impl std::ops::Add for Totals {
     }
 }
 
-/// The languages the built-in highlighter knows, picked by file extension.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Language {
-    Rust,
-    TypeScript,
-    Python,
-    Go,
-    Sql,
-    Toml,
-    Terraform,
-    Shell,
-    Markdown,
-    Plain,
-}
-
-impl Language {
-    #[must_use]
-    pub fn from_path(path: &str) -> Self {
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
-        match extension {
-            "rs" => Self::Rust,
-            "ts" | "tsx" | "js" | "jsx" | "mjs" => Self::TypeScript,
-            "py" => Self::Python,
-            "go" => Self::Go,
-            "sql" => Self::Sql,
-            "toml" => Self::Toml,
-            "tf" | "hcl" => Self::Terraform,
-            "sh" | "bash" | "zsh" => Self::Shell,
-            "md" => Self::Markdown,
-            _ if name == "BUILD.bazel" || name == "MODULE.bazel" => Self::Python,
-            _ => Self::Plain,
-        }
-    }
-}
+/// The languages the shared highlighter knows, detected by file name,
+/// extension, shebang or modeline.
+pub use humata2_highlight::Language;
 
 /// Why a unified diff could not be read.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -527,8 +505,8 @@ new file mode 100644
     #[test]
     fn languages_follow_the_extension() {
         assert_eq!(Language::from_path("a/b/lib.rs"), Language::Rust);
-        assert_eq!(Language::from_path("web/app.tsx"), Language::TypeScript);
-        assert_eq!(Language::from_path("BUILD.bazel"), Language::Python);
+        assert_eq!(Language::from_path("web/app.tsx"), Language::Tsx);
+        assert_eq!(Language::from_path("BUILD.bazel"), Language::Starlark);
         assert_eq!(Language::from_path("README"), Language::Plain);
     }
 }

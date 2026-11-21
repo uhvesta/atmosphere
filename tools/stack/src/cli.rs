@@ -183,6 +183,57 @@ List every command with its arguments and a one-line purpose. With --json the
 list is data an agent can read: each command's path, purpose and arguments
 with their names, value names, defaults and help.")]
     Commands(CommandsArgs),
+
+    /// Import a remote stack locally from a PR URL/number, a `gh stack` stack,
+    /// or a chain of PRs whose bases point at each other.
+    #[command(long_about = "\
+Import a remote stack locally from a PR URL/number, a `gh stack` stack, or a
+chain of PRs whose bases point at each other.
+
+Fetches the remote branches and materializes them in our local format (topics,
+relatives, order, PR numbers, and foreign-branch metadata) so `status`, `diff`,
+`restack`, and the review view work on them. Re-importing updates the stack in
+place while keeping any interleaved local commits.")]
+    Import(ImportArgs),
+
+    /// Initialize a stack on the trunk and optionally adopt existing branches.
+    Init(InitArgs),
+
+    /// Add a new branch/layer on top of the current stack layer.
+    Add(AddArgs),
+
+    /// View the stack and pull request status (matches `gh stack view`).
+    View(StatusArgs),
+
+    /// Checkout the next upper layer in the stack.
+    Up,
+
+    /// Checkout the next lower layer in the stack.
+    Down,
+
+    /// Checkout the highest layer in the stack.
+    Top,
+
+    /// Checkout the lowest layer in the stack.
+    Bottom,
+
+    /// Checkout the stack's trunk branch.
+    Trunk(Target),
+
+    /// Push stack branches and create or update pull requests (matches `gh stack submit`).
+    Submit(SubmitArgs),
+
+    /// Push stack branches with `--force-with-lease` without editing pull requests.
+    Push(PushArgs),
+
+    /// Fetch trunk, rebase stale stack layers, push active branches, and sync PR bases.
+    Sync(SyncArgs),
+
+    /// Rebase the stack locally onto trunk or `--onto` (matches `gh stack rebase`).
+    Rebase(RebaseArgs),
+
+    /// Link pull requests into a native GitHub stack or base-branch chain.
+    Link(LinkArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -373,6 +424,144 @@ pub(crate) struct UploadArgs {
     /// whose pull request is open keeps the branch it has.
     #[arg(long, value_name = "PREFIX")]
     pub(crate) prefix: Option<String>,
+
+    /// Allow force-pushing imported branches authored by someone else. Without
+    /// this flag, foreign branches are never force-pushed (only their PR base
+    /// is updated when an interleaved layer changes it).
+    #[arg(long)]
+    pub(crate) force_foreign: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ImportArgs {
+    /// A PR URL, PR number (`42` or `#42`), or `gh stack` stack reference (`stack:7`).
+    #[arg(value_name = "TARGET")]
+    pub(crate) target_ref: Option<String>,
+
+    /// Local branch name to materialize the imported stack onto.
+    #[arg(long, value_name = "BRANCH")]
+    pub(crate) branch: Option<String>,
+
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Print the imported stack as JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InitArgs {
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Optional existing or new branches to record as layers bottom-to-top.
+    #[arg(value_name = "BRANCH")]
+    pub(crate) branches: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AddArgs {
+    /// Branch or topic name for the new stack layer.
+    #[arg(value_name = "NAME")]
+    pub(crate) name: String,
+
+    /// Place the new layer on top of this topic or branch instead of the current one.
+    #[arg(long, value_name = "TOPIC")]
+    pub(crate) relative: Option<String>,
+
+    #[command(flatten)]
+    pub(crate) target: Target,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SubmitArgs {
+    #[command(flatten)]
+    pub(crate) upload: UploadArgs,
+
+    /// Non-interactively create new pull requests as drafts (matches `gh stack submit --auto`).
+    #[arg(long)]
+    pub(crate) auto: bool,
+
+    /// Mark new and existing draft pull requests ready for review (matches `gh stack submit --open`).
+    #[arg(long)]
+    pub(crate) open: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PushArgs {
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Print what would be pushed and change nothing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Push only this topic and the topics it builds on. Repeat for more topics.
+    #[arg(long = "topic", value_name = "TOPIC")]
+    pub(crate) topics: Vec<String>,
+
+    /// Branch prefix override for new topics.
+    #[arg(long, value_name = "PREFIX")]
+    pub(crate) prefix: Option<String>,
+
+    /// Allow force-pushing imported branches authored by someone else.
+    #[arg(long)]
+    pub(crate) force_foreign: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SyncArgs {
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Print what would be synced and change nothing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Print the result as JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Don't link the pull requests as a native GitHub stack.
+    #[arg(long)]
+    pub(crate) no_native_stack: bool,
+
+    /// Allow force-pushing imported branches authored by someone else.
+    #[arg(long)]
+    pub(crate) force_foreign: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RebaseArgs {
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Rebase onto this ref instead of `<remote>/<trunk>`.
+    #[arg(long, value_name = "REF")]
+    pub(crate) onto: Option<String>,
+
+    /// Continue an in-progress rebase after resolving conflicts.
+    #[arg(long = "continue", conflicts_with_all = ["skip", "abort"])]
+    pub(crate) continue_rebase: bool,
+
+    /// Skip the conflicting commit and continue rebasing.
+    #[arg(long, conflicts_with_all = ["continue_rebase", "abort"])]
+    pub(crate) skip: bool,
+
+    /// Abort the in-progress rebase and restore the branch.
+    #[arg(long, conflicts_with_all = ["continue_rebase", "skip"])]
+    pub(crate) abort: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LinkArgs {
+    #[command(flatten)]
+    pub(crate) target: Target,
+
+    /// Pull request URLs or numbers, bottom of the stack first.
+    #[arg(value_name = "PR", required = true)]
+    pub(crate) prs: Vec<String>,
 }
 
 #[derive(Debug, Args)]

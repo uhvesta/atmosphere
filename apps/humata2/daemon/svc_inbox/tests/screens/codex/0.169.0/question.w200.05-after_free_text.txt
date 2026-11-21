@@ -1,0 +1,47 @@
+agent: codex
+cli: 0.169.0
+script: question
+label: after_free_text
+expect: none
+cols: 200
+rows: 40
+---
+ Resume a previous session
+
+ Filter:  Cwd  All    Status:  Active  Archived    Sort:  Updated  Created
+
+ Search: w use the same tool to ask me one open question that I answer by typing free text: what is my pet's name? Then stop.otter
+
+  No results for your search
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
+ enter resume   esc clear search   ⌃c exit   tab focus sort/filter   ←/→ change option
+ ⌃o comfortable view   ⌃t transcript   ⌃e expand   ↑/↓ browse

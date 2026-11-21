@@ -9,7 +9,7 @@ mod close;
 mod copy;
 mod new;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use humata2_clients::desk::{Access, DeskClient, DeskSession, Document, Switch};
@@ -20,7 +20,7 @@ use humata2_clients::{DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
-pub use channel::{ChannelCloseSheet, ChannelForm, ChannelNewAction, ChannelRow};
+pub use channel::{ChannelCloseSheet, ChannelDeskStatus, ChannelForm, ChannelNewAction, ChannelRow};
 pub use clean_up::CleanUpDialog;
 pub use close::CloseDialog;
 pub use copy::CopyDialog;
@@ -83,6 +83,8 @@ pub struct DeskState {
     pub menu: Option<Menu>,
     /// Sessions with a change in flight.
     pub pending: BTreeSet<SessionId>,
+    /// Per-channel status of ensuring the persistent primary Desk (CHANNELDESK).
+    pub channel_status: BTreeMap<ChannelId, ChannelDeskStatus>,
     /// What went wrong last, outside a dialog.
     pub error: Option<String>,
 }
@@ -334,6 +336,41 @@ pub enum DeskAction {
     /// A channel Desk session was pointed at a session of its channel, or
     /// with `None` at the whole channel (CD-5).
     SetTarget(SessionId, Option<SessionId>),
+    /// Start a channel's persistent primary Desk session (`target: None`)
+    /// inline without opening a creation dialog (CHANNELDESK).
+    EnsurePrimaryChannel {
+        /// The channel.
+        channel: ChannelId,
+        /// The session title.
+        title: String,
+        /// The agent to launch.
+        agent: Agent,
+        /// The machine to run on.
+        machine: MachineId,
+    },
+    /// The daemon finished starting the channel's primary Desk session.
+    PrimaryChannelStarted {
+        /// The channel.
+        channel: ChannelId,
+        /// The created session id, or why it failed.
+        result: Result<SessionId, DaemonError>,
+    },
+    /// Reopen a channel's closed-kept primary Desk session inline (CHANNELDESK).
+    ReopenPrimaryChannel {
+        /// The channel.
+        channel: ChannelId,
+        /// The closed-kept primary Desk session id.
+        session: SessionId,
+    },
+    /// The daemon finished reopening the channel's primary Desk session.
+    PrimaryChannelReopened {
+        /// The channel.
+        channel: ChannelId,
+        /// The reopened session id.
+        session: SessionId,
+        /// How it went.
+        result: Result<(), DaemonError>,
+    },
     /// Cancel or Escape: closes the innermost thing that is open: a
     /// pop-up first, then the dialog.
     CancelDialog,
@@ -400,6 +437,13 @@ impl Desk {
         match change {
             Change::Reopen => Effect::send(DeskAction::Delegate(Delegate::OpenSession(session))),
             Change::Close if state.workspace.desk.channel_sessions.contains_key(&session) => {
+                if let Some(record) = state.workspace.desk.channel_sessions.get(&session)
+                    && record.target.is_none()
+                {
+                    state
+                        .channel_status
+                        .insert(record.channel.clone(), ChannelDeskStatus::Closed);
+                }
                 let title = state
                     .workspace
                     .sessions
@@ -445,6 +489,17 @@ impl Reducer for Desk {
         match action {
             DeskAction::Show(workspace) => {
                 state.workspace = workspace;
+                let open_primaries: Vec<ChannelId> = state
+                    .workspace
+                    .desk
+                    .channel_sessions
+                    .values()
+                    .filter(|found| found.desk.closed.is_none() && found.target.is_none())
+                    .map(|found| found.channel.clone())
+                    .collect();
+                for channel in open_primaries {
+                    state.channel_status.remove(&channel);
+                }
                 let gone = state.copy.as_ref().is_some_and(|copy| {
                     !state.workspace.desk.documents.contains(&copy.document)
                 });
@@ -483,13 +538,21 @@ impl Reducer for Desk {
                     Effect::send(DeskAction::Delegate(Delegate::OpenSession(id)))
                 }
                 Err(error) => {
+                    let mut shown = false;
                     if let Some(form) = state.new.as_mut() {
                         form.starting = false;
                         form.error = Some(error.to_string());
+                        shown = true;
                     }
                     if let Some(form) = state.channel_new.as_mut() {
                         form.starting = false;
                         form.error = Some(error.to_string());
+                        shown = true;
+                    }
+                    // SMB-011: if the user pressed Esc/Cancel while starting,
+                    // surface the failure on state.error instead of dropping it.
+                    if !shown {
+                        state.error = Some(error.to_string());
                     }
                     Effect::none()
                 }
@@ -590,6 +653,43 @@ impl Reducer for Desk {
             DeskAction::SharedCopied { path, result } => Self::shared_copied(state, path, result),
             DeskAction::SetSwitch(id, switch, on) => self.set_switch(state, id, switch, on),
             DeskAction::SetTarget(id, target) => self.set_target(state, id, target),
+            DeskAction::EnsurePrimaryChannel {
+                channel,
+                title,
+                agent,
+                machine,
+            } => self.ensure_primary_channel(state, channel, title, agent, machine),
+            DeskAction::PrimaryChannelStarted { channel, result } => {
+                match result {
+                    Ok(_) => {
+                        state.channel_status.remove(&channel);
+                    }
+                    Err(error) => {
+                        state
+                            .channel_status
+                            .insert(channel, ChannelDeskStatus::Failed(error.to_string()));
+                    }
+                }
+                Effect::none()
+            }
+            DeskAction::ReopenPrimaryChannel { channel, session } => {
+                self.reopen_primary_channel(state, channel, session)
+            }
+            DeskAction::PrimaryChannelReopened {
+                channel, result, ..
+            } => {
+                match result {
+                    Ok(()) => {
+                        state.channel_status.remove(&channel);
+                    }
+                    Err(error) => {
+                        state
+                            .channel_status
+                            .insert(channel, ChannelDeskStatus::Failed(error.to_string()));
+                    }
+                }
+                Effect::none()
+            }
             DeskAction::DismissError => {
                 state.error = None;
                 Effect::none()

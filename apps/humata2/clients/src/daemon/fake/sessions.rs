@@ -597,6 +597,7 @@ pub(super) fn archive(
     daemon: &FakeDaemon,
     session: &SessionId,
     push_first: bool,
+    end: bool,
 ) -> Reply<Archive> {
     let id = session.clone();
     daemon.reply(
@@ -625,6 +626,18 @@ pub(super) fn archive(
                 .map(|s| s.id.clone())
                 .collect();
             inner.last_archive = Some((id.clone(), push_first));
+            inner.last_archive_end = Some(end);
+            if end {
+                inner
+                    .running
+                    .retain(|holder| holder.session.as_ref() != Some(&id));
+            } else {
+                for holder in &mut inner.running {
+                    if holder.session.as_ref() == Some(&id) {
+                        holder.archived = true;
+                    }
+                }
+            }
             inner.archived.insert(id.clone(), (snapshot, children));
             let parent = {
                 let found = inner

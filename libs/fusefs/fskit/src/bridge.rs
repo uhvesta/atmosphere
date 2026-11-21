@@ -28,11 +28,19 @@ impl<V: Volume + 'static> FsKitBridgeServer<V> {
         socket_path: impl Into<PathBuf>,
         adapter: Arc<FsKitAdapter<V>>,
     ) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
         let socket_path = socket_path.into();
+        if let Some(parent) = socket_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         if socket_path.exists() {
             let _ = std::fs::remove_file(&socket_path);
         }
         let listener = UnixListener::bind(&socket_path)?;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             socket_path,
             listener,
@@ -622,6 +630,116 @@ mod tests {
         {
             FsKitResponse::Error { errno: e, .. } => assert_eq!(e, errno::EACCES),
             other => panic!("expected EACCES after revocation, got {other:?}"),
+        }
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn bridge_creates_regular_files_handles_socket_query_probe_and_sets_private_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let volume = Arc::new(
+            InMemoryVolume::builder()
+                .dir("/work")
+                .build()
+                .unwrap(),
+        );
+        let adapter = Arc::new(FsKitAdapter::new(volume, "humatafs", "humata"));
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("nested/fskit.sock");
+        let server = FsKitBridgeServer::bind(&sock, adapter).unwrap().spawn();
+
+        let mode = std::fs::metadata(server.socket_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        let mut client = FsKitBridgeClient::connect(server.socket_path()).unwrap();
+
+        // ProbeResource strips query parameters when naming the container.
+        match client
+            .call(&FsKitEnvelope::new(FsKitRequest::ProbeResource {
+                resource_url: "humatafs://humata2?socket=%2Ftmp%2Ffskit.sock".into(),
+            }))
+            .unwrap()
+        {
+            FsKitResponse::Probe {
+                result: ProbeResult::Usable { name, container_id },
+            } => {
+                assert_eq!(name, "humata-humata2");
+                assert_eq!(container_id, "humatafs://humata2");
+            }
+            other => panic!("expected Usable probe, got {other:?}"),
+        }
+
+        let work_ino = match client
+            .call(&FsKitEnvelope::new(FsKitRequest::LookupItem {
+                parent: ROOT_NODE_ID,
+                name: "work".into(),
+            }))
+            .unwrap()
+        {
+            FsKitResponse::ItemAttributes { attr } => attr.ino,
+            other => panic!("expected ItemAttributes, got {other:?}"),
+        };
+
+        // CreateItem with FsItemKind::Regular creates the file.
+        let created_ino = match client
+            .call(&FsKitEnvelope::new(FsKitRequest::CreateItem {
+                parent: work_ino,
+                name: "fresh.txt".into(),
+                kind: FsItemKind::Regular,
+                mode: 0o644,
+                symlink_target: None,
+            }))
+            .unwrap()
+        {
+            FsKitResponse::ItemAttributes { attr } => attr.ino,
+            other => panic!("expected created ItemAttributes, got {other:?}"),
+        };
+
+        // Duplicate CreateItem fails with EEXIST.
+        match client
+            .call(&FsKitEnvelope::new(FsKitRequest::CreateItem {
+                parent: work_ino,
+                name: "fresh.txt".into(),
+                kind: FsItemKind::Regular,
+                mode: 0o644,
+                symlink_target: None,
+            }))
+            .unwrap()
+        {
+            FsKitResponse::Error { errno: e, .. } => assert_eq!(e, errno::EEXIST),
+            other => panic!("expected EEXIST, got {other:?}"),
+        }
+
+        // Write + read back through the bridge.
+        match client
+            .call(&FsKitEnvelope::new(FsKitRequest::Write {
+                item: created_ino,
+                handle: None,
+                offset: 0,
+                data: b"hello fskit".to_vec(),
+                expected_generation: None,
+            }))
+            .unwrap()
+        {
+            FsKitResponse::Written { bytes_written } => assert_eq!(bytes_written, 11),
+            other => panic!("expected Written, got {other:?}"),
+        }
+        match client
+            .call(&FsKitEnvelope::new(FsKitRequest::Read {
+                item: created_ino,
+                handle: None,
+                offset: 0,
+                length: 64,
+            }))
+            .unwrap()
+        {
+            FsKitResponse::ReadData { data } => assert_eq!(data, b"hello fskit"),
+            other => panic!("expected ReadData, got {other:?}"),
         }
 
         server.shutdown();

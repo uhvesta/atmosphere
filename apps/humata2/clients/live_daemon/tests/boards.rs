@@ -27,7 +27,7 @@ const GLOBAL_PREFIX: &str = "GLB";
 const DEADLINE: Duration = Duration::from_secs(60);
 
 /// How often a file is looked at while waiting for it.
-const POLL: Duration = Duration::from_millis(50);
+const POLL: Duration = Duration::from_millis(2);
 
 fn binary(variable: &str) -> PathBuf {
     let path = std::env::var_os(variable)

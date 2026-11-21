@@ -313,6 +313,9 @@ async fn run(
     // and the session as it was: a start fresh asked again is the same.
     crate::fault::point("start_fresh.recorded");
     // Marks it busy, so a second resume or start fresh is refused.
+    // SMB-046: track live start-fresh in `ResumingNow` so `left_resuming` can
+    // distinguish an active start-fresh from one whose rollback failed.
+    let _live = super::ResumingNow::enter(&session);
     let mut busy = old.clone();
     busy.state = AgentState::Resuming;
     busy.updated_unix_ms = now_ms();
@@ -359,15 +362,44 @@ async fn run(
             // and a message kept for it goes too (one kept for the old
             // conversation stays, for the next try).
             let (store, restoring) = (starter.store.clone(), old.clone());
-            let _ = blocking(move || {
+            let reason = status::chain(&error);
+            let rolled_back = blocking(move || {
                 if let Ok(Some(kept)) = store.fresh_seed(&restoring.session)
                     && kept.conversation_id != restoring.launch.conversation_id
                 {
                     let _ = store.typed_fresh_seed(&kept.session_id, &kept.conversation_id);
                 }
-                store.put_agent(&restoring)
+                match store.put_agent(&restoring) {
+                    Ok(()) => Ok(()),
+                    Err(first) => {
+                        // SMB-046: if restoring the old row failed, try
+                        // recording ResumeFailed so the session does not stay
+                        // stuck in Resuming.
+                        let fallback = AgentRecord {
+                            state: AgentState::ResumeFailed {
+                                reason: humata2_store::ResumeFailure::AgentExited,
+                                exit_code: None,
+                            },
+                            updated_unix_ms: now_ms(),
+                            ..restoring
+                        };
+                        let _ = store.put_agent(&fallback);
+                        Err(first)
+                    }
+                }
             })
             .await;
+            match rolled_back {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => crate::log::say!(
+                    "humatad2: couldn't roll back agent state for session {session} after failed start fresh: {}",
+                    status::chain(&err)
+                ),
+                Err(err) => crate::log::say!(
+                    "humatad2: couldn't roll back agent state for session {session} after failed start fresh: {}",
+                    err.message()
+                ),
+            }
             progress.set_step("launch", pb::StepState::Failed, Some(status::chain(&error)));
             progress.fail(error_of(
                 &error,

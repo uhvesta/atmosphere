@@ -15,7 +15,7 @@ use std::rc::Rc;
 impl Overlays {
     /// The command palette: grouped, searchable entries.
     pub(super) fn palette(
-        &self,
+        &mut self,
         palette: &PaletteState,
         look: Look,
         ui: &Rc<Ui>,
@@ -24,6 +24,12 @@ impl Overlays {
     ) -> AnyElement {
         sync(&self.query, &palette.query, window, cx);
         let mac = cx.platform_info().is_mac();
+        let viewport_h = f32::from(window.viewport_size().height);
+        let max_list_h = if viewport_h > 0. {
+            (viewport_h - 220.).clamp(160., 420.)
+        } else {
+            420.
+        };
         let group = |command: &Command| match command {
             // D784: a session's terminals, hidden ones too, sit with its sessions.
             Command::Session(_) | Command::Terminal { .. } => 0,
@@ -31,12 +37,17 @@ impl Overlays {
             Command::Channel(_) => 2,
             _ => 3,
         };
+        let mut child_count = 0usize;
+        let mut selected_child = None;
         let mut list = col()
             .id("palette-entries")
             .role(Role::ListBox)
             .aria_label("Search results")
+            .min_h_0()
             .overflow_y_scroll()
-            .max_h(px(420.));
+            .track_scroll(&self.palette_scroll)
+            .max_h(px(max_list_h))
+            .test_support();
         for (index, name) in ["Sessions", "Files", "Channels", "Commands"]
             .into_iter()
             .enumerate()
@@ -63,6 +74,7 @@ impl Overlays {
                         name
                     }),
             );
+            child_count += 1;
             for (at, entry) in palette
                 .entries
                 .iter()
@@ -70,6 +82,10 @@ impl Overlays {
                 .filter(|(_, entry)| group(&entry.command) == index)
             {
                 let selected = at == palette.cursor;
+                if selected {
+                    selected_child = Some(child_count);
+                }
+                child_count += 1;
                 let ui = ui.clone();
                 let danger = entry.command == Command::DeleteAllSessions;
                 let color = if selected { 0xffffff } else { look.secondary };
@@ -174,26 +190,53 @@ impl Overlays {
             let ui = ui.clone();
             move |action, cx: &mut App| ui.send(AppAction::Find(action), cx)
         });
-        // The cursor past the entries is on a hit, as a place in the hits.
+        // The cursor past the entries is on a hit, as a place in the visible hits.
         let selected = palette.cursor.checked_sub(palette.entries.len());
-        let (conversations, no_hits, loading, failed) = ui.read(|s| {
-            // Moving a session asks for a machine, not a conversation.
-            let conversations = if s.palette.asking.is_some() {
-                None
+        let (conversations, selected_hit_offset, no_hits, loading, failed) = ui.read(|s| {
+            let visible = s.visible_find_hits();
+            let filtered_out =
+                s.palette.asking.is_some() || humata2_palette::parse_query(&s.palette.query).filter.is_some();
+            let (rows, hit_offset) = if filtered_out {
+                (Vec::new(), None)
             } else {
                 let offline = |machine: &humata2_clients::model::MachineId| {
                     s.workspace.machines.iter().any(|m| &m.id == machine && !m.online)
                 };
-                crate::palette_hits::conversations(&s.find, selected, &offline, look, &send_find)
+                crate::palette_hits::conversation_rows(
+                    &visible,
+                    &s.find.query,
+                    &s.find.next_page,
+                    s.find.loading,
+                    s.find.error.as_deref(),
+                    selected,
+                    &offline,
+                    look,
+                    &send_find,
+                )
             };
             (
-                conversations,
-                s.find.hits.is_empty(),
-                s.find.loading,
-                s.find.error.is_some(),
+                rows,
+                hit_offset,
+                visible.is_empty(),
+                !filtered_out && s.find.loading,
+                !filtered_out && s.find.error.is_some(),
             )
         });
+        if let Some(offset) = selected_hit_offset {
+            selected_child = Some(child_count + offset);
+        }
         list = list.children(conversations);
+        let query_changed = self.palette_query != palette.query;
+        let cursor_changed = self.palette_cursor != Some(palette.cursor);
+        if query_changed || self.palette_cursor.is_none() {
+            self.palette_scroll.set_offset(point(px(0.), px(0.)));
+            self.palette_query.clone_from(&palette.query);
+        } else if cursor_changed
+            && let Some(item_index) = selected_child
+        {
+            self.palette_scroll.scroll_to_item(item_index);
+        }
+        self.palette_cursor = Some(palette.cursor);
         // One empty-state line when nothing is listed at all. A failed search
         // says so in its own line, so this one stays away.
         if palette.entries.is_empty() && no_hits && !failed {
@@ -274,6 +317,69 @@ impl Overlays {
                     ),
             )
             .child(list)
+            .when(palette.asking.is_none(), |dialog| {
+                let archived_on = palette.shows_archived();
+                let toggle_ui = ui.clone();
+                dialog.child(
+                    row()
+                        .id("palette-footer")
+                        .flex_shrink_0()
+                        .px(px(14.))
+                        .pt(px(6.))
+                        .pb(px(2.))
+                        .mt(px(2.))
+                        .border_t_1()
+                        .border_color(rgb(look.line))
+                        .gap(px(10.))
+                        .text_size(px(11.))
+                        .text_color(rgb(look.tertiary))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child("> commands   # channels   @ sessions   / files"),
+                        )
+                        .child(
+                            row()
+                                .id("palette-toggle-archived")
+                                .role(Role::CheckBox)
+                                .aria_label("Include archived")
+                                .aria_selected(archived_on)
+                                .flex_shrink_0()
+                                .gap(px(5.))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .when(archived_on, |x| {
+                                    x.text_color(rgb(look.accent))
+                                })
+                                .hover(move |x| x.bg(rgb(look.fill)))
+                                .child(
+                                    div()
+                                        .size(px(11.))
+                                        .rounded(px(3.))
+                                        .border_1()
+                                        .border_color(rgb(if archived_on {
+                                            look.accent
+                                        } else {
+                                            look.tertiary
+                                        }))
+                                        .when(archived_on, |x| x.bg(rgb(look.accent))),
+                                )
+                                .child("Include archived")
+                                .on_click(move |_, _, cx| {
+                                    toggle_ui.send(
+                                        AppAction::Palette(PaletteAction::ToggleArchived),
+                                        cx,
+                                    );
+                                })
+                                .test_support(),
+                        ),
+                )
+            })
             .focus_trap("palette-trap", &self.query.focus_handle(cx))
             .into_any_element()
     }

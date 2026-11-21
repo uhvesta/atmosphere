@@ -13,6 +13,7 @@ use crate::error::Error;
 use crate::git::Git;
 use crate::local;
 use crate::plan::{Commit, Plan};
+use crate::state::StackState;
 
 /// Reads the topics between the trunk (as last fetched) and HEAD, checks the
 /// first commit of each has the template's sections, and rebuilds each topic
@@ -20,12 +21,17 @@ use crate::plan::{Commit, Plan};
 pub(crate) fn run(args: &CheckArgs, dir: &Path) -> Result<(), Error> {
     let config = Config::load()?;
     let git = Git::new(dir);
+    let state = StackState::load(&git)?;
     let remote = config.remote(&args.target);
     let trunk = config.local_trunk(&args.target, &git, &remote);
 
     let (merge_base, plan) = local::read(&git, &remote, &trunk)?;
     let template = Template::load(&config)?;
-    local::require_sections(&template, &plan)?;
+    let foreign = state
+        .as_ref()
+        .map(StackState::foreign_topics)
+        .unwrap_or_default();
+    local::require_sections(&template, &plan, &foreign)?;
     local::rebuild(&git, &plan, &merge_base, &BTreeSet::new())?;
 
     if args.json {

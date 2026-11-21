@@ -61,6 +61,12 @@ pub(crate) enum Error {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error("{message}")]
+    Usage {
+        message: String,
+        next: String,
+    },
 }
 
 impl Error {
@@ -72,7 +78,7 @@ impl Error {
             Error::Git(_) | Error::WorkingDir { .. } | Error::TempFile { .. } | Error::Json { .. } => 1,
             Error::Gh(GhError::Refused { .. }) | Error::ClosedPr { .. } => 4,
             Error::Gh(_) => 1,
-            Error::Plan(_) | Error::MissingSections { .. } => 2,
+            Error::Plan(_) | Error::MissingSections { .. } | Error::Usage { .. } => 2,
             Error::Config(error) => error.exit_code(),
             Error::Restack(error) => error.exit_code(),
             Error::Diff(error) => error.exit_code(),
@@ -99,6 +105,7 @@ impl Error {
             Error::Diff(error) => error.next_command(),
             Error::WorkingDir { .. } => "cd into your checkout and run the same stack command".to_owned(),
             Error::TempFile { .. } | Error::Json { .. } => "the same stack command again".to_owned(),
+            Error::Usage { next, .. } => next.clone(),
         };
         Some(command)
     }

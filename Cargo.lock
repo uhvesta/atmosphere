@@ -4231,6 +4231,7 @@ name = "humata2-diff-view"
 version = "0.0.0"
 dependencies = [
  "gpui-kit",
+ "humata2-highlight",
  "thiserror 2.0.21",
  "unicode-segmentation",
  "unicode-width",
@@ -4286,6 +4287,13 @@ dependencies = [
  "terminal_view",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "humata2-highlight"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
 ]
 
 [[package]]

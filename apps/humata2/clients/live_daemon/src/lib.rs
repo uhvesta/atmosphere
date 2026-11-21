@@ -23,6 +23,7 @@ pub(crate) mod humata2_grpc {
 mod agent_switches;
 mod boards;
 mod channel_repos;
+mod cli_auth;
 mod daemon;
 mod events;
 pub mod history;

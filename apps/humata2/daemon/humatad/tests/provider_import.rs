@@ -581,18 +581,54 @@ async fn an_agents_import_under_a_never_rule_is_denied_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_user_cannot_use_the_agents_ask() {
-    let daemon = common::shared::shared_daemon().await;
+async fn the_user_can_file_a_provider_import_request_that_waits_for_approval() {
+    let daemon = Daemon::start().await;
+    save(&daemon, EXISTING).await;
+    let before = config(&daemon).await;
 
-    let refused = providers(daemon)
+    // Missing reason is still rejected.
+    let no_reason = providers(&daemon)
         .await
         .request_provider_import(pb::RequestProviderImportRequest {
             text: IMPORTED.to_owned(),
+            file_name: "picked.toml".to_owned(),
+            reason: String::new(),
             ..Default::default()
         })
         .await
         .unwrap_err();
+    assert_eq!(no_reason.code(), Code::InvalidArgument, "{no_reason:?}");
 
-    assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
-    assert_eq!(config(daemon).await.toml, "");
+    // With a reason, even the owner's request waits in the Inbox until approved.
+    let pending = providers(&daemon)
+        .await
+        .request_provider_import(pb::RequestProviderImportRequest {
+            idempotency_key: Some(pb::IdempotencyKey {
+                value: "user-ask-1".to_owned(),
+            }),
+            text: IMPORTED.to_owned(),
+            file_name: "picked.toml".to_owned(),
+            reason: "testing request-import from CLI".to_owned(),
+        })
+        .await
+        .unwrap_err();
+    let id = pending_request(&pending);
+    let shown = card(&daemon, &id).await;
+    assert_eq!(shown.state(), pb::RequestState::Pending);
+    assert_eq!(shown.capability(), pb::Capability::ProviderImport);
+    assert_eq!(shown.reason, "testing request-import from CLI");
+    assert_eq!(config(&daemon).await, before);
+
+    answer(&daemon, &id, pb::request_answer::Answer::Approve(pb::Approve {})).await;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let now = listed(&daemon).await;
+        if label_of(&now, "fresh").as_deref() == Some("Fresh") {
+            assert_eq!(label_of(&now, "kept").as_deref(), Some("Kept again"));
+            assert_eq!(label_of(&now, "other").as_deref(), Some("Other"));
+            break;
+        }
+        assert!(Instant::now() < deadline, "approved import was not written");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
 }

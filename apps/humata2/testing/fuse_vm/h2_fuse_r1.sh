@@ -91,6 +91,9 @@ if ((${#missing[@]})); then
   apt-get -o DPkg::Lock::Timeout=60 update
   apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends "${missing[@]}"
 fi
+# Keep SSH host keys stable across limactl stop --force / start (Lima's cidata
+# bumps instance-id on start, which otherwise makes cloud-init regenerate them).
+printf 'ssh_deletekeys: false\n' >/etc/cloud/cloud.cfg.d/99-keep-ssh-host-keys.cfg
 echo fuse >/etc/modules-load.d/fuse.conf
 modprobe fuse
 touch /etc/fuse.conf

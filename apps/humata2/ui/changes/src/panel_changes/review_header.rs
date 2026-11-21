@@ -257,6 +257,7 @@ pub(super) fn review_repo(
     documents: &Documents,
     session: &Session,
     diff: &RepoDiff,
+    all_repos: &[&str],
     picked: Option<(&RepoDiff, &humata2_clients::model::FileDiff)>,
     cursor: Option<&humata2_review::ListCursor>,
     (font_size, line_height, cell_width): (f32, f32, f32),
@@ -266,7 +267,7 @@ pub(super) fn review_repo(
     let open = picked.is_some_and(|(held, _)| held.repo == diff.repo);
     // Frame 68: the repo row, its file and the file's code, 4 apart.
     let mut group = col().gap(px(4.)).child(ringed(
-        review_repo_head(ui, state, look, session, diff, open),
+        review_repo_head(ui, state, look, session, diff, all_repos, open),
         at_repo(cursor, &diff.repo),
         look,
     ));
@@ -565,6 +566,7 @@ pub(super) fn review_repo_head(
     look: Look,
     session: &Session,
     diff: &RepoDiff,
+    all_repos: &[&str],
     open: bool,
 ) -> AnyElement {
     let number = humata2_review::comments::github_target(&state.workspace, &session.id, &diff.repo)
@@ -574,7 +576,7 @@ pub(super) fn review_repo_head(
         .iter()
         .find(|clone| clone.repo == diff.repo || clone.repo.rsplit('/').next() == Some(diff.repo.as_str()))
         .map_or("", |clone| clone.branch.as_str());
-    let name = diff.repo.rsplit('/').next().unwrap_or(diff.repo.as_str());
+    let name = display_repo_name(&diff.repo, all_repos.iter().copied());
     // The folded row opens the repository's first visible file; a repository
     // with no visible files has nothing to open, so its row is not a click target.
     let first = if open {
@@ -777,12 +779,14 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
         .occlude()
         .text_size(px(12.5))
         .children(diffs.iter().map(|diff| {
+            let shown_repo =
+                display_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()));
             row()
                 .gap(px(8.))
                 .h(px(28.))
                 .px(px(8.))
                 .child(full_text(
-                    text(repo_label(&diff.repo).to_owned())
+                    text(shown_repo.to_owned())
                         .id(SharedString::from(format!("push-list-repo-{}", diff.repo)))
                         .min_w_0()
                         .overflow_hidden()
@@ -1190,6 +1194,7 @@ pub(super) fn repo_head(
     documents: &Documents,
     index: usize,
     diff: &RepoDiff,
+    all_repos: &[&str],
     branch: &str,
     folded: bool,
 ) -> AnyElement {
@@ -1247,7 +1252,7 @@ pub(super) fn repo_head(
                 }),
         )
         .child(full_text(
-            text(repo_label(&diff.repo).to_owned())
+            text(display_repo_name(&diff.repo, all_repos.iter().copied()).to_owned())
                 .id(SharedString::from(format!("repo-name-{index}")))
                 .font_weight(FontWeight::SEMIBOLD)
                 .min_w_0()

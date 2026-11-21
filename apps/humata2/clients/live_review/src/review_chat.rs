@@ -3,7 +3,7 @@
 //! back on the change feed, pushed as they happen, and nothing polls.
 
 use humata2_clients::comments::{Anchor, CommentId, Side};
-use humata2_clients::model::{RepoDiffSpec, SessionId};
+use humata2_clients::model::SessionId;
 use humata2_clients::review_chat::{
     AgentSwitches, ChangeEvents, FocusRequest, Highlight, LineSpan, Note, Place, ReviewChange,
     ReviewChangeKind, ReviewChatClient, ReviewContext, ReviewView, ViewedFile,
@@ -137,17 +137,7 @@ fn view(wire: Option<&pb::ReviewViewState>) -> ReviewView {
         targets: wire
             .spec
             .as_ref()
-            .map(|spec| {
-                spec.repos
-                    .iter()
-                    .filter_map(|each| {
-                        Some(RepoDiffSpec {
-                            repo: each.repo.as_ref().map(map::repo_text)?,
-                            base: views::repo_base(each.base.as_ref()),
-                        })
-                    })
-                    .collect()
-            })
+            .map(|spec| spec.repos.iter().filter_map(views::repo_diff_spec).collect())
             .unwrap_or_default(),
         open: wire.open.as_ref().and_then(place),
         order: wire.order.iter().filter_map(|path| file_of(Some(path))).collect(),
@@ -512,10 +502,12 @@ mod tests {
 
     #[test]
     fn a_view_survives_the_round_trip_to_the_daemon_and_back() {
+        use humata2_clients::model::RepoDiffSpec;
         let original = ReviewView {
             targets: vec![RepoDiffSpec {
                 repo: "acme/api".to_owned(),
                 base: humata2_clients::model::RepoBase::Branch("main".to_owned()),
+                options: humata2_clients::model::RepoDiffOptions::default(),
             }],
             open: Some(Place {
                 repo: "acme/api".to_owned(),
@@ -550,11 +542,12 @@ mod tests {
 
     #[test]
     fn a_stack_and_its_layer_survive_the_round_trip() {
-        use humata2_clients::model::RepoBase;
+        use humata2_clients::model::{RepoBase, RepoDiffSpec};
         use humata2_clients::views::{LayerRepoView, LayerView, StackView};
         let spec = |base| RepoDiffSpec {
             repo: "acme/api".to_owned(),
             base,
+            options: humata2_clients::model::RepoDiffOptions::default(),
         };
         let range = RepoBase::Range {
             base: "m".to_owned(),

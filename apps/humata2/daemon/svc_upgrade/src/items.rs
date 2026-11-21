@@ -240,6 +240,15 @@ struct Pending {
     to: pb::BuildInfo,
     /// Migrate was triggered and the machine isn't at `to` yet.
     migrating: bool,
+    /// The bundle the in-flight migration is targeting (`Some` while `migrating`
+    /// is true). Kept separate from `queued_to` so a newer staged release
+    /// observed mid-migration cannot hide the active migration's arrival or
+    /// failure.
+    active_bundle: Option<String>,
+    /// A newer target release observed while an earlier migration to
+    /// `active_bundle` was already in flight. Evaluated once the in-flight
+    /// migration settles or fails.
+    queued_to: Option<pb::BuildInfo>,
     /// The last attempt failed or rolled back and is waiting for manual retry.
     failed: bool,
     /// What a Holders item lists (D373); none for any other.
@@ -496,7 +505,26 @@ impl Migrations {
     ) -> Result<pb::RequestId, MigrateError> {
         let key = (thing, machine.value.clone());
         if let Some(known) = self.known(&key) {
-            if known.from == from && known.to == to {
+            if known.migrating {
+                let active = known.active_bundle.as_deref().unwrap_or(known.to.bundle.as_str());
+                if to.bundle != active {
+                    // Keep the in-flight migration's target intact so `arrived(active)`
+                    // or `failed(active)` settles it cleanly, and queue `to` to be
+                    // evaluated once the active migration finishes.
+                    let mut updated = known.clone();
+                    updated.queued_to = Some(to);
+                    self.remember(key, updated);
+                    return Ok(known.id);
+                }
+                if known.from == from && known.to == to {
+                    if known.queued_to.is_some() {
+                        let mut updated = known.clone();
+                        updated.queued_to = None;
+                        self.remember(key, updated);
+                    }
+                    return Ok(known.id);
+                }
+            } else if known.from == from && known.to == to {
                 return Ok(known.id);
             }
             let (id, shown) = (known.id.value.clone(), (from.clone(), to.clone()));
@@ -519,8 +547,25 @@ impl Migrations {
                 })?;
             if updated.is_some() {
                 let migrating = known.migrating;
+                let active_bundle = if migrating {
+                    known.active_bundle.or_else(|| Some(to.bundle.clone()))
+                } else {
+                    None
+                };
                 let failed = known.failed && known.to.bundle == to.bundle;
-                self.remember(key, Pending { id: known.id.clone(), from, to, migrating, failed, detail: None });
+                self.remember(
+                    key,
+                    Pending {
+                        id: known.id.clone(),
+                        from,
+                        to,
+                        migrating,
+                        active_bundle,
+                        queued_to: None,
+                        failed,
+                        detail: None,
+                    },
+                );
                 return Ok(known.id);
             }
             // The Inbox no longer holds it pending: it is posted again.
@@ -536,7 +581,19 @@ impl Migrations {
                 machine: machine.value.clone(),
                 source,
             })?;
-        self.remember(key, Pending { id: id.clone(), from, to, migrating: false, failed: false, detail: None });
+        self.remember(
+            key,
+            Pending {
+                id: id.clone(),
+                from,
+                to,
+                migrating: false,
+                active_bundle: None,
+                queued_to: None,
+                failed: false,
+                detail: None,
+            },
+        );
         Ok(id)
     }
 
@@ -672,7 +729,7 @@ impl Migrations {
         if manual {
             self.inner.breaker.clear(&machine.value, &to.bundle);
         }
-        self.set_migrating(&key, true);
+        self.begin_migrating(&key, to.bundle.clone());
         self.set_failed(&key, false);
         if thing == pb::MigrateThing::DeskFolders {
             return self.approve_desk_folders(id, &key, &machine, item).await;
@@ -791,9 +848,11 @@ impl Migrations {
         bundle: &str,
         within: Duration,
     ) -> Result<(), Status> {
-        let waiting = self
-            .known(key)
-            .is_some_and(|known| known.migrating && known.id.value == id && known.to.bundle == bundle);
+        let waiting = self.known(key).is_some_and(|known| {
+            known.migrating
+                && known.id.value == id
+                && (known.active_bundle.as_deref() == Some(bundle) || known.to.bundle == bundle)
+        });
         if !waiting {
             return Ok(());
         }
@@ -878,6 +937,11 @@ impl Migrations {
                 // A failed restart ends the round: Migrate is on offer again.
                 let failed = detail.failed.is_some();
                 let migrating = known.migrating && !failed;
+                let active_bundle = if migrating {
+                    known.active_bundle.or_else(|| Some(build.bundle.clone()))
+                } else {
+                    None
+                };
                 self.remember(
                     key,
                     Pending {
@@ -885,6 +949,8 @@ impl Migrations {
                         from: build.clone(),
                         to: build,
                         migrating,
+                        active_bundle,
+                        queued_to: None,
                         failed,
                         detail: Some(detail),
                     },
@@ -913,6 +979,8 @@ impl Migrations {
                 from: build.clone(),
                 to: build,
                 migrating: false,
+                active_bundle: None,
+                queued_to: None,
                 failed,
                 detail: Some(detail),
             },
@@ -961,16 +1029,35 @@ impl Migrations {
 
     /// This host's daemon is at release `bundle` on `machine`, its own
     /// machine: a Migrate item for it that was waiting for that release is
-    /// finished.
+    /// finished. If a newer target release was observed while that migration
+    /// was in flight, it is evaluated once the active migration settles.
     pub async fn arrived(&self, machine: &str, bundle: &str) {
-        let key = (pb::MigrateThing::Daemon, machine.to_owned());
-        if bundle.is_empty() || !self.known(&key).is_some_and(|known| known.to.bundle == bundle) {
+        if bundle.is_empty() {
             return;
         }
-        let machine = pb::MachineId {
+        let _serial = self.inner.serial.lock().await;
+        let key = (pb::MigrateThing::Daemon, machine.to_owned());
+        let Some(known) = self
+            .known(&key)
+            .filter(|known| known.active_bundle.as_deref() == Some(bundle) || known.to.bundle == bundle)
+        else {
+            return;
+        };
+        let queued_to = known.queued_to.clone();
+        let arrived_build = known.to.clone();
+        let machine_id = pb::MachineId {
             value: machine.to_owned(),
         };
-        if let Err(error) = self.resolved(pb::MigrateThing::Daemon, &machine).await {
+        if let Err(error) = self.resolved_locked(pb::MigrateThing::Daemon, &machine_id).await {
+            humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
+            return;
+        }
+        if let Some(next_to) = queued_to
+            && next_to.bundle != bundle
+            && let Err(error) = self
+                .observe_locked(pb::MigrateThing::Daemon, &machine_id, arrived_build, next_to)
+                .await
+        {
             humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
         }
     }
@@ -978,16 +1065,65 @@ impl Migrations {
     /// The upgrade of this host's own daemon to release `to_bundle` was
     /// undone: records `(machine, to_bundle)` in `failed.json` so auto-migrate
     /// does not retry-loop, and if its Migrate item was waiting for that
-    /// release, shows `problem` as Failed so a manual click retries.
+    /// release, shows `problem` as Failed so a manual click retries (or
+    /// advances the card to Waiting for any newer queued target release).
     pub async fn failed(&self, machine: &str, to_bundle: &str, problem: pb::Error) {
         let _serial = self.inner.serial.lock().await;
         self.inner
             .breaker
             .trip(machine, to_bundle, &problem.message);
         let key = (pb::MigrateThing::Daemon, machine.to_owned());
-        let Some(known) = self.known(&key).filter(|known| known.to.bundle == to_bundle) else {
+        let Some(known) = self
+            .known(&key)
+            .filter(|known| known.active_bundle.as_deref() == Some(to_bundle) || known.to.bundle == to_bundle)
+        else {
             return;
         };
+        if let Some(next_to) = known.queued_to.clone().filter(|next| next.bundle != to_bundle) {
+            let machine_id = pb::MachineId {
+                value: machine.to_owned(),
+            };
+            let name = self.name_of(&machine_id);
+            let (from, to) = (known.from.clone(), next_to.clone());
+            let updated = self
+                .inner
+                .inbox
+                .update_migrate(
+                    &known.id.value,
+                    Box::new(move |request| {
+                        show(request, pb::MigrateThing::Daemon, &machine_id, &name, &from, &to);
+                        if let Some(card) = card_mut(request) {
+                            card.phase = pb::MigratePhase::Waiting as i32;
+                            card.last_error = None;
+                            card.steps.clear();
+                        }
+                    }),
+                )
+                .await;
+            match updated {
+                Ok(Some(_)) => {
+                    self.remember(
+                        key,
+                        Pending {
+                            id: known.id,
+                            from: known.from,
+                            to: next_to,
+                            migrating: false,
+                            active_bundle: None,
+                            queued_to: None,
+                            failed: false,
+                            detail: None,
+                        },
+                    );
+                }
+                Ok(None) => self.forget(&key),
+                Err(error) => {
+                    self.set_migrating(&key, false);
+                    humata2_rpc_kit::log::say!("humatad2: warning: {}", status::chain(&error));
+                }
+            }
+            return;
+        }
         self.set_migrating(&key, false);
         self.set_failed(&key, true);
         let shown = self
@@ -1009,6 +1145,19 @@ impl Migrations {
         }
     }
 
+    fn begin_migrating(&self, key: &(pb::MigrateThing, String), bundle: String) {
+        if let Some(known) = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(key)
+        {
+            known.migrating = true;
+            known.active_bundle = Some(bundle);
+        }
+    }
+
     fn set_migrating(&self, key: &(pb::MigrateThing, String), migrating: bool) {
         if let Some(known) = self
             .inner
@@ -1018,6 +1167,9 @@ impl Migrations {
             .get_mut(key)
         {
             known.migrating = migrating;
+            if !migrating {
+                known.active_bundle = None;
+            }
         }
     }
 
@@ -1294,13 +1446,17 @@ fn restored(request: &pb::InboxRequest) -> Option<((pb::MigrateThing, String), P
         return None;
     };
     let machine = card.machine.as_ref()?;
+    let to = card.to.clone().unwrap_or_default();
+    let migrating = card.phase() == pb::MigratePhase::Migrating;
     Some((
         (card.thing(), machine.value.clone()),
         Pending {
             id: request.id.clone()?,
             from: card.from.clone().unwrap_or_default(),
-            to: card.to.clone().unwrap_or_default(),
-            migrating: card.phase() == pb::MigratePhase::Migrating,
+            active_bundle: migrating.then(|| to.bundle.clone()),
+            queued_to: None,
+            to,
+            migrating,
             failed: card.phase() == pb::MigratePhase::Failed,
             detail: None,
         },
@@ -2682,5 +2838,99 @@ mod tests {
         // A later clean report does not retry on its own.
         watch.holders("gpu", report, false, &channel).await;
         assert_eq!(calls(&fake), 1, "a reported failure is not retried without a click");
+    }
+
+    /// SMB-056: observing a newer target release while a migration to B1 is in
+    /// flight must not hide `arrived(B1)` or leave `migrating` wedged forever;
+    /// once B1 arrives, the item settles and B2 is queued as a fresh Waiting item.
+    #[tokio::test]
+    async fn observing_a_newer_release_mid_migration_settles_the_active_one_on_arrival_and_queues_the_next() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        let migrations = Migrations::new(inbox.clone(), fake.clone());
+        let b0 = build("2.0.4", "aaaaaaaa");
+        let b1 = build("2.0.5", "bbbbbbbb");
+        let b2 = build("2.0.6", "cccccccc");
+
+        let id1 = migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), b0.clone(), b1.clone())
+            .await
+            .unwrap();
+        migrations.approve(&id1.value).await.unwrap();
+        assert!(migrations.is_migrating(pb::MigrateThing::Daemon, &gpu()));
+        assert_eq!(calls(&fake), 1);
+
+        // B2 is staged before the daemon restarts into B1.
+        let same = migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), b0, b2.clone())
+            .await
+            .unwrap();
+        assert_eq!(same, id1);
+        assert!(migrations.is_migrating(pb::MigrateThing::Daemon, &gpu()));
+
+        // The daemon comes back at B1: B1 settles as Approved and B2 is queued.
+        migrations.arrived("gpu", &b1.bundle).await;
+        assert_eq!(held(&inbox, &id1).await.state(), pb::RequestState::Approved);
+        assert!(!migrations.is_migrating(pb::MigrateThing::Daemon, &gpu()));
+
+        // Observing B1 -> B2 returns the Waiting item for B2, which can be approved.
+        let id2 = migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), b1, b2)
+            .await
+            .unwrap();
+        assert_ne!(id2, id1);
+        assert!(!migrations.is_migrating(pb::MigrateThing::Daemon, &gpu()));
+        assert_eq!(card(&held(&inbox, &id2).await).phase(), pb::MigratePhase::Waiting);
+
+        let approved = migrations.approve(&id2.value).await.unwrap();
+        assert_eq!(card(&approved).phase(), pb::MigratePhase::Migrating);
+        assert_eq!(calls(&fake), 2);
+    }
+
+    /// SMB-056: if a migration to B1 fails after B2 was observed mid-migration,
+    /// `migrating` clears, B1's breaker trips, and the item advances to Waiting
+    /// for B2 so B2 can be migrated.
+    #[tokio::test]
+    async fn observing_a_newer_release_mid_migration_clears_migrating_on_failure_and_advances_to_the_next() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = inbox(directory.path());
+        let fake = Arc::new(Fake::default());
+        let migrations = Migrations::new(inbox.clone(), fake.clone());
+        let b0 = build("2.0.4", "aaaaaaaa");
+        let b1 = build("2.0.5", "bbbbbbbb");
+        let b2 = build("2.0.6", "cccccccc");
+
+        let id = migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), b0.clone(), b1.clone())
+            .await
+            .unwrap();
+        migrations.approve(&id.value).await.unwrap();
+        migrations
+            .observe(pb::MigrateThing::Daemon, &gpu(), b0, b2.clone())
+            .await
+            .unwrap();
+
+        migrations
+            .failed(
+                "gpu",
+                &b1.bundle,
+                pb::Error {
+                    message: "rolled back B1".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(!migrations.is_migrating(pb::MigrateThing::Daemon, &gpu()));
+        assert!(migrations.is_failed("gpu", &b1.bundle));
+        assert!(!migrations.is_failed("gpu", &b2.bundle));
+        let shown = held(&inbox, &id).await;
+        assert_eq!(card(&shown).phase(), pb::MigratePhase::Waiting);
+        assert_eq!(card(&shown).to.as_ref().map(|t| t.bundle.as_str()), Some(b2.bundle.as_str()));
+
+        let approved = migrations.approve(&id.value).await.unwrap();
+        assert_eq!(card(&approved).phase(), pb::MigratePhase::Migrating);
+        assert_eq!(calls(&fake), 2);
     }
 }

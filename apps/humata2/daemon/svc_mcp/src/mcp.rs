@@ -24,6 +24,8 @@ use tonic::{Code, Request, Status};
 use crate::ports::TOKEN_HEADER;
 
 mod boards;
+// BROWSER
+mod browser;
 mod delete_many;
 mod todo;
 // REPOS (CH-21)
@@ -33,6 +35,8 @@ mod session_start;
 mod doc_versions;
 mod history;
 mod pull_requests;
+// PROVIDERCLI (D906)
+mod providers;
 // REPOS
 mod repos;
 // TP-1 (D772).
@@ -67,6 +71,9 @@ struct GrpcDaemon {
     /// Whether `tools/list` offers `sessions_delete_many`: learned from the
     /// caller's rule at connect and refreshed on rule changes (D876).
     delete_many_offered: Arc<AtomicBool>,
+    /// BROWSER: whether `tools/list` offers the 6 `browser_*` tools (true only
+    /// for `claude`, `codex`, `copilot` and `agy`, learned in `bind`).
+    browser_offered: Arc<AtomicBool>,
     /// Signals the MCP server to emit `notifications/tools/list_changed` when
     /// the offered tool set changes (D876).
     tool_list_changes: Option<mpsc::UnboundedSender<()>>,
@@ -126,6 +133,7 @@ impl GrpcDaemon {
             token: Mutex::new(None),
             bundle: bundle_id(),
             delete_many_offered: Arc::new(AtomicBool::new(false)),
+            browser_offered: Arc::new(AtomicBool::new(false)),
             tool_list_changes,
             rule_watcher: Mutex::new(None),
         }
@@ -787,6 +795,97 @@ impl GrpcDaemon {
         ))
     }
 
+    /// `session_push` (D920): plans and pushes the caller's session branches,
+    /// optionally opening pull requests. Non-default branch-only pushes run
+    /// without asking; opening a PR or pushing a default branch asks in the
+    /// Inbox.
+    async fn session_push(&self, call: Call) -> Result<Reply, ToolError> {
+        let session = self.own_session().await?;
+        let arguments = &call.arguments;
+        let plan_request = self.request(pb::PlanPushRequest {
+            id: Some(session.clone()),
+            spec: None,
+        })?;
+        let plan = self
+            .sessions()
+            .plan_push(plan_request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let wanted_repos: Option<Vec<String>> = arguments
+            .get("repos")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .filter(|items: &Vec<String>| !items.is_empty());
+        let open_pr = arguments
+            .get("open_pr")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let pr_title = text(arguments, "title");
+        let pr_body = text(arguments, "body");
+        let commit_message = text(arguments, "commit_message");
+        let base_branch = text(arguments, "base_branch");
+        let repo_refs: Vec<pb::RepoRef> = match wanted_repos {
+            Some(names) => names
+                .into_iter()
+                .map(|slug| {
+                    let (owner, name) = slug.split_once('/').unwrap_or(("", slug.as_str()));
+                    pb::RepoRef {
+                        owner: owner.to_owned(),
+                        name: name.to_owned(),
+                    }
+                })
+                .collect(),
+            None => plan
+                .repos
+                .iter()
+                .filter_map(|repo| repo.repo.clone())
+                .collect(),
+        };
+        let pushed_slugs: Vec<String> = repo_refs
+            .iter()
+            .map(|repo| format!("{}/{}", repo.owner, repo.name))
+            .collect();
+        let choices: Vec<pb::PushChoice> = repo_refs
+            .into_iter()
+            .map(|repo| pb::PushChoice {
+                repo: Some(repo),
+                commit_message: commit_message.clone(),
+                open_pull_request: open_pr,
+                pr_title: pr_title.clone(),
+                pr_body: pr_body.clone(),
+                base_branch: base_branch.clone(),
+            })
+            .collect();
+        let request = self.request(pb::PushAndOpenPullRequestsRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(session),
+            repos: choices,
+            plan: plan.token,
+            from_view: None,
+        })?;
+        let operation = self
+            .sessions()
+            .push_and_open_pull_requests(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({
+                "operation": operation.id.map(|id| id.value),
+                "repos": pushed_slugs,
+                "open_pr": open_pr,
+            }),
+            None,
+        ))
+    }
+
     /// `session_continue_in_channel` (CV-8): a new session in another channel
     /// from a copy of the caller's conversation; the daemon asks the user
     /// first when the rule says so.
@@ -1302,12 +1401,21 @@ impl Daemon for GrpcDaemon {
         if operation == Operation::SessionsDeleteMany {
             return self.delete_many_offered();
         }
+        // BROWSER
+        if browser::is_browser_op(operation) {
+            return self.browser_offered();
+        }
         matches!(
             operation,
             Operation::Whoami |
             Operation::InboxAsk |
             Operation::InboxRequest |
+            Operation::InboxWait |
             Operation::SessionType |
+            Operation::SessionNote |
+            Operation::SessionAsk |
+            Operation::SessionAnswer |
+            Operation::ReviewCommits |
             Operation::ReviewContext |
             Operation::ReviewFocus |
             Operation::ReviewNote |
@@ -1332,6 +1440,9 @@ impl Daemon for GrpcDaemon {
             Operation::SessionStart |
             Operation::SessionFork |
             Operation::SessionContinueInChannel |
+            Operation::SessionPush |
+            Operation::SessionAddRepo |
+            Operation::DeskSessionMoveToChannel |
             Operation::FileWrite |
             Operation::FilesList |
             Operation::FileRead |
@@ -1365,13 +1476,28 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewDraftDrop |
             Operation::ReviewSummaryDraft |
             Operation::PrReviewStart |
-            Operation::ProviderImport
+            Operation::ProviderImport |
+            Operation::ProviderRequestImport |
+            Operation::ProviderGuide |
+            Operation::ProviderSchema |
+            Operation::ProviderExample |
+            Operation::ProviderCheck |
+            Operation::ProviderRender |
+            Operation::ProviderParse
         )
     }
 
     async fn bind(&self, token: &SessionToken) -> Result<(), ToolError> {
         *lock(&self.token) = Some(token.clone());
-        self.agent().await?;
+        let (agent, _) = self.agent().await?;
+        // BROWSER
+        self.learn_browser_agent(
+            agent
+                .agent
+                .as_ref()
+                .map(|id| id.value.as_str())
+                .unwrap_or_default(),
+        );
         self.ask_delete_many_rule().await;
         self.watch_delete_many_rule(token.clone());
         Ok(())
@@ -1413,6 +1539,7 @@ impl Daemon for GrpcDaemon {
             Operation::SessionStart => self.session_start(call).await,
             Operation::SessionFork => self.session_fork(call).await,
             Operation::SessionContinueInChannel => self.session_continue_in_channel(call).await,
+            Operation::SessionPush => self.session_push(call).await,
             Operation::SessionAddRepo => self.session_add_repo(call).await, // REPOS (CH-21)
             Operation::FileWrite => self.file_write(call).await,
             Operation::FilesList => self.files_list(call).await,
@@ -1448,7 +1575,22 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewSummaryDraft => self.review_summary_draft(call).await,
             Operation::PrReviewStart => self.pr_review_start(call).await,
             Operation::DeskSessionMoveToChannel => self.desk_move_to_channel(call).await,
-            Operation::ProviderImport => self.provider_import(call).await,
+            Operation::ProviderImport | Operation::ProviderRequestImport => {
+                self.provider_import(call).await
+            }
+            Operation::ProviderGuide => self.provider_guide(),
+            Operation::ProviderSchema => self.provider_schema(call),
+            Operation::ProviderExample => self.provider_example(call),
+            Operation::ProviderCheck => self.provider_check(call),
+            Operation::ProviderRender => self.provider_render(call),
+            Operation::ProviderParse => self.provider_parse(call),
+            // BROWSER
+            Operation::BrowserListTabs
+            | Operation::BrowserReadTab
+            | Operation::BrowserGuideHighlight
+            | Operation::BrowserClick
+            | Operation::BrowserType
+            | Operation::BrowserNavigate => self.browser_call(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)

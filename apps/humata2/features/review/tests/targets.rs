@@ -77,10 +77,12 @@ fn api_uncommitted() -> DiffBase {
         RepoDiffSpec {
             repo: "acme/api".to_owned(),
             base: RepoBase::Uncommitted,
+            options: Default::default(),
         },
         RepoDiffSpec {
             repo: "acme/web".to_owned(),
             base: RepoBase::DefaultBranch,
+            options: Default::default(),
         },
     ])
 }

@@ -27,7 +27,7 @@ use std::path::Path;
 use std::time::Duration;
 
 mod mcp;
-pub use mcp::{MCP_SERVER, claude_mcp_config, codex_mcp, copilot_mcp_config};
+pub use mcp::{MCP_SERVER, agy_mcp_config, claude_mcp_config, codex_mcp, copilot_mcp_config};
 mod question;
 pub use question::{Question, Reply, parse_question, render_question};
 

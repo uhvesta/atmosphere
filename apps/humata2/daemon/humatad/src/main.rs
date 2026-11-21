@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use humatad_core::error::DaemonError;
 use humatad_core::plugins::Plugins;
 use humatad_core::serve::{AdminPolicy, ServeArgs};
-use humatad_core::{bridge, fault, log, serve, status, stop, tool_path};
+use humatad_core::{bridge, browser_host, fault, log, serve, status, stop, tool_path};
 
 #[cfg(feature = "admin")]
 #[derive(clap::Args)]
@@ -95,6 +95,8 @@ enum Command {
     /// Stops this machine's sessions, even when its daemon doesn't answer
     /// (D262).
     Stop(stop::cli::StopArgs),
+    /// Runs the WebExtension Native Messaging host bridging stdio to the daemon.
+    BrowserHost(browser_host::BrowserHostArgs),
 }
 
 fn build_plugins() -> Plugins {
@@ -117,12 +119,16 @@ fn build_plugins() -> Plugins {
 fn main() -> ExitCode {
     #[cfg(feature = "admin")]
     humata2_rpc_kit::admin::set_admin_mode(true);
-    let cli = Cli::parse();
+    let command = if browser_host::invoked_as_browser_host() {
+        Command::BrowserHost(browser_host::args_from_argv0())
+    } else {
+        Cli::parse().command
+    };
     // Before the runtime starts any thread: this sets PATH.
-    if matches!(cli.command, Command::Serve(_)) && tool_path::asked() {
+    if matches!(command, Command::Serve(_)) && tool_path::asked() {
         tool_path::widen_from_login_shell();
     }
-    let mut builder = if matches!(cli.command, Command::Serve(_)) {
+    let mut builder = if matches!(command, Command::Serve(_)) {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.worker_threads(4);
         builder
@@ -137,7 +143,7 @@ fn main() -> ExitCode {
             let result = runtime.block_on(async move {
                 // Test builds with `faults`: SIGUSR2 is a power cut.
                 fault::power_cut_on_sigusr2();
-                match cli.command {
+                match command {
                     Command::Serve(args) => {
                         let (base, admin_policy) = args.into_parts();
                         serve::run(base, admin_policy, build_plugins()).await
@@ -148,6 +154,7 @@ fn main() -> ExitCode {
                     Command::Stop(args) => stop::cli::run(args)
                         .await
                         .map_err(|source| DaemonError::StopCli { source }),
+                    Command::BrowserHost(args) => browser_host::run(args).await,
                 }
             });
             // Dropping the runtime would wait for a blocking read of stdin

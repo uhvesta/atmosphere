@@ -66,3 +66,19 @@ pub fn codex_mcp(humatad: &Path, socket: &Path) -> String {
         string(TOKEN_VAR),
     )
 }
+
+/// The session-only settings file Antigravity (`agy`) loads with
+/// `--settings=<file>` (never saved and never touching `~/.gemini`):
+/// one stdio MCP server, `humatad` run as `mcp`, with the session token
+/// inherited from the environment.
+pub fn agy_mcp_config(humatad: &Path, socket: &Path) -> String {
+    let config = json!({
+        "mcpServers": {
+            MCP_SERVER: {
+                "command": humatad.to_string_lossy(),
+                "args": server_args(socket),
+            },
+        },
+    });
+    serde_json::to_string_pretty(&config).unwrap_or_default()
+}

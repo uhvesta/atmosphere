@@ -2,7 +2,7 @@ agent: copilot
 cli: 1.0.115-1
 script: probe
 label: launch
-expect: unknown
+expect: prompt:folder_trust
 cols: 80
 rows: 40
 ---
@@ -20,15 +20,15 @@ rows: 40
  ● No Copilot instructions found for this repository. Run /init to generate
    them.
 
- ! Run /login again to use Connectors. Your saved GitHub authorization is
-   missing the write:plugin_gateway_connections permission.
+
+
 
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Confirm folder trust                                                         │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ ╭──────────────────────────────────────────────────────────────────────────╮ │
-│ │ /private/tmp/claude-501/screenparse-rec/copilot/probe/work               │ │
+│ │ /private/tmp/screenparse-corpus-0100/copilot/probe/work                  │ │
 │ ╰──────────────────────────────────────────────────────────────────────────╯ │
 │                                                                              │
 │ Copilot can read files in this folder and, with your permission, edit them   │

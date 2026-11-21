@@ -12,3 +12,4 @@ path = "src/lib.rs"
 
 [dependencies]
 gpui-kit = { workspace = true }
+humata2-highlight = { path = "../../highlight" }

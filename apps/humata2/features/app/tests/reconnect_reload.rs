@@ -56,3 +56,57 @@ fn a_follow_that_lands_after_a_failed_load_ends_in_a_reload() {
         "the ready state is the resync's load, which saw the new daemon's data"
     );
 }
+
+#[test]
+fn repeated_events_ended_backs_off_and_toasts_once_per_outage() {
+    // SMB-003: while the daemon is down, repeated EventsEnded(Failed) must
+    // back off via the clock instead of spinning in a tight loop, and toast
+    // only once per outage.
+    let clock = Arc::new(TestClock::new());
+    let (clients, fakes) = humata2_clients::fake_clients(fixture::design(), clock.clone());
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    let err = || humata2_clients::DaemonError::Offline {
+        machine: humata2_clients::model::MachineId::new("this-mac"),
+    };
+    // First disconnect: toasts once, schedules immediate reconnect.
+    let _hold = fakes.daemon.hold_next_subscribe();
+    store.send(A::EventsEnded(StreamEnd::Failed(err())), |_| {});
+    let toasts_after_first = store.state().toasts.len();
+    assert_eq!(toasts_after_first, 1, "first disconnect shows one toast");
+
+    // Second failure while still disconnected: must NOT add a second toast.
+    store.send(A::EventsEnded(StreamEnd::Failed(err())), |_| {});
+    assert_eq!(
+        store.state().toasts.len(),
+        1,
+        "repeated reconnect failures must not spam duplicate toasts"
+    );
+    store.finish();
+}
+
+#[test]
+fn resync_restarts_pinned_watch() {
+    // SMB-032: after a daemon restart (Event::Resync), Pinned must be started
+    // again so pinned items keep updating without relaunching the app.
+    let clock = Arc::new(TestClock::new());
+    let (clients, _fakes) = humata2_clients::fake_clients(fixture::design(), clock);
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    store.send(A::Event(humata2_clients::Event::Resync), |_| {});
+    store.receive_matching(
+        "Resync reloads workspace",
+        |a| matches!(a, A::Loaded(Ok(_))),
+        |_| {},
+    );
+    store.receive_matching(
+        "Resync restarts pinned watch",
+        |a| matches!(a, A::Pinned(_)),
+        |_| {},
+    );
+    store.settle();
+    store.skip_received();
+    store.finish();
+}

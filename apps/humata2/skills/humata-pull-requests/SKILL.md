@@ -1,6 +1,6 @@
 ---
 name: humata-pull-requests
-description: Push a Humata session's work and open pull requests, split commits into a stack of pull requests with the stack CLI, start a pull request review session, and draft review comments for the owner to post. Use when the user says "push this", "open a PR", "put up a pull request", "stack these commits", "split this into stacked PRs", "restack", "update the PR after review", "review this PR", "review PR 123", "draft review comments" or "what changed in this session".
+description: Push a Humata session's work and open pull requests, split commits into a stack of pull requests with the stack CLI, import or copy a remote stack locally, interleave local commits, start a pull request or native stack review session, and draft review comments for the owner to post. Use when the user says "push this", "open a PR", "put up a pull request", "stack these commits", "split this into stacked PRs", "import this stack", "copy this stack locally", "restack", "update the PR after review", "review this PR", "review this stack", "review PR 123", "draft review comments" or "what changed in this session".
 ---
 
 # Humata pull requests, reviews and stacks

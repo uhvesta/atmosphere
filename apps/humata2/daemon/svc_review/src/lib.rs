@@ -479,16 +479,15 @@ impl Review {
     }
 
     /// `plan` checked against the diffs its spec makes now, its notes
-    /// anchored, with those diffs.
+    /// anchored, with those diffs and any checked stack.
     async fn checked_plan(
         &self,
         caller: &Caller,
         record: &SessionRecord,
         session: &SessionRef,
         plan: &pb::ReviewPlan,
-    ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>), Status> {
-        let (plan, diffs, _) = self.checked_plan_with_stack(caller, record, session, plan).await?;
-        Ok((plan, diffs))
+    ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>, Option<humata2_review_diff::CheckedStack>), Status> {
+        self.checked_plan_with_stack(caller, record, session, plan).await
     }
 
     /// As [`Self::checked_plan`], with the checked stack when the plan sent
@@ -502,6 +501,8 @@ impl Review {
     ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>, Option<humata2_review_diff::CheckedStack>), Status> {
         let stacked = plan.stack.is_some() || plan.from_stack.is_some();
         let mut sent = plan.clone();
+        let owners = unique_repo_owners(&self.inner, record)?;
+        normalize_plan_repos(&mut sent, &owners);
         if stacked {
             if sent.spec.as_ref().is_some_and(|spec| !spec.repos.is_empty()) {
                 return Err(ports::invalid_field(
@@ -541,16 +542,161 @@ impl Review {
     }
 }
 
+/// Unique `name -> owner` map for repositories recorded in `session_detail`.
+/// A repo name that appears with more than one owner is omitted so we never guess.
+pub(crate) fn unique_repo_owners(
+    inner: &Inner,
+    record: &SessionRecord,
+) -> Result<BTreeMap<String, String>, Status> {
+    let Some(detail) = inner
+        .store
+        .session_detail(&record.id)
+        .map_err(|error| ports::store_error(error, &inner.machine, "read the session's repositories"))?
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let mut owners: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for repo in detail.repos {
+        if repo.name.is_empty() {
+            continue;
+        }
+        let owner = (!repo.owner.is_empty()).then_some(repo.owner);
+        owners
+            .entry(repo.name)
+            .and_modify(|existing| {
+                if *existing != owner {
+                    *existing = None;
+                }
+            })
+            .or_insert(owner);
+    }
+    Ok(owners
+        .into_iter()
+        .filter_map(|(name, owner)| owner.map(|owner| (name, owner)))
+        .collect())
+}
+
+fn normalize_repo_ref(repo: &mut pb::RepoRef, owners: &BTreeMap<String, String>) {
+    if repo.owner.is_empty()
+        && let Some(owner) = owners.get(&repo.name)
+    {
+        repo.owner.clone_from(owner);
+    }
+}
+
+fn normalize_repo_path(path: &mut pb::RepoPath, owners: &BTreeMap<String, String>) {
+    if let Some(repo) = path.repo.as_mut() {
+        normalize_repo_ref(repo, owners);
+    }
+}
+
+pub(crate) fn normalize_plan_repos(plan: &mut pb::ReviewPlan, owners: &BTreeMap<String, String>) {
+    if owners.is_empty() {
+        return;
+    }
+    if let Some(spec) = plan.spec.as_mut() {
+        for repo in &mut spec.repos {
+            if let Some(r) = repo.repo.as_mut() {
+                normalize_repo_ref(r, owners);
+            }
+        }
+    }
+    for path in &mut plan.order {
+        normalize_repo_path(path, owners);
+    }
+    for group in &mut plan.groups {
+        if let Some(first) = group.first.as_mut() {
+            normalize_repo_path(first, owners);
+        }
+    }
+    for note in &mut plan.notes {
+        if let Some(file) = note.file.as_mut() {
+            normalize_repo_path(file, owners);
+        }
+    }
+    for imp in &mut plan.importance {
+        if let Some(file) = imp.file.as_mut() {
+            normalize_repo_path(file, owners);
+        }
+    }
+    if let Some(from) = plan.from_stack.as_mut()
+        && let Some(repo) = from.repo.as_mut()
+    {
+        normalize_repo_ref(repo, owners);
+    }
+    if let Some(stack) = plan.stack.as_mut() {
+        for layer in &mut stack.layers {
+            for part in &mut layer.repos {
+                if let Some(repo) = part.repo.as_mut() {
+                    normalize_repo_ref(repo, owners);
+                }
+            }
+            for path in &mut layer.order {
+                normalize_repo_path(path, owners);
+            }
+            for group in &mut layer.groups {
+                if let Some(first) = group.first.as_mut() {
+                    normalize_repo_path(first, owners);
+                }
+            }
+            for imp in &mut layer.importance {
+                if let Some(file) = imp.file.as_mut() {
+                    normalize_repo_path(file, owners);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn normalize_content_repos(
+    content: &mut pb::prepared_view::Content,
+    owners: &BTreeMap<String, String>,
+) {
+    if owners.is_empty() {
+        return;
+    }
+    use pb::prepared_view::Content;
+    match content {
+        Content::Review(walkthrough) => {
+            for step in &mut walkthrough.steps {
+                if let Some(file) = step.file.as_mut() {
+                    normalize_repo_path(file, owners);
+                }
+            }
+        }
+        Content::Board(_) => {}
+        Content::PullRequest(draft) => {
+            for repo in &mut draft.repos {
+                if let Some(r) = repo.repo.as_mut() {
+                    normalize_repo_ref(r, owners);
+                }
+            }
+        }
+        Content::ReviewPlan(plan) => normalize_plan_repos(plan, owners),
+    }
+}
+
 /// The repositories asked for, else every clone in the session's folder,
 /// each as `owner/name` when the session's start recorded its owner (the
 /// key comments, reviews and the app's repo names use) and as the folder
 /// name otherwise.
 async fn repo_keys(inner: &Inner, record: &SessionRecord, asked: &[pb::RepoRef]) -> Result<Vec<String>, Status> {
     if !asked.is_empty() {
+        let owners = if asked.iter().any(|repo| repo.owner.is_empty()) {
+            unique_repo_owners(inner, record)?
+        } else {
+            BTreeMap::new()
+        };
         let mut keys = Vec::with_capacity(asked.len());
         for repo in asked {
-            let key = wire::repo_key(repo);
-            if repo.name.is_empty() || repo.name.contains('/') || repo.name == "." || repo.name == ".." {
+            let mut normalized = repo.clone();
+            normalize_repo_ref(&mut normalized, &owners);
+            let key = wire::repo_key(&normalized);
+            if normalized.name.is_empty()
+                || normalized.name.contains('/')
+                || normalized.name == "."
+                || normalized.name == ".."
+            {
                 return Err(bad_repo(&key));
             }
             keys.push(key);
@@ -782,7 +928,10 @@ impl pb::diff_service_server::DiffService for Review {
             pr_bases.get(repo).cloned()
         })
         .map_err(|error| wire_failed("base", &error))?;
-        let key = wire::repo_key(&repo);
+        let key = keys
+            .first()
+            .cloned()
+            .unwrap_or_else(|| wire::repo_key(&repo));
         let checkout = clones.get(&key).map_err(|error| diff_failed(&error))?.clone();
         // The file's own repo's spec (RV-31), never another repo's.
         let repo_spec = spec
@@ -1032,7 +1181,8 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             Some(place) => selected_text(&record.folder, place).await,
             None => Vec::new(),
         };
-        let mut answer = wire::context_to_pb(&context, selected);
+        let checked = lock(&review.stacked).checked.clone();
+        let mut answer = wire::context_to_pb(&context, selected, checked.as_ref());
         if let Some(stack) = context.view.stack.as_ref()
             && let Some(told) = self.context_stack(&record, &review, stack).await
             && let Some(view) = answer.view.as_mut()
@@ -1096,11 +1246,11 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
                 .map_err(|error| chat_failed(&error))?;
             let at = now();
             chat.at.insert(change.seq, at);
-            wire::change_to_pb(&change, at)
+            wire::change_to_pb(&change, at, None)
         } else if let Some(change) = moved {
             let chat = lock(&review.chat);
             let at = chat.at.get(&change.seq).copied().unwrap_or_else(now);
-            wire::change_to_pb(&change, at)
+            wire::change_to_pb(&change, at, None)
         } else {
             return Err(ports::missing("file"));
         };
@@ -1126,7 +1276,8 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             let change = chat.chat.undo(&request.undo_id).map_err(|error| chat_failed(&error))?;
             let at = now();
             chat.at.insert(change.seq, at);
-            wire::change_to_pb(&change, at)
+            let checked = lock(&review.stacked).checked.clone();
+            wire::change_to_pb(&change, at, checked.as_ref())
         };
         self.publish(&caller, &record, &review, change.seq).await?;
         Ok(Response::new(change))
@@ -1148,10 +1299,17 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         let stream = async_stream(move |sender| async move {
             loop {
                 let next: Vec<pb::ReviewChange> = {
+                    let checked = lock(&review.stacked).checked.clone();
                     let chat = lock(&review.chat);
                     chat.chat
                         .changes_after(after)
-                        .map(|change| wire::change_to_pb(change, chat.at.get(&change.seq).copied().unwrap_or(0)))
+                        .map(|change| {
+                            wire::change_to_pb(
+                                change,
+                                chat.at.get(&change.seq).copied().unwrap_or(0),
+                                checked.as_ref(),
+                            )
+                        })
                         .collect()
                 };
                 for change in next {
@@ -1858,7 +2016,8 @@ fn saved(session: &str, review: &SessionReview) -> ReviewRecord {
             .map(|(key, answer)| answer_to_stored(key, answer))
             .collect(),
     };
-    let mut chat = wire::context_to_pb(&context, Vec::new());
+    let checked = lock(&review.stacked).checked.clone();
+    let mut chat = wire::context_to_pb(&context, Vec::new(), checked.as_ref());
     chat.notes = context.notes.iter().map(|note| note_comment(note, session)).collect();
     let shown = lock(&review.shown)
         .values()
@@ -1878,7 +2037,7 @@ fn saved(session: &str, review: &SessionReview) -> ReviewRecord {
 
 fn undo_to_stored(entry: &Undoable, session: &str) -> stored::ReviewUndo {
     use stored::review_undo::Before;
-    let view = |view: ViewState| wire::view_to_pb(&view).encode_to_vec();
+    let view = |view: ViewState| wire::view_to_pb(&view, None).encode_to_vec();
     let mut added_notes = Vec::new();
     let before = match &entry.before {
         Replaced::Focus { place, highlights } => Before::Focus(view(ViewState {
@@ -2308,4 +2467,137 @@ fn now() -> i64 {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bare(name: &str) -> pb::RepoRef {
+        pb::RepoRef {
+            owner: String::new(),
+            name: name.to_owned(),
+        }
+    }
+
+    fn owned(owner: &str, name: &str) -> pb::RepoRef {
+        pb::RepoRef {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    fn path(repo: pb::RepoRef, p: &str) -> pb::RepoPath {
+        pb::RepoPath {
+            repo: Some(repo),
+            path: p.to_owned(),
+        }
+    }
+
+    #[test]
+    fn normalize_content_repos_fills_unique_owners_across_all_view_types() {
+        let owners = BTreeMap::from([
+            ("api".to_owned(), "acme".to_owned()),
+            ("web".to_owned(), "acme".to_owned()),
+        ]);
+
+        // ReviewPlan: spec, order, groups, notes, importance, from_stack, stack layers
+        let mut plan_content = pb::prepared_view::Content::ReviewPlan(pb::ReviewPlan {
+            spec: Some(pb::DiffSpec {
+                repos: vec![pb::RepoDiffSpec {
+                    repo: Some(bare("api")),
+                    ..Default::default()
+                }],
+            }),
+            order: vec![path(bare("api"), "src/a.rs"), path(owned("other", "api"), "src/b.rs")],
+            groups: vec![pb::ReviewGroup {
+                title: "Core".to_owned(),
+                note: String::new(),
+                first: Some(path(bare("web"), "index.ts")),
+            }],
+            notes: vec![pb::ReviewNote {
+                file: Some(path(bare("api"), "src/a.rs")),
+                text: "note".to_owned(),
+                ..Default::default()
+            }],
+            importance: vec![pb::ReviewImportance {
+                file: Some(path(bare("web"), "index.ts")),
+                tier: pb::review_importance::Tier::Key as i32,
+            }],
+            from_stack: Some(pb::ReviewFromStack {
+                repo: Some(bare("api")),
+                ..Default::default()
+            }),
+            stack: Some(pb::ReviewStack {
+                layers: vec![pb::ReviewLayer {
+                    title: "L1".to_owned(),
+                    repos: vec![
+                        pb::ReviewLayerRepo {
+                            repo: Some(bare("api")),
+                            ..Default::default()
+                        },
+                        pb::ReviewLayerRepo {
+                            repo: Some(bare("unknown")),
+                            ..Default::default()
+                        },
+                    ],
+                    order: vec![path(bare("api"), "src/a.rs")],
+                    groups: vec![pb::ReviewGroup {
+                        title: "G".to_owned(),
+                        note: String::new(),
+                        first: Some(path(bare("api"), "src/a.rs")),
+                    }],
+                    importance: vec![pb::ReviewImportance {
+                        file: Some(path(bare("api"), "src/a.rs")),
+                        tier: pb::review_importance::Tier::Skim as i32,
+                    }],
+                    ..Default::default()
+                }],
+            }),
+        });
+        normalize_content_repos(&mut plan_content, &owners);
+        let pb::prepared_view::Content::ReviewPlan(plan) = plan_content else {
+            unreachable!()
+        };
+        assert_eq!(plan.spec.unwrap().repos[0].repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(plan.order[0].repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(plan.order[1].repo.as_ref().unwrap().owner, "other");
+        assert_eq!(plan.groups[0].first.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(plan.notes[0].file.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(plan.importance[0].file.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(plan.from_stack.unwrap().repo.as_ref().unwrap().owner, "acme");
+        let layer = &plan.stack.unwrap().layers[0];
+        assert_eq!(layer.repos[0].repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(layer.repos[1].repo.as_ref().unwrap().owner, "");
+        assert_eq!(layer.order[0].repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(layer.groups[0].first.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+        assert_eq!(layer.importance[0].file.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+
+        // PullRequestDraft
+        let mut pr_content = pb::prepared_view::Content::PullRequest(pb::PullRequestDraft {
+            repos: vec![pb::pull_request_draft::PerRepo {
+                repo: Some(bare("api")),
+                title: "Fix".to_owned(),
+                ..Default::default()
+            }],
+        });
+        normalize_content_repos(&mut pr_content, &owners);
+        let pb::prepared_view::Content::PullRequest(pr) = pr_content else {
+            unreachable!()
+        };
+        assert_eq!(pr.repos[0].repo.as_ref().unwrap().owner, "acme");
+
+        // ReviewWalkthrough
+        let mut wt_content = pb::prepared_view::Content::Review(pb::ReviewWalkthrough {
+            steps: vec![pb::review_walkthrough::Step {
+                file: Some(path(bare("web"), "app.tsx")),
+                ..Default::default()
+            }],
+        });
+        normalize_content_repos(&mut wt_content, &owners);
+        let pb::prepared_view::Content::Review(wt) = wt_content else {
+            unreachable!()
+        };
+        assert_eq!(wt.steps[0].file.as_ref().unwrap().repo.as_ref().unwrap().owner, "acme");
+    }
 }

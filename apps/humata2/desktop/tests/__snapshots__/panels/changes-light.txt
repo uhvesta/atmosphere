@@ -50,7 +50,7 @@ Complementary "Diff"
   #changes-files
     #repo-row-0
       Button "Collapse acme/api"
-      text "acme/api"
+      text "api"
       #repo-totals-0
         text "+6"
         text "−2"
@@ -71,7 +71,7 @@ Complementary "Diff"
       CheckBox "Not looked at"
   text "client.rs"
   Button "Open in editor" description="Open in editor"
-  text "acme/api"
+  text "api"
   text "·"
   text "src/"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"

@@ -7,22 +7,191 @@ use humata2_mcp::Operation;
 use serde_json::{Map, Value, json};
 use support::{Client, FakeDaemon, minimal};
 
-/// MCP.md §6
+/// MCPCOMPRESS: `tools/list` exposes only the 3 progressive-disclosure
+/// meta-tools within the wire and prompt byte budgets.
+#[tokio::test]
+async fn tools_list_exposes_three_meta_tools_within_byte_budget() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let reply = client.request(json!("list"), "tools/list", json!({})).await;
+    let result = &reply["result"];
+    let tools = result["tools"].as_array().expect("tools array");
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(names, ["humata_call", "humata_describe", "humata_list"]);
+
+    let wire_bytes = serde_json::to_string(result).unwrap().len();
+    assert!(
+        wire_bytes <= 5_000,
+        "tools/list wire size {wire_bytes} B exceeds 5,000 B budget"
+    );
+
+    let mut without_output = result.clone();
+    for tool in without_output["tools"].as_array_mut().unwrap() {
+        tool.as_object_mut().unwrap().remove("outputSchema");
+    }
+    let prompt_bytes = serde_json::to_string(&without_output).unwrap().len();
+    assert!(
+        prompt_bytes <= 2_500,
+        "tools/list without outputSchema {prompt_bytes} B exceeds 2,500 B budget"
+    );
+}
+
+/// MCP.md §6, MCPCOMPRESS: `humata_list` offers every tool of MCP.md as a
+/// compact 1-line `<name> [<category>,<effect>](...): <summary>` entry.
 #[tokio::test]
 async fn tools_list_offers_exactly_the_tools_of_mcp_md() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    let mut names: Vec<String> = client
-        .tools()
-        .await
+    let listed = client.humata_list(json!({})).await;
+    let entries = listed["tools"].as_array().expect("tools");
+    let mut names: Vec<String> = entries
         .iter()
-        .map(|tool| tool["name"].as_str().expect("a name").to_owned())
+        .map(|entry| {
+            let line = entry.as_str().expect("1-line string");
+            assert!(!line.contains('\n'), "must be 1-line: {line}");
+            assert!(line.contains(" [") && line.contains("](") && line.contains("): "), "{line}");
+            line.split_whitespace().next().expect("name").to_owned()
+        })
         .collect();
     names.sort();
 
     let expected: Vec<&str> = include_str!("tools.txt").lines().collect();
     assert_eq!(names, expected);
+    assert_eq!(listed["count"], expected.len());
+}
+
+/// MCPCOMPRESS: `humata_list` filters by category and case-insensitive query.
+#[tokio::test]
+async fn humata_list_filters_by_category_and_query() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let board = client.humata_list(json!({ "category": "board" })).await;
+    let board_tools = board["tools"].as_array().unwrap();
+    assert!(!board_tools.is_empty());
+    assert!(
+        board_tools
+            .iter()
+            .all(|line| line.as_str().unwrap().contains("[board,")),
+        "{board}"
+    );
+
+    let filtered = client
+        .humata_list(json!({ "category": "board", "query": "ITEM_MOVE" }))
+        .await;
+    let names: Vec<&str> = filtered["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(names, ["board_item_move"]);
+}
+
+/// MCPCOMPRESS: `humata_describe` enforces `minItems: 1`, `maxItems: 20` and
+/// returns structured `unavailable` entries for user-only and unknown names.
+#[tokio::test]
+async fn humata_describe_validates_bounds_and_reports_unavailable() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let empty = client
+        .call_raw(json!(1), "humata_describe", json!({ "names": [] }))
+        .await;
+    assert_eq!(empty["error"]["code"], -32602, "{empty}");
+
+    let too_many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
+    let over = client
+        .call_raw(json!(2), "humata_describe", json!({ "names": too_many }))
+        .await;
+    assert_eq!(over["error"]["code"], -32602, "{over}");
+
+    let mixed = client
+        .humata_describe(&["whoami", "access_set_rule", "no_such_tool"])
+        .await;
+    assert_eq!(mixed["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(mixed["tools"][0]["name"], "whoami");
+    let unavailable = mixed["unavailable"].as_array().unwrap();
+    assert_eq!(unavailable.len(), 2, "{mixed}");
+    assert_eq!(unavailable[0]["name"], "access_set_rule");
+    assert_eq!(unavailable[0]["reason"], "user_only");
+    assert_eq!(unavailable[0]["capability"], "access_change");
+    assert_eq!(unavailable[1]["name"], "no_such_tool");
+    assert_eq!(unavailable[1]["reason"], "unknown");
+}
+
+/// MCPCOMPRESS: every example from `humata_describe` across `Operation::ALL`
+/// validates against `input_schema(op)`.
+#[tokio::test]
+async fn every_example_from_humata_describe_validates_against_input_schema() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let described = client.all_described_tools().await;
+    assert_eq!(described.len(), Operation::ALL.len());
+    let mut req_id = 1000_u64;
+    for tool in described {
+        let name = tool["name"].as_str().expect("name");
+        let examples = tool["examples"].as_array().expect("examples");
+        assert!(!examples.is_empty(), "{name} must have at least one example");
+        if name == "inbox_wait" {
+            // inbox_wait starts a wait; just check its example shape directly.
+            assert!(examples[0]["request_id"].is_string(), "{name}: {examples:?}");
+            continue;
+        }
+        for example in examples {
+            req_id += 1;
+            let reply = client
+                .humata_call_raw(json!(req_id), name, example.clone())
+                .await;
+            assert!(
+                reply["result"].is_object(),
+                "{name} example failed validation: example={example}, reply={reply}"
+            );
+        }
+    }
+}
+
+/// MCPCOMPRESS: `humata_call` validation failure returns exact violation AND
+/// compact inline schema in both `error.message` and `error.data.schema` for
+/// 1-turn self-correction.
+#[tokio::test]
+async fn validation_error_returns_inline_schema_for_one_turn_self_correction() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let bad = client
+        .humata_call_raw(json!(1), "board_item_create", json!({ "board": "session" }))
+        .await;
+    assert_eq!(bad["error"]["code"], -32602, "{bad}");
+    assert_eq!(bad["error"]["data"]["field"], "/title");
+    assert_eq!(bad["error"]["data"]["problem"], "missing");
+    let schema_text = bad["error"]["data"]["schema"]
+        .as_str()
+        .expect("error.data.schema");
+    assert!(schema_text.contains("title*:"), "{schema_text}");
+    assert!(
+        bad["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(schema_text),
+        "{bad}"
+    );
+
+    // 1-turn self-correction using the inline schema succeeds.
+    let fixed = client
+        .humata_call(
+            json!(2),
+            "board_item_create",
+            json!({ "board": "session", "title": "Fixed in one turn" }),
+        )
+        .await;
+    assert_eq!(fixed["structuredContent"]["outcome"], "applied", "{fixed}");
 }
 
 /// TP-16
@@ -48,7 +217,9 @@ async fn every_tool_takes_an_object_that_allows_no_other_fields_and_no_caller() 
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    for tool in client.tools().await {
+    let mut all = client.tools().await;
+    all.extend(client.all_described_tools().await);
+    for tool in all {
         let name = &tool["name"];
         let input = &tool["inputSchema"];
         assert_eq!(input["type"], "object", "{name}");
@@ -78,6 +249,18 @@ async fn every_tool_has_an_object_output_schema_and_annotations() {
         let destructive = annotations["destructiveHint"] == true;
         assert!(!(read_only && destructive), "{name} is read-only and destructive");
     }
+
+    for tool in client.all_described_tools().await {
+        let name = &tool["name"];
+        assert!(tool["description"].as_str().is_some_and(|text| !text.is_empty()), "{name}");
+        let annotations = &tool["annotations"];
+        for hint in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+            assert!(annotations[hint].is_boolean(), "{name} {hint}");
+        }
+        let read_only = annotations["readOnlyHint"] == true;
+        let destructive = annotations["destructiveHint"] == true;
+        assert!(!(read_only && destructive), "{name} is read-only and destructive");
+    }
 }
 
 /// MCP.md §4: TP-11
@@ -86,7 +269,7 @@ async fn every_tool_a_rule_can_send_to_the_inbox_takes_wait_seconds_up_to_600() 
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    for tool in client.tools().await {
+    for tool in client.all_described_tools().await {
         let wait = &tool["inputSchema"]["properties"]["wait_seconds"];
         if wait.is_null() {
             continue;
@@ -104,14 +287,14 @@ async fn the_smallest_arguments_each_schema_describes_are_accepted() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    for (n, tool) in client.tools().await.into_iter().enumerate() {
+    for (n, tool) in client.all_described_tools().await.into_iter().enumerate() {
         let name = tool["name"].as_str().expect("a name");
         if name == "inbox_wait" {
             // It waits on the Inbox; tests/waiting.rs covers it.
             continue;
         }
         let reply = client
-            .call_raw(json!(n), name, minimal(&tool["inputSchema"]))
+            .humata_call_raw(json!(n), name, minimal(&tool["inputSchema"]))
             .await;
         assert!(reply["result"].is_object(), "{name}: {reply}");
     }
@@ -257,11 +440,8 @@ async fn the_daemon_gets_the_tool_and_its_arguments_without_wait_seconds() {
 async fn one_field_of_a_choice_is_required_and_two_are_refused() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
-    let tools = client.tools().await;
-    let file_write = tools
-        .iter()
-        .find(|tool| tool["name"] == "file_write")
-        .expect("file_write is a tool");
+    let described = client.humata_describe(&["file_write"]).await;
+    let file_write = &described["tools"][0];
     let mut arguments = minimal(&file_write["inputSchema"]);
     let Value::Object(fields) = &mut arguments else {
         panic!("file_write takes an object");
@@ -293,15 +473,16 @@ async fn a_session_folder_location_is_accepted_and_reaches_the_daemon_as_given()
     assert_eq!(calls[0].arguments["location"], location);
 }
 
-/// MCP.md §6: D382. A session's folder holds no repository, so naming one
-/// is not a field of that location.
+/// MCP.md §6: D382, MCPCOMPRESS `OneOf` closest-shape regression: a session
+/// folder location with `repo` matches the `session_folder` discriminator and
+/// reports `/location/repo` as `not_allowed_here` (not `/location/root`).
 #[tokio::test]
 async fn a_session_folder_location_takes_no_repo() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
     let reply = client
-        .call_raw(
+        .humata_call_raw(
             json!(1),
             "file_read",
             json!({ "location": {
@@ -313,6 +494,8 @@ async fn a_session_folder_location_takes_no_repo() {
         .await;
 
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    assert_eq!(reply["error"]["data"]["field"], "/location/repo", "{reply}");
+    assert_eq!(reply["error"]["data"]["problem"], "not_allowed_here", "{reply}");
     assert!(daemon.calls().is_empty());
 }
 
@@ -322,13 +505,16 @@ async fn a_session_folder_location_takes_no_repo() {
 async fn a_browser_write_without_its_page_address_is_refused_and_listing_tabs_needs_nothing() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
-    let tools = client.tools().await;
+    let described = client
+        .humata_describe(&["browser_click", "browser_type", "browser_navigate"])
+        .await;
+    let tools = described["tools"].as_array().expect("described tools");
 
     for name in ["browser_click", "browser_type", "browser_navigate"] {
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == name)
-            .expect("the browser tool is listed");
+            .expect("the browser tool is described");
         let mut arguments = minimal(&tool["inputSchema"]);
         arguments
             .as_object_mut()

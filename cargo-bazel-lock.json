@@ -1,5 +1,5 @@
 {
-  "checksum": "491cf6ac7f5c25015ee260a354fef45695b1d5d0d835abb517be748b17f863b1",
+  "checksum": "6bc86a619ae8746fdf08188f391ca46dd0fc548cfce77c198666d7704c6a7604",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -19152,6 +19152,29 @@
         {
           "Library": {
             "crate_name": "humata2_gui_spike",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-highlight 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_highlight",
+      "name": "humata2-highlight",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_highlight",
             "crate_root": "src/lib.rs"
           }
         }
@@ -53500,6 +53523,7 @@
     "humata2-files 0.0.0": "apps/humata2/features/files",
     "humata2-find 0.0.0": "apps/humata2/features/find",
     "humata2-gui-spike 0.0.0": "apps/humata2/spike/gui",
+    "humata2-highlight 0.0.0": "apps/humata2/highlight",
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
     "humata2-hosts 0.0.0": "apps/humata2/features/hosts",
     "humata2-inbox 0.0.0": "apps/humata2/features/inbox",

@@ -211,3 +211,110 @@ fn a_half_screen_window_can_navigate_and_restore_its_columns() {
     assert!(!app.contains("sidebar-strip"));
     assert_eq!(app.ui.read(|s| s.layout), saved);
 }
+
+#[test]
+fn command_palette_scrolls_selected_row_into_view_on_arrow_keys() {
+    let mut app = App::new(fixture::design());
+    app.send(AppAction::OpenPalette);
+    app.draw();
+
+    let (viewport_h, list_bounds) = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            (
+                f32::from(window.viewport_size().height),
+                window.find("palette-entries").bounds(),
+            )
+        })
+        .expect("palette bounds");
+    assert!(
+        f32::from(list_bounds.bottom()) <= viewport_h,
+        "palette-entries ({list_bounds:?}) fits inside viewport height {viewport_h}"
+    );
+    assert!(
+        f32::from(list_bounds.size.height) <= 421.,
+        "palette-entries height is bounded: {:?}",
+        list_bounds.size.height
+    );
+
+    let total = app.ui.read(|s| s.palette.entries.len());
+    assert!(total > 20, "palette has enough entries to scroll: {total}");
+
+    // Press Down 20 times to move well past the initial 420px fold.
+    for _ in 0..20 {
+        app.cx
+            .update_window(app.window, |_, window, cx| window.press("down", cx))
+            .expect("press down");
+        app.settle();
+    }
+    app.draw();
+    assert_eq!(app.ui.read(|s| s.palette.cursor), 20);
+
+    let (list_bounds, item_bounds) = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            (
+                window.find("palette-entries").bounds(),
+                window.find(("palette-entry", 20usize)).bounds(),
+            )
+        })
+        .expect("bounds after arrow down");
+    assert!(
+        f32::from(item_bounds.top()) >= f32::from(list_bounds.top()) - 1.
+            && f32::from(item_bounds.bottom()) <= f32::from(list_bounds.bottom()) + 1.,
+        "selected row ({item_bounds:?}) scrolled into palette-entries ({list_bounds:?})"
+    );
+
+    // Include archived toggle starts off and flips on/off on click.
+    assert!(!app.ui.read(|s| s.palette.include_archived));
+    app.click("palette-toggle-archived");
+    assert!(app.ui.read(|s| s.palette.include_archived));
+    app.click("palette-toggle-archived");
+    assert!(!app.ui.read(|s| s.palette.include_archived));
+}
+
+#[test]
+fn collapsed_sidebar_recovers_via_edge_strip_click_and_cmd_b_shortcut() {
+    let mut app = App::new(fixture::design());
+    assert!(!app.ui.read(|s| s.layout.sidebar.collapsed));
+
+    // 1. Collapse via the sidebar hide button, then recover by clicking the left-edge strip.
+    app.click("sidebar-hide");
+    assert!(app.ui.read(|s| s.layout.sidebar.collapsed));
+    assert!(app.contains("sidebar-strip"));
+
+    app.click("sidebar-strip");
+    assert!(!app.ui.read(|s| s.layout.sidebar.collapsed));
+    assert!(!app.ui.read(|s| s.navigation_overlay));
+    assert!(app.contains("sidebar"));
+    assert!(!app.contains("sidebar-strip"));
+
+    // 2. Collapse and recover via Cmd+B on Home.
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("cmd-b", cx))
+        .expect("cmd-b collapses");
+    app.settle();
+    assert!(app.ui.read(|s| s.layout.sidebar.collapsed));
+    assert!(app.contains("sidebar-strip"));
+
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("cmd-b", cx))
+        .expect("cmd-b expands");
+    app.settle();
+    assert!(!app.ui.read(|s| s.layout.sidebar.collapsed));
+    assert!(app.contains("sidebar"));
+
+    // 3. Collapse and recover via Cmd+B while a session is open.
+    app.open("ledger", Panel::Info);
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("cmd-b", cx))
+        .expect("cmd-b collapses in session");
+    app.settle();
+    assert!(app.ui.read(|s| s.layout.sidebar.collapsed));
+
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("cmd-b", cx))
+        .expect("cmd-b expands in session");
+    app.settle();
+    assert!(!app.ui.read(|s| s.layout.sidebar.collapsed));
+}

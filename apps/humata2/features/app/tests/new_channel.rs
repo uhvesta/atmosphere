@@ -238,3 +238,15 @@ fn retry_lists_the_repos_again_after_a_failure() {
     assert!(sheet(&store).search.problem().is_none());
     assert_eq!(sheet(&store).shown_repos().len(), 6);
 }
+
+#[test]
+fn creating_a_mixed_case_channel_closes_the_sheet_and_opens_it() {
+    let (mut store, fakes) = setup();
+    open(&mut store);
+    store.send(A::NewChannel(N::Name("Q4 Billing".into())), |_| {});
+    store.send(A::NewChannel(N::Create), |_| {});
+    store.skip_received();
+    let channel = made(&fakes, "q4-billing").expect("the channel is made");
+    assert!(store.state().overlay().is_none());
+    assert_eq!(store.state().route, Route::Channel(channel.id));
+}

@@ -52,7 +52,7 @@ pub struct HostKey {
     fingerprint: String,
 }
 
-const KEY_ALGORITHMS: [&str; 7] = [
+pub(crate) const KEY_ALGORITHMS: [&str; 7] = [
     "ssh-ed25519",
     "ssh-rsa",
     "ecdsa-sha2-nistp256",
@@ -60,6 +60,21 @@ const KEY_ALGORITHMS: [&str; 7] = [
     "ecdsa-sha2-nistp521",
     "sk-ssh-ed25519@openssh.com",
     "sk-ecdsa-sha2-nistp256@openssh.com",
+];
+
+/// Top-level JSON keys accepted by [`parse_identity`]. Shared with `spec` so
+/// the schema cannot drift from the parser.
+pub(crate) const IDENTITY_KEYS: [&str; 6] = ["name", "ssh", "os", "arch", "state", "instance_id"];
+
+/// JSON keys accepted inside `ssh` objects by [`parse_ssh_object`]. Shared
+/// with `spec` so the schema cannot drift from the parser.
+pub(crate) const SSH_KEYS: [&str; 6] = [
+    "host",
+    "ssh_config",
+    "port",
+    "user",
+    "identity_file",
+    "host_key",
 ];
 
 /// Whether `bytes` holds anything that looks like a private key.
@@ -80,7 +95,7 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
     let Value::Object(top) = value else {
         return Err(field("", "output", FieldProblem::NotObject));
     };
-    known(&top, "", &["name", "ssh", "os", "arch", "state", "instance_id"])?;
+    known(&top, "", &IDENTITY_KEYS)?;
 
     let name = required(&top, "", "name")?;
     if name != machine.as_str() {
@@ -136,11 +151,7 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
 
 /// Validates and parses an `ssh` JSON object from `identity`, `status`, or `list`.
 pub(crate) fn parse_ssh_object(ssh: &Map<String, Value>, prefix: &str) -> Result<SshTarget, IdentityError> {
-    known(
-        ssh,
-        prefix,
-        &["host", "ssh_config", "port", "user", "identity_file", "host_key"],
-    )?;
+    known(ssh, prefix, &SSH_KEYS)?;
     let host = word(prefix, "host", required(ssh, prefix, "host")?)?;
     let access = match optional(ssh, prefix, "ssh_config")? {
         Some(ssh_config) => {

@@ -1019,6 +1019,61 @@ const PROVIDER_FILE_HELP: &str = concat!(
 
 #[derive(Debug, Subcommand)]
 pub enum ProviderCommand {
+    /// Complete plain-text guide to authoring machine providers (offline).
+    Guide,
+    /// Every provider TOML field and output JSON format, generated from the real parser (offline).
+    Schema,
+    /// Complete, valid example provider files: lima, cloud, terraform, ssh (offline).
+    Example {
+        /// Which example to print (lima, cloud, terraform, ssh). Omit to list all kinds.
+        kind: Option<String>,
+    },
+    /// Validate a provider TOML file offline with the real parser (`-` for stdin).
+    Check {
+        /// Path to the provider TOML file, or `-` to read from stdin.
+        file: String,
+    },
+    /// Print the exact command, args, env, and target machine for an action without running it (offline).
+    Render {
+        /// Path to the provider TOML file, or `-` to read from stdin.
+        file: String,
+        /// Action to render (create, connect, identity, list/discover, start, stop, wake, refresh, ssh, delete, status).
+        action: String,
+        /// Machine name to substitute into `{name}` and `HUMATA_NAME`.
+        #[arg(long)]
+        name: String,
+        /// Provider id to select when the file defines more than one provider.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Parameter values (`key=value`), repeated as needed.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+        /// Remote command to substitute for `{cmd}` when rendering `connect` (default: `uname -sm`).
+        #[arg(long)]
+        cmd: Option<String>,
+    },
+    /// Validate stdout from an `identity`, `status`, or `discover` command offline.
+    Parse {
+        /// Output format to validate.
+        #[arg(value_enum)]
+        kind: ProviderParseKind,
+        /// Path to the captured output file, or `-` for stdin.
+        #[arg(default_value = "-")]
+        file: String,
+        /// Expected machine name (used by `identity` to verify the `name` field).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// File an Inbox request asking the host owner to import a provider file.
+    ///
+    /// Anyone (owner, agent, or script) can submit a request; only the owner
+    /// can approve or deny it in the Inbox.
+    RequestImport {
+        file: std::path::PathBuf,
+        /// Why this provider is needed; shown to the owner on the Inbox card.
+        #[arg(long)]
+        reason: String,
+    },
     Ls,
     #[command(subcommand)]
     Config(ProviderConfigCommand),
@@ -1271,6 +1326,14 @@ pub enum OnExisting {
     Fail,
     Replace,
     KeepBoth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ProviderParseKind {
+    Identity,
+    Status,
+    #[value(alias = "list")]
+    Discover,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

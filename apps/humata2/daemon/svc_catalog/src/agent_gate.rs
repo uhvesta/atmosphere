@@ -14,12 +14,12 @@
 //! therefore not found, and the install counts as failed, which says so.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use humata2_daemon_runtime::agent_switches::{AgentSwitches, CliToFind, cli_to_find};
+use humata2_daemon_runtime::agent_switches::{AgentSwitches, CliToFind, SwitchesError, cli_to_find};
 use crate::pb;
 use humata2_rpc_kit::{chain, failure, log};
 use humata2_sessions_core::Agents;
@@ -53,6 +53,12 @@ pub enum GateError {
         #[source]
         source: Option<std::io::Error>,
     },
+    #[error("agent settings file {} couldn't be read", path.display())]
+    BadSwitches {
+        path: PathBuf,
+        #[source]
+        source: SwitchesError,
+    },
 }
 
 impl GateError {
@@ -84,6 +90,10 @@ impl GateError {
                     "run `{command}` yourself on this machine (npm needs Node.js installed first, and the CLI must end up on the daemon's PATH), or turn \"Install when missing\" off in Settings › Agents and install it your way"
                 ),
             ),
+            GateError::BadSwitches { path, source } => (
+                format!("{error}: {}", chain(source)),
+                format!("fix or remove {}, then try again", path.display()),
+            ),
         };
         pb::Error { message, fix, retry: None, kind: None }
     }
@@ -97,32 +107,47 @@ impl From<GateError> for Status {
 
 static LAST_BAD_FILE: Mutex<Option<String>> = Mutex::new(None);
 
-/// The switches in the agents' file, or the defaults when there is no file
-/// path or the file is bad (logged once per distinct problem).
-pub fn switches(agents: &Agents) -> Option<AgentSwitches> {
-    let path = agents.settings_file()?;
+/// Reads the switches from the agents' file, failing closed on read or parse
+/// errors (logged once per distinct problem). Returns `Ok(None)` when the
+/// daemon has no settings path configured.
+pub fn read_switches(agents: &Agents) -> Result<Option<AgentSwitches>, GateError> {
+    let Some(path) = agents.settings_file() else {
+        return Ok(None);
+    };
     match AgentSwitches::read(path) {
         Ok(switches) => {
             *LAST_BAD_FILE.lock().unwrap_or_else(PoisonError::into_inner) = None;
-            Some(switches)
+            Ok(Some(switches))
         }
-        Err(error) => {
-            let text = chain(&error);
+        Err(source) => {
+            let text = chain(&source);
             let mut last = LAST_BAD_FILE.lock().unwrap_or_else(PoisonError::into_inner);
             if last.as_deref() != Some(text.as_str()) {
-                log::say!("humatad2: warning: {text}; every agent is treated as on, with no installs");
+                log::say!("humatad2: warning: {text}; non-shell agents are refused until agents.toml is fixed");
                 *last = Some(text);
             }
-            AgentSwitches::parse("").ok()
+            Err(GateError::BadSwitches {
+                path: path.to_path_buf(),
+                source,
+            })
         }
     }
 }
 
-/// Refuses `kind` when the person turned it off.
+/// The switches in the agents' file, or `None` when there is no file path or
+/// the file couldn't be read (used by callers that fail closed on `None`).
+pub fn switches(agents: &Agents) -> Option<AgentSwitches> {
+    read_switches(agents).ok().flatten()
+}
+
+/// Refuses `kind` when the person turned it off, or when `agents.toml` is
+/// unreadable/invalid (except for the plain shell `zsh`).
 pub fn enabled(agents: &Agents, kind: &str) -> Result<(), GateError> {
-    match switches(agents) {
-        Some(switches) => enabled_in(&switches, agents, kind),
-        None => Ok(()),
+    match read_switches(agents) {
+        Ok(Some(switches)) => enabled_in(&switches, agents, kind),
+        Ok(None) => Ok(()),
+        Err(_) if kind == "zsh" => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -141,8 +166,11 @@ fn enabled_in(switches: &AgentSwitches, agents: &Agents, kind: &str) -> Result<(
 /// `Ok(true)` means the CLI is missing and Humata may install it, which
 /// [`install_now`] does; `Ok(false)` means it is found.
 pub fn check(agents: &Agents, kind: &str) -> Result<bool, GateError> {
-    let Some(switches) = switches(agents) else {
-        return Ok(false);
+    let switches = match read_switches(agents) {
+        Ok(Some(switches)) => switches,
+        Ok(None) => return Ok(false),
+        Err(_) if kind == "zsh" => return Ok(false),
+        Err(error) => return Err(error),
     };
     enabled_in(&switches, agents, kind)?;
     let Ok(found) = agents.get(kind) else {
@@ -168,7 +196,13 @@ pub fn check(agents: &Agents, kind: &str) -> Result<bool, GateError> {
 /// second waits for the first and then finds the CLI. Never installs over
 /// a CLI that is found.
 pub async fn install_now(agents: &Agents, kind: &str) -> Result<(), GateError> {
-    let (Some(switches), Ok(found)) = (switches(agents), agents.get(kind)) else {
+    let switches = match read_switches(agents) {
+        Ok(Some(switches)) => switches,
+        Ok(None) => return Ok(()),
+        Err(_) if kind == "zsh" => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let Ok(found) = agents.get(kind) else {
         return Ok(());
     };
     let target = cli_to_find(kind, &found.program, &found.start_args);
@@ -384,5 +418,44 @@ mod tests {
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(!check(&agents, "fake").unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_bad_switches_file_refuses_agents_but_not_the_shell() {
+        // SMB-064: a damaged or unreadable agents.toml must fail closed for
+        // agents (refuse enabled/ready) rather than silently turning every
+        // agent back on, while still allowing the plain shell ("zsh").
+        for (label, content, mode) in [
+            ("unknown key", "[agents.fake]\nenabled = false\nbogus = 1\n", 0o644),
+            ("broken toml", "not toml [", 0o644),
+            ("unreadable", "[agents.fake]\nenabled = false\n", 0o000),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (agents, bin) = rig(dir.path(), content);
+            std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let settings = dir.path().join("agents.toml");
+            if mode != 0o644 {
+                std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            let enabled_fake = enabled(&agents, "fake");
+            let enabled_zsh = enabled(&agents, "zsh");
+            let ready_fake = ready(&agents, "fake").await;
+            if mode != 0o644 {
+                std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            assert!(
+                enabled_fake.is_err(),
+                "{label}: expected enabled(fake) to fail closed, got {enabled_fake:?}"
+            );
+            assert!(
+                enabled_zsh.is_ok(),
+                "{label}: expected enabled(zsh) to stay allowed, got {enabled_zsh:?}"
+            );
+            assert!(
+                ready_fake.is_err(),
+                "{label}: expected ready(fake) to fail closed, got {ready_fake:?}"
+            );
+        }
     }
 }

@@ -31,7 +31,10 @@ DEPS = [
             "//apps/humata2/review:__subpackages__",
             "//apps/humata2/ui:__subpackages__",
         ],
-        deps = DEPS + [gpui_kit],
+        deps = DEPS + [
+            "//apps/humata2/highlight:highlight" + engine,
+            gpui_kit,
+        ],
     )
     for engine, gpui_kit in GPUI_KIT.items()
 ]

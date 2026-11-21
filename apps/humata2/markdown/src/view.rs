@@ -1138,6 +1138,7 @@ impl MarkdownView {
         }
         TextView::new(self.active_text())
             .style(style)
+            .shared_code_block_highlighter(humata2_highlight::shared_code_block_highlighter(self.theme.dark))
             .selectable(true)
             .selection_format(format)
             .scrollable(self.options.layout == Layout::Scroll)

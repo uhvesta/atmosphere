@@ -198,3 +198,26 @@ fn a_late_reply_without_a_form_still_opens_the_session() {
     store.send(A::Started(Ok(id.clone())), |_| {});
     store.receive(A::Delegate(Delegate::OpenSession(id)), |_| {});
 }
+
+#[test]
+fn cancelling_during_start_surfaces_a_late_failure_in_desk_error() {
+    // SMB-011: pressing Esc/Cancel while a Desk start is in flight must not
+    // silently swallow a subsequent Started(Err) failure.
+    let (mut store, _fake) = store(fixture::empty());
+    store.send(A::StartNew { agent: Agent::Claude }, |_| {});
+    store.send(A::New(N::Title("Plan".to_owned())), |_| {});
+    store.send(A::CancelDialog, |_| {});
+    assert!(store.state().new.is_none());
+    store.send(
+        A::Started(Err(humata2_clients::DaemonError::Refused {
+            what: "start desk".to_owned(),
+            reason: "disk full".to_owned(),
+        })),
+        |_| {},
+    );
+    assert!(
+        store.state().error.as_deref().is_some_and(|e| e.contains("disk full")),
+        "expected Desk state.error to surface the failure, got {:?}",
+        store.state().error
+    );
+}

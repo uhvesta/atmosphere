@@ -13,7 +13,7 @@ def _cli_impl(ctx):
         sha256 = ctx.attr.sha256,
         stripPrefix = ctx.attr.prefix,
     )
-    ctx.file("BUILD.bazel", 'exports_files(["wasm-bindgen"], visibility = ["@@//apps/humata2/terminal/web:__pkg__"])\n')
+    ctx.file("BUILD.bazel", 'exports_files(["wasm-bindgen"], visibility = ["@@//apps/humata2/terminal/web:__pkg__", "@@//apps/humata2/web_todo/web:__pkg__"])\n')
 
 _cli = repository_rule(
     implementation = _cli_impl,

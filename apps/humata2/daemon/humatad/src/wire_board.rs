@@ -8,25 +8,29 @@ use std::time::Duration;
 use humata2_access::{AccessRequest, Call};
 use humata2_daemon_ports::{BoardAsk, Caller, Run, UserVia};
 use humata2_grpc::humata::v1 as pb;
+use humata2_grpc::humata::v1::browser_bridge_service_server::BrowserBridgeService;
 use humata2_grpc::humata::v1::file_service_server::FileService;
 use humata2_grpc::humata::v1::machine_service_server::MachineService;
+use humata2_grpc::humata::v1::provider_service_server::ProviderService;
 use humata2_grpc::humata::v1::repo_service_server::RepoService;
 use humata2_grpc::humata::v1::session_service_server::SessionService;
 use humata2_grpc::humata::v1::transfer_service_server::TransferService;
 use humata2_store::Store;
 use humata2_svc_board::ports::{
-    AwayCall, BoardFeed, BoardForwarder, BoardGuard, BoardInbox, Checked, HostCalls, HostFiles,
-    HostMachines, HostRepos, HostTransfers, Method, OwnedItem, Row, Scope, SessionTell, SyncMode,
-    TodoAutomation, TodoAutomationSource,
+    AwayCall, BoardFeed, BoardForwarder, BoardGuard, BoardInbox, Checked, HostBrowser, HostCalls,
+    HostFiles, HostMachines, HostProviders, HostRepos, HostTransfers, Method, OwnedItem, Row,
+    Scope, SessionTell, SyncMode, TodoAutomation, TodoAutomationSource,
 };
 use humata2_svc_peer::ports::{PeerBoardPort, Replayed as PeerReplayed};
 use humatad_core::away::{self, Forwarder, HostLink};
+use humatad_core::browser_service::BrowserBridgeSvc;
 use humatad_core::events::Feed;
 use humatad_core::files::Files;
 use humatad_core::guard::{self, Guard};
 use humatad_core::inbox::Inbox;
 use humatad_core::machine_service::MachineSvc;
 use humatad_core::plugins::{BoardContext, BoardInstance, BoardPlugin as BoardPluginTrait};
+use humatad_core::provider_service::ProviderSvc;
 use humatad_core::repo_service::RepoSvc;
 use humatad_core::session_service::{SessionSvc, Tell};
 use humatad_core::status;
@@ -213,6 +217,11 @@ fn away_method(method: Method) -> away::Method {
         Method::ListDirectory => away::Method::ListDirectory,
         Method::Stat => away::Method::Stat,
         Method::StartTransfer => away::Method::StartTransfer,
+        Method::GetBrowserBridgeStatus => away::Method::GetBrowserBridgeStatus,
+        Method::ExecuteBrowserAction => away::Method::ExecuteBrowserAction,
+        Method::ListProviders => away::Method::ListProviders,
+        Method::GetProvidersConfig => away::Method::GetProvidersConfig,
+        Method::RequestProviderImport => away::Method::RequestProviderImport,
     }
 }
 
@@ -350,6 +359,51 @@ impl HostTransfers for TransfersAdapter {
         request: Request<pb::StartTransferRequest>,
     ) -> Result<Response<pb::Transfer>, Status> {
         TransferService::start_transfer(self.0.as_ref(), adapt_request(request)).await
+    }
+}
+
+struct BrowserAdapter(BrowserBridgeSvc);
+
+#[tonic::async_trait]
+impl HostBrowser for BrowserAdapter {
+    async fn get_browser_bridge_status(
+        &self,
+        request: Request<pb::GetBrowserBridgeStatusRequest>,
+    ) -> Result<Response<pb::GetBrowserBridgeStatusResponse>, Status> {
+        BrowserBridgeService::get_browser_bridge_status(&self.0, adapt_request(request)).await
+    }
+
+    async fn execute_browser_action(
+        &self,
+        request: Request<pb::ExecuteBrowserActionRequest>,
+    ) -> Result<Response<pb::ExecuteBrowserActionResponse>, Status> {
+        BrowserBridgeService::execute_browser_action(&self.0, adapt_request(request)).await
+    }
+}
+
+struct ProvidersAdapter(ProviderSvc);
+
+#[tonic::async_trait]
+impl HostProviders for ProvidersAdapter {
+    async fn list_providers(
+        &self,
+        request: Request<pb::ListProvidersRequest>,
+    ) -> Result<Response<pb::ListProvidersResponse>, Status> {
+        ProviderService::list_providers(&self.0, adapt_request(request)).await
+    }
+
+    async fn get_providers_config(
+        &self,
+        request: Request<pb::GetProvidersConfigRequest>,
+    ) -> Result<Response<pb::ProvidersConfig>, Status> {
+        ProviderService::get_providers_config(&self.0, adapt_request(request)).await
+    }
+
+    async fn request_provider_import(
+        &self,
+        request: Request<pb::RequestProviderImportRequest>,
+    ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
+        ProviderService::request_provider_import(&self.0, adapt_request(request)).await
     }
 }
 
@@ -731,16 +785,20 @@ pub(crate) fn build(
     svc
 }
 
-/// Wraps `humatad`'s host machine, file, and transfer services as [`HostCalls`].
+/// Wraps `humatad`'s host machine, provider, file, transfer and browser bridge services as [`HostCalls`].
 fn host_calls(
     machines: MachineSvc,
+    providers: ProviderSvc,
     files: Arc<Files>,
     transfers: Arc<TransferSvc>,
+    browser: BrowserBridgeSvc,
 ) -> HostCalls {
     HostCalls {
         machines: Arc::new(MachinesAdapter(machines)),
+        providers: Arc::new(ProvidersAdapter(providers)),
         files: Arc::new(FilesAdapter(files)),
         transfers: Arc::new(TransfersAdapter(transfers)),
+        browser: Arc::new(BrowserAdapter(browser)),
     }
 }
 
@@ -780,11 +838,13 @@ impl BoardInstance for LiveBoard {
     fn answer_host_calls(
         &self,
         machines: MachineSvc,
+        providers: ProviderSvc,
         files: Arc<Files>,
         transfers: Arc<TransferSvc>,
+        browser: BrowserBridgeSvc,
     ) {
         self.0
-            .answer_host_calls(host_calls(machines, files, transfers));
+            .answer_host_calls(host_calls(machines, providers, files, transfers, browser));
     }
 
     fn register(self: Box<Self>, routes: &mut RoutesBuilder) {

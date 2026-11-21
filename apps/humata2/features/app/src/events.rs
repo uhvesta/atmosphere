@@ -216,20 +216,27 @@ impl App {
                                 && !request.is_to_do_ask()
                                 && !request.operation.starts_with("board.")
                         });
-                        if let Some(notice) = humata2_notify::evaluate(
-                            &state.settings.preferences.notify,
-                            &frontmost,
-                            &mut state.notify_burst,
-                            NotifyEvent::TerminalNeedsYou {
-                                session_id: session.id.clone(),
-                                session_title: session_title.clone(),
-                                channel_id: channel_id.clone(),
-                                channel_name: channel_name.clone(),
-                                agent_name: session.agent.name().to_owned(),
-                                has_pending_inbox_request,
-                            },
-                            now_secs,
-                        ) {
+                        let has_pending_to_do_ask = state.workspace.requests.iter().any(|request| {
+                            request.session == session.id
+                                && request.answer.is_none()
+                                && request.is_to_do_ask()
+                        });
+                        if !has_pending_to_do_ask
+                            && let Some(notice) = humata2_notify::evaluate(
+                                &state.settings.preferences.notify,
+                                &frontmost,
+                                &mut state.notify_burst,
+                                NotifyEvent::TerminalNeedsYou {
+                                    session_id: session.id.clone(),
+                                    session_title: session_title.clone(),
+                                    channel_id: channel_id.clone(),
+                                    channel_name: channel_name.clone(),
+                                    agent_name: session.agent.name().to_owned(),
+                                    has_pending_inbox_request,
+                                },
+                                now_secs,
+                            )
+                        {
                             notices.push(notice);
                         }
                     }
@@ -420,7 +427,7 @@ impl App {
                 }
                 return Effect::merge(effects);
             }
-            // D908: the open Sync section reads the mount state again.
+            // D908: the open Sync or Browser section reads its live state again.
             Event::SettingsChanged => {
                 if state.route == crate::Route::Settings
                     && state.settings.section == humata2_settings::Section::Sync
@@ -432,6 +439,41 @@ impl App {
                         )),
                     );
                 }
+                if state.route == crate::Route::Settings
+                    && state.settings.section == humata2_settings::Section::Browser
+                {
+                    return self.child(
+                        state,
+                        AppAction::Settings(humata2_settings::SettingsAction::Browser(
+                            humata2_settings::BrowserAction::Load,
+                        )),
+                    );
+                }
+                if state.route == crate::Route::Settings
+                    && matches!(
+                        state.settings.section,
+                        humata2_settings::Section::General
+                            | humata2_settings::Section::Agents
+                            | humata2_settings::Section::Layout
+                            | humata2_settings::Section::Notifications
+                    )
+                {
+                    return self.child(
+                        state,
+                        AppAction::Settings(humata2_settings::SettingsAction::General(
+                            humata2_settings::GeneralAction::Load,
+                        )),
+                    );
+                }
+                return Effect::none();
+            }
+            Event::PendingCliLogin(login) => {
+                upsert(&mut state.pending_cli_logins, login, |a, b| a.id == b.id);
+                return Effect::none();
+            }
+            Event::PendingCliLoginGone(id) => {
+                state.pending_cli_logins.retain(|login| login.id != id);
+                state.answering_cli_logins.remove(&id);
                 return Effect::none();
             }
             Event::Restart(restart) => return self.heard_restart(state, restart),
@@ -451,7 +493,22 @@ impl App {
                 );
                 return Effect::merge([pr_dialog, session]);
             }
-            Event::Resync => return self.load(),
+            Event::Resync => {
+                // SMB-032: after a daemon restart/resync, restart the Pinned
+                // watch (and Todo watch when To-do is open) so live feeds
+                // resume instead of staying silently dead.
+                let mut effects = vec![
+                    self.load(),
+                    self.child(state, AppAction::Pinned(humata2_find::PinnedAction::Start)),
+                ];
+                if state.route == crate::Route::Todo {
+                    effects.push(self.child(
+                        state,
+                        AppAction::Todo(humata2_todo_feature::TodoAction::Watch),
+                    ));
+                }
+                return Effect::merge(effects);
+            }
         }
         let mut effects = vec![self.show(state)];
         if left {
@@ -486,12 +543,33 @@ impl App {
         end: StreamEnd<DaemonError>,
     ) -> Effect<AppAction> {
         let clock = self.clients.clock.clone();
-        let text = match end {
-            StreamEnd::Finished => "The daemon stopped sending updates. Reconnecting.".to_owned(),
-            StreamEnd::Failed(error) => {
-                format!("Lost updates from the daemon: {error}. Reconnecting.")
-            }
-        };
-        Effect::merge([state.toast(text, &clock), self.load(), self.follow()])
+        let attempt = state.reconnect_attempts;
+        state.reconnect_attempts = attempt.saturating_add(1);
+        // SMB-003: toast once per outage (not on every failed retry) and back
+        // off exponentially on repeated failures instead of spinning in a
+        // tight reconnect loop.
+        let mut effects = Vec::new();
+        if attempt == 0 {
+            let text = match end {
+                StreamEnd::Finished => "The daemon stopped sending updates. Reconnecting.".to_owned(),
+                StreamEnd::Failed(error) => {
+                    format!("Lost updates from the daemon: {error}. Reconnecting.")
+                }
+            };
+            effects.push(state.toast(text, &clock));
+            effects.push(self.load());
+            effects.push(self.follow());
+        } else {
+            let shift = (attempt - 1).min(6);
+            let delay_ms = (250u64 << shift).min(10_000);
+            effects.push(
+                Effect::future(async move {
+                    clock.sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    AppAction::ReconnectEvents
+                })
+                .cancellable("events-reconnect", true),
+            );
+        }
+        Effect::merge(effects)
     }
 }

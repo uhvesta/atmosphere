@@ -19,9 +19,10 @@ use humata2_app::{AppAction, Route};
 use humata2_clients::comments::{
     Anchor, Author, CommentId, CommentsClient, Destination, Side, Status as CommentStatus, Which,
 };
-use humata2_clients::model::{Agent, SessionId};
+use humata2_clients::model::{Agent, RepoBase, SessionId, ViewId};
 use humata2_clients::pull_requests::{PullRequestInfo, PullRequestRef, PullRequestState, Verdict};
 use humata2_clients::review_chat::Place;
+use humata2_clients::views::ViewContent;
 use humata2_grpc::humata::v1 as pb;
 use humata2_pr_review::dialog::{DialogAction, Fetch, Start};
 use humata2_pr_review::follower::FollowerAction;
@@ -30,6 +31,7 @@ use humata2_pr_review::submit::{Outcome, Step, SubmitAction};
 use humata2_remote_rig::common::{get_session, wait_running};
 use humata2_remote_rig::pr_github::{API, CONTEXT, Fixture, LEDGER, change_of, clone_head, ok, repo_of};
 use humata2_review::ReviewAction;
+use humata2_views::ViewsAction;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
@@ -785,4 +787,452 @@ fn a_review_started_on_devbox_1_runs_there_and_posts_through_the_hosts_gh() {
     // `gh` ran on the host alone and was never handed a token, and no file
     // of the host's folder (the shared remotes too) holds the one it knows.
     gh.assert_token_stayed_with_gh(&world.host_root());
+}
+
+// ---------------------------------------------------------------------------
+// Prepared PR views: real humatad2 + real bare git PR remotes + real MCP +
+// real ViewsFeed + real LiveDiff + real UI rendering.
+
+struct PreparedReview<'r> {
+    // The app goes first: it is dropped before the daemon it talks to.
+    app: App<'r>,
+    fixture: Fixture,
+    id: SessionId,
+    session: pb::Session,
+}
+
+/// Starts a real PR review session of acme/api#482 and acme/ledger#91 on the
+/// daemon and opens the app on Home (so `ViewsFeed` is live, the session's
+/// clones hold both PR heads, and the review chat has not reported open yet,
+/// allowing `review_prepare` to create draft prepared views).
+fn prepared_review(runtime: &Runtime) -> PreparedReview<'_> {
+    let fixture = runtime.block_on(Fixture::with_env(&[("HUMATA2_PR_POLL_MS", NEVER)]));
+    case_watches(&[fixture.daemon.dir.path()]);
+    let session = runtime.block_on(fixture.start_review(&[API, LEDGER]));
+    let id = SessionId::new(session.id.as_ref().expect("the review session has an id").value.clone());
+    let clients = runtime
+        .block_on(live_clients(fixture.daemon.socket.clone(), false))
+        .expect("the app connects to the daemon");
+    let mut app = App::open(runtime, clients);
+    app.wait_until("the review session to load in the workspace", |app| {
+        app.ui.read(|state| {
+            state
+                .workspace
+                .session(&id)
+                .is_some_and(|held| held.pull_request_review)
+        })
+    });
+    PreparedReview {
+        app,
+        fixture,
+        id,
+        session,
+    }
+}
+
+fn mark_view_ready(
+    runtime: &Runtime,
+    agent: &mut humata2_remote_rig::pr_github::Agent,
+    view_id: &str,
+) -> ViewId {
+    let reply = runtime.block_on(agent.call("view_mark_ready", json!({ "view_id": view_id })));
+    let result = ok(&reply);
+    assert_eq!(result["state"], "waiting", "{reply}");
+    ViewId::new(view_id)
+}
+
+fn wait_for_view_offer(app: &mut App, session: &SessionId, view_id: &ViewId) {
+    app.wait_until("the prepared view offer to arrive on ViewsFeed", |app| {
+        app.ui
+            .read(|state| state.views.offers(session).iter().any(|record| &record.id == view_id))
+    });
+}
+
+fn fetch_error(app: &App, id: &SessionId) -> Option<String> {
+    app.ui.read(|state| {
+        let fetch = state.review.fetch.get(id)?;
+        if let Some(error) = &fetch.error {
+            return Some(error.clone());
+        }
+        if !fetch.repo_errors.is_empty() {
+            return Some(format!("{:?}", fetch.repo_errors));
+        }
+        None
+    })
+}
+
+fn loaded_diffs(app: &App, id: &SessionId) -> Option<Vec<(String, Vec<String>)>> {
+    app.ui.read(|state| {
+        let fetch = state.review.fetch.get(id)?;
+        if fetch.loading {
+            return None;
+        }
+        let diffs = fetch.diffs.as_ref()?;
+        Some(
+            diffs
+                .iter()
+                .map(|diff| {
+                    let paths = diff.files.iter().map(|file| file.path.clone()).collect();
+                    (diff.repo.clone(), paths)
+                })
+                .collect(),
+        )
+    })
+}
+
+/// Flow 1: Prepared stacked PR `ReviewPlan` (`review_prepare` -> `view_mark_ready`
+/// -> `ViewsAction::Open`).
+///
+/// Verifies end-to-end:
+/// - Short repo name (`"api"` without `"acme/"`) in a layer & order entry is
+///   normalized across the stack (Bug 2).
+/// - Resolved layer `files > 0` arrives over `ViewsFeed` (Bug 4).
+/// - Opening the view fetches real `RepoDiff`s with `!diff.files.is_empty()`
+///   and no review error (D919 + Bug 2 + Bug 4).
+/// - Stack header and layer nav render in the PR review panel (Bug 5).
+/// - Selecting a layer (`ReviewAction::PickLayer`) loads the single-layer diff
+///   cleanly with no error and updates the stack header.
+#[test]
+fn prepared_stacked_review_plan_resolves_short_repo_renders_stack_and_switches_layers() {
+    let runtime = runtime();
+    let mut review = prepared_review(&runtime);
+    let id = review.id.clone();
+    let api_head = review.fixture.prs[API].head();
+    let ledger_head = review.fixture.prs[LEDGER].head();
+    let mut agent = runtime.block_on(review.fixture.agent(&review.session));
+
+    let prepared = runtime.block_on(agent.call(
+        "review_prepare",
+        json!({
+            "title": "Stacked refund review",
+            "stack": {
+                "layers": [
+                    {
+                        "title": "api rounding",
+                        "purpose": "Round refunds half-even in api",
+                        "repos": [
+                            {
+                                "repo": "api",
+                                "range": { "base": "origin/main", "head": api_head },
+                                "pull_request": "acme/api#482"
+                            }
+                        ],
+                        "order": [
+                            { "repo": "api", "path": "refund.rs" },
+                            { "repo": "api", "path": "rounding.rs" }
+                        ]
+                    },
+                    {
+                        "title": "ledger recording",
+                        "purpose": "Record refunds in the ledger",
+                        "repos": [
+                            {
+                                "repo": "acme/ledger",
+                                "range": { "base": "origin/main", "head": ledger_head },
+                                "pull_request": "acme/ledger#91"
+                            }
+                        ],
+                        "order": [
+                            { "repo": "acme/ledger", "path": "ledger.rs" }
+                        ]
+                    }
+                ]
+            }
+        }),
+    ));
+    let prepared_result = ok(&prepared);
+    assert_eq!(prepared_result["state"], "draft", "{prepared}");
+    let view_id_str = prepared_result["view_id"]
+        .as_str()
+        .expect("review_prepare returns view_id when review chat is not open");
+    let view_id = mark_view_ready(&runtime, &mut agent, view_id_str);
+    wait_for_view_offer(&mut review.app, &id, &view_id);
+
+    // Bug 4: resolved layer `files > 0` arrived over the wire.
+    review.app.ui.read(|state| {
+        let record = state.views.record(&view_id).expect("view record is cached");
+        let ViewContent::ReviewPlan(plan) = &record.content else {
+            panic!("expected ReviewPlan, got {:?}", record.content);
+        };
+        let stack = plan.stack.as_ref().expect("plan carries a stack");
+        assert_eq!(stack.layers.len(), 2, "{stack:#?}");
+        for layer in &stack.layers {
+            assert!(!layer.repos.is_empty(), "layer {} has repos", layer.title);
+            for part in &layer.repos {
+                assert!(
+                    part.files > 0,
+                    "resolved layer {} repo {} should have files > 0, got {part:#?}",
+                    layer.title,
+                    part.repo
+                );
+            }
+        }
+    });
+
+    send(&mut review.app, AppAction::Views(ViewsAction::Open(view_id.clone())));
+
+    // D919 + Bug 2 + Bug 4: real RepoDiffs arrive with non-empty files and no error.
+    review.app.wait_until("stacked review plan whole-stack diffs to load", |app| {
+        if let Some(error) = fetch_error(app, &id) {
+            panic!("review diff failed: {error}");
+        }
+        let Some(diffs) = loaded_diffs(app, &id) else {
+            return false;
+        };
+        let has_api = diffs
+            .iter()
+            .any(|(repo, files)| repo == "acme/api" && files.iter().any(|path| path == "refund.rs"));
+        let has_ledger = diffs
+            .iter()
+            .any(|(repo, files)| repo == "acme/ledger" && files.iter().any(|path| path == "ledger.rs"));
+        has_api && has_ledger
+    });
+
+    // Bug 2: short repo name "api" was normalized to "acme/api" in the active plan.
+    review.app.ui.read(|state| {
+        assert!(
+            state.review.fetch.get(&id).and_then(|f| f.error.as_ref()).is_none(),
+            "no review error"
+        );
+        let plan = state.review.plans.get(&id).expect("review plan is active");
+        let stack = plan.stack.as_ref().expect("stack is active");
+        let api_layer = &stack.layers[0];
+        assert_eq!(api_layer.repos[0].repo, "acme/api");
+        assert_eq!(api_layer.repos[0].spec.repo, "acme/api");
+        assert!(
+            api_layer.order.iter().all(|(repo, _)| repo == "acme/api"),
+            "layer order normalized: {:?}",
+            api_layer.order
+        );
+    });
+
+    // Bug 5: stack header and layer nav render in the PR review panel.
+    let rendered = review.app.view();
+    assert!(
+        rendered.contains("Whole stack · 2 layers"),
+        "PR review panel should render stack header:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("api rounding") && rendered.contains("ledger recording"),
+        "PR review panel should render layer nav:\n{rendered}"
+    );
+
+    // Select a single layer and verify single-layer diff loads cleanly with no error.
+    send(
+        &mut review.app,
+        AppAction::Review(ReviewAction::PickLayer(Some("api rounding".to_owned()))),
+    );
+    review.app.wait_until("single-layer diff for api rounding to load", |app| {
+        if let Some(error) = fetch_error(app, &id) {
+            panic!("single-layer diff failed: {error}");
+        }
+        let Some(diffs) = loaded_diffs(app, &id) else {
+            return false;
+        };
+        diffs.len() == 1
+            && diffs[0].0 == "acme/api"
+            && diffs[0].1.iter().any(|path| path == "refund.rs")
+            && diffs[0].1.iter().any(|path| path == "rounding.rs")
+    });
+    assert!(fetch_error(&review.app, &id).is_none());
+    let layer_rendered = review.app.view();
+    assert!(
+        layer_rendered.contains("Layer 1 of 2 · api rounding"),
+        "stack header should update to selected layer:\n{layer_rendered}"
+    );
+}
+
+/// Flow 2: Prepared `PullRequest` draft view (`view_prepare` with `pull_request`
+/// -> `view_mark_ready` -> `ViewsAction::Open`).
+///
+/// Verifies end-to-end:
+/// - `ViewContent::PullRequest(drafts)` preserves `repo`, `title`, `body`,
+///   `base_branch`, and `draft` over the wire (Bug 1).
+/// - Opening the view loads real diffs against `base_branch` and renders the
+///   draft metadata in the view tab (no empty pane).
+#[test]
+fn prepared_pull_request_draft_preserves_metadata_loads_diff_and_renders_fields() {
+    let runtime = runtime();
+    let mut review = prepared_review(&runtime);
+    let id = review.id.clone();
+    let mut agent = runtime.block_on(review.fixture.agent(&review.session));
+
+    let draft_title = "Round refunds half-even";
+    let draft_body = "Uses bankers rounding for half-cent refunds.";
+    let prepared = runtime.block_on(agent.call(
+        "view_prepare",
+        json!({
+            "title": "Draft PR: refund rounding",
+            "summary": "Ready to open against main",
+            "content": {
+                "pull_request": {
+                    "repos": [
+                        {
+                            "repo": "acme/api",
+                            "title": draft_title,
+                            "body": draft_body,
+                            "base_branch": "main",
+                            "draft": true
+                        }
+                    ]
+                }
+            }
+        }),
+    ));
+    let prepared_result = ok(&prepared);
+    let view_id_str = prepared_result["view_id"]
+        .as_str()
+        .expect("view_prepare returns view_id");
+    let view_id = mark_view_ready(&runtime, &mut agent, view_id_str);
+    wait_for_view_offer(&mut review.app, &id, &view_id);
+
+    // Bug 1: ViewContent::PullRequest preserves all draft metadata fields.
+    review.app.ui.read(|state| {
+        let record = state.views.record(&view_id).expect("view record is cached");
+        let ViewContent::PullRequest(drafts) = &record.content else {
+            panic!("expected PullRequest content, got {:?}", record.content);
+        };
+        assert_eq!(drafts.len(), 1, "{drafts:#?}");
+        let draft = &drafts[0];
+        assert_eq!(draft.repo, "acme/api");
+        assert_eq!(draft.title, draft_title);
+        assert_eq!(draft.body, draft_body);
+        assert_eq!(draft.base_branch, "main");
+        assert!(draft.draft, "draft flag should be preserved");
+    });
+
+    send(&mut review.app, AppAction::Views(ViewsAction::Open(view_id.clone())));
+
+    // Opening switches to base_branch and fetches real diffs cleanly.
+    review.app.wait_until("pull request draft diff against base_branch to load", |app| {
+        if let Some(error) = fetch_error(app, &id) {
+            panic!("pull request draft diff failed: {error}");
+        }
+        let Some(diffs) = loaded_diffs(app, &id) else {
+            return false;
+        };
+        diffs.iter().any(|(repo, files)| {
+            repo == "acme/api"
+                && files.iter().any(|path| path == "refund.rs")
+                && files.iter().any(|path| path == "rounding.rs")
+        })
+    });
+
+    review.app.ui.read(|state| {
+        assert_eq!(
+            state.review.targets_of(&id).of("acme/api"),
+            RepoBase::Branch("main".to_owned()),
+            "opening PullRequest draft compares against its base_branch"
+        );
+    });
+
+    let rendered = review.app.view();
+    assert!(
+        rendered.contains("Tab \"Draft PR: refund rounding\" selected")
+            && rendered.contains("#prepared-view-content")
+            && rendered.contains("#pr-draft-repo")
+            && rendered.contains("#pr-draft-base")
+            && rendered.contains("#pr-draft-status")
+            && rendered.contains("#pr-draft-title")
+            && rendered.contains("#pr-draft-body"),
+        "PR draft view tab should render all draft metadata elements (no empty pane):\n{rendered}"
+    );
+}
+
+/// Flow 3: Non-stacked `ReviewPlan` with `include_paths` filter and with empty
+/// targets (`review_prepare` -> `view_mark_ready` -> `ViewsAction::Open`).
+///
+/// Verifies end-to-end that:
+/// - Opening a non-stacked plan with `include_paths` applies the path filter
+///   over `LiveDiff` cleanly with no error.
+/// - Opening a non-stacked plan with empty targets fetches real diffs cleanly
+///   against the session's bases (Bug 6).
+#[test]
+fn prepared_non_stacked_review_plan_with_include_paths_and_empty_targets_loads_real_diffs() {
+    let runtime = runtime();
+    let mut review = prepared_review(&runtime);
+    let id = review.id.clone();
+    let mut agent = runtime.block_on(review.fixture.agent(&review.session));
+
+    // Prepare both draft views before opening either (while review chat is not open).
+    let filtered = runtime.block_on(agent.call(
+        "review_prepare",
+        json!({
+            "title": "Focused refund diff",
+            "spec": {
+                "repos": [
+                    {
+                        "repo": "api",
+                        "base": { "merge_base_with": "main" },
+                        "include_paths": ["refund.rs"]
+                    }
+                ]
+            },
+            "order": [
+                { "repo": "api", "path": "refund.rs" }
+            ]
+        }),
+    ));
+    let filtered_id = mark_view_ready(
+        &runtime,
+        &mut agent,
+        ok(&filtered)["view_id"].as_str().expect("filtered view_id"),
+    );
+
+    let empty_targets = runtime.block_on(agent.call(
+        "review_prepare",
+        json!({
+            "title": "Default bases review plan",
+            "spec": {
+                "repos": []
+            }
+        }),
+    ));
+    let empty_targets_id = mark_view_ready(
+        &runtime,
+        &mut agent,
+        ok(&empty_targets)["view_id"]
+            .as_str()
+            .expect("empty targets view_id"),
+    );
+
+    wait_for_view_offer(&mut review.app, &id, &filtered_id);
+    wait_for_view_offer(&mut review.app, &id, &empty_targets_id);
+
+    // 1) Open the `include_paths`-filtered plan: only refund.rs should appear in acme/api.
+    send(&mut review.app, AppAction::Views(ViewsAction::Open(filtered_id.clone())));
+    review.app.wait_until("filtered review plan diff to load", |app| {
+        if let Some(error) = fetch_error(app, &id) {
+            panic!("filtered review plan diff failed: {error}");
+        }
+        let Some(diffs) = loaded_diffs(app, &id) else {
+            return false;
+        };
+        diffs.len() == 1 && diffs[0].0 == "acme/api" && diffs[0].1 == vec!["refund.rs".to_owned()]
+    });
+    assert!(fetch_error(&review.app, &id).is_none());
+
+    // Revert back before opening the empty-targets plan.
+    send(&mut review.app, AppAction::Views(ViewsAction::Revert));
+
+    // 2) Open the empty-targets plan (Bug 6): fetches real diffs cleanly for both repos.
+    send(&mut review.app, AppAction::Views(ViewsAction::Open(empty_targets_id.clone())));
+    review.app.wait_until("empty-targets review plan diffs to load", |app| {
+        if let Some(error) = fetch_error(app, &id) {
+            panic!("empty-targets review plan diff failed: {error}");
+        }
+        let Some(diffs) = loaded_diffs(app, &id) else {
+            return false;
+        };
+        let has_api = diffs.iter().any(|(repo, files)| {
+            repo == "acme/api"
+                && files.iter().any(|path| path == "refund.rs")
+                && files.iter().any(|path| path == "rounding.rs")
+        });
+        let has_ledger = diffs
+            .iter()
+            .any(|(repo, files)| repo == "acme/ledger" && files.iter().any(|path| path == "ledger.rs"));
+        has_api && has_ledger
+    });
+    assert!(fetch_error(&review.app, &id).is_none());
 }

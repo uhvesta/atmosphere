@@ -3,8 +3,9 @@
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    DiffBase, DiffLine, FileChange, FileDiff, FileTier, LineKind, PushChoice, PushPlan, PushRepo,
-    LookedFile, RepoBase, RepoBases, RepoDiff, RepoDiffSpec, SessionFile, SessionId,
+    DiffBase, DiffLine, DiffUntracked, DiffUpto, DiffWhitespace, FileChange, FileDiff, FileTier,
+    LineKind, LookedFile, PushChoice, PushPlan, PushRepo, RepoBase, RepoBases, RepoDiff,
+    RepoDiffSpec, SessionFile, SessionId,
 };
 use humata2_clients_live_core::{
     LiveConnection, MESSAGE_MAX_BYTES, Wire, fresh_key, map,
@@ -42,6 +43,22 @@ pub fn file_tier(wire: i32) -> FileTier {
     }
 }
 
+fn wire_base_for_repo(base: &DiffBase, repo: &str) -> Option<pb::DiffBase> {
+    if let DiffBase::Spec(repos) = base {
+        let matched: Vec<RepoDiffSpec> = repos
+            .iter()
+            .filter(|each| each.repo == repo)
+            .cloned()
+            .collect();
+        if !matched.is_empty() {
+            return Some(pb::DiffBase {
+                base: Some(pb::diff_base::Base::Spec(spec_to_wire(&matched)?)),
+            });
+        }
+    }
+    wire_base(base)
+}
+
 const WHAT: &str = "The session's changes";
 
 fn wire_base(base: &DiffBase) -> Option<pb::DiffBase> {
@@ -69,25 +86,53 @@ pub fn spec_to_wire(repos: &[RepoDiffSpec]) -> Option<pb::DiffSpec> {
     let repos = repos
         .iter()
         .map(|each| {
+            let pinned = matches!(
+                each.base,
+                RepoBase::Range { .. } | RepoBase::Overlay { .. }
+            );
+            let upto = match each.options.upto {
+                Some(DiffUpto::Commits) => Upto::Commits as i32,
+                Some(DiffUpto::Staged) => Upto::Staged as i32,
+                Some(DiffUpto::Unstaged) => Upto::Unstaged as i32,
+                None if pinned => Upto::Commits as i32,
+                None => Upto::Unstaged as i32,
+            };
+            let untracked = match each.options.untracked {
+                Some(DiffUntracked::None) => Untracked::None as i32,
+                Some(DiffUntracked::All) => Untracked::All as i32,
+                Some(DiffUntracked::Paths) => Untracked::Paths as i32,
+                None if pinned => Untracked::None as i32,
+                None => Untracked::All as i32,
+            };
+            let head = match &each.base {
+                RepoBase::Range { head, .. } => head.clone(),
+                _ => each.options.head.clone().unwrap_or_default(),
+            };
+            let worktree_paths = match &each.base {
+                RepoBase::Overlay { paths, .. } => paths.clone(),
+                _ => each.options.worktree_paths.clone(),
+            };
+            let whitespace = match each.options.whitespace {
+                DiffWhitespace::Default => pb::DiffWhitespace::Unspecified as i32,
+                DiffWhitespace::IgnoreChanges => pb::DiffWhitespace::IgnoreChanges as i32,
+                DiffWhitespace::IgnoreAll => pb::DiffWhitespace::IgnoreAll as i32,
+            };
             Some(pb::RepoDiffSpec {
                 repo: Some(map::parse_repo(&each.repo)?),
                 base: Some(pb::DiffSpecBase {
                     base: Some(repo_base_to_wire(&each.base)),
                 }),
                 compare: Some(pb::DiffSpecCompare {
-                    upto: Upto::Unstaged as i32,
-                    untracked: Untracked::All as i32,
-                    untracked_paths: Vec::new(),
-                    head: match &each.base {
-                        RepoBase::Range { head, .. } => head.clone(),
-                        _ => String::new(),
-                    },
-                    worktree_paths: match &each.base {
-                        RepoBase::Overlay { paths, .. } => paths.clone(),
-                        _ => Vec::new(),
-                    },
+                    upto,
+                    untracked,
+                    untracked_paths: each.options.untracked_paths.clone(),
+                    head,
+                    worktree_paths,
                 }),
-                ..pb::RepoDiffSpec::default()
+                include_paths: each.options.include_paths.clone(),
+                exclude_paths: each.options.exclude_paths.clone(),
+                whitespace,
+                no_renames: each.options.no_renames,
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -105,31 +150,23 @@ fn repo_base_to_wire(base: &RepoBase) -> pb::diff_spec_base::Base {
             Base::MergeBaseWith(branch.clone())
         }
         RepoBase::Branch(branch) => Base::MergeBaseWith(format!("origin/{branch}")),
+        RepoBase::MergeBase(branch) => Base::MergeBaseWith(branch.clone()),
         RepoBase::Rev(rev) => Base::Rev(rev.clone()),
         RepoBase::LastReviewed => Base::ReviewedSnapshot(0),
         RepoBase::ForkPoint => Base::ForkPoint(pb::ForkPointBase {}),
         RepoBase::Uncommitted => Base::Rev("HEAD".to_owned()),
+        RepoBase::Index => Base::Index(pb::IndexBase {}),
         RepoBase::PullRequestBase => Base::PullRequestBase(pb::PullRequestBaseRef {}),
         RepoBase::Range { base, .. } | RepoBase::Overlay { base, .. } => Base::Rev(base.clone()),
     }
 }
 
-/// Whether a base is a stack layer or the Whole stack (D800): exactly its
-/// repositories show.
-fn is_stack(base: &DiffBase) -> bool {
-    match base {
-        DiffBase::Spec(repos) => repos
-            .iter()
-            .any(|each| matches!(each.base, RepoBase::Range { .. } | RepoBase::Overlay { .. })),
-        _ => false,
-    }
-}
-
-/// The repositories a `GetDiff` is limited to: a stack's own, none (every
-/// repository of the session) for anything else.
+/// The repositories a `GetDiff` is limited to: a spec's explicit repositories
+/// (for both stacked and non-stacked review plans), or none (every repository
+/// of the session) for a session-wide preset.
 fn repo_filter(base: &DiffBase) -> Vec<pb::RepoRef> {
     match base {
-        DiffBase::Spec(repos) if is_stack(base) => repos
+        DiffBase::Spec(repos) => repos
             .iter()
             .filter_map(|each| map::parse_repo(&each.repo))
             .collect(),
@@ -177,10 +214,12 @@ fn readable_repo_base(base: &RepoBase) -> String {
             .strip_prefix("origin/")
             .unwrap_or(branch.as_str())
             .to_owned(),
+        RepoBase::MergeBase(branch) => branch.clone(),
         RepoBase::Rev(rev) => rev.clone(),
         RepoBase::LastReviewed => "last reviewed".to_owned(),
         RepoBase::ForkPoint => "since fork".to_owned(),
         RepoBase::Uncommitted => "uncommitted changes".to_owned(),
+        RepoBase::Index => "staged changes".to_owned(),
         RepoBase::PullRequestBase => "the pull request's base".to_owned(),
         RepoBase::Range { base, head } => format!("{base}..{head}"),
         RepoBase::Overlay { base, .. } => format!("{base} and uncommitted changes"),
@@ -605,7 +644,7 @@ async fn read_diffs(
                     let page = match diffs(conn)
                         .get_file_diff(pb::GetFileDiffRequest {
                             session: id.clone(),
-                            base: wire_base(base),
+                            base: wire_base_for_repo(base, &name),
                             file: Some(pb::RepoPath {
                                 repo: Some(repo.clone()),
                                 path: summary.path.clone(),
@@ -720,7 +759,7 @@ fn session_file(entry: &pb::FileEntry) -> Option<SessionFile> {
 
 #[cfg(test)]
 mod tests {
-    use humata2_clients::model::RepoDiffSpec;
+    use humata2_clients::model::{RepoDiffOptions, RepoDiffSpec};
 
     use super::*;
     use pb::diff_spec_base::Base as SpecBase;
@@ -729,6 +768,7 @@ mod tests {
         RepoDiffSpec {
             repo: repo.to_owned(),
             base,
+            options: RepoDiffOptions::default(),
         }
     }
 
@@ -828,6 +868,7 @@ mod tests {
 
     #[test]
     fn a_range_compares_its_head_and_an_overlay_its_paths() {
+        use pb::diff_spec_compare::{Untracked, Upto};
         let base = DiffBase::Spec(vec![
             spec(
                 "acme/api",
@@ -843,28 +884,31 @@ mod tests {
                     paths: vec!["src".to_owned()],
                 },
             ),
+            spec("acme/docs", RepoBase::DefaultBranch),
         ]);
         let Some(repos) = repo_specs(&base) else {
             panic!("a spec should map to a wire spec");
         };
         assert_eq!(old_side(&repos[0]), Some(SpecBase::Rev("aaa".to_owned())));
-        assert_eq!(
-            repos[0].compare.as_ref().map(|c| c.head.clone()),
-            Some("bbb".to_owned())
-        );
+        let range_cmp = repos[0].compare.as_ref().expect("range compare");
+        assert_eq!(range_cmp.head, "bbb");
+        assert_eq!(range_cmp.upto, Upto::Commits as i32);
+        assert_eq!(range_cmp.untracked, Untracked::None as i32);
+
         assert_eq!(old_side(&repos[1]), Some(SpecBase::Rev("ccc".to_owned())));
-        assert_eq!(
-            repos[1].compare.as_ref().map(|c| c.worktree_paths.clone()),
-            Some(vec!["src".to_owned()])
-        );
-        assert_eq!(
-            repos[1].compare.as_ref().map(|c| c.head.clone()),
-            Some(String::new())
-        );
+        let overlay_cmp = repos[1].compare.as_ref().expect("overlay compare");
+        assert_eq!(overlay_cmp.worktree_paths, vec!["src".to_owned()]);
+        assert_eq!(overlay_cmp.head, "");
+        assert_eq!(overlay_cmp.upto, Upto::Commits as i32);
+        assert_eq!(overlay_cmp.untracked, Untracked::None as i32);
+
+        let default_cmp = repos[2].compare.as_ref().expect("default compare");
+        assert_eq!(default_cmp.upto, Upto::Unstaged as i32);
+        assert_eq!(default_cmp.untracked, Untracked::All as i32);
     }
 
     #[test]
-    fn a_stack_spec_limits_the_diff_to_its_repositories_and_a_plain_one_does_not() {
+    fn explicit_spec_limits_the_diff_to_its_repositories_and_presets_do_not() {
         let stack = DiffBase::Spec(vec![spec(
             "acme/api",
             RepoBase::Range {
@@ -877,8 +921,52 @@ mod tests {
             name: "api".to_owned(),
         }]);
         let plain = DiffBase::Spec(vec![spec("acme/api", RepoBase::DefaultBranch)]);
-        assert!(repo_filter(&plain).is_empty());
+        assert_eq!(repo_filter(&plain), vec![pb::RepoRef {
+            owner: "acme".to_owned(),
+            name: "api".to_owned(),
+        }]);
         assert!(repo_filter(&DiffBase::OriginMain).is_empty());
+    }
+
+    #[test]
+    fn repo_diff_options_index_and_local_merge_base_survive_spec_to_wire() {
+        use pb::diff_spec_compare::{Untracked, Upto};
+        let base = DiffBase::Spec(vec![
+            RepoDiffSpec {
+                repo: "acme/api".to_owned(),
+                base: RepoBase::Index,
+                options: RepoDiffOptions {
+                    include_paths: vec!["src/".to_owned()],
+                    exclude_paths: vec!["src/gen/".to_owned()],
+                    upto: Some(DiffUpto::Staged),
+                    untracked: Some(DiffUntracked::Paths),
+                    untracked_paths: vec!["src/new.rs".to_owned()],
+                    head: None,
+                    worktree_paths: Vec::new(),
+                    whitespace: DiffWhitespace::IgnoreAll,
+                    no_renames: true,
+                },
+            },
+            RepoDiffSpec {
+                repo: "acme/web".to_owned(),
+                base: RepoBase::MergeBase("local-feature".to_owned()),
+                options: RepoDiffOptions::default(),
+            },
+        ]);
+        let repos = repo_specs(&base).expect("maps to wire spec");
+        assert_eq!(old_side(&repos[0]), Some(SpecBase::Index(pb::IndexBase {})));
+        let compare = repos[0].compare.as_ref().expect("compare");
+        assert_eq!(compare.upto, Upto::Staged as i32);
+        assert_eq!(compare.untracked, Untracked::Paths as i32);
+        assert_eq!(compare.untracked_paths, vec!["src/new.rs".to_owned()]);
+        assert_eq!(repos[0].include_paths, vec!["src/".to_owned()]);
+        assert_eq!(repos[0].exclude_paths, vec!["src/gen/".to_owned()]);
+        assert_eq!(repos[0].whitespace, pb::DiffWhitespace::IgnoreAll as i32);
+        assert!(repos[0].no_renames);
+        assert_eq!(
+            old_side(&repos[1]),
+            Some(SpecBase::MergeBaseWith("local-feature".to_owned()))
+        );
     }
 
     #[test]

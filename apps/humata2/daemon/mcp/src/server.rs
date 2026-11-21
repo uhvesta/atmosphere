@@ -281,19 +281,11 @@ impl<D: Daemon> Shared<D> {
                     );
                 }
                 Incoming::Request { id, method, params } => {
-                    // What `tools/list` offers can depend on the caller's
-                    // rules, which the daemon's bind learns (D876): wait for
-                    // the binding, as a call does. A failed bind still lists
-                    // the tools the daemon serves without it.
-                    if method == "tools/list" {
-                        let _ = self.ensure_bound().await;
-                    }
                     let reply = match answer(
                         &method,
                         &params,
                         self.list_changed,
                         fuse_root_is_mounted(),
-                        |operation| self.daemon.serves(operation),
                     ) {
                         Ok(result) => jsonrpc::result(&id, result),
                         Err(error) => jsonrpc::error(&id, &error),
@@ -393,27 +385,69 @@ impl<D: Daemon> Shared<D> {
             .filter(|token| token.is_string() || token.is_number())
             .cloned();
 
-        let Some(operation) = Operation::from_tool_name(&name) else {
+        match name.as_str() {
+            "humata_list" => {
+                let schema = tools::meta_input_schema("humata_list").expect("meta schema");
+                validate_args("humata_list", &schema, &arguments)?;
+                let _ = self.ensure_bound().await;
+                return Ok(tools::run_humata_list(&arguments, |op| self.daemon.serves(op)));
+            }
+            "humata_describe" => {
+                let schema = tools::meta_input_schema("humata_describe").expect("meta schema");
+                validate_args("humata_describe", &schema, &arguments)?;
+                let _ = self.ensure_bound().await;
+                return Ok(tools::run_humata_describe(&arguments, |op| self.daemon.serves(op)));
+            }
+            "humata_call" => {
+                let schema = tools::meta_input_schema("humata_call").expect("meta schema");
+                validate_args("humata_call", &schema, &arguments)?;
+                let mut outer = match arguments {
+                    Value::Object(map) => map,
+                    _ => Map::new(),
+                };
+                let inner_name = match outer.remove("name") {
+                    Some(Value::String(inner)) => inner,
+                    _ => String::new(),
+                };
+                let inner_args = match outer.remove("arguments") {
+                    None | Some(Value::Null) => Value::Object(Map::new()),
+                    Some(args @ Value::Object(_)) => args,
+                    Some(_) => Value::Object(Map::new()),
+                };
+                return self
+                    .dispatch_operation(seq, id, &inner_name, inner_args, progress)
+                    .await;
+            }
+            _ => {
+                return self
+                    .dispatch_operation(seq, id, &name, arguments, progress)
+                    .await;
+            }
+        }
+    }
+
+    async fn dispatch_operation(
+        &self,
+        seq: u64,
+        id: &Value,
+        name: &str,
+        arguments: Value,
+        progress: Option<Value>,
+    ) -> Result<Value, RpcError> {
+        let Some(operation) = Operation::from_tool_name(name) else {
             // MCP.md §7: refused before anything else, and nothing reaches
             // the daemon or the Inbox.
-            if let Some(refusal) = user_only::refusal(&name) {
+            if let Some(refusal) = user_only::refusal(name) {
                 return Ok(outcome::failure(&refusal));
             }
             return Err(RpcError::new(
                 INVALID_PARAMS,
-                format!("there is no tool {name}; tools/list gives the tools"),
+                format!("there is no tool {name}; call humata_list to see available tools"),
             )
             .with_data(json!({ "tool": name })));
         };
-        if let Err(violation) = tools::input_schema(operation).validate(&arguments) {
-            return Err(RpcError::new(INVALID_PARAMS, format!("{name}: {violation}")).with_data(
-                json!({
-                    "tool": name,
-                    "field": violation.path,
-                    "problem": violation.problem.name(),
-                }),
-            ));
-        }
+        let schema = tools::input_schema(operation);
+        validate_args(name, &schema, &arguments)?;
         let mut arguments = match arguments {
             Value::Object(arguments) => arguments,
             _ => Map::new(),
@@ -558,18 +592,34 @@ fn no_token(missing: &TokenError) -> ToolError {
     }
 }
 
+fn validate_args(name: &str, schema: &crate::schema::Schema, arguments: &Value) -> Result<(), RpcError> {
+    if let Err(violation) = schema.validate(arguments) {
+        let compact = schema.to_compact_focused(&violation.path);
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("{name}: {violation}\nschema: {compact}"),
+        )
+        .with_data(json!({
+            "tool": name,
+            "field": violation.path,
+            "problem": violation.problem.name(),
+            "schema": compact,
+        })));
+    }
+    Ok(())
+}
+
 /// Requests answered without the daemon.
 fn answer(
     method: &str,
     params: &Value,
     list_changed: bool,
     mounted: bool,
-    serves: impl Fn(Operation) -> bool,
 ) -> Result<Value, RpcError> {
     match method {
         "initialize" => Ok(initialize(params, list_changed, mounted)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools::list(serves)),
+        "tools/list" => Ok(tools::meta_list()),
         _ => Err(RpcError::new(
             METHOD_NOT_FOUND,
             format!("{method} isn't offered; this server has tools only"),
@@ -616,7 +666,9 @@ const NO_MOUNT: &str = "Humata's files aren't mounted on this machine: use the f
 /// What every agent is told of these tools when it connects (D748): what
 /// they do, and never where the session's repos or folder are (D743). An
 /// agent that wants those asks: `whoami` and `humata whoami` answer.
-const INSTRUCTIONS: &str = "Humata's tools for this session. You are always this session: no tool takes a caller. \
+const INSTRUCTIONS: &str = "Humata's tools for this session use progressive disclosure: \
+call humata_list to discover tools, humata_describe to inspect their schemas and examples, and humata_call to run them. \
+You are always this session: no tool takes a caller. \
 The Board tools (board_*) list, read, create, update and move the channel's work items. \
 The review tools (review_*) draft comments and a summary on the pull request under review, and view_* prepare views of it for the user. \
 inbox_ask asks the user a question and inbox_request asks for their approval; whoami says which session, channel and machine you are, and session_info the session's repos. \
@@ -709,16 +761,20 @@ mod tests {
 
         send(
             &mut to_server,
-            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "humata_list", "arguments": {} } }),
         )
         .await;
         let before: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
         let has_tool = |reply: &Value| {
-            reply["result"]["tools"]
+            reply["result"]["structuredContent"]["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|tool| tool["name"] == "sessions_delete_many")
+                .any(|entry| {
+                    entry
+                        .as_str()
+                        .is_some_and(|line| line.starts_with("sessions_delete_many "))
+                })
         };
         assert!(!has_tool(&before));
 
@@ -729,7 +785,7 @@ mod tests {
 
         send(
             &mut to_server,
-            json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {} }),
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "humata_list", "arguments": {} } }),
         )
         .await;
         let after: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
@@ -742,7 +798,7 @@ mod tests {
 
         send(
             &mut to_server,
-            json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {} }),
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "humata_list", "arguments": {} } }),
         )
         .await;
         let hidden: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();

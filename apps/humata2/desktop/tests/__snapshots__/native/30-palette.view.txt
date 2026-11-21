@@ -138,14 +138,16 @@ Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Desi
 Dialog "Command palette" focused
   #input focused
     TextInput "Search commands" value="ledg" placeholder="Type a command, a channel or a session" focused
-  ListBoxOption "Ledger schema migration" selected
-  ListBoxOption "zsh in Ledger schema migration"
-  ListBoxOption "Try BRIN index"
-  ListBoxOption "Review the schema"
-  ListBoxOption "ledger/README.md"
-  ListBoxOption "ledger/migrations/0041_init.sql"
-  ListBoxOption "ledger/migrations/0042_accounts.sql"
-  ListBoxOption "Fork “Ledger schema migration”"
-  ListBoxOption "Toggle side panel"
-  ListBoxOption "Terminal full screen"
-  ListBoxOption "Side panel full screen"
+  ListBox "Search results"
+    ListBoxOption "Ledger schema migration" selected
+    ListBoxOption "zsh in Ledger schema migration"
+    ListBoxOption "Try BRIN index"
+    ListBoxOption "Review the schema"
+    ListBoxOption "ledger/README.md"
+    ListBoxOption "ledger/migrations/0041_init.sql"
+    ListBoxOption "ledger/migrations/0042_accounts.sql"
+    ListBoxOption "Fork “Ledger schema migration”"
+    ListBoxOption "Toggle side panel"
+    ListBoxOption "Terminal full screen"
+    ListBoxOption "Side panel full screen"
+  CheckBox "Include archived"

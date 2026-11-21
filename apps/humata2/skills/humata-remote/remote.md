@@ -151,17 +151,29 @@ Never by default, and nothing writes rules.
 ## Machine providers
 
 A provider is a set of commands that make and run a kind of machine (a
-cloud VM, a local VM). You can read them and ask the owner to add one:
+cloud VM, a local VM, a Terraform workspace, or an SSH fleet). Start with
+the offline authoring helpers — they work without a running daemon, run
+nothing, and are open to every caller:
 
-    humata provider ls --json                # ids, labels, params, interactive; no commands
-    humata provider config show --json       # the owner's providers file
-    humata provider import <file.toml> --reason "<why the task needs it>" --json --key <key>   # asks the owner in the Inbox
-    humata provider import --help            # the file format, with the Lima provider as example
+    humata provider guide                                       # full model in plain text (start here)
+    humata provider schema [--json]                             # every TOML key + identity/status/discover JSON schema
+    humata provider example [lima|cloud|terraform|ssh]          # complete, valid example provider files
+    humata provider check <file.toml|->                         # offline validation with the real parser (exit 2 if invalid)
+    humata provider render <file.toml> <action> --name <m> [--param k=v]...   # exact argv, env, and target machine (runs nothing)
+    humata provider parse <identity|status|discover> [<file>|-] [--name <m>]  # validate captured stdout against Humata's real parser
 
-`provider import` never adds anything itself: it files a request that
-shows the owner the whole file and every command in it, and answers exit
-12 `pending`. Don't repeat it. The MCP tool `provider_import` files the
-same request.
+You can also inspect installed providers and ask the owner to import a new one:
+
+    humata provider ls --json                                   # ids, labels, params, interactive
+    humata provider config show --json                          # the owner's providers file
+    humata provider request-import <file.toml> --reason "<why>" --json --key <key>   # files an Inbox card for the owner
+    humata provider import <file.toml> --reason "<why>" --json --key <key>           # same for agents
+
+`provider request-import` (and an agent's `provider import`) never adds
+anything itself: it files a host Inbox request showing the owner the whole
+file and every command in it, and answers exit 12 `pending`. Only the owner
+can approve or deny it. Don't repeat it. The MCP tool `provider_request_import`
+/ `provider_import` files the same request.
 
 The file has one `[providers.<id>]` table per provider:
 

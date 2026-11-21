@@ -6,6 +6,14 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
+- **2026-11-20 ~12:25 (Gemini main): 0.10.0 in progress.**
+  - **D916 committed (`bf585c0e`):** `svc_stop_restart_unit_test`, `files_without_mount_test`, `fusefs_restart_test` passed 3/3; `:humatad2` built.
+  - **T13 (`live_flows_fuse_vm_test`, log `20261120-114901-1e1676.log`):** 1/6 (case 6 passed; D916 shell `HUMATA_FUSE_ROOT` worked; cases 1/2/3/5 hit `identity_mismatch` on `settings get fusefs_status`, case 4 hit `mnt/m/<machine>/s/<id>` layout). Diagnostician running.
+  - **0.10.0 leaf-crate batch green (`20261120-122258-335bda.log`):** `screenparse_unit_test` + `:screenparse_record`, `svc_board:all`, `features/todo:all`, `features/settings:all`, `ui/settings:settings_unit_test`, `ui/workspace:workspace_unit_test`, `browser_copilot_test`, `daemon/mcp:all`.
+  - **Judge rulings logged:** D917 (`record_corpus.sh` isolation fixes in progress by SCREENPARSE worker), D918 (`providers-e-remove-blocked.view.txt` `+Tab "Sync"` approved).
+  - **Owner additions logged:** `SETTINGSFIX.md` written for `0.10.1` (default `branch_prefix` + full Settings UI, Inbox-gated agent settings via `AskNoAllow`, working `humata login` app prompt); Push-permission removal & Diff-view "prepared view mixing worktrees and refs" under investigation.
+  - **In flight:** Linux ARM64 FUSEFS cross-build, BROWSER daemon wiring (A3–A5, B2–B3), SCREENPARSE D917 fixes, T13 Diagnostician, Push/Diff Investigator, `0.10.1`–`0.10.4` planners.
+
 - **2026-11-20 ~13:00: Claude Code main hands over to a Gemini main agent. Read `GEMINI_HANDOFF.md` first.** It holds the state at `0385636a` plus the uncommitted D916 shell fix, every release still owed (0.10.0 → 0.11.0), the next steps for each lane, how to test (outcome tests, fast tiers: the owner's emphasis) and the hard rules. No agents are running; each lane needs a fresh manager pointed at its milestone file.
 
 - **2026-11-20 ~09:45 (Claude Code main): current state. Read this first; a /dag-walk or /dag-walk-gemini resume starts here.**

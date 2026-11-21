@@ -42,11 +42,11 @@ mod workspace;
 
 pub use clipboard::Clipboard;
 pub use daemon::{
-    AgentSwitch, ArchivePlan, ChannelSessionWork, Daemon, DaemonError, DeleteChannelPlan,
-    DeleteChannelRequest, DeleteChannelResponse, EVENT_QUEUE, Event, Events, FileChange,
-    ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError, fair_share,
-    RunningHolder, SwitchChange, TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork,
-    NoAgentOn, pick_agent,
+    AgentSwitch, ArchivePlan, ChannelSessionWork, CliSession, Daemon, DaemonError,
+    DeleteChannelPlan, DeleteChannelRequest, DeleteChannelResponse, EVENT_QUEUE, Event, Events,
+    FileChange, ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, PendingCliLogin,
+    Reply, SESSION_FILES_CAP, ScriptToken, SendError, fair_share, RunningHolder, SwitchChange,
+    TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork, NoAgentOn, pick_agent,
 };
 pub use comments::CommentsClient;
 pub use desk::DeskClient;

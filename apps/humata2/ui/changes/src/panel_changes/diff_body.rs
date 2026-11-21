@@ -328,6 +328,8 @@ pub(super) struct CodeRows {
     code_focus: Option<FocusHandle>,
     /// Linked To-do context for Add to steps / Spin off To-do comment hooks.
     todo_ctx: comment_cards::TodoHookContext,
+    /// Cached per-line syntax highlight spans for `file.lines`.
+    syntax: std::sync::Arc<Vec<Vec<(Range<usize>, HighlightStyle)>>>,
 }
 
 impl CodeRows {
@@ -446,6 +448,19 @@ impl CodeRows {
         let todo_ctx = session
             .map(|session| comment_cards::todo_context(state, &session.id))
             .unwrap_or_default();
+        let dark = ((look.term >> 8) & 0xff) < 0x80;
+        let first_code = file
+            .lines
+            .iter()
+            .find(|line| is_code(line))
+            .map(|line| line.text.as_str());
+        let language = humata2_highlight::Language::detect(Some(&file.path), first_code);
+        let code_lines: Vec<&str> = file
+            .lines
+            .iter()
+            .map(|line| if is_code(line) { line.text.as_str() } else { "" })
+            .collect();
+        let syntax = humata2_highlight::highlight_lines_cached(language, &code_lines, dark);
         Self {
             ui: ui.clone(),
             metrics,
@@ -470,6 +485,7 @@ impl CodeRows {
             focus_index,
             code_focus: (!metrics.review).then(|| documents.diff_code.clone()),
             todo_ctx,
+            syntax,
         }
     }
 
@@ -665,26 +681,33 @@ impl CodeRows {
                 })
             })
             .filter(|(span, _)| !span.is_empty());
+        let line_syntax = self.syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
         let code = col().children(fragments.into_iter().enumerate().map(|(part, fragment)| {
-            let marked = mark.as_ref().and_then(|(span, color)| {
-                Some((display_range(&line.text, &fragment, self.wrap, span)?, *color))
+            let overlay = mark.as_ref().and_then(|(span, color)| {
+                let range = display_range(&line.text, &fragment, self.wrap, span)?;
+                let style = HighlightStyle {
+                    background_color: Some(rgb(blend(look.term, *color, 0.28)).into()),
+                    ..Default::default()
+                };
+                Some((range, style))
             });
+            let syntax_spans: Vec<(Range<usize>, HighlightStyle)> = line_syntax
+                .iter()
+                .filter_map(|(span, style)| {
+                    let mapped = display_range(&line.text, &fragment, self.wrap, span)?;
+                    Some((mapped, *style))
+                })
+                .collect();
+            let highlights = humata2_highlight::merge_overlay(syntax_spans, overlay);
             let cell = div()
                 .id(SharedString::from(format!("change-code-{index}-{part}")))
                 .h(px(line_height))
                 .whitespace_nowrap()
                 .text_color(rgb(look.term_text));
-            let cell = match marked {
-                Some((range, color)) => {
-                    let style = HighlightStyle {
-                        background_color: Some(rgb(blend(look.term, color, 0.28)).into()),
-                        ..Default::default()
-                    };
-                    cell.child(
-                        StyledText::new(fragment.display.clone()).with_highlights([(range, style)]),
-                    )
-                }
-                None => cell.child(fragment.display.clone()),
+            let cell = if highlights.is_empty() {
+                cell.child(fragment.display.clone())
+            } else {
+                cell.child(StyledText::new(fragment.display.clone()).with_highlights(highlights))
             };
             cell.test_text(line.text[fragment.source].to_owned()).test_support()
         }));

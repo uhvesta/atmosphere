@@ -21,9 +21,13 @@ use humata2_clients_live_desk::LiveDesk;
 use crate::humata2_grpc::humata::v1 as pb;
 use crate::humata2_grpc::humata::v1::{
     access_service_client::AccessServiceClient, agent_service_client::AgentServiceClient,
-    board_service_client::BoardServiceClient, channel_service_client::ChannelServiceClient,
-    daemon_service_client::DaemonServiceClient, event_service_client::EventServiceClient,
-    inbox_service_client::InboxServiceClient, operation_service_client::OperationServiceClient,
+    board_service_client::BoardServiceClient,
+    browser_bridge_service_client::BrowserBridgeServiceClient,
+    channel_service_client::ChannelServiceClient,
+    cli_auth_service_client::CliAuthServiceClient,
+    daemon_service_client::DaemonServiceClient,
+    event_service_client::EventServiceClient, inbox_service_client::InboxServiceClient,
+    operation_service_client::OperationServiceClient,
     session_service_client::SessionServiceClient, settings_service_client::SettingsServiceClient,
     terminal_service_client::TerminalServiceClient,
 };
@@ -188,6 +192,12 @@ impl Shared {
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }
 
+    pub(crate) fn cli_auth(&self) -> CliAuthServiceClient<Wire> {
+        CliAuthServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
     pub(crate) fn agents(&self) -> AgentServiceClient<Wire> {
         AgentServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
@@ -196,6 +206,12 @@ impl Shared {
 
     pub(crate) fn settings(&self) -> SettingsServiceClient<Wire> {
         SettingsServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn browser_bridge(&self) -> BrowserBridgeServiceClient<Wire> {
+        BrowserBridgeServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }

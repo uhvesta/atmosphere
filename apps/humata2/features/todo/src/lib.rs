@@ -26,6 +26,15 @@ use tca::{Effect, Reducer};
 
 const WATCH: &str = "todo-watch";
 
+/// A known workspace channel's ID and human-readable display name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelRef {
+    /// Stable channel ID stored on items and filters.
+    pub id: String,
+    /// Human-readable channel name shown in the UI.
+    pub name: String,
+}
+
 /// Which channel the list is narrowed to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelPick {
@@ -106,6 +115,23 @@ impl FilterChip {
             FilterChip::Only(OnlyPick::PullRequests) => "Pull requests".to_owned(),
             FilterChip::IncludeTerminal => "Won't do / Became".to_owned(),
             FilterChip::Search(q) => format!("\"{q}\""),
+        }
+    }
+
+    /// Human-readable label for this chip, resolving channel and session IDs.
+    #[must_use]
+    pub fn label_with<'a>(
+        &'a self,
+        channel_name: impl Fn(&'a str) -> &'a str,
+        session_name: impl Fn(&str) -> Option<String>,
+    ) -> String {
+        match self {
+            FilterChip::Channel(ChannelPick::Channel(id)) => channel_name(id).to_owned(),
+            FilterChip::Session(SessionPick::Session(id)) => {
+                let name = session_name(id).unwrap_or_else(|| id.clone());
+                format!("Session: {name}")
+            }
+            _ => self.label(),
         }
     }
 }
@@ -330,6 +356,8 @@ pub struct QuestionDraft {
 pub struct TodoState {
     /// Every item the host listed, with its revision.
     pub items: Vec<Entry>,
+    /// Known workspace channels for resolving channel IDs to display names.
+    pub known_channels: Vec<ChannelRef>,
     /// Today, as the reducer last read it.
     pub today: Day,
     /// Presentation retained across restarts.
@@ -356,6 +384,8 @@ pub struct TodoState {
     pub runs: BTreeMap<String, TodoRunsResult>,
     /// Editable drafts for open Question asks, keyed by `ask_id`.
     pub question_drafts: BTreeMap<String, QuestionDraft>,
+    /// NOTIFY2 (Fable ruling 4): ask IDs whose inline "Why?" explanation is expanded.
+    pub expanded_why: BTreeSet<String>,
     /// The line that adds an item.
     pub quick_add: QuickAdd,
     /// The drawer field being typed into.
@@ -380,6 +410,7 @@ impl TodoState {
     pub fn new(view: View, today: Day) -> Self {
         Self {
             items: Vec::new(),
+            known_channels: Vec::new(),
             today,
             view,
             sort: SortBy::Priority,
@@ -393,6 +424,7 @@ impl TodoState {
             history: BTreeMap::new(),
             runs: BTreeMap::new(),
             question_drafts: BTreeMap::new(),
+            expanded_why: BTreeSet::new(),
             quick_add: QuickAdd::default(),
             editing: None,
             migration: None,
@@ -453,6 +485,39 @@ impl TodoState {
         humata2_todo::header(&self.shown(), self.today)
     }
 
+    /// Updates the known workspace channels used to resolve channel IDs to display names.
+    pub fn set_channels(&mut self, channels: Vec<ChannelRef>) {
+        self.known_channels = channels;
+    }
+
+    /// Human-readable display name for a channel ID, falling back to `id` when unknown.
+    #[must_use]
+    pub fn channel_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.known_channels
+            .iter()
+            .find(|c| c.id == id && !c.name.is_empty())
+            .map_or(id, |c| c.name.as_str())
+    }
+
+    /// All known workspace channels plus any channel IDs referenced by items
+    /// that are not yet in `known_channels`.
+    #[must_use]
+    pub fn all_channels(&self) -> Vec<ChannelRef> {
+        let mut out = self.known_channels.clone();
+        for c in self.items.iter().filter_map(|e| e.todo.channel.as_ref()) {
+            if !out.iter().any(|ch| ch.id == *c) {
+                out.push(ChannelRef { id: c.clone(), name: c.clone() });
+            }
+        }
+        out
+    }
+
+    /// Human-readable label for an active filter chip, resolving channel IDs.
+    #[must_use]
+    pub fn chip_label(&self, chip: &FilterChip) -> String {
+        chip.label_with(|id| self.channel_name(id), |_| None)
+    }
+
     /// The channels items are in, for the quick-add parser and the chips.
     #[must_use]
     pub fn channels(&self) -> Vec<String> {
@@ -490,7 +555,9 @@ impl TodoState {
 
     /// What a typed line would add, and where it would land.
     fn preview(&self, line: &str) -> Option<Preview> {
-        let draft = humata2_todo::parse(line, self.today, &self.channels())?;
+        let channels: Vec<(String, String)> =
+            self.all_channels().into_iter().map(|c| (c.id, c.name)).collect();
+        let draft = humata2_todo::parse_with_channels(line, self.today, &channels)?;
         const NEW: &str = "\u{0}new";
         let mut item = Item::new(NEW, &draft.title, self.today);
         item.channel.clone_from(&draft.channel);
@@ -524,6 +591,8 @@ pub enum TodoAction {
     Watch,
     /// The host's list after a change, from any screen.
     Updated(Vec<Entry>),
+    /// Syncs the known workspace channels used for display names and quick-add resolution.
+    SetChannels(Vec<ChannelRef>),
 
     /// Narrows the list.
     SetFilter(ViewFilter),
@@ -611,7 +680,7 @@ pub enum TodoAction {
     /// Closes the overlay.
     CloseDoNext,
 
-    /// Asks the agent why. The app routes it; the list does not change.
+    /// Toggles the inline "Why?" explanation on a To-do ask (NOTIFY2, Fable ruling 4).
     AskWhy(String),
     /// Starts the review of a pull request review item (by key). The app
     /// routes it to the pull request review start; the list does not change.
@@ -621,6 +690,8 @@ pub enum TodoAction {
     StartSession(String),
     /// Opens the session an item belongs to. The app routes it.
     OpenSession(String),
+    /// Opens the channel an item belongs to. The app routes it.
+    OpenChannel(String),
     /// Opens an item's history. The app routes it.
     ShowHistory(String),
     /// Opens a link on an ask card's evidence row. The app routes it.
@@ -1027,6 +1098,10 @@ impl Reducer for Todo {
                 }
                 Effect::none()
             }
+            TodoAction::SetChannels(channels) => {
+                state.set_channels(channels);
+                Effect::none()
+            }
 
             TodoAction::SetFilter(filter) => {
                 state.view.filter = filter;
@@ -1038,8 +1113,14 @@ impl Reducer for Todo {
                 state.do_next = None;
                 Effect::none()
             }
-            TodoAction::AskWhy(_)
-            | TodoAction::OpenSession(_)
+            TodoAction::AskWhy(ask_id) => {
+                if !state.expanded_why.remove(&ask_id) {
+                    state.expanded_why.insert(ask_id);
+                }
+                Effect::none()
+            }
+            TodoAction::OpenSession(_)
+            | TodoAction::OpenChannel(_)
             | TodoAction::StartReview(_)
             | TodoAction::StartSession(_)
             | TodoAction::ShowHistory(_)

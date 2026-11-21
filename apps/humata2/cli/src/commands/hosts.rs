@@ -1,9 +1,10 @@
 //! Machines, providers, skills, port bridges, settings, agents, marks and
 //! bug reports (CLI.md §5.6 and §5.7).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
+use humata2_machines::spec as provider_spec;
 use humata2_proto::humata::v1 as pb;
 use prost::Message;
 use serde_json::{Value as Json, json};
@@ -11,7 +12,8 @@ use serde_json::{Value as Json, json};
 use super::{pages, parse, reply, secret, settings, streams, values};
 use crate::args::{
     AgentFields, AgentsCommand, BridgeCommand, HostCommand, PinnedCommand, ProviderCommand,
-    ProviderConfigCommand, ReportCommand, SettingsCommand, SkillsCommand, VarCommand,
+    ProviderConfigCommand, ProviderParseKind, ReportCommand, SettingsCommand, SkillsCommand,
+    VarCommand,
 };
 use crate::call::{Ctx, Done, Outcome};
 use crate::console::Console;
@@ -309,6 +311,46 @@ fn read(path: &std::path::Path) -> Result<Vec<u8>, CliError> {
     })
 }
 
+fn read_file_or_stdin<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    from: &str,
+) -> Result<Vec<u8>, CliError> {
+    if from == "-" {
+        ctx.console
+            .stdin()
+            .map_err(|source| CliError::Console { source })
+    } else {
+        read(std::path::Path::new(from))
+    }
+}
+
+fn read_text_or_stdin<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    from: &str,
+    field: &'static str,
+) -> Result<String, CliError> {
+    let bytes = read_file_or_stdin(ctx, from)?;
+    String::from_utf8(bytes).map_err(|_| CliError::BadValue {
+        field,
+        value: "<not UTF-8>".into(),
+        expected: "UTF-8 text",
+    })
+}
+
+fn printed_or_json<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    text: &str,
+    result: Json,
+) -> Result<Done, CliError> {
+    if !ctx.flags.json {
+        ctx.console.print(text);
+    }
+    Ok(Done {
+        result,
+        outcome: Outcome::Printed,
+    })
+}
+
 /// Whether the daemon knows this connection as a session's agent.
 async fn is_agent<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<bool, CliError> {
     let me: pb::WhoAmIResponse = ctx.call(rpc::daemon::WHO_AM_I, &pb::WhoAmIRequest {}).await?;
@@ -324,6 +366,156 @@ pub(super) async fn provider<D: Daemon, C: Console>(
 ) -> Result<Done, CliError> {
     let key = ctx.key();
     match command {
+        ProviderCommand::Guide => {
+            let guide = provider_spec::provider_guide();
+            printed_or_json(ctx, guide, json!({ "guide": guide }))
+        }
+        ProviderCommand::Schema => {
+            let schema = provider_spec::provider_schema();
+            let text = schema.render_text();
+            let result = serde_json::to_value(&schema).unwrap_or(Json::Null);
+            printed_or_json(ctx, &text, result)
+        }
+        ProviderCommand::Example { kind } => match kind {
+            None => {
+                let examples = provider_spec::list_examples();
+                let mut text = String::from("Available provider examples:\n");
+                for example in examples {
+                    text.push_str(&format!("  {:<10} {}\n", example.kind, example.summary));
+                }
+                text.push_str("\nRun `humata provider example <kind>` to print a complete, valid TOML file.");
+                let kinds: Vec<Json> = examples
+                    .iter()
+                    .map(|e| json!({ "kind": e.kind, "aliases": e.aliases, "summary": e.summary }))
+                    .collect();
+                printed_or_json(ctx, &text, json!({ "examples": kinds }))
+            }
+            Some(kind) => {
+                let example = provider_spec::provider_example(&kind).map_err(|error| {
+                    CliError::ProviderSpec {
+                        message: error.to_string(),
+                        fix: "Run `humata provider example` with no arguments to list available kinds."
+                            .to_owned(),
+                        details: json!({
+                            "available": provider_spec::list_examples()
+                                .iter()
+                                .map(|e| e.kind)
+                                .collect::<Vec<_>>(),
+                        }),
+                    }
+                })?;
+                printed_or_json(
+                    ctx,
+                    example.toml.trim_end(),
+                    serde_json::to_value(example).unwrap_or(Json::Null),
+                )
+            }
+        },
+        ProviderCommand::Check { file } => {
+            let toml = read_text_or_stdin(ctx, &file, "providers TOML")?;
+            let report = provider_spec::check_providers(&toml);
+            if report.ok {
+                let text = report.render_text();
+                let result = serde_json::to_value(&report).unwrap_or(Json::Null);
+                printed_or_json(ctx, &text, result)
+            } else {
+                Err(CliError::ProviderSpec {
+                    message: report.render_text(),
+                    fix: "Fix each reported field, then run `humata provider check` again."
+                        .to_owned(),
+                    details: serde_json::to_value(&report).unwrap_or(Json::Null),
+                })
+            }
+        }
+        ProviderCommand::Render {
+            file,
+            action,
+            name,
+            provider,
+            params,
+            cmd,
+        } => {
+            let toml = read_text_or_stdin(ctx, &file, "providers TOML")?;
+            let parsed_action =
+                provider_spec::RenderAction::parse(&action).ok_or_else(|| CliError::BadValue {
+                    field: "action",
+                    value: action.clone(),
+                    expected: "one of: create, connect, identity, list, discover, start, stop, wake, refresh, ssh, delete, status",
+                })?;
+            let params: BTreeMap<String, String> = params
+                .iter()
+                .map(|text| parse::pair(text))
+                .collect::<Result<_, CliError>>()?;
+            let rendered = provider_spec::render_provider_action(
+                &toml,
+                provider.as_deref(),
+                parsed_action,
+                &name,
+                &params,
+                cmd.as_deref(),
+            )
+            .map_err(|error| {
+                let details = match &error {
+                    provider_spec::RenderError::InvalidConfig { report } => {
+                        serde_json::to_value(report).unwrap_or_else(|_| json!({}))
+                    }
+                    provider_spec::RenderError::UnknownProvider { available, .. }
+                    | provider_spec::RenderError::AmbiguousProvider { available } => {
+                        json!({ "available_providers": available })
+                    }
+                    _ => json!({}),
+                };
+                CliError::ProviderSpec {
+                    message: error.to_string(),
+                    fix: "Fix the provider file, action, machine name, or `--param key=value` flags and run `humata provider render` again.".to_owned(),
+                    details,
+                }
+            })?;
+            let text = rendered.render_text();
+            let result = serde_json::to_value(&rendered).unwrap_or(Json::Null);
+            printed_or_json(ctx, &text, result)
+        }
+        ProviderCommand::Parse { kind, file, name } => {
+            let bytes = read_file_or_stdin(ctx, &file)?;
+            let spec_kind = match kind {
+                ProviderParseKind::Identity => provider_spec::ParseKind::Identity,
+                ProviderParseKind::Status => provider_spec::ParseKind::Status,
+                ProviderParseKind::Discover => provider_spec::ParseKind::Discover,
+            };
+            let parsed = provider_spec::parse_provider_output(spec_kind, &bytes, name.as_deref())
+                .map_err(|error| CliError::ProviderSpec {
+                    message: error.message,
+                    fix: error.fix,
+                    details: json!({
+                        "kind": error.kind,
+                        "field": error.field,
+                    }),
+                })?;
+            let text = parsed.render_text();
+            let result = serde_json::to_value(&parsed).unwrap_or(Json::Null);
+            printed_or_json(ctx, &text, result)
+        }
+        ProviderCommand::RequestImport { file, reason } => {
+            let file_name = file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let text = String::from_utf8(read(&file)?).map_err(|_| CliError::BadValue {
+                field: "providers TOML",
+                value: "<not UTF-8>".into(),
+                expected: "UTF-8 TOML",
+            })?;
+            ctx.note(&format!(
+                "Asking the owner to import {file_name}: the request waits in the Inbox."
+            ));
+            let request = pb::RequestProviderImportRequest {
+                idempotency_key: key,
+                text,
+                file_name,
+                reason,
+            };
+            ctx.change(rpc::provider::REQUEST_PROVIDER_IMPORT, &request).await
+        }
         ProviderCommand::Ls => {
             reply(ctx, rpc::provider::LIST_PROVIDERS, &pb::ListProvidersRequest {}).await
         }

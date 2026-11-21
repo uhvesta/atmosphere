@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use humata2_clients::model::{DiffBase, FileDiff, RepoBase, RepoDiff, RepoDiffSpec, SessionId};
+use humata2_clients::model::{
+    DiffBase, FileDiff, RepoBase, RepoDiff, RepoDiffOptions, RepoDiffSpec, SessionId,
+};
 use humata2_clients::{Daemon, DaemonError, FakeDaemon, fixture};
 use tca::TestClock;
 use tokio::runtime::Builder;
@@ -27,6 +29,7 @@ fn spec(repo: &str, base: RepoBase) -> RepoDiffSpec {
     RepoDiffSpec {
         repo: repo.to_owned(),
         base,
+        options: RepoDiffOptions::default(),
     }
 }
 

@@ -22,7 +22,7 @@ tools/release/release.sh signs it again and names the copy "Humata 2.app".
 _SCRIPT = r"""
 set -eu
 app="$1"; exe="$2"; tools="$3"; platform="$4"; plist="$5"; bundle_id="$6"
-notices="$7"; icon="$8"; machine_tools="${9:-}"
+notices="$7"; icon="$8"; machine_tools="${9:-}"; fskit_appex="${10:-}"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
 cp "$exe" "$contents/MacOS/humata2"
@@ -60,9 +60,16 @@ if [ -n "$machine_tools" ]; then
   linux=$(sed 's/^{"platforms": {//' "$machine_tools/manifest.json")
   printf '%s, %s\n' "$mac" "$linux" > "$contents/Resources/manifest.json"
 fi
+# The FSKit file-system extension (FSKITSERVE), in Contents/Extensions where
+# ExtensionKit discovers com.apple.fskit.fsmodule bundles.
+if [ -n "$fskit_appex" ]; then
+  mkdir -p "$contents/Extensions"
+  cp -RL "$fskit_appex" "$contents/Extensions/$(basename "$fskit_appex")"
+  chmod -R u+w "$contents/Extensions/$(basename "$fskit_appex")"
+fi
 # The notification sounds (NOTIFY2), by name: macOS finds a named
 # notification sound in the bundle's Resources.
-shift 9
+shift 10
 for sound in "$@"; do
   cp "$sound" "$contents/Resources/$(basename "$sound")"
 done
@@ -90,10 +97,12 @@ def _humata2_app_impl(ctx):
     args.add(ctx.file.icon.path if ctx.file.icon else "")
     machine_tools = ctx.file.machine_tools
     args.add(machine_tools.path if machine_tools else "")
+    fskit_appex = ctx.file.fskit_appex
+    args.add(fskit_appex.path if fskit_appex else "")
     sounds = ctx.files.sounds
     args.add_all(sounds)
     ctx.actions.run_shell(
-        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []) + sounds,
+        inputs = [executable, tools, ctx.file.infoplist] + optional + ([machine_tools] if machine_tools else []) + ([fskit_appex] if fskit_appex else []) + sounds,
         outputs = [app],
         command = _SCRIPT,
         arguments = [args],
@@ -109,6 +118,8 @@ humata2_app = rule(
         "bundle_id": attr.string(mandatory = True),
         # The desktop binary, which becomes Contents/MacOS/humata2.
         "executable": attr.label(mandatory = True, executable = True, cfg = "target"),
+        # The macOS FSKit `.appex` bundle, copied to Contents/Extensions. Optional.
+        "fskit_appex": attr.label(allow_single_file = True),
         # The app icon, an .icns file, copied to Contents/Resources/Humata2.icns
         # (Info.plist names it). Optional.
         "icon": attr.label(allow_single_file = [".icns"]),

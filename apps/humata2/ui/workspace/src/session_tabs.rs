@@ -571,29 +571,39 @@ fn file_body(
                 .child(format!("{repo}/{path}")),
         )
         .child(match content {
-            Some(Ok(text)) => col()
-                .font_family("Menlo")
-                .text_size(px(12.))
-                .line_height(px(18.))
-                .children(text.lines().enumerate().map(|(index, line)| {
-                    row()
-                        .gap(px(12.))
-                        .px(px(12.))
-                        .child(
-                            div()
-                                .w(px(30.))
-                                .text_right()
-                                .text_color(rgb(look.tertiary))
-                                .child((index + 1).to_string()),
-                        )
-                        .child(
-                            div()
-                                .whitespace_nowrap()
-                                .child(line.to_owned())
-                                .test_text(line.to_owned()),
-                        )
-                }))
-                .into_any_element(),
+            Some(Ok(text)) => {
+                let dark = ((look.term >> 8) & 0xff) < 0x80;
+                let language = humata2_highlight::Language::detect(Some(path), Some(text));
+                let file_lines: Vec<&str> = text.lines().collect();
+                let syntax = humata2_highlight::highlight_lines_cached(language, &file_lines, dark);
+                col()
+                    .font_family("Menlo")
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .children(file_lines.into_iter().enumerate().map(|(index, line)| {
+                        let spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        let code_cell = div().whitespace_nowrap();
+                        let code_cell = if spans.is_empty() {
+                            code_cell.child(line.to_owned())
+                        } else {
+                            code_cell.child(
+                                StyledText::new(line.to_owned()).with_highlights(spans.to_vec()),
+                            )
+                        };
+                        row()
+                            .gap(px(12.))
+                            .px(px(12.))
+                            .child(
+                                div()
+                                    .w(px(30.))
+                                    .text_right()
+                                    .text_color(rgb(look.tertiary))
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(code_cell.test_text(line.to_owned()))
+                    }))
+                    .into_any_element()
+            }
             Some(Err(error)) => div()
                 .p(px(14.))
                 .child(error.to_string())

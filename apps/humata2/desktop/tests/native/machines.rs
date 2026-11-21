@@ -232,6 +232,7 @@ fn running_list(now: i64) -> Vec<humata2_clients::RunningHolder> {
             machine: MachineId::new("devbox-1"),
             stopped: pid.is_none(),
             agent_tab: false,
+            archived: false,
             paused_for_move: false,
         }
     };

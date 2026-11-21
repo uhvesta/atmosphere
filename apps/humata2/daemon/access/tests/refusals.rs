@@ -617,12 +617,12 @@ fn the_capability_list_matches_the_trace_matrix() {
     // SESSION_STOP_OTHER with D306 (SESSION_DELETE_OTHER took its Never place).
     assert_eq!(count(Tier::AskMe), 20);
     // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305, PROVIDER_IMPORT
-    // with D792.
-    assert_eq!(count(Tier::AskNoAllow), 3);
+    // with D792, SETTINGS_CHANGE with SETTINGSFIX.
+    assert_eq!(count(Tier::AskNoAllow), 4);
     // MACHINE_SCRIPT_RUN joined them with D688; SESSIONS_DELETE_MANY joined
     // with MASSDELETE (D876).
     assert_eq!(count(Tier::NeverByDefault), 6);
-    assert_eq!(count(Tier::UserOnly), 11);
+    assert_eq!(count(Tier::UserOnly), 10);
     assert_eq!(count(Tier::Peer), 2);
     // Rules exist for the agent tiers only.
     for capability in Capability::ALL {
@@ -674,4 +674,104 @@ fn an_agent_answers_comments_of_its_own_session_only() {
             Err(CheckError::TargetDoesNotFit { capability })
         );
     }
+}
+
+#[test]
+fn settings_change_asks_without_always_allow_and_forbids_allow_rule() {
+    let mut policy = policy();
+    let global_call = use_on(Capability::SettingsChange, Target::Global);
+    let Verdict::Ask(asked) = check(&policy, &as_agent(a()), &global_call, &on_mac()) else {
+        panic!("agent settings change must ask by default");
+    };
+    assert_eq!(asked.capability, Capability::SettingsChange);
+    assert!(asked.always_let.is_none(), "SettingsChange must never offer Always allow");
+
+    let channel_call = use_on(Capability::SettingsChange, Target::Channel(payments()));
+    let Verdict::Ask(channel_asked) = check(&policy, &as_agent(a()), &channel_call, &on_mac())
+    else {
+        panic!("agent channel settings change must ask by default");
+    };
+    assert!(channel_asked.always_let.is_none());
+
+    // Setting the rule to Allow is forbidden (AskNoAllow).
+    assert!(matches!(
+        policy.set_rule(
+            &user(),
+            &Rules::Channel(payments()),
+            Capability::SettingsChange,
+            Decision::Allow,
+        ),
+        Err(humata2_access::PolicyError::SettingNotOffered {
+            capability: Capability::SettingsChange,
+            decision: Decision::Allow,
+        })
+    ));
+
+    // Setting the rule to Never refuses immediately.
+    policy
+        .set_rule(
+            &user(),
+            &Rules::Channel(payments()),
+            Capability::SettingsChange,
+            Decision::Never,
+        )
+        .expect("Never is offered for AskNoAllow");
+    let refusal = refusal_of(check(&policy, &as_agent(a()), &global_call, &on_mac()));
+    assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::NeverRule));
+}
+
+#[test]
+fn branch_only_push_on_non_default_branch_runs_without_asking_while_review_never_and_default_branch_stay_guarded() {
+    let feature_push = use_on(
+        Capability::GitPush,
+        Target::PushBranch(RepoBranch {
+            repo: RepoRef::new("acme/api"),
+            branch: "me/fix-refunds".to_owned(),
+        }),
+    );
+    let main_push = use_on(
+        Capability::GitPush,
+        Target::PushBranch(RepoBranch {
+            repo: RepoRef::new("acme/api"),
+            branch: "main".to_owned(),
+        }),
+    );
+
+    let mut policy = policy();
+    // Ordinary agent pushing a non-default branch runs without asking.
+    assert!(allowed(Source::Rule).met_by(&check(
+        &policy,
+        &as_agent(a()),
+        &feature_push,
+        &on_mac(),
+    )));
+    // Pushing a default branch still asks.
+    assert!(asks(Capability::GitPush).met_by(&check(
+        &policy,
+        &as_agent(a()),
+        &main_push,
+        &on_mac(),
+    )));
+    // Opening a PR (Target::Push) still asks.
+    assert!(asks(Capability::GitPush).met_by(&check(
+        &policy,
+        &as_agent(a()),
+        &push(),
+        &on_mac(),
+    )));
+    // A review session with push_allowed = false is still refused.
+    let refusal = refusal_of(check(&policy, &review(false), &feature_push, &on_mac()));
+    assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::HardLimit));
+    assert_eq!(refusal.fix(), Fix::UserAllowsReviewPush { session: a().id });
+    // A channel with GitPush set to Never still refuses branch-only pushes.
+    policy
+        .set_rule(
+            &user(),
+            &Rules::Channel(payments()),
+            Capability::GitPush,
+            Decision::Never,
+        )
+        .expect("GitPush offers Never");
+    let never_refusal = refusal_of(check(&policy, &as_agent(a()), &feature_push, &on_mac()));
+    assert_eq!(never_refusal.kind(), ErrorKind::Denied(DeniedSource::NeverRule));
 }

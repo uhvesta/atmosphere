@@ -41,6 +41,7 @@ use sessions::{session, sessions};
 
 pub use desk::{channel_desk, desk, empty};
 pub use design_session::design_session;
+pub use requests::{browser_read_request, browser_write_request};
 pub(crate) use desk::session as desk_session;
 pub(crate) use terminal::{extra_terminal, terminal_line, terminal_screen};
 

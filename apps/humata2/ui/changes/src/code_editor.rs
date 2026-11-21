@@ -88,9 +88,27 @@ pub fn body(
         path: path.to_owned(),
         reattach: documents.reattach(),
     });
+    let dark = ((look.term >> 8) & 0xff) < 0x80;
+    let language = humata2_highlight::Language::detect(Some(path), Some(text));
     let side_rows = (code.mode == CodeMode::SideBySide).then(|| editor::side_by_side(&rows));
     let (lines, starts, slots): (Vec<Vec<AnyElement>>, Vec<usize>, Vec<Slot>) = match &side_rows {
         Some(side) => {
+            let old_texts: Vec<&str> = side
+                .iter()
+                .map(|row| match row {
+                    SideRow::Pair { old: Some(line), .. } => line.text.as_str(),
+                    _ => "",
+                })
+                .collect();
+            let new_texts: Vec<&str> = side
+                .iter()
+                .map(|row| match row {
+                    SideRow::Pair { new: Some(line), .. } => line.text.as_str(),
+                    _ => "",
+                })
+                .collect();
+            let old_syntax = humata2_highlight::highlight_lines_cached(language, &old_texts, dark);
+            let new_syntax = humata2_highlight::highlight_lines_cached(language, &new_texts, dark);
             let starts = editor::side_changes(side);
             let slots = side
                 .iter()
@@ -104,7 +122,9 @@ pub fn body(
                 .enumerate()
                 .map(|(index, row)| match row {
                     SideRow::Pair { old, new } => {
-                        vec![side_pair(index, old.as_ref(), new.as_ref(), &commenting, look)]
+                        let old_spans = old_syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        let new_spans = new_syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        vec![side_pair(index, old.as_ref(), old_spans, new.as_ref(), new_spans, &commenting, look)]
                     }
                     SideRow::Fold { start, count } => {
                         vec![fold(ui, repo, path, *start, *count, look)]
@@ -114,6 +134,14 @@ pub fn body(
             (lines, starts, slots)
         }
         None => {
+            let line_texts: Vec<&str> = rows
+                .iter()
+                .map(|row| match row {
+                    Row::Line(line) => line.text.as_str(),
+                    Row::Fold { .. } => "",
+                })
+                .collect();
+            let syntax = humata2_highlight::highlight_lines_cached(language, &line_texts, dark);
             let starts = editor::changes(&rows);
             let slots = rows
                 .iter()
@@ -126,7 +154,10 @@ pub fn body(
                 .iter()
                 .enumerate()
                 .map(|(index, row)| match row {
-                    Row::Line(line) => vec![line_row(index, line, &commenting, look)],
+                    Row::Line(line) => {
+                        let spans = syntax.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                        vec![line_row(index, line, spans, &commenting, look)]
+                    }
                     Row::Fold { start, count } => vec![fold(ui, repo, path, *start, *count, look)],
                 })
                 .collect();
@@ -629,11 +660,25 @@ fn fold(ui: &Rc<Ui>, repo: &str, path: &str, start: u32, count: u32, look: Look)
 }
 
 /// A line of the inline and full-file rows: both numbers, the sign, the text.
-fn line_row(index: usize, line: &DiffLine, commenting: &Rc<Commenting>, look: Look) -> AnyElement {
+fn line_row(
+    index: usize,
+    line: &DiffLine,
+    syntax: &[(std::ops::Range<usize>, HighlightStyle)],
+    commenting: &Rc<Commenting>,
+    look: Look,
+) -> AnyElement {
     let (sign, bg) = match line.kind {
         LineKind::Added => ("+", Some(look.add)),
         LineKind::Removed => ("−", Some(look.del)),
         _ => (" ", None),
+    };
+    let text_cell = div()
+        .whitespace_nowrap()
+        .text_color(rgb(look.term_text));
+    let text_cell = if syntax.is_empty() {
+        text_cell.child(line.text.clone())
+    } else {
+        text_cell.child(StyledText::new(line.text.clone()).with_highlights(syntax.to_vec()))
     };
     row()
         .id(SharedString::from(format!("editor-line-{index}")))
@@ -650,13 +695,7 @@ fn line_row(index: usize, line: &DiffLine, commenting: &Rc<Commenting>, look: Lo
                 .text_color(rgb(look.term_text))
                 .child(sign),
         )
-        .child(
-            div()
-                .whitespace_nowrap()
-                .text_color(rgb(look.term_text))
-                .child(line.text.clone())
-                .test_text(line.text.clone()),
-        )
+        .child(text_cell.test_text(line.text.clone()))
         .test_support()
         .into_any_element()
 }
@@ -665,7 +704,9 @@ fn line_row(index: usize, line: &DiffLine, commenting: &Rc<Commenting>, look: Lo
 fn side_pair(
     index: usize,
     old: Option<&DiffLine>,
+    old_syntax: &[(std::ops::Range<usize>, HighlightStyle)],
     new: Option<&DiffLine>,
+    new_syntax: &[(std::ops::Range<usize>, HighlightStyle)],
     commenting: &Rc<Commenting>,
     look: Look,
 ) -> AnyElement {
@@ -673,16 +714,22 @@ fn side_pair(
         .id(SharedString::from(format!("editor-row-{index}")))
         .items_stretch()
         .w_full()
-        .child(half(old, true, commenting, look))
+        .child(half(old, old_syntax, true, commenting, look))
         .child(div().w(px(1.)).flex_shrink_0().bg(rgb(look.line)))
-        .child(half(new, false, commenting, look))
+        .child(half(new, new_syntax, false, commenting, look))
         .test_support()
         .into_any_element()
 }
 
 /// One side of a pair. An empty side is a muted cell standing in for hatching.
 /// Only the new side's numbers take a comment.
-fn half(line: Option<&DiffLine>, old_side: bool, commenting: &Rc<Commenting>, look: Look) -> Div {
+fn half(
+    line: Option<&DiffLine>,
+    syntax: &[(std::ops::Range<usize>, HighlightStyle)],
+    old_side: bool,
+    commenting: &Rc<Commenting>,
+    look: Look,
+) -> Div {
     let Some(line) = line else {
         return div().flex_1().min_w_0().min_h(px(18.)).bg(rgb(look.fill));
     };
@@ -697,21 +744,23 @@ fn half(line: Option<&DiffLine>, old_side: bool, commenting: &Rc<Commenting>, lo
     } else {
         new_number(shown, line, commenting, look)
     };
+    let text_cell = div()
+        .flex_1()
+        .min_w_0()
+        .whitespace_nowrap()
+        .text_color(rgb(look.term_text));
+    let text_cell = if syntax.is_empty() {
+        text_cell.child(line.text.clone())
+    } else {
+        text_cell.child(StyledText::new(line.text.clone()).with_highlights(syntax.to_vec()))
+    };
     row()
         .flex_1()
         .min_w_0()
         .min_h(px(18.))
         .when_some(bg, |row, bg| row.bg(rgb(bg)))
         .child(gutter)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .whitespace_nowrap()
-                .text_color(rgb(look.term_text))
-                .child(line.text.clone())
-                .test_text(line.text.clone()),
-        )
+        .child(text_cell.test_text(line.text.clone()))
 }
 
 /// A line number column, blank when the line has no number on that side.

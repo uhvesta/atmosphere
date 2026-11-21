@@ -72,7 +72,7 @@ fn review_a_pull_request_starts_on_the_agent_the_reviews_channel_takes() {
     let mut workspace = fixture::design();
     workspace.channels.push(Channel {
         id: ChannelId::new("pr-reviews-channel"),
-        name: "PR reviews".to_owned(),
+        name: "PR Reviews".to_owned(),
         repos: Vec::new(),
         machines: vec![MachineId::new("this-mac")],
         purpose: String::new(),

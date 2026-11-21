@@ -395,3 +395,30 @@ fn open_documents_are_listed_before_closed_kept_ones() {
         .collect();
     assert_eq!(from, ["cdesk-triage", "cdesk-triage", "cdesk-old", "cdesk-old"]);
 }
+
+#[test]
+fn confirming_close_while_another_change_is_pending_does_not_stick_the_sheet() {
+    // SMB-012: if another change (e.g., a switch toggle) is already in flight
+    // for the session, ConfirmCloseChannel must not set `closing = true` and
+    // leave the close sheet stuck with Cancel ignored.
+    let workspace = with_channel_desk();
+    let session = SessionId::new("cdesk-triage");
+    let fake = FakeDaemon::new(workspace.clone(), Arc::new(TestClock::new()));
+    let mut state = DeskState {
+        workspace: Arc::new(workspace),
+        ..DeskState::default()
+    };
+    state.pending.insert(session.clone());
+    let mut store = TestStore::new(state, Desk::new(Arc::new(fake))).non_exhaustive();
+    store.send(A::AskClose(session.clone()), |_| {});
+    store.send(A::ConfirmCloseChannel, |_| {});
+    let sheet = store
+        .state()
+        .channel_close
+        .as_ref()
+        .expect("close sheet stays open with message");
+    assert!(!sheet.closing, "sheet must not be stuck in closing=true");
+    assert!(sheet.error.is_some(), "sheet should explain a change is still saving");
+    store.send(A::CancelDialog, |_| {});
+    assert!(store.state().channel_close.is_none(), "Cancel must dismiss the sheet");
+}

@@ -54,7 +54,6 @@ fn answer(request: &http::Request<Body>) -> http::Response<Body> {
 not_built! {
     AuditService => audit_service_server,
     ActivityService => activity_service_server,
-    ProviderService => provider_service_server,
     SkillsService => skills_service_server,
     BridgeService => bridge_service_server,
     ViewStateService => view_state_service_server,
@@ -69,11 +68,7 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(ViewStateService)
 }
 
-/// Adds MachineService and ProviderService to a machine's `router`: only
-/// the host keeps machines and their providers, and the machine's daemon
-/// doesn't forward to them yet.
+/// Adds host-only services not yet forwarded on a machine's `router`.
 pub(crate) fn register_host_only<L>(router: Router<L>) -> Router<L> {
-    router
-        .add_service(ProviderService)
-        .add_service(SkillsService)
+    router.add_service(SkillsService)
 }

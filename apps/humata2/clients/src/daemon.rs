@@ -161,6 +161,10 @@ pub enum Event {
     /// The daemon's settings changed, or its mount state did (D908): read the
     /// open Settings section again.
     SettingsChanged,
+    /// SETTINGSFIX: a `humata login` is waiting for approval in the app.
+    PendingCliLogin(PendingCliLogin),
+    /// SETTINGSFIX: a pending `humata login` was answered or the terminal stopped waiting.
+    PendingCliLoginGone(String),
     /// Events were dropped because the subscriber fell behind: reload.
     Resync,
 }
@@ -227,8 +231,16 @@ pub enum Operation {
     SetAgentSwitch,
     /// [`Daemon::set_sync_settings`].
     SetSyncSettings,
+    /// [`Daemon::set_web_todo_enabled`] (WEBTODO, D905).
+    SetWebTodoEnabled,
     /// [`Daemon::set_todo_automation`] (TODO2WIRE).
     SetTodoAutomation,
+    /// [`Daemon::update_settings`] (SETTINGSFIX).
+    UpdateSettings,
+    /// [`Daemon::refresh_gh_login`] (SETTINGSFIX).
+    RefreshGhLogin,
+    /// [`Daemon::update_channel_settings`] (SETTINGSFIX).
+    UpdateChannelSettings,
     /// [`Daemon::rename_session`].
     RenameSession,
     /// [`Daemon::add_repo_to_session`].
@@ -269,6 +281,26 @@ pub enum Operation {
     AdoptRunningHolder,
     /// [`Terminals::open_agent_tab`].
     OpenAgentTab,
+    /// [`Daemon::list_detected_browsers`].
+    ListDetectedBrowsers,
+    /// [`Daemon::install_browser_host`].
+    InstallBrowserHost,
+    /// [`Daemon::uninstall_browser_host`].
+    UninstallBrowserHost,
+    /// [`Daemon::browser_bridge_status`].
+    BrowserBridgeStatus,
+    /// [`Daemon::list_pending_cli_logins`].
+    ListPendingCliLogins,
+    /// [`Daemon::answer_cli_login`].
+    AnswerCliLogin,
+    /// [`Daemon::list_cli_sessions`].
+    ListCliSessions,
+    /// [`Daemon::end_cli_session`].
+    EndCliSession,
+    /// [`Daemon::list_script_tokens`].
+    ListScriptTokens,
+    /// [`Daemon::revoke_script_token`].
+    RevokeScriptToken,
 }
 
 /// Why a daemon call failed.
@@ -706,6 +738,12 @@ pub trait Daemon: Send + Sync + 'static {
     /// unpushed work is committed, pushed and opened as pull requests first;
     /// without it, that work is deleted with the session.
     fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive>;
+    /// Like [`Daemon::archive`], and with `end` ends the session's agent and
+    /// shells (D801 F) instead of leaving them running.
+    fn archive_with_end(&self, session: &SessionId, push_first: bool, end: bool) -> Reply<Archive> {
+        let _ = end;
+        self.archive(session, push_first)
+    }
     /// Adds a plain SSH destination to the fake workspace.
     fn add_machine(&self, address: &str) -> Reply<MachineId>;
     /// Restores a session archived by this client, including its tree and pin.
@@ -878,11 +916,122 @@ pub trait Daemon: Send + Sync + 'static {
     /// Changes the Sync section and/or the mount switch; gives what the
     /// daemon holds after. Running sessions follow at once.
     fn set_sync_settings(&self, change: SyncChange) -> Reply<SyncSnapshot>;
+    /// What Settings holds for the To-do web UI switch and its live loopback
+    /// URL (WEBTODO, D905).
+    fn web_todo_settings(&self) -> Reply<WebTodoSnapshot> {
+        let what = "Reading the To-do web UI setting".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Turns the host daemon's loopback To-do web server on or off (WEBTODO, D905).
+    fn set_web_todo_enabled(&self, enabled: bool) -> Reply<WebTodoSnapshot> {
+        let _ = enabled;
+        let what = "Changing the To-do web UI setting".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// What Settings › General › To-do holds (TODO2WIRE, D902).
     fn todo_automation(&self) -> Reply<TodoAutomation>;
     /// Replaces the whole To-do automation section; gives what the daemon
     /// holds after. It applies with no restart.
     fn set_todo_automation(&self, section: TodoAutomation) -> Reply<TodoAutomation>;
+
+    /// Full global settings snapshot from `SettingsService.GetSettings` (SETTINGSFIX).
+    fn full_settings(&self) -> Reply<FullSettings> {
+        let what = "Reading the settings".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Applies a partial update via `SettingsService.UpdateSettings` (SETTINGSFIX).
+    fn update_settings(&self, patch: SettingsPatch) -> Reply<FullSettings> {
+        let _ = patch;
+        let what = "Saving the settings".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Triggers a `gh` login refresh for the default branch prefix and returns the current settings (SETTINGSFIX).
+    fn refresh_gh_login(&self) -> Reply<FullSettings> {
+        let what = "Refreshing GitHub login".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Per-channel settings snapshot from `SettingsService.GetChannelSettings` (SETTINGSFIX).
+    fn channel_settings(&self, channel: &ChannelId) -> Reply<ChannelSettings> {
+        let what = format!("Reading settings for {channel}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Updates per-channel settings via `SettingsService.UpdateChannelSettings` (SETTINGSFIX).
+    fn update_channel_settings(
+        &self,
+        channel: &ChannelId,
+        patch: ChannelSettingsPatch,
+    ) -> Reply<ChannelSettings> {
+        let _ = patch;
+        let what = format!("Saving settings for {channel}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// The browsers found on this Mac and whether each has the native messaging
+    /// host set up (BROWSER).
+    fn list_detected_browsers(&self) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        let what = "Listing detected browsers".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Links `humata2-browser-host` and installs Humata's native messaging host
+    /// manifest for each browser in `kinds` (every found browser when empty),
+    /// returning the updated list (BROWSER).
+    fn install_browser_host(
+        &self,
+        kinds: Vec<crate::model::BrowserKind>,
+    ) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        let _ = kinds;
+        let what = "Setting up the browser host".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Removes Humata's native messaging host manifest for each browser in
+    /// `kinds` (every found browser when empty), returning the updated list
+    /// (BROWSER).
+    fn uninstall_browser_host(
+        &self,
+        kinds: Vec<crate::model::BrowserKind>,
+    ) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        let _ = kinds;
+        let what = "Uninstalling the browser host".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Whether a browser extension host is currently connected to the daemon (BROWSER).
+    fn browser_bridge_status(&self) -> Reply<crate::model::BrowserBridgeStatus> {
+        let what = "Checking browser bridge status".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Pending `humata login` requests waiting for approval in the app (SETTINGSFIX).
+    fn list_pending_cli_logins(&self) -> Reply<Vec<PendingCliLogin>> {
+        let what = "Listing pending CLI logins".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Approves (`allow = true`) or denies (`allow = false`) a pending `humata login` (SETTINGSFIX).
+    fn answer_cli_login(&self, id: String, allow: bool) -> Reply<()> {
+        let _ = (id, allow);
+        let what = "Answering a CLI login".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Active `humata login` sessions on this daemon (SETTINGSFIX).
+    fn list_cli_sessions(&self) -> Reply<Vec<CliSession>> {
+        let what = "Listing CLI sessions".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Ends an active `humata login` session (SETTINGSFIX).
+    fn end_cli_session(&self, id: String) -> Reply<()> {
+        let _ = id;
+        let what = "Ending a CLI session".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Script tokens on this daemon (SETTINGSFIX).
+    fn list_script_tokens(&self) -> Reply<Vec<ScriptToken>> {
+        let what = "Listing script tokens".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Revokes a script token (SETTINGSFIX).
+    fn revoke_script_token(&self, id: String) -> Reply<()> {
+        let _ = id;
+        let what = "Revoking a script token".to_owned();
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
 }
 
 /// The terminals of sessions. What a tab draws, and what is typed into it,
@@ -1028,13 +1177,23 @@ pub enum ImageKind {
 }
 
 mod agent_switches;
+mod cli_auth;
 mod running;
+mod settings_full;
 mod sync;
 mod todo_automation;
+mod web_todo;
 
 pub use agent_switches::{AgentSwitch, NoAgentOn, SwitchChange, pick_agent};
+pub use cli_auth::{CliSession, PendingCliLogin, ScriptToken};
+pub use settings_full::{
+    ChannelSettings, ChannelSettingsPatch, DefaultAgentSetting, FullSettings, LongLinesMode,
+    NotificationSettings, RetentionDefaults, SecuritySettings, SettingsPatch, SkillsSettings,
+    TerminalSettings, sample_branch, valid_branch_prefix,
+};
 pub use sync::{FuseMountStatus, MachineSyncSettings, SyncChange, SyncSettings, SyncSkillsMode, SyncSnapshot};
 pub use todo_automation::{
     DEFAULT_IDLE_NUDGE_DAYS, IDLE_NUDGE_CHOICES, TodoAutomation, TodoMode,
 };
+pub use web_todo::{WebTodoSnapshot, WebTodoStatus};
 pub use running::{HolderTab, RunningHolder, agent_of_kind};

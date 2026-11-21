@@ -114,3 +114,30 @@ fn a_default_agent_that_is_on_stays_the_choice() {
     };
     assert_eq!(sheet.agent, Agent::Codex);
 }
+
+#[test]
+fn pressing_escape_while_creating_toasts_a_late_error() {
+    // SMB-004: pressing Esc on New session while creation is in flight must
+    // not silently drop a subsequent SessionCreated(Err).
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    state.workspace = Arc::new(fixture::design());
+    state.route = Route::Channel(ChannelId::new("payments-rewrite"));
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::StartNewSession, |_| {});
+    store.send(A::Escape, |_| {});
+    assert!(store.state().overlay().is_none());
+    store.send(
+        A::SessionCreated(Err(humata2_clients::DaemonError::Refused {
+            what: "create session".to_owned(),
+            reason: "clone failed".to_owned(),
+        })),
+        |_| {},
+    );
+    assert!(
+        store.state().toasts.iter().any(|t| t.text.contains("clone failed")),
+        "expected a toast with the error, got {:?}",
+        store.state().toasts
+    );
+    store.finish();
+}

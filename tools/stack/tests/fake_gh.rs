@@ -63,11 +63,14 @@ fn answer(state: &mut Value, args: &[String]) -> Result<String, String> {
         ["repo", "view", ..] => Ok(repo_view(state)),
         ["api", "user", ..] => Ok(json!({"login": state["login"]}).to_string()),
         ["pr", "list", rest @ ..] => pr_list(state, rest),
+        ["pr", "view", target, rest @ ..] => pr_view(state, target, rest),
         ["pr", "create", rest @ ..] => pr_create(state, rest),
         ["pr", "edit", number, rest @ ..] => pr_edit(state, number, rest),
+        ["pr", "ready", number, ..] => pr_ready(state, number),
         ["api", rest @ ..] => api(state, rest),
         ["stack", "--help"] => native(state).map(|()| "Usage: gh stack <command>\n".to_owned()),
         ["stack", "link", rest @ ..] => stack_link(state, rest),
+        ["stack", "view", rest @ ..] => stack_view(state, rest),
         _ => Err(format!("fake gh: unexpected call: gh {}", args.join(" "))),
     }
 }
@@ -97,7 +100,8 @@ fn list(value: Option<&str>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn pr_json(pr: &Value) -> Value {
+fn pr_json(pr: &Value, default_login: &str) -> Value {
+    let author = pr["author"].as_str().unwrap_or(default_login);
     json!({
         "number": pr["number"],
         "url": pr["url"],
@@ -108,6 +112,7 @@ fn pr_json(pr: &Value) -> Value {
         "body": pr["body"],
         "isDraft": pr["draft"],
         "reviewDecision": "",
+        "author": {"login": author},
     })
 }
 
@@ -122,16 +127,32 @@ fn pr_list(state: &mut Value, rest: &[&str]) -> Result<String, String> {
     let head = flag(rest, "--head");
     let mine = flag(rest, "--author") == Some("@me");
     let state_filter = flag(rest, "--state").unwrap_or("open");
+    let login = state["login"].as_str().unwrap_or("alice").to_owned();
     let mut found: Vec<Value> = prs(state)?
         .iter()
         .filter(|pr| head.is_none_or(|head| pr["head"] == head))
         .filter(|pr| state_filter == "all" || pr["state"] == state_filter.to_uppercase())
-        .filter(|_| mine || head.is_some())
-        .map(pr_json)
+        .filter(|pr| !mine || pr["author"].as_str().unwrap_or(&login) == login)
+        .map(|pr| pr_json(pr, &login))
         .collect();
     // Newest first, as gh lists them.
     found.reverse();
     Ok(Value::Array(found).to_string())
+}
+
+fn pr_view(state: &mut Value, target: &str, rest: &[&str]) -> Result<String, String> {
+    if flag(rest, "--json").is_none() {
+        return Err("fake gh: pr view without --json".to_owned());
+    }
+    let login = state["login"].as_str().unwrap_or("alice").to_owned();
+    let pr = find_pr(state, target)?.clone();
+    Ok(pr_json(&pr, &login).to_string())
+}
+
+fn pr_ready(state: &mut Value, number: &str) -> Result<String, String> {
+    let pr = find_pr(state, number)?;
+    pr["draft"] = json!(false);
+    Ok(format!("{}\n", pr["url"].as_str().unwrap_or_default()))
 }
 
 fn body_from_file(rest: &[&str]) -> Result<Option<String>, String> {
@@ -292,4 +313,17 @@ fn stack_link(state: &mut Value, rest: &[&str]) -> Result<String, String> {
         stacks.push(Value::Array(urls));
     }
     Ok(String::new())
+}
+
+fn stack_view(state: &Value, rest: &[&str]) -> Result<String, String> {
+    native(state)?;
+    if has(rest, "--json") {
+        let stacks = state
+            .get("native_stacks")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        Ok(stacks.to_string())
+    } else {
+        Ok(String::new())
+    }
 }

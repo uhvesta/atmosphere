@@ -23,6 +23,7 @@ rust_library(
         "//apps/humata2/features/sidebar",
         "//apps/humata2/features/todo",
         "//apps/humata2/features/views",
+        "//apps/humata2/highlight",
         "//apps/humata2/terminal/client:terminal_replica",
         "//apps/humata2/terminal/grid:terminal_grid",
         "//apps/humata2/terminal/pane:terminal_pane",

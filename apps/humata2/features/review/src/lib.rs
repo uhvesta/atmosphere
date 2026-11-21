@@ -130,6 +130,24 @@ pub struct Anchor {
     pub line: u32,
 }
 
+/// Default width of the full-screen Diff file list column, in logical pixels.
+pub const DEFAULT_FILE_LIST_WIDTH: f32 = 300.;
+/// Narrowest width the full-screen Diff file list column can be dragged to.
+pub const MIN_FILE_LIST_WIDTH: f32 = 180.;
+/// Widest width the full-screen Diff file list column can be dragged to.
+pub const MAX_FILE_LIST_WIDTH: f32 = 560.;
+
+/// Clamps a full-screen Diff file list width into `[MIN_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH]`,
+/// falling back to [`DEFAULT_FILE_LIST_WIDTH`] for non-finite values.
+#[must_use]
+pub fn clamp_file_list_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(MIN_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH)
+    } else {
+        DEFAULT_FILE_LIST_WIDTH
+    }
+}
+
 /// What survives a restart: the selected file and folded files. Comments
 /// older builds kept here are read once and handed to the daemon.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +170,10 @@ pub struct ReviewSaved {
     /// Saved files from before this field load with none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub targets: BTreeMap<SessionId, DiffTargets>,
+    /// Width of the full-screen Diff file list column, in logical pixels, when
+    /// resized away from [`DEFAULT_FILE_LIST_WIDTH`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_list_width: Option<u16>,
 }
 
 /// What the page knows about its reads of one session's changes (D179).
@@ -726,7 +748,7 @@ impl ReviewState {
             _ => &plan.importance,
         };
         list.iter()
-            .find(|entry| entry.repo == repo && entry.path == path)
+            .find(|entry| same_repo(&entry.repo, repo) && entry.path == path)
             .map(|entry| entry.tier)
     }
 
@@ -769,12 +791,30 @@ impl ReviewState {
     }
 
     /// What `session` reads: the picked layer's repositories while a stack
-    /// shows, else its diff targets.
+    /// shows, else a non-stacked review plan's explicit diff specs (preserving
+    /// per-repo options and repo filtering), else its diff targets.
     fn current_base(&self, session: &SessionId) -> DiffBase {
-        match self.stack_of(session) {
-            Some(stack) => stack::layer_base(stack, self.layer_of(session)),
-            None => self.targets_of(session).base(&repos_of(self, session)),
+        if let Some(stack) = self.stack_of(session) {
+            return stack::layer_base(stack, self.layer_of(session));
         }
+        if let Some(plan) = self.plans.get(session)
+            && !plan.targets.is_empty()
+        {
+            let targets = self.targets_of(session);
+            return DiffBase::Spec(
+                plan.targets
+                    .iter()
+                    .map(|spec| {
+                        let mut spec = spec.clone();
+                        if let Some(override_base) = targets.repos.get(&spec.repo) {
+                            spec.base = override_base.clone();
+                        }
+                        spec
+                    })
+                    .collect(),
+            );
+        }
+        self.targets_of(session).base(&repos_of(self, session))
     }
 
     /// Whether a stack shows for `session`: its base menus stay shut.
@@ -825,6 +865,14 @@ impl ReviewState {
         }
     }
 
+    /// The full-screen Diff file list column width, clamped to the allowed range.
+    #[must_use]
+    pub fn file_list_width(&self) -> f32 {
+        self.saved
+            .file_list_width
+            .map_or(DEFAULT_FILE_LIST_WIDTH, |w| clamp_file_list_width(f32::from(w)))
+    }
+
     /// Takes what was saved: the folds, the older comments and each
     /// session's diff targets, which become the targets in use.
     pub fn load_saved(&mut self, saved: ReviewSaved) {
@@ -860,6 +908,11 @@ pub enum ReviewAction {
     PrevChange,
     /// Open the narrow file list over the file bar, or fold it (DS-3).
     ToggleFileList,
+    /// Resize the full-screen Diff file list column to `width` logical pixels
+    /// (clamped to `[MIN_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH]`).
+    ResizeFileList(f32),
+    /// Reset the full-screen Diff file list column to [`DEFAULT_FILE_LIST_WIDTH`].
+    ResetFileListWidth,
     /// Down (↓) while the file list has focus: the cursor moves to
     /// the next row, stopping at the last. The first press with no cursor
     /// only places it, on the open file or the first row (DS-84).
@@ -1377,7 +1430,10 @@ fn repos_of(state: &ReviewState, session: &SessionId) -> Vec<String> {
             .sessions
             .iter()
             .filter(|each| &each.id == session)
-            .map(|each| each.repo.clone())
+            .flat_map(|each| {
+                std::iter::once(each.repo.clone())
+                    .chain(each.clones.iter().map(|clone| clone.repo.clone()))
+            })
             .filter(|repo| !repo.is_empty()),
     );
     repos.extend(
@@ -1483,6 +1539,17 @@ impl Reducer for Review {
                     state.file_list_open.insert(session);
                 }
             }
+            ReviewAction::ResizeFileList(width) => {
+                let clamped = clamp_file_list_width(width).round() as u16;
+                state.saved.file_list_width = if clamped == DEFAULT_FILE_LIST_WIDTH as u16 {
+                    None
+                } else {
+                    Some(clamped)
+                };
+            }
+            ReviewAction::ResetFileListWidth => {
+                state.saved.file_list_width = None;
+            }
             ReviewAction::FilterFiles(session, query) => {
                 if query.is_empty() {
                     state.file_filter.remove(&session);
@@ -1515,6 +1582,9 @@ impl Reducer for Review {
                 if let Some(session) = state.session.clone()
                     && !state.shows_stack(&session)
                 {
+                    if let Some(plan) = state.plans.get_mut(&session) {
+                        plan.targets.clear();
+                    }
                     state
                         .targets
                         .entry(session.clone())
@@ -2202,4 +2272,57 @@ pub fn rows(workspace: &Workspace, session: &SessionId, folded: &BTreeSet<String
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use humata2_clients::model::{DiffUpto, RepoDiffOptions, RepoDiffSpec};
+    use humata2_clients::views::PlanTier;
+
+    #[test]
+    fn agent_tier_matches_short_repo_names_against_owner_slash_name() {
+        let session = SessionId::new("se_1");
+        let mut state = ReviewState::default();
+        state.plans.insert(
+            session.clone(),
+            PlanView {
+                importance: vec![PlanTier {
+                    repo: "api".to_owned(),
+                    path: "src/lib.rs".to_owned(),
+                    tier: FileTier::Key,
+                }],
+                ..PlanView::default()
+            },
+        );
+        let file = FileDiff {
+            path: "src/lib.rs".to_owned(),
+            ..FileDiff::default()
+        };
+        assert_eq!(state.tier_of(&session, "acme/api", &file), Tier::Key);
+    }
+
+    #[test]
+    fn current_base_preserves_non_stacked_plan_options_and_repo_list() {
+        let session = SessionId::new("se_1");
+        let mut state = ReviewState::default();
+        let spec = RepoDiffSpec {
+            repo: "acme/api".to_owned(),
+            base: RepoBase::Index,
+            options: RepoDiffOptions {
+                include_paths: vec!["src/".to_owned()],
+                upto: Some(DiffUpto::Staged),
+                no_renames: true,
+                ..RepoDiffOptions::default()
+            },
+        };
+        state.plans.insert(
+            session.clone(),
+            PlanView {
+                targets: vec![spec.clone()],
+                ..PlanView::default()
+            },
+        );
+        assert_eq!(state.current_base(&session), DiffBase::Spec(vec![spec]));
+    }
 }

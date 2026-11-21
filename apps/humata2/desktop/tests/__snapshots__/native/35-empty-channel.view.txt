@@ -25,6 +25,7 @@ Tab "To-do"
 Tab "Repos and machines"
 Tab "Agent access"
 Tab "Activity"
+Tab "Settings"
 #channel-empty
   text "Nothing in # web-revamp yet"
   Button "Add a GitHub repo…"

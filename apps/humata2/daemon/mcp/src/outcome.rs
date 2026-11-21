@@ -152,7 +152,7 @@ pub(crate) fn failure(error: &ToolError) -> Value {
     tool_result(json!({ "error": body }), true)
 }
 
-fn tool_result(structured: Value, is_error: bool) -> Value {
+pub(crate) fn tool_result(structured: Value, is_error: bool) -> Value {
     json!({
         "content": [{ "type": "text", "text": structured.to_string() }],
         "structuredContent": structured,

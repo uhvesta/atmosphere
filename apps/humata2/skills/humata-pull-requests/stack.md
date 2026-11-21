@@ -22,6 +22,42 @@ reference, and it matches the version installed:
     stack upload             # push the topic branches, open or update the pull requests
     stack status             # the stack as a tree; each should say `up to date`
 
+`stack` also matches `gh stack` command for command (`init`, `add`, `view`,
+`up`, `down`, `top`, `bottom`, `trunk`, `submit`, `push`, `sync`, `rebase`,
+`link`). A stack created by `gh stack` or `stack` is understood by both.
+
+## Importing a remote stack & interleaving local commits
+
+To copy or import a remote stack locally (by PR URL/number, a `gh stack` stack,
+or a chain of PRs whose bases point at each other):
+
+    stack import <pr-url-or-number>        # fetches branches, records topics/relatives/PRs locally
+    stack status                           # inspects the imported stack layer by layer
+    stack diff <topic>                     # diffs an imported or pinned layer
+    stack import <pr-url-or-number>        # re-importing updates the local stack in place
+
+You can interleave local commits between, on top of, or below imported layers
+using `Topic:` and `Relative:` trailers (or `stack add` / `stack restack`).
+When you `stack upload`, `stack submit`, `stack push`, or `stack sync`:
+
+- Your own local topics are pushed and their PRs are opened with the right bases.
+- Imported PRs' bases on GitHub are updated when a local layer is inserted below them.
+- Foreign branches (other authors' branches) are **never** force-pushed unless
+  you explicitly pass `--force-foreign`.
+
+## Native GitHub stack mode vs comment fallback
+
+The model has two levels: a PR is a stack of commits (one topic), and a stacked
+PR is a stack of those PRs.
+
+- **Native mode (default when `gh stack` is installed):** `stack upload` /
+  `stack submit` links the chain as a native GitHub stack and writes **zero**
+  comments (existing comments are left alone, never deleted).
+- **Fallback mode (no `gh stack` extension, repo refusal, or `--no-native-stack`):**
+  `stack` maintains one history comment per PR with a revision table and a
+  **Stack Update Summary** table containing clickable compare/diff links for
+  every repushed layer.
+
 To change an earlier topic after review:
 
     stack restack edit --topic <topic>     # stop at that topic's last commit

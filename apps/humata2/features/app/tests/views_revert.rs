@@ -393,10 +393,12 @@ fn a_review_plan_opens_the_diff_panel_with_a_base_per_repository() {
                     RepoDiffSpec {
                         repo: "acme/ledger".to_owned(),
                         base: RepoBase::Branch("release/2.4".to_owned()),
+                        options: Default::default(),
                     },
                     RepoDiffSpec {
                         repo: "acme/api".to_owned(),
                         base: RepoBase::Uncommitted,
+                        options: Default::default(),
                     },
                 ],
                 order: vec![
@@ -876,4 +878,103 @@ fn a_stack_opens_at_whole_stack_and_revert_restores_the_stack_and_layer_together
     rig.act(A::Views(ViewsAction::Revert));
     assert_eq!(rig.state().review.layer_of(&ledger()), Some("web"));
     assert_eq!(titles(&rig), vec!["api", "web"]);
+}
+
+#[test]
+fn a_pull_request_view_opens_tab_and_changes_panel_with_resolved_repo_bases() {
+    use humata2_clients::views::PullRequestDraftView;
+    let (mut rig, id) = rig(|views| {
+        views.offer_view(
+            &ledger(),
+            "PR: ledger migration",
+            "Ready to open",
+            "Claude Code",
+            ViewContent::PullRequest(vec![
+                PullRequestDraftView {
+                    repo: "ledger".to_owned(),
+                    title: "Add accounts table".to_owned(),
+                    body: "Creates migration 0042.".to_owned(),
+                    base_branch: "release/2.4".to_owned(),
+                    draft: true,
+                },
+                PullRequestDraftView {
+                    repo: "acme/api".to_owned(),
+                    title: "Wire client".to_owned(),
+                    body: String::new(),
+                    base_branch: String::new(),
+                    draft: false,
+                },
+            ]),
+        )
+    });
+    rig.act(A::Session(SessionAction::SetPanel(None)));
+
+    rig.act(A::Views(ViewsAction::Open(id.clone())));
+    assert_eq!(rig.state().route, Route::Session(ledger()));
+    assert_eq!(rig.state().panel(), Some(Panel::Changes));
+    let targets = rig.state().review.targets_of(&ledger());
+    assert_eq!(
+        targets.of("acme/ledger"),
+        RepoBase::Branch("release/2.4".to_owned())
+    );
+    assert_eq!(targets.of("acme/api"), RepoBase::DefaultBranch);
+    assert!(rig
+        .state()
+        .session
+        .views
+        .get(&ledger())
+        .is_some_and(|page| page.groups.iter().any(|g| g.tabs.contains(&Tab::View(id.to_string())))));
+}
+
+#[test]
+fn a_review_plan_resolves_short_repo_names_and_fetches_when_targets_are_empty() {
+    let (mut rig_short, short_id) = rig(|views| {
+        views.offer_view(
+            &ledger(),
+            "Short repo plan",
+            "Uses short repo name",
+            "Claude Code",
+            ViewContent::ReviewPlan(PlanView {
+                targets: vec![RepoDiffSpec {
+                    repo: "api".to_owned(),
+                    base: RepoBase::Uncommitted,
+                    options: Default::default(),
+                }],
+                order: vec![("api".to_owned(), "src/client.rs".to_owned())],
+                ..PlanView::default()
+            }),
+        )
+    });
+    rig_short.act(A::Views(ViewsAction::Open(short_id)));
+    let plan = rig_short.state().review.plans.get(&ledger()).expect("plan stored");
+    assert_eq!(plan.targets[0].repo, "acme/api");
+    assert_eq!(plan.order[0].0, "acme/api");
+    assert_eq!(
+        rig_short.state().review.targets_of(&ledger()).of("acme/api"),
+        RepoBase::Uncommitted
+    );
+
+    let (mut rig_empty, empty_id) = rig(|views| {
+        views.offer_view(
+            &ledger(),
+            "Empty targets plan",
+            "Order only",
+            "Claude Code",
+            ViewContent::ReviewPlan(PlanView {
+                order: vec![("acme/api".to_owned(), "src/client.rs".to_owned())],
+                ..PlanView::default()
+            }),
+        )
+    });
+    rig_empty.act(A::Views(ViewsAction::Open(empty_id)));
+    assert!(
+        rig_empty
+            .state()
+            .review
+            .fetch
+            .get(&ledger())
+            .and_then(|f| f.diffs.as_ref())
+            .is_some(),
+        "opening a plain ReviewPlan with empty targets must still fetch diffs"
+    );
 }

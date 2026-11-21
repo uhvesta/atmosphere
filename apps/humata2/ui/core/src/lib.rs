@@ -77,6 +77,7 @@ gpui_kit::assets::icon_assets!(
         HardDrive,
         Bell,
         Keyboard,
+        Globe,
         SquareTerminal,
         WifiOff,
     ]

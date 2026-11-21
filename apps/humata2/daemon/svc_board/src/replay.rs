@@ -421,6 +421,52 @@ impl BoardSvc {
             let request: pb::AskWhyRequest = request_of(bytes, &call.method)?;
             return Ok(self.inbox.ask_why_as(caller, request).await?.encode_to_vec());
         }
+        // PROVIDERCLI (D906): any remote caller (owner/script outside a session
+        // or a session agent) can list providers, read config, or ask the host
+        // owner to import a provider file into the host Inbox.
+        if matches!(
+            row.method,
+            Method::ListProviders | Method::GetProvidersConfig | Method::RequestProviderImport
+        ) {
+            if let Some(pb::forwarded_call::Principal::User(user)) = &call.principal {
+                if !user.outside_sessions {
+                    return Err(refused(&Refusal::PresenceRequired {
+                        accepted: vec![PresenceMethod::ApprovalPassphrase],
+                    }));
+                }
+                let caller = Caller::User(UserVia::Host);
+                let providers = &self.host_calls_for(&call.method)?.providers;
+                return match row.method {
+                    Method::ListProviders => {
+                        let request: pb::ListProvidersRequest = request_of(bytes, &call.method)?;
+                        Ok(providers
+                            .list_providers(as_caller(caller, request))
+                            .await?
+                            .into_inner()
+                            .encode_to_vec())
+                    }
+                    Method::GetProvidersConfig => {
+                        let request: pb::GetProvidersConfigRequest =
+                            request_of(bytes, &call.method)?;
+                        Ok(providers
+                            .get_providers_config(as_caller(caller, request))
+                            .await?
+                            .into_inner()
+                            .encode_to_vec())
+                    }
+                    Method::RequestProviderImport => {
+                        let request: pb::RequestProviderImportRequest =
+                            request_of(bytes, &call.method)?;
+                        Ok(providers
+                            .request_provider_import(as_caller(caller, request))
+                            .await?
+                            .into_inner()
+                            .encode_to_vec())
+                    }
+                    _ => unreachable!(),
+                };
+            }
+        }
         let Some(pb::forwarded_call::Principal::Agent(principal)) = &call.principal else {
             return Err(not_built_status(&call.method));
         };
@@ -583,6 +629,54 @@ impl BoardSvc {
                 let transfers = &me.host_calls_for(&call.method)?.transfers;
                 Ok(transfers
                     .start_transfer(as_caller(caller, request))
+                    .await?
+                    .into_inner()
+                    .encode_to_vec())
+            }
+            // BROWSER (D891): a machine's agents reach the host Mac's connected
+            // browser extension as that agent, with Inbox approval verified on
+            // both ends.
+            Method::GetBrowserBridgeStatus => {
+                let request: pb::GetBrowserBridgeStatusRequest = request_of(bytes, &call.method)?;
+                let browser = &me.host_calls_for(&call.method)?.browser;
+                Ok(browser
+                    .get_browser_bridge_status(as_caller(caller, request))
+                    .await?
+                    .into_inner()
+                    .encode_to_vec())
+            }
+            Method::ExecuteBrowserAction => {
+                let request: pb::ExecuteBrowserActionRequest = request_of(bytes, &call.method)?;
+                let browser = &me.host_calls_for(&call.method)?.browser;
+                Ok(browser
+                    .execute_browser_action(as_caller(caller, request))
+                    .await?
+                    .into_inner()
+                    .encode_to_vec())
+            }
+            Method::ListProviders => {
+                let request: pb::ListProvidersRequest = request_of(bytes, &call.method)?;
+                let providers = &me.host_calls_for(&call.method)?.providers;
+                Ok(providers
+                    .list_providers(as_caller(caller, request))
+                    .await?
+                    .into_inner()
+                    .encode_to_vec())
+            }
+            Method::GetProvidersConfig => {
+                let request: pb::GetProvidersConfigRequest = request_of(bytes, &call.method)?;
+                let providers = &me.host_calls_for(&call.method)?.providers;
+                Ok(providers
+                    .get_providers_config(as_caller(caller, request))
+                    .await?
+                    .into_inner()
+                    .encode_to_vec())
+            }
+            Method::RequestProviderImport => {
+                let request: pb::RequestProviderImportRequest = request_of(bytes, &call.method)?;
+                let providers = &me.host_calls_for(&call.method)?.providers;
+                Ok(providers
+                    .request_provider_import(as_caller(caller, request))
                     .await?
                     .into_inner()
                     .encode_to_vec())
@@ -884,6 +978,11 @@ impl BoardSvc {
             | Method::ListDirectory
             | Method::Stat
             | Method::StartTransfer
+            | Method::GetBrowserBridgeStatus
+            | Method::ExecuteBrowserAction
+            | Method::ListProviders
+            | Method::GetProvidersConfig
+            | Method::RequestProviderImport
             | Method::AskWhy
             | Method::ExplainAsk => Err(Rejection::UnknownOperation {
                 operation: entry.operation.clone(),

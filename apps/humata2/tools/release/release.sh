@@ -84,6 +84,19 @@ sign() {
 for helper in "$app/Contents/Helpers/"*; do
   sign "$helper"
 done
+for appex in "$app/Contents/Extensions/"*.appex; do
+  [ -d "$appex" ] || continue
+  appex_ent="$scratch/$(basename "$appex").entitlements"
+  if [ -f "apps/humata2/app/fskit/HumataFS.entitlements" ]; then
+    sed "s/@APP_GROUP@/$team.$bundle_id/g" "apps/humata2/app/fskit/HumataFS.entitlements" >"$appex_ent"
+    for bin in "$appex/Contents/MacOS/"*; do
+      [ -f "$bin" ] && sign --entitlements "$appex_ent" "$bin"
+    done
+    sign --entitlements "$appex_ent" "$appex"
+  else
+    sign "$appex"
+  fi
+done
 # Signing rewrote the helpers, so the release manifest's Mac checksums, taken
 # at build time, no longer match them. The daemon checks those checksums
 # before it installs its tools, so put the signed files' ones in before the

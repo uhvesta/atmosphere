@@ -182,7 +182,8 @@ fn empty(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
 
 pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
     let shown = state.inbox.shown();
-    if shown.is_empty() {
+    let cli_logins = crate::cli_login::inbox_cards(ui, state, look);
+    if shown.is_empty() && cli_logins.is_none() {
         return empty(ui, state, look).into_any_element();
     }
     let total = state.inbox.chips().iter().map(|(_, count)| count).sum::<usize>();
@@ -229,6 +230,7 @@ pub fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
                 .py(px(12.))
                 .gap(px(14.))
                 .child(InboxRoom::measure(ui, Measured::Pane))
+                .children(cli_logins)
                 .children(shown.into_iter().enumerate().map(|(index, request): (usize, &Request)| {
                     let card = div()
                         .relative()

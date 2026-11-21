@@ -9,17 +9,18 @@ use serde_json::Value;
 use stack_graph::{Pr as GraphPr, Stack};
 
 use crate::body::{self, Template};
-use crate::cli::UploadArgs;
+use crate::cli::{PushArgs, SubmitArgs, SyncArgs, UploadArgs};
 use crate::clock;
 use crate::config::Config;
 use crate::error::Error;
 use crate::gh::{self, Gh, NewPr, PrEdit, PrState};
 use crate::git::{Git, PushUpdate};
-use crate::history::{self, History, Row, StackLine};
+use crate::history::{self, History, LayerUpdate, Row, StackLine};
 use crate::local::{self, Branches, Tip};
 use crate::pins;
 use crate::plan::{Plan, Topic};
 use crate::restack;
+use crate::state::StackState;
 
 /// What the upload did for a topic, or would do with `--dry-run`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,8 @@ struct Session {
     draft: bool,
     /// Whether to replace descriptions edited on GitHub.
     overwrite_body: bool,
+    /// Whether force-pushing foreign imported branches is explicitly allowed.
+    force_foreign: bool,
 }
 
 /// The pull requests already on GitHub for the plan's topics, by topic name.
@@ -86,6 +89,8 @@ struct Item<'a> {
     /// The remote branch's head before this run; None when the branch is new.
     old_head: Option<String>,
     existing: Option<gh::Pr>,
+    /// True when this topic belongs to a foreign imported branch.
+    foreign: bool,
 }
 
 impl Item<'_> {
@@ -105,6 +110,10 @@ struct Uploaded<'a> {
     action: Action,
     subject: String,
     tip: Tip,
+    /// The remote branch's head before this run; None when newly created.
+    old_head: Option<String>,
+    /// True when this topic belongs to a foreign imported branch.
+    foreign: bool,
     /// The topic, for rendering its description again.
     source: &'a Topic,
     /// Its live description, as GitHub has it after this run's edits.
@@ -138,15 +147,139 @@ impl Drop for TempBody {
 }
 
 pub(crate) fn run(args: &UploadArgs, dir: &Path) -> Result<(), Error> {
+    run_inner(args, false, false, dir)
+}
+
+/// `stack submit`: matches `gh stack submit` (`--auto` creates new PRs as drafts,
+/// `--open` marks new and existing draft PRs ready for review).
+pub(crate) fn run_submit(args: &SubmitArgs, dir: &Path) -> Result<(), Error> {
+    run_inner(&args.upload, args.auto, args.open, dir)
+}
+
+/// `stack push`: atomically pushes changed stack branches with `--force-with-lease`
+/// without creating or editing pull requests. Never force-pushes foreign branches
+/// unless `--force-foreign` is set.
+pub(crate) fn run_push(args: &PushArgs, dir: &Path) -> Result<(), Error> {
     let git = Git::new(dir);
     restack::refuse_if_in_progress(&git)?;
     let config = Config::load()?;
-    let template = Template::load(&config)?;
+    let stack_state = StackState::load(&git)?;
     let gh = Gh::new(dir);
     let repo = gh.repo()?;
     let login = gh.login()?;
     let prefix = config.prefix(&git, args.prefix.as_deref(), &login)?;
-    let branches = Branches::new(prefix, gh.my_open_prs()?);
+    let branches = Branches::with_state(prefix, gh.my_open_prs()?, stack_state.as_ref());
+    let session = Session {
+        trunk: config.trunk(&args.target, repo.default_branch),
+        remote: config.remote(&args.target),
+        git,
+        gh,
+        login,
+        repo_url: repo.url,
+        branches,
+        draft: false,
+        overwrite_body: false,
+        force_foreign: args.force_foreign,
+    };
+
+    fetch_trunk_and_stack(&session)?;
+    let (merge_base, plan) = local::read(&session.git, &session.remote, &session.trunk)?;
+    let plan = plan.only(&args.topics)?;
+    let mut existing = existing_prs(&session, &plan)?;
+    let merged_names: BTreeSet<String> = existing.merged.keys().cloned().collect();
+    let tips = local::rebuild(&session.git, &plan, &merge_base, &merged_names)?;
+    let heads = all_remote_heads(&session)?;
+    let items = plan_items(&session, &plan, &tips, &heads, &mut existing);
+
+    let updates = push_updates(&session, &items);
+    if args.dry_run {
+        for update in &updates {
+            println!("would push {} ({})", update.branch, &update.new[..8.min(update.new.len())]);
+        }
+        if updates.is_empty() {
+            println!("Everything up to date.");
+        }
+        return Ok(());
+    }
+    session.git.push(&session.remote, &updates)?;
+    if updates.is_empty() {
+        println!("Everything up to date.");
+    } else {
+        for update in &updates {
+            println!("pushed {} ({})", update.branch, &update.new[..8.min(update.new.len())]);
+        }
+    }
+    Ok(())
+}
+
+/// `stack sync`: fetches trunk, rebases the local stack onto trunk when clean,
+/// then pushes active branches and updates PR bases (never force-pushing foreign
+/// branches without `--force-foreign`).
+pub(crate) fn run_sync(args: &SyncArgs, dir: &Path) -> Result<(), Error> {
+    let git = Git::new(dir);
+    restack::refuse_if_in_progress(&git)?;
+    if !args.dry_run && git.has_uncommitted_changes()? {
+        return Err(Error::Usage {
+            message: "the working tree has uncommitted changes; commit or stash them before running `stack sync`".to_owned(),
+            next: "git status".to_owned(),
+        });
+    }
+    let config = Config::load()?;
+    let gh = Gh::new(dir);
+    let repo = gh.repo()?;
+    let remote = config.remote(&args.target);
+    let trunk = config.trunk(&args.target, repo.default_branch);
+    git.fetch(
+        &remote,
+        &[format!("+refs/heads/{trunk}:refs/remotes/{remote}/{trunk}")],
+    )?;
+    if !args.dry_run {
+        let onto = format!("{remote}/{trunk}");
+        let output = git.rebase(&[onto.as_str()], None)?;
+        if !output.status.success() {
+            return Err(Error::Usage {
+                message: format!(
+                    "`stack sync` stopped on rebase onto `{onto}`: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                next: "resolve conflicts, `git add`, then `stack rebase --continue` (or `stack rebase --abort`)".to_owned(),
+            });
+        }
+    }
+    let upload_args = UploadArgs {
+        target: crate::cli::Target {
+            trunk: args.target.trunk.clone(),
+            remote: args.target.remote.clone(),
+        },
+        dry_run: args.dry_run,
+        json: args.json,
+        draft: false,
+        topics: Vec::new(),
+        note: None,
+        no_native_stack: args.no_native_stack,
+        overwrite_body: false,
+        prefix: None,
+        force_foreign: args.force_foreign,
+    };
+    run_inner(&upload_args, false, false, dir)
+}
+
+fn run_inner(args: &UploadArgs, auto_draft: bool, open_ready: bool, dir: &Path) -> Result<(), Error> {
+    let git = Git::new(dir);
+    restack::refuse_if_in_progress(&git)?;
+    let config = Config::load()?;
+    let template = Template::load(&config)?;
+    let stack_state = StackState::load(&git)?;
+    let gh = Gh::new(dir);
+    let repo = gh.repo()?;
+    let login = gh.login()?;
+    let prefix = config.prefix(&git, args.prefix.as_deref(), &login)?;
+    let branches = Branches::with_state(prefix, gh.my_open_prs()?, stack_state.as_ref());
+    let draft = if open_ready {
+        false
+    } else {
+        args.draft || auto_draft || config.draft.value
+    };
     let session = Session {
         trunk: config.trunk(&args.target, repo.default_branch.clone()),
         remote: config.remote(&args.target),
@@ -155,19 +288,24 @@ pub(crate) fn run(args: &UploadArgs, dir: &Path) -> Result<(), Error> {
         login,
         repo_url: repo.url,
         branches,
-        draft: args.draft || config.draft.value,
+        draft,
         overwrite_body: args.overwrite_body || config.overwrite_body.value,
+        force_foreign: args.force_foreign,
     };
 
     fetch_trunk_and_stack(&session)?;
     let (merge_base, plan) = local::read(&session.git, &session.remote, &session.trunk)?;
     let plan = plan.only(&args.topics)?;
-    local::require_sections(&template, &plan)?;
+    let foreign_topics = stack_state
+        .as_ref()
+        .map(StackState::foreign_topics)
+        .unwrap_or_default();
+    local::require_sections(&template, &plan, &foreign_topics)?;
 
     let mut existing = existing_prs(&session, &plan)?;
     let merged_names: BTreeSet<String> = existing.merged.keys().cloned().collect();
     let tips = local::rebuild(&session.git, &plan, &merge_base, &merged_names)?;
-    let heads = local::remote_heads(&session.git, &session.remote, &session.branches.prefixes())?;
+    let heads = all_remote_heads(&session)?;
     let mut items = plan_items(&session, &plan, &tips, &heads, &mut existing);
 
     if args.dry_run {
@@ -181,21 +319,25 @@ pub(crate) fn run(args: &UploadArgs, dir: &Path) -> Result<(), Error> {
     }
 
     retarget(&session, &mut items)?;
-    let updates: Vec<PushUpdate> = items
-        .iter()
-        .filter(|item| item.changed())
-        .map(|item| PushUpdate {
-            branch: item.branch.clone(),
-            new: item.tip.head.clone(),
-            old: item.old_head.clone(),
-        })
-        .collect();
+    let updates = push_updates(&session, &items);
     session.git.push(&session.remote, &updates)?;
 
-    let mut uploaded = write_prs(&session, &template, &items)?;
+    let mut uploaded = write_prs(&session, &template, &items, open_ready)?;
     let graph = Stack::new(&whole_stack(&session, &uploaded));
     write_stack_tables(&session, &template, &graph, &mut uploaded)?;
-    let revisions = if config.history_comment.value {
+
+    // Native GitHub stack mode: when active, link the native stack and write
+    // zero comments (existing comments are left alone, never deleted).
+    // Comments are written only in fallback mode (native unavailable, refused,
+    // or `--no-native-stack`).
+    let native_requested = !args.no_native_stack && config.native_stack.value;
+    let native_active = if native_requested && session.gh.has_native_stacks() {
+        link_native_stacks(&session, &graph, &uploaded)
+    } else {
+        false
+    };
+
+    let revisions = if !native_active && config.history_comment.value {
         update_histories(&session, args.note.as_deref(), &graph, &uploaded)?
     } else {
         BTreeMap::new()
@@ -203,22 +345,59 @@ pub(crate) fn run(args: &UploadArgs, dir: &Path) -> Result<(), Error> {
     if config.pin_revisions.value {
         pin_revisions(&session, &uploaded, &revisions, config.keep_revisions.value)?;
     }
-    if !args.no_native_stack && config.native_stack.value {
-        link_native_stacks(&session, &graph, &uploaded);
-    }
 
     let found: Vec<Outcome> = uploaded.iter().map(outcome_of).collect();
     let outcomes = in_plan_order(&plan, &existing.merged, found);
     print_outcomes(&outcomes, args.json, false)
 }
 
-/// Fetches the trunk and the stack branches of every prefix in use, so the
-/// old heads are local when the patch ids are compared.
+/// Builds the list of branch updates to push, skipping foreign imported
+/// branches unless `session.force_foreign` is set.
+fn push_updates(session: &Session, items: &[Item<'_>]) -> Vec<PushUpdate> {
+    let mut updates = Vec::new();
+    for item in items {
+        if !item.changed() {
+            continue;
+        }
+        if item.foreign && !session.force_foreign {
+            eprintln!(
+                "stack: note: skipping push of foreign branch `{}` (topic `{}`); pass --force-foreign to push it",
+                item.branch, item.topic.name
+            );
+            continue;
+        }
+        updates.push(PushUpdate {
+            branch: item.branch.clone(),
+            new: item.tip.head.clone(),
+            old: item.old_head.clone(),
+        });
+    }
+    updates
+}
+
+/// Reads remote heads for all `<prefix>/stack/*` prefixes plus any imported branches.
+fn all_remote_heads(session: &Session) -> Result<BTreeMap<String, String>, Error> {
+    let mut heads = local::remote_heads(&session.git, &session.remote, &session.branches.prefixes())?;
+    for branch in session.branches.extra_branches() {
+        if !heads.contains_key(&branch)
+            && let Ok(found) = session.git.remote_heads(&session.remote, &branch)
+        {
+            heads.extend(found);
+        }
+    }
+    Ok(heads)
+}
+
+/// Fetches the trunk, the stack branches of every prefix in use, and any
+/// imported branches so old heads are local when patch ids are compared.
 fn fetch_trunk_and_stack(session: &Session) -> Result<(), Error> {
     let (trunk, remote) = (&session.trunk, &session.remote);
     let mut refspecs = vec![format!("+refs/heads/{trunk}:refs/remotes/{remote}/{trunk}")];
     for prefix in session.branches.prefixes() {
         refspecs.push(format!("+refs/heads/{prefix}/stack/*:refs/remotes/{remote}/{prefix}/stack/*"));
+    }
+    for branch in session.branches.extra_branches() {
+        refspecs.push(format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"));
     }
     session.git.fetch(remote, &refspecs)?;
     Ok(())
@@ -287,6 +466,7 @@ fn plan_items<'a>(
             old_head: heads.get(&branch).cloned(),
             tip: tip.clone(),
             existing: existing.open.remove(&topic.name),
+            foreign: session.branches.is_foreign(&topic.name),
             branch,
             base,
         });
@@ -320,7 +500,12 @@ fn retarget(session: &Session, items: &mut [Item<'_>]) -> Result<(), Error> {
 /// Creates or updates each topic's pull request, parents first. A new pull
 /// request's description has no stack table yet: its number isn't known
 /// until it exists, so `write_stack_tables` adds it.
-fn write_prs<'a>(session: &Session, template: &Template, items: &[Item<'a>]) -> Result<Vec<Uploaded<'a>>, Error> {
+fn write_prs<'a>(
+    session: &Session,
+    template: &Template,
+    items: &[Item<'a>],
+    open_ready: bool,
+) -> Result<Vec<Uploaded<'a>>, Error> {
     let mut uploaded = Vec::with_capacity(items.len());
     for item in items {
         let subject = subject_of(item.topic);
@@ -333,14 +518,20 @@ fn write_prs<'a>(session: &Session, template: &Template, items: &[Item<'a>]) -> 
                     base: item.base.as_str(),
                     title: subject,
                     body_file: body_file.path.as_path(),
-                    draft: session.draft || item.topic.draft,
+                    draft: session.draft || (!open_ready && item.topic.draft),
                     reviewers: item.topic.reviewers.as_slice(),
                     labels: item.topic.labels.as_slice(),
                 })?;
                 (number, url, Action::Created, true, description)
             }
             Some(pr) => {
-                let (action, base_edited) = update_existing(&session.gh, item, pr, subject)?;
+                let (mut action, base_edited) = update_existing(session, item, pr, subject)?;
+                if open_ready && pr.is_draft && (!item.foreign || session.force_foreign) {
+                    session.gh.pr_ready(pr.number)?;
+                    if action == Action::Unchanged {
+                        action = Action::Updated;
+                    }
+                }
                 (pr.number, pr.url.clone(), action, base_edited, pr.body.clone())
             }
         };
@@ -353,6 +544,8 @@ fn write_prs<'a>(session: &Session, template: &Template, items: &[Item<'a>]) -> 
             action,
             subject: subject.to_owned(),
             tip: item.tip.clone(),
+            old_head: item.old_head.clone(),
+            foreign: item.foreign,
             source: item.topic,
             body,
             relinked,
@@ -363,6 +556,7 @@ fn write_prs<'a>(session: &Session, template: &Template, items: &[Item<'a>]) -> 
 
 /// Writes each description with its stack table, now every number is known.
 /// A description edited on GitHub is kept unless `overwrite_body` is set.
+/// Foreign PR descriptions are left untouched unless `force_foreign` is set.
 fn write_stack_tables(
     session: &Session,
     template: &Template,
@@ -370,6 +564,9 @@ fn write_stack_tables(
     uploaded: &mut [Uploaded<'_>],
 ) -> Result<(), Error> {
     for item in uploaded.iter_mut() {
+        if item.foreign && !session.force_foreign {
+            continue;
+        }
         let description = template.render(item.source, &session.trunk, &stack_lines(graph, item.number));
         match body_change(&item.body, &description, session.overwrite_body) {
             BodyChange::Same => {}
@@ -424,6 +621,9 @@ fn pin_revisions(
 ) -> Result<(), Error> {
     let mut refs = Vec::new();
     for item in uploaded {
+        if item.foreign && !session.force_foreign {
+            continue;
+        }
         let prefix = local::split_branch(&item.branch)
             .map_or_else(|| session.branches.prefix().to_owned(), |(prefix, _)| prefix.to_owned());
         let pinned = pins::on_remote(&session.git, &session.remote, &prefix, &item.topic)?;
@@ -447,16 +647,22 @@ fn pin_revisions(
 /// Edits an open pull request where its base or title differ, and its
 /// reviewers and labels when the topic changed. Returns the action and
 /// whether the base was edited. `write_stack_tables` does the description.
-fn update_existing(gh: &Gh, item: &Item<'_>, pr: &gh::Pr, subject: &str) -> Result<(Action, bool), Error> {
+fn update_existing(
+    session: &Session,
+    item: &Item<'_>,
+    pr: &gh::Pr,
+    subject: &str,
+) -> Result<(Action, bool), Error> {
     let base_edited = pr.base_ref_name != item.base;
-    let title_edited = pr.title != subject;
+    let foreign_only = item.foreign && !session.force_foreign;
+    let title_edited = !foreign_only && pr.title != subject;
     let none: &[String] = &[];
-    let (reviewers, labels) = if item.changed() {
+    let (reviewers, labels) = if !foreign_only && item.changed() {
         (item.topic.reviewers.as_slice(), item.topic.labels.as_slice())
     } else {
         (none, none)
     };
-    gh.edit_pr(&PrEdit {
+    session.gh.edit_pr(&PrEdit {
         number: pr.number,
         base: base_edited.then_some(item.base.as_str()),
         title: title_edited.then_some(subject),
@@ -465,7 +671,8 @@ fn update_existing(gh: &Gh, item: &Item<'_>, pr: &gh::Pr, subject: &str) -> Resu
         add_labels: labels,
     })?;
     let edited = base_edited || title_edited;
-    let action = if item.changed() || edited {
+    let pushed = !foreign_only && item.changed();
+    let action = if pushed || edited {
         Action::Updated
     } else {
         Action::Unchanged
@@ -473,9 +680,9 @@ fn update_existing(gh: &Gh, item: &Item<'_>, pr: &gh::Pr, subject: &str) -> Resu
     Ok((action, base_edited))
 }
 
-/// Writes each uploaded topic's history comment: a row when its head moved,
-/// and the stack tree. Creates the comment when there is none. Returns each
-/// topic's revision: the number of the row for its current head.
+/// Writes each uploaded topic's history comment (used only in comment/fallback
+/// mode): a row when its head moved, the stack tree, and a Stack Update Summary
+/// table with clickable compare/diff links when layers are repushed.
 fn update_histories(
     session: &Session,
     note: Option<&str>,
@@ -483,7 +690,30 @@ fn update_histories(
     uploaded: &[Uploaded<'_>],
 ) -> Result<BTreeMap<String, u32>, Error> {
     let mut revisions = BTreeMap::new();
+    let layer_updates: Vec<LayerUpdate> = uploaded
+        .iter()
+        .map(|item| {
+            let status = match (item.action, item.old_head.as_deref()) {
+                (Action::Created, _) => "created",
+                (_, Some(old)) if old != item.tip.head => "repushed",
+                (Action::Updated, _) => "updated",
+                _ => "unchanged",
+            };
+            LayerUpdate {
+                number: item.number,
+                topic: item.topic.clone(),
+                action: status.to_owned(),
+                old_head: item.old_head.clone(),
+                new_head: item.tip.head.clone(),
+                base: item.tip.base.clone(),
+            }
+        })
+        .collect();
+
     for item in uploaded {
+        if item.foreign && !session.force_foreign {
+            continue;
+        }
         let lines = stack_lines(graph, item.number);
         let comments = session.gh.comments(item.number)?;
         let found = history::find(&comments, &session.login);
@@ -514,7 +744,14 @@ fn update_histories(
         if let Some(row) = hist.rows.last() {
             revisions.insert(item.topic.clone(), row.rev);
         }
-        let text = history::render(&session.repo_url, &session.trunk, &item.topic, &lines, &hist);
+        let text = history::render_with_updates(
+            &session.repo_url,
+            &session.trunk,
+            &item.topic,
+            &lines,
+            &hist,
+            &layer_updates,
+        );
         match found {
             Some(comment) if normalised(&comment.body) == normalised(&text) => {}
             Some(comment) => {
@@ -545,8 +782,10 @@ fn same_patch(git: &Git, last: Option<&Row>, tip: &Tip) -> Result<bool, Error> {
 }
 
 /// Links each native chain that holds a pull request created or re-based in
-/// this run. A refusal is a note: the pull requests stay chained by base.
-fn link_native_stacks(session: &Session, graph: &Stack, uploaded: &[Uploaded<'_>]) {
+/// this run. Returns `true` when native stack mode is active (every link
+/// succeeded or chains were already linked), and `false` if GitHub refused
+/// native stacks (so callers fall back to comment mode).
+fn link_native_stacks(session: &Session, graph: &Stack, uploaded: &[Uploaded<'_>]) -> bool {
     let chains: Vec<Vec<u64>> = graph
         .native_chains()
         .into_iter()
@@ -558,9 +797,7 @@ fn link_native_stacks(session: &Session, graph: &Stack, uploaded: &[Uploaded<'_>
             })
         })
         .collect();
-    if chains.is_empty() || !session.gh.has_native_stacks() {
-        return;
-    }
+    let mut linked_ok = true;
     for chain in chains {
         let urls: Vec<String> = chain
             .iter()
@@ -579,6 +816,7 @@ fn link_native_stacks(session: &Session, graph: &Stack, uploaded: &[Uploaded<'_>
             })
             .collect();
         if let Err(error) = session.gh.link_stack(&session.trunk, &urls) {
+            linked_ok = false;
             let numbers: Vec<String> = chain.iter().map(|number| format!("#{number}")).collect();
             eprintln!(
                 "stack: note: could not link {} as a native stack ({error}); the pull requests are still chained by base",
@@ -586,6 +824,7 @@ fn link_native_stacks(session: &Session, graph: &Stack, uploaded: &[Uploaded<'_>
             );
         }
     }
+    linked_ok
 }
 
 /// The outcome for each topic a dry run would touch, with no writes. `graph`

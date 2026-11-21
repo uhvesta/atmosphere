@@ -11,7 +11,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 use humata2_clients::history::SearchHit;
 use humata2_clients::model::MachineId;
-use humata2_find::{FindAction, FindState};
+use humata2_find::FindAction;
+#[cfg(test)]
+use humata2_find::FindState;
 
 /// Sends a search action to the store, such as
 /// `move |action, cx| ui.send(AppAction::Find(action), cx)`.
@@ -31,6 +33,7 @@ pub(crate) fn searchable(query: &str) -> bool {
 /// a machine is offline now, so its hits say how old the host's copy is. A
 /// click on a hit sends [`FindAction::Open`] with its place; the palette
 /// sends the same for the selected hit when Enter is pressed.
+#[cfg(test)]
 pub(crate) fn conversations(
     find: &FindState,
     selected: Option<usize>,
@@ -89,6 +92,84 @@ pub(crate) fn conversations(
         section = section.child(more_row(selected == Some(find.hits.len()), look, send));
     }
     Some(section.into_any_element())
+}
+
+/// Flat rows for the Conversations section so `palette-entries` can scroll
+/// directly to any selected hit with `ScrollHandle::scroll_to_item`.
+/// Each entry in `hits` is `(raw_index_in_find_hits, hit)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn conversation_rows(
+    hits: &[(usize, &SearchHit)],
+    query: &str,
+    next_page: &str,
+    loading: bool,
+    error: Option<&str>,
+    selected: Option<usize>,
+    offline: &dyn Fn(&MachineId) -> bool,
+    look: Look,
+    send: &SendFind,
+) -> (Vec<AnyElement>, Option<usize>) {
+    if hits.is_empty() && next_page.is_empty() && error.is_none() {
+        return (Vec::new(), None);
+    }
+    let mut rows = Vec::new();
+    let mut selected_offset = None;
+    rows.push(
+        row()
+            .id("palette-conversations")
+            .flex_shrink_0()
+            .px(px(16.))
+            .pt(px(8.))
+            .pb(px(3.))
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(look.secondary))
+            .child(div().flex_1().child("Conversations"))
+            .when(loading && !hits.is_empty(), |x| {
+                x.child(
+                    div()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(rgb(look.tertiary))
+                        .child("Searching…"),
+                )
+            })
+            .into_any_element(),
+    );
+    if let Some(error) = error {
+        rows.push(
+            note(
+                "palette-hits-error",
+                format!("Search didn't answer: {error}. Edit the query to try again."),
+                humata2_ui_core::theme::RED,
+                true,
+            )
+            .into_any_element(),
+        );
+    }
+    let words = words(query);
+    for (visible_index, (raw_index, hit)) in hits.iter().enumerate() {
+        let is_selected = selected == Some(visible_index);
+        if is_selected {
+            selected_offset = Some(rows.len());
+        }
+        rows.push(hit_row(
+            hit,
+            *raw_index,
+            is_selected,
+            offline(&hit.machine),
+            &words,
+            look,
+            send,
+        ));
+    }
+    if !next_page.is_empty() {
+        let is_selected = selected == Some(hits.len());
+        if is_selected {
+            selected_offset = Some(rows.len());
+        }
+        rows.push(more_row(is_selected, look, send));
+    }
+    (rows, selected_offset)
 }
 
 /// The row that asks for the next page of hits. Enter on it does the same

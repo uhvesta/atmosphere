@@ -41,6 +41,7 @@ Tab "To-do"
 Tab "Repos and machines" selected
 Tab "Agent access"
 Tab "Activity"
+Tab "Settings"
 #channel-repos
   Button "This Mac"
   Button "devbox-1"

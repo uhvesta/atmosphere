@@ -110,6 +110,32 @@ impl MountSpec {
         Self::new("humatafs", url, mountpoint.as_ref())
     }
 
+    /// Convenience constructor for `humatafs://...` mounts that carry an explicit
+    /// bridge Unix-socket path in the URL query (`?socket=<percent-encoded>`).
+    pub fn for_humatafs_with_socket(
+        authority: &str,
+        bridge_socket: &Path,
+        mountpoint: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let base = Self::build_resource_url("humatafs", authority, None)?;
+        let encoded = percent_encode_query_value(&bridge_socket.to_string_lossy());
+        let url = format!("{base}?socket={encoded}");
+        Self::new("humatafs", url, mountpoint.as_ref())
+    }
+
+    /// Extracts the decoded `socket` query parameter from a resource URL, if present.
+    pub fn parse_socket_query(resource_url: &str) -> Option<PathBuf> {
+        let (_, query) = resource_url.split_once('?')?;
+        for pair in query.split('&') {
+            if let Some(raw) = pair.strip_prefix("socket=")
+                && !raw.is_empty()
+            {
+                return percent_decode_query_value(raw).map(PathBuf::from);
+            }
+        }
+        None
+    }
+
     /// Sets whether `-o nobrowse` is included (defaults to `true`).
     pub fn with_nobrowse(mut self, nobrowse: bool) -> Self {
         self.nobrowse = nobrowse;
@@ -142,6 +168,39 @@ impl MountSpec {
         args.push(self.mountpoint.to_string_lossy().into_owned());
         args
     }
+}
+
+fn percent_encode_query_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_decode_query_value(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = (bytes[i + 1] as char).to_digit(16)?;
+            let lo = (bytes[i + 2] as char).to_digit(16)?;
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 fn validate_scheme(scheme: &str) -> io::Result<()> {
@@ -216,5 +275,18 @@ mod tests {
         assert!(MountSpec::new("humatafs", "file:///tmp/x", "/tmp/mnt").is_err());
         assert!(MountSpec::new("humatafs", "not-a-url", "/tmp/mnt").is_err());
         assert!(MountSpec::build_resource_url("123bad", "main", None).is_err());
+    }
+
+    #[test]
+    fn encodes_and_parses_bridge_socket_query_param() {
+        let sock = Path::new("/Users/alice/Library/Group Containers/TEAM.com.humata2/fskit.sock");
+        let spec = MountSpec::for_humatafs_with_socket("humata2", sock, "/Users/alice/mnt").unwrap();
+        assert!(spec.resource_url.starts_with("humatafs://humata2?socket="));
+        assert!(!spec.resource_url.contains(' '));
+        assert_eq!(
+            MountSpec::parse_socket_query(&spec.resource_url),
+            Some(sock.to_path_buf())
+        );
+        assert_eq!(MountSpec::parse_socket_query("humatafs://humata2"), None);
     }
 }

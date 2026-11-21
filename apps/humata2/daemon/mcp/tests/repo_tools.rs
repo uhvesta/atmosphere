@@ -11,13 +11,14 @@ async fn both_repo_tools_are_listed_as_reads() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    let tools = client.tools().await;
+    let described = client.humata_describe(&["repo_search", "repo_library"]).await;
+    let tools = described["tools"].as_array().expect("tools");
 
     for name in ["repo_search", "repo_library"] {
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == name)
-            .unwrap_or_else(|| panic!("{name} isn't listed"));
+            .unwrap_or_else(|| panic!("{name} isn't described"));
         assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
         assert_eq!(tool["annotations"]["destructiveHint"], false, "{name}");
     }
@@ -28,11 +29,8 @@ async fn a_search_can_widen_one_call_but_has_no_way_to_save_a_scope() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
 
-    let tools = client.tools().await;
-    let search = tools
-        .iter()
-        .find(|tool| tool["name"] == "repo_search")
-        .expect("repo_search is listed");
+    let described = client.humata_describe(&["repo_search"]).await;
+    let search = &described["tools"][0];
 
     let input = &search["inputSchema"];
     assert_eq!(input["required"], json!(["query"]));
@@ -48,13 +46,22 @@ async fn a_search_can_widen_one_call_but_has_no_way_to_save_a_scope() {
 async fn removing_forgetting_and_saving_the_scope_are_refused_and_never_reach_the_daemon() {
     let daemon = FakeDaemon::new();
     let mut client = Client::start(&daemon);
+    let listed = client.humata_list(json!({})).await;
+    let entries = listed["tools"].as_array().unwrap();
 
     for (n, name) in ["repo_remove", "repo_forget", "repo_scope_update"]
         .into_iter()
         .enumerate()
     {
-        assert!(client.tools().await.iter().all(|tool| tool["name"] != name), "{name}");
-        let result = client.call(json!(n), name, json!({ "repo": "acme/api" })).await;
+        assert!(
+            entries
+                .iter()
+                .all(|line| !line.as_str().unwrap().starts_with(&format!("{name} "))),
+            "{name}"
+        );
+        let result = client
+            .humata_call(json!(n), name, json!({ "repo": "acme/api" }))
+            .await;
 
         assert_eq!(result["isError"], true, "{name}");
         assert_eq!(structured(&result)["error"]["kind"], "user_only", "{name}");

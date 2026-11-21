@@ -99,7 +99,7 @@ impl RenderOnce for RowMenu {
                 .top(px(20.))
                 .right(px(0.));
             for (index, action) in self.actions.iter().copied().enumerate() {
-                if separated(action) {
+                if index > 0 && separated(action) {
                     card = card.child(div().h(px(1.)).mx(px(4.)).my(px(2.)).bg(rgb(look.line)));
                 }
                 let (ui, close) = (self.ui.clone(), open.clone());
@@ -199,6 +199,29 @@ struct Draw<'a> {
     look: Look,
 }
 
+/// A row's badge when its session is already archived, so a leftover shell
+/// never masquerades as an active or stopped session.
+pub const fn row_badge(holder: &RunningHolder) -> Option<&'static str> {
+    if holder.archived {
+        Some("Archived")
+    } else {
+        None
+    }
+}
+
+/// Accessible label for a row, distinguishing archived sessions' leftovers.
+pub fn row_aria_label(holder: &RunningHolder) -> String {
+    let title = if holder.title.is_empty() {
+        agent_label(holder.agent).to_owned()
+    } else {
+        holder.title.clone()
+    };
+    match row_badge(holder) {
+        Some(badge) => format!("{title} ({badge})"),
+        None => title,
+    }
+}
+
 /// A row as its ⋯ button names it: its title, or its agent and folder for
 /// an untitled holder, so two orphans of one agent differ.
 fn row_name(holder: &RunningHolder) -> String {
@@ -207,6 +230,15 @@ fn row_name(holder: &RunningHolder) -> String {
     } else {
         holder.title.clone()
     }
+}
+
+/// What clicking a running-holder row itself does, when it names a live session.
+#[must_use]
+pub fn row_click_action(holder: &RunningHolder) -> Option<MachinePageAction> {
+    if holder.archived {
+        return None;
+    }
+    holder.session.clone().map(MachinePageAction::OpenSession)
 }
 
 fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &RunningHolder) -> AnyElement {
@@ -244,29 +276,57 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
     let open = {
         let ui = draw.ui.clone();
         let click = (draw.wrap)(MachinePageAction::Running(RunningAction::Row(holder.clone(), RowAction::Open)));
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| ui.send(click.clone(), cx)
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            ui.send(click.clone(), cx);
+        }
     };
+    let row_action = row_click_action(holder).map(draw.wrap);
     let mut line = row()
         .id((group, index))
         .role(Role::ListItem)
-        .aria_label(title.clone())
+        .aria_label(row_aria_label(holder))
         .gap(px(8.))
         .px(px(12.))
         .h(px(36.))
         .border_b_1()
         .border_color(rgb(look.line))
         .when(busy, |line| line.opacity(0.5))
+        .when_some(row_action, |line, click_action| {
+            let ui = draw.ui.clone();
+            line.cursor_pointer()
+                .hover(move |item| item.bg(rgb(look.fill)))
+                .on_click(move |_, _, cx| ui.send(click_action.clone(), cx))
+        })
         .child(if holder.stopped { chrome::stopped() } else { chrome::status(status) })
         .child(
-            div()
+            row()
                 .when(orphan, |name| name.w(px(90.)).flex_shrink_0())
                 .when(!orphan, |name| name.flex_1().min_w_0())
-                .whitespace_nowrap()
-                .overflow_hidden()
-                .text_ellipsis()
-                .font_weight(FontWeight::MEDIUM)
-                .when(holder.stopped, |name| name.text_color(rgb(look.secondary)))
-                .child(title),
+                .gap(px(6.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .font_weight(FontWeight::MEDIUM)
+                        .when(holder.stopped || holder.archived, |name| name.text_color(rgb(look.secondary)))
+                        .child(title),
+                )
+                .children(row_badge(holder).map(|badge| {
+                    div()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(10.5))
+                        .text_color(rgb(look.secondary))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .child(badge)
+                })),
         );
     // A session row drops the folder column: its channel and agent say
     // where it is, and the card's width goes to the title and the buttons.
@@ -356,17 +416,20 @@ pub fn listing(
     for (index, holder) in listed.iter().enumerate() {
         main = main.child(holder_row(&draw, index, "running-session", holder));
     }
-    // A row's Stop, Resume or End for good the daemon refused says why,
-    // under the rows, instead of the dialog closing as if it had worked.
+    // A row's Stop, Resume, Archive or End for good the daemon refused says
+    // why, under the rows, instead of failing silently.
     if let Some(error) = &state.running.error {
         main = main.child(
             div()
                 .id("machine-page-running-error")
+                .role(Role::Alert)
+                .aria_label(error.clone())
                 .px(px(12.))
                 .py(px(8.))
                 .text_size(px(12.))
                 .text_color(rgb(RED_STATUS))
-                .child(error.clone()),
+                .child(error.clone())
+                .test_support(),
         );
     }
     let orphans = state.running.not_in_a_channel().map(|orphans| {
@@ -423,5 +486,52 @@ mod tests {
     #[test]
     fn ending_reads_the_same_for_every_row() {
         assert!(action_label(RowAction::EndForGood).starts_with("End for good"));
+    }
+
+    fn sample_holder(stopped: bool, archived: bool) -> RunningHolder {
+        RunningHolder {
+            tab: Some("tb_shell".to_owned()),
+            session: Some(humata2_clients::model::SessionId::new("se_1")),
+            title: "Old work".to_owned(),
+            channel: None,
+            desk: true,
+            agent: Agent::Shell,
+            pid: (!stopped).then_some(42),
+            folder: "/work/old".to_owned(),
+            started_unix_ms: (!stopped).then_some(100),
+            attached: false,
+            machine: humata2_clients::model::MachineId::new("this-mac"),
+            stopped,
+            agent_tab: false,
+            archived,
+            paused_for_move: false,
+        }
+    }
+
+    #[test]
+    fn an_archived_holder_is_badged_apart_from_an_active_stopped_row() {
+        let archived_stopped = sample_holder(true, true);
+        let archived_running = sample_holder(false, true);
+        let active_stopped = sample_holder(true, false);
+
+        assert!(row_badge(&archived_stopped).is_some());
+        assert!(row_badge(&archived_running).is_some());
+        assert!(row_badge(&active_stopped).is_none());
+        assert_ne!(row_aria_label(&archived_stopped), row_aria_label(&active_stopped));
+    }
+
+    #[test]
+    fn clicking_a_session_holder_row_opens_that_session() {
+        let running = sample_holder(false, false);
+        let stopped = sample_holder(true, false);
+        let archived = sample_holder(true, true);
+        let mut orphan = sample_holder(false, false);
+        orphan.session = None;
+
+        let expected = MachinePageAction::OpenSession(humata2_clients::model::SessionId::new("se_1"));
+        assert_eq!(row_click_action(&running), Some(expected.clone()));
+        assert_eq!(row_click_action(&stopped), Some(expected));
+        assert_eq!(row_click_action(&archived), None);
+        assert_eq!(row_click_action(&orphan), None);
     }
 }

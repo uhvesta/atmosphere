@@ -1,0 +1,83 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_shared_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":bundle.bzl", "wasm_bundle")
+
+platform(
+    name = "wasm32",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+)
+
+rust_shared_library(
+    name = "application_fast",
+    srcs = [
+        "src/lib.rs",
+        "src/view.rs",
+    ],
+    compile_data = ["//apps/humata2/terminal/client:fonts"],
+    crate_name = "humata2_web_todo_web",
+    platform = ":wasm32",
+    rustc_flags = [
+        "-C",
+        "link-arg=-zstack-size=8388608",
+        "-C",
+        "link-arg=--strip-debug",
+    ],
+    deps = [
+        "//apps/humata2/engine:engine_fast",
+        "//apps/humata2/todo",
+        "//apps/humata2/web_todo/wire",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates_gpui_web//:gpui-kit",
+        "@crates_gpui_web//:log",
+        "@crates_gpui_web//:wasm-bindgen",
+    ],
+)
+
+wasm_bundle(
+    name = "bundle",
+    index = "index.html",
+    licenses = ["//apps/humata2/terminal/client:licenses"],
+    visibility = ["//apps/humata2:__subpackages__"],
+    wasm = ":application_fast",
+)
+
+# Native smoke server binary for the headless browser check: serves the real
+# compiled GPUI Wasm bundle on 127.0.0.1:0 with sample To-do items and pushes
+# live updates on request.
+rust_binary(
+    name = "smoke_server",
+    testonly = True,
+    srcs = ["src/smoke_server.rs"],
+    data = [":bundle"],
+    deps = [
+        "//apps/humata2/todo",
+        "//apps/humata2/web_todo/server",
+        "//apps/humata2/web_todo/wire",
+        "@crates//:tokio",
+    ],
+)
+
+sh_test(
+    name = "browser_check_test",
+    timeout = "moderate",
+    srcs = ["browser_check.sh"],
+    data = [
+        "browser_check.py",
+        ":bundle",
+        ":smoke_server",
+    ],
+    tags = ["local"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "bundle.bzl",
+    ],
+    tags = ["starlark"],
+)

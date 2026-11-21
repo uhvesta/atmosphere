@@ -243,3 +243,73 @@ fn the_counter_follows_the_comparison_and_handles_no_changes(cx: &mut TestAppCon
         (None, 0)
     );
 }
+
+/// HIGHLIGHT: DiffView passes the shared detector's language to gpui-component's
+/// DiffFile for every file, including Starlark (`BUILD.bazel`, `.bzl`), TOML,
+/// YAML, Go, Rust, Java, Dockerfile, Terraform and shebang scripts.
+#[gpui_kit::test]
+fn diff_view_passes_detected_language_to_diff_files(cx: &mut TestAppContext) {
+    use humata2_diff_view::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, RepoDiff};
+
+    let make_file = |path: &str, line: &str| FileDiff {
+        path: path.to_owned(),
+        status: FileStatus::Added,
+        hunks: vec![Hunk {
+            old_start: 0,
+            new_start: 1,
+            section: String::new(),
+            lines: vec![DiffLine::new(LineKind::Added, line)],
+        }],
+        ..FileDiff::default()
+    };
+
+    let review = Review {
+        repos: vec![RepoDiff {
+            name: "repo".to_owned(),
+            branch: "main".to_owned(),
+            files: vec![
+                make_file("src/lib.rs", "pub fn main() {}"),
+                make_file("cmd/main.go", "package main"),
+                make_file("Cargo.toml", "[package]"),
+                make_file("ci.yaml", "name: ci"),
+                make_file("App.java", "public class App {}"),
+                make_file("BUILD.bazel", "load(\"@rules_rust//rust:defs.bzl\", \"rust_library\")"),
+                make_file("bazel/defs.bzl", "def my_rule(name): pass"),
+                make_file("infra/main.tf", "resource \"null_resource\" \"x\" {}"),
+                make_file("Dockerfile", "FROM rust:1.80"),
+                make_file("bin/tool", "#!/usr/bin/env python3"),
+            ],
+            ..RepoDiff::default()
+        }],
+        guide: None,
+    };
+
+    let (_window, pane) = open(cx, review);
+    let diff_view = view(cx, &pane);
+    let languages: Vec<(String, String)> = diff_view.read_with(cx, |view, cx| {
+        view.diff_state()
+            .read(cx)
+            .files()
+            .iter()
+            .filter(|f| f.path().starts_with("repo/"))
+            .map(|f| (f.path().to_string(), f.language().to_string()))
+            .collect()
+    });
+    for (path, expected) in [
+        ("repo/src/lib.rs", "rust"),
+        ("repo/cmd/main.go", "go"),
+        ("repo/Cargo.toml", "toml"),
+        ("repo/ci.yaml", "yaml"),
+        ("repo/App.java", "java"),
+        ("repo/BUILD.bazel", "starlark"),
+        ("repo/bazel/defs.bzl", "starlark"),
+        ("repo/infra/main.tf", "terraform"),
+        ("repo/Dockerfile", "dockerfile"),
+        ("repo/bin/tool", "python"),
+    ] {
+        assert!(
+            languages.iter().any(|(p, l)| p == path && l == expected),
+            "expected ({path}, {expected}) in {languages:?}"
+        );
+    }
+}

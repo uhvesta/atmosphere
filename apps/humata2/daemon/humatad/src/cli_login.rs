@@ -62,6 +62,9 @@ pub(crate) struct CliLogins {
     /// How long every login lasts instead of the hours it asked for: a
     /// test daemon's `--cli-login-seconds`. Release builds pass `None`.
     lifetime: Option<Duration>,
+    /// Optional event feed notified immediately when a pending login arrives
+    /// or leaves, so the desktop app surfaces it without polling (SETTINGSFIX).
+    feed: std::sync::OnceLock<Arc<crate::events::Feed>>,
     state: Mutex<State>,
 }
 
@@ -96,7 +99,11 @@ struct Asked<'a> {
 
 impl Drop for Asked<'_> {
     fn drop(&mut self) {
-        lock(&self.logins.state).pending.remove(&self.id);
+        let removed = lock(&self.logins.state).pending.remove(&self.id);
+        if let Some(pending) = removed {
+            self.logins
+                .publish_pending(pb::Change::Deleted, pending.shown);
+        }
     }
 }
 
@@ -105,7 +112,20 @@ impl CliLogins {
         Self {
             processes,
             lifetime,
+            feed: std::sync::OnceLock::new(),
             state: Mutex::new(State::default()),
+        }
+    }
+
+    /// Connects the daemon's event feed so pending CLI logins are pushed to
+    /// the desktop app immediately when they arrive or settle (SETTINGSFIX).
+    pub(crate) fn set_feed(&self, feed: Arc<crate::events::Feed>) {
+        let _ = self.feed.set(feed);
+    }
+
+    fn publish_pending(&self, change: pb::Change, login: pb::PendingCliLogin) {
+        if let Some(feed) = self.feed.get() {
+            feed.publish(change, pb::event::Payload::PendingCliLogin(login), None);
         }
     }
 
@@ -152,9 +172,14 @@ impl CliLogins {
             hours,
             asked_at: Some(timestamp(SystemTime::now())),
         };
-        lock(&self.state)
-            .pending
-            .insert(id.clone(), Pending { shown, answer });
+        lock(&self.state).pending.insert(
+            id.clone(),
+            Pending {
+                shown: shown.clone(),
+                answer,
+            },
+        );
+        self.publish_pending(pb::Change::Created, shown);
         (Asked { logins: self, id }, answered)
     }
 
@@ -170,10 +195,12 @@ impl CliLogins {
 
     /// Answers the waiting login `id`; false when there's none.
     fn answer(&self, id: &str, allow: bool) -> bool {
-        match lock(&self.state).pending.remove(id) {
+        let removed = lock(&self.state).pending.remove(id);
+        match removed {
             // The login stopped waiting just now if this fails: nothing to do.
             Some(pending) => {
                 let _ = pending.answer.send(allow);
+                self.publish_pending(pb::Change::Deleted, pending.shown);
                 true
             }
             None => false,
@@ -843,5 +870,51 @@ mod tests {
 
         assert!(logins.pending().is_empty());
         assert!(!logins.answer(&id, true));
+    }
+
+    #[test]
+    fn pending_cli_logins_publish_created_and_deleted_events_on_the_feed() {
+        let logins = logins(terminal(), None);
+        let feed = Arc::new(crate::events::Feed::default());
+        logins.set_feed(feed.clone());
+        let mut live = feed.subscribe_events();
+
+        // Answering emits Created then Deleted once (dropping Asked afterward
+        // does not emit a duplicate Deleted).
+        let (asked, _answered) = logins.ask("Terminal, ttys004".to_owned(), 6);
+        let id = asked.id.clone();
+        let created = live.try_recv().expect("created event");
+        assert_eq!(created.change, pb::Change::Created as i32);
+        match &created.payload {
+            Some(pb::event::Payload::PendingCliLogin(login)) => {
+                assert_eq!(login.id, id);
+                assert_eq!(login.terminal, "Terminal, ttys004");
+                assert_eq!(login.hours, 6);
+            }
+            other => panic!("expected PendingCliLogin created, got {other:?}"),
+        }
+
+        assert!(logins.answer(&id, true));
+        let deleted = live.try_recv().expect("deleted event on answer");
+        assert_eq!(deleted.change, pb::Change::Deleted as i32);
+        assert!(matches!(
+            &deleted.payload,
+            Some(pb::event::Payload::PendingCliLogin(login)) if login.id == id
+        ));
+
+        drop(asked);
+        assert!(live.try_recv().is_err(), "no duplicate deleted event on drop");
+
+        // Withdrawing before an answer emits Created then Deleted on drop.
+        let (withdrawn, _rx) = logins.ask("iTerm2, ttys009".to_owned(), 2);
+        let withdrawn_id = withdrawn.id.clone();
+        let _ = live.try_recv().expect("created event for withdrawn");
+        drop(withdrawn);
+        let gone = live.try_recv().expect("deleted event on drop");
+        assert_eq!(gone.change, pb::Change::Deleted as i32);
+        assert!(matches!(
+            &gone.payload,
+            Some(pb::event::Payload::PendingCliLogin(login)) if login.id == withdrawn_id
+        ));
     }
 }

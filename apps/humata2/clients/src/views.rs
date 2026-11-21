@@ -43,12 +43,27 @@ pub enum ViewContent {
         /// Whether its forks' items show too.
         with_forks: bool,
     },
-    /// A pull request draft; the app shows the summary only.
-    PullRequest,
+    /// A pull request draft, one entry per repository (VW-13).
+    PullRequest(Vec<PullRequestDraftView>),
     /// How to review the session's changes.
     ReviewPlan(PlanView),
     /// Nothing the app knows beyond the summary.
     Summary,
+}
+
+/// One repository's pull request draft in a prepared pull request view (VW-13).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PullRequestDraftView {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// The pull request's title.
+    pub title: String,
+    /// The pull request's body.
+    pub body: String,
+    /// The branch the pull request targets; empty for the repository's default branch.
+    pub base_branch: String,
+    /// Whether the pull request is opened as a draft.
+    pub draft: bool,
 }
 
 /// One stop of a walkthrough.

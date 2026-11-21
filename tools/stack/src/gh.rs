@@ -46,10 +46,42 @@ pub(crate) struct Pr {
     /// APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or empty/None.
     #[serde(default)]
     pub(crate) review_decision: Option<String>,
+    /// The pull request author's login, when returned by gh.
+    #[serde(default, deserialize_with = "deserialize_author")]
+    pub(crate) author: String,
 }
 
-/// The `--json` fields every `gh pr list` asks for.
-pub(crate) const PR_FIELDS: &str = "number,url,state,headRefName,baseRefName,title,body,isDraft,reviewDecision";
+/// A native GitHub stack returned by `gh stack view --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct NativeStack {
+    #[serde(default)]
+    pub(crate) number: u64,
+    #[serde(default)]
+    pub(crate) base: String,
+    #[serde(default)]
+    pub(crate) prs: Vec<u64>,
+}
+
+fn deserialize_author<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        User { login: String },
+        Login(String),
+        Null,
+    }
+    match Option::<Raw>::deserialize(deserializer)? {
+        Some(Raw::User { login }) => Ok(login),
+        Some(Raw::Login(login)) => Ok(login),
+        Some(Raw::Null) | None => Ok(String::new()),
+    }
+}
+
+/// The `--json` fields every `gh pr list` / `gh pr view` asks for.
+pub(crate) const PR_FIELDS: &str = "number,url,state,headRefName,baseRefName,title,body,isDraft,reviewDecision,author";
 
 /// An issue comment on a pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +265,32 @@ impl Gh {
         ])
     }
 
+    /// All open pull requests in the repository: `gh pr list --state open --limit 200 --json <PR_FIELDS>`.
+    pub(crate) fn open_prs(&self) -> Result<Vec<Pr>, GhError> {
+        self.json(&[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "200",
+            "--json",
+            PR_FIELDS,
+        ])
+    }
+
+    /// One pull request by number, URL, or branch: `gh pr view <target> --json <PR_FIELDS>`.
+    pub(crate) fn pr_view(&self, target: &str) -> Result<Pr, GhError> {
+        self.json(&["pr", "view", target, "--json", PR_FIELDS])
+    }
+
+    /// Marks a draft pull request ready for review: `gh pr ready <number>`.
+    pub(crate) fn pr_ready(&self, number: u64) -> Result<(), GhError> {
+        let number = number.to_string();
+        self.run(&["pr", "ready", number.as_str()])?;
+        Ok(())
+    }
+
     /// `gh pr create --head --base --title --body-file [--draft] [--reviewer a,b] [--label x,y]`.
     /// Returns the new pull request's number and URL (gh prints the URL; the
     /// number is its last path segment).
@@ -339,6 +397,28 @@ impl Gh {
         args.extend(urls.iter().map(String::as_str));
         self.run(&args)?;
         Ok(())
+    }
+
+    /// Native GitHub stacks from `gh stack view --json`, when the extension is
+    /// installed and returns JSON. Returns `Ok(None)` when unavailable.
+    pub(crate) fn native_stack_view(&self) -> Result<Option<Vec<NativeStack>>, GhError> {
+        if !self.has_native_stacks() {
+            return Ok(None);
+        }
+        let Ok(output) = self.run(&["stack", "view", "--json"]) else {
+            return Ok(None);
+        };
+        let trimmed = output.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if let Ok(list) = serde_json::from_str::<Vec<NativeStack>>(trimmed) {
+            return Ok(Some(list));
+        }
+        if let Ok(single) = serde_json::from_str::<NativeStack>(trimmed) {
+            return Ok(Some(vec![single]));
+        }
+        Ok(None)
     }
 }
 

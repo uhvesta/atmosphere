@@ -203,6 +203,17 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
 /// Whether a command only reads files, so it runs with the daemon down.
 pub fn works_offline(command: &Command) -> bool {
     matches!(command, Command::Doctor(DoctorCommand::Restarts(args)) if args.explain)
+        || matches!(
+            command,
+            Command::Provider(
+                ProviderCommand::Guide
+                    | ProviderCommand::Schema
+                    | ProviderCommand::Example { .. }
+                    | ProviderCommand::Check { .. }
+                    | ProviderCommand::Render { .. }
+                    | ProviderCommand::Parse { .. }
+            )
+        )
 }
 
 pub use doctor::{DoctorError, Offline};
@@ -387,6 +398,13 @@ pub fn operation(command: &Command) -> &'static str {
             },
         },
         Command::Provider(command) => match command {
+            ProviderCommand::Guide => "provider.guide",
+            ProviderCommand::Schema => "provider.schema",
+            ProviderCommand::Example { .. } => "provider.example",
+            ProviderCommand::Check { .. } => "provider.check",
+            ProviderCommand::Render { .. } => "provider.render",
+            ProviderCommand::Parse { .. } => "provider.parse",
+            ProviderCommand::RequestImport { .. } => "provider.request_import",
             ProviderCommand::Ls => "providers.list",
             ProviderCommand::Config(ProviderConfigCommand::Show) => "providers.config_get",
             ProviderCommand::Config(ProviderConfigCommand::Edit { .. }) => "providers.config_set",

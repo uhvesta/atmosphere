@@ -1,0 +1,31 @@
+agent: codex
+cli: 0.169.0
+script: login
+label: after_escape
+expect: prompt:login
+cols: 200
+rows: 40
+---
+  Welcome to Codex, OpenAI's command-line coding agent
+
+  Choose how you want to use Codex.
+
+> 1. Sign in with ChatGPT
+     Usage included with Plus, Pro, Business, and Enterprise plans
+
+  2. Sign in with Device Code
+     Sign in from another device with a one-time code
+
+  3. Sign in another way
+     Use an API key or another provider
+
+  Press enter to continue
+
+
+
+
+
+
+
+
+

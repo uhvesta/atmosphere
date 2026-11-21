@@ -185,14 +185,28 @@ pub fn changes(
     // D800: the stack's rows send through this.
     let stack_send = crate::panel_stack::sender(ui);
     // Whether a stack shows (D800): its file header, list and footer follow
-    // frames 119 to 121.
-    let stacked = review.is_none() && crate::panel_stack::header_line(&state.review).is_some();
+    // frames 119 to 121 (including inside a pull request review).
+    let stacked = crate::panel_stack::header_line(&state.review).is_some();
     // DS-84: while the file list has focus, the row at the keyboard cursor wears a ring.
     let cursor = session_id
         .as_ref()
         .filter(|_| documents.diff_list.is_focused(window))
         .and_then(|id| state.review.list_cursor(id));
     let has_plan = plan.is_some();
+    let all_repos: Vec<&str> = diffs
+        .iter()
+        .map(|diff| diff.repo.as_str())
+        .chain(
+            fetch
+                .into_iter()
+                .flat_map(|fetch| fetch.repo_errors.keys().map(String::as_str)),
+        )
+        .collect();
+    let file_list_width = if full && !inline {
+        effective_file_list_width(state.review.file_list_width(), width)
+    } else {
+        humata2_review::DEFAULT_FILE_LIST_WIDTH
+    };
     let mut rows: Vec<AnyElement> = match plan {
         Some(plan) => plan_list(ui, state, look, documents, &diffs, picked, cursor, plan),
         None => diffs
@@ -217,6 +231,7 @@ pub fn changes(
                         documents,
                         session,
                         diff,
+                        &all_repos,
                         picked,
                         cursor,
                         (font_size, line_height, cell_width),
@@ -227,8 +242,12 @@ pub fn changes(
                 col()
                     .child(ringed(
                         match review {
-                            Some(session) => review_repo_head(ui, state, look, session, diff, true),
-                            None => repo_head(ui, state, look, documents, index, diff, branch, folded),
+                            Some(session) => {
+                                review_repo_head(ui, state, look, session, diff, &all_repos, true)
+                            }
+                            None => repo_head(
+                                ui, state, look, documents, index, diff, &all_repos, branch, folded,
+                            ),
                         },
                         at_repo(cursor, &diff.repo),
                         look,
@@ -278,7 +297,7 @@ pub fn changes(
         fetch
             .into_iter()
             .flat_map(|fetch| fetch.repo_errors.iter())
-            .map(|(repo, message)| repo_error_row(ui, look, repo, message)),
+            .map(|(repo, message)| repo_error_row(ui, look, repo, message, &all_repos)),
     );
     // DS-28, DS-34: the files stay, dimmed, until the new diff arrives.
     let loading = fetch.is_some_and(|fetch| fetch.loading);
@@ -424,7 +443,7 @@ pub fn changes(
             // The numbers take their digits, an 8 pt left inset, the 4 pt right pad
             // and the 8 pt the code overlaps, so 20000 is never clipped or flush.
             let gutter_width = 34_f32.max(digits as f32 * cell_width + 20.);
-            let view_width = width - if full { 300. } else { 0. };
+            let view_width = (width - if full { file_list_width } else { 0. }).max(0.);
             // DS-19: full screen draws an old and a new number column,
             // beside the terminal one.
             let start = code_start_of(gutter_width, cell_width, full);
@@ -587,12 +606,8 @@ pub fn changes(
                         // `repo · dir/name`: the directory gives way first and
                         // the name stays; the block ends before "Open in editor".
                         let (dir, file_name) = split_path(&file.path);
-                        // A stack names a repository by its last part, as its rows do.
-                        let shown_repo = if stacked {
-                            crate::panel_stack::stack_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()))
-                        } else {
-                            repo_label(&diff.repo)
-                        };
+                        let shown_repo =
+                            display_repo_name(&diff.repo, all_repos.iter().copied());
                         row()
                             .flex_1()
                             .min_w_0()
@@ -609,7 +624,7 @@ pub fn changes(
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis(),
-                                shown_repo.to_owned(),
+                                repo_label(&diff.repo).to_owned(),
                             ))
                             // The "·" stays when the repo itself ends in "…".
                             .child(secondary(look, "·").flex_shrink_0())
@@ -771,17 +786,48 @@ pub fn changes(
         );
     crate::panel_stack::stack_keys(col(), &state.review)
         .size_full()
+        .when(full && !inline, |panel| {
+            let move_drag = documents.diff_list_drag.clone();
+            let move_ui = ui.clone();
+            let up_drag = documents.diff_list_drag.clone();
+            panel
+                .on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
+                    let Some((start_x, start_width)) = move_drag.get() else {
+                        return;
+                    };
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        move_drag.set(None);
+                        return;
+                    }
+                    let next = start_width + (f32::from(event.position.x) - start_x);
+                    move_ui.send(AppAction::Review(ReviewAction::ResizeFileList(next)), cx);
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    up_drag.set(None);
+                })
+        })
         // A pull request review's header names the pull request instead
         // of a base to pick (a pull request's base is GitHub's); Full screen
         // and Close stay, as on every panel.
         .child(match review {
-            Some(session) => diff_header(
-                ui,
-                state,
-                full,
-                Some(review_line(state, look, session, &review_base, diffs.len())),
-                look,
-            ),
+            Some(session) => {
+                let pr_line = review_line(state, look, session, &review_base, diffs.len());
+                let extra = match crate::panel_stack::header_line(&state.review) {
+                    Some(line) => row()
+                        .min_w_0()
+                        .gap(px(6.))
+                        .child(pr_line)
+                        .child(secondary(look, "\u{b7}").flex_shrink_0())
+                        .child(
+                            secondary(look, line)
+                                .id("stack-header")
+                                .test_support()
+                                .flex_shrink_0(),
+                        ),
+                    None => pr_line,
+                };
+                diff_header(ui, state, full, Some(extra), look)
+            }
             None => match crate::panel_stack::header_line(&state.review) {
                 Some(line) => diff_header(
                     ui,
@@ -845,12 +891,12 @@ pub fn changes(
                         .map(|(diff, file)| file_bar(ui, look, &diffs, diff, file, None, false, false)),
                 )
                 .children(match inline_handle {
-                    Some(handle) => Some(
+                    Some(ref handle) => Some(
                         div()
                             .id("review-diff")
                             .flex_1()
                             .min_h_0()
-                            .track_scroll(&handle)
+                            .track_scroll(handle)
                             .overflow_y_scroll()
                             .child(list)
                             .test_support()
@@ -869,7 +915,7 @@ pub fn changes(
                                 // Stretched by the row, not h_full: a percent
                                 // height grows with the list and pushes it
                                 // past the window.
-                                .w(px(300.))
+                                .w(px(file_list_width))
                                 .flex_shrink_0()
                                 .border_r_1()
                                 .border_color(rgb(look.line))
@@ -883,6 +929,55 @@ pub fn changes(
                         .child(list)
                         .into_any_element(),
                     ),
+                })
+                .when(full && !inline && inline_handle.is_none(), |body| {
+                    let drag = documents.diff_list_drag.clone();
+                    let reset_ui = ui.clone();
+                    body.child(
+                        div()
+                            .id("changes-files-divider")
+                            .role(Role::Splitter)
+                            .aria_label("Resize the file list")
+                            .w(px(crate::theme::DIVIDER))
+                            .ml(px(-(crate::theme::DIVIDER - 1.) / 2.))
+                            .mr(px(-(crate::theme::DIVIDER - 1.) / 2.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .cursor_col_resize()
+                            .group("changes-files-divider")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(5.))
+                                    .h(px(36.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(look.secondary))
+                                    .opacity(0.)
+                                    .group_hover("changes-files-divider", |grip| grip.opacity(1.)),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    if event.click_count == 2 {
+                                        drag.set(None);
+                                        reset_ui.send(
+                                            AppAction::Review(ReviewAction::ResetFileListWidth),
+                                            cx,
+                                        );
+                                    } else {
+                                        drag.set(Some((
+                                            f32::from(event.position.x),
+                                            file_list_width,
+                                        )));
+                                    }
+                                },
+                            )
+                            .test_support(),
+                    )
                 })
                 .when(!inline || refresh_failed, |body| body.child(view))
                 .children(crate::changes_loading::changes_loading(
@@ -971,7 +1066,7 @@ pub fn changes(
                             + if sendable > 0 { shaped(&format!("Send to {send}"), 13.) + 24. + 8. } else { 0. };
                         let room = width - 20. - 16. - buttons;
                         let line = drafts_line(state, id, agent, you, |line| shaped(line, 11.5) <= room);
-                        full_text(
+                        let drafts_el = full_text(
                             secondary(look, line.clone())
                                 .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
                                 .min_w_0()
@@ -981,7 +1076,24 @@ pub fn changes(
                             line,
                         )
                         .test_support()
-                        .into_any_element()
+                        .into_any_element();
+                        if stacked && !crate::panel_stack::whole_picked(&state.review) {
+                            let links = crate::panel_stack::footer_links(
+                                &state.review,
+                                look,
+                                &stack_send,
+                                roomy,
+                            )
+                            .unwrap_or_default();
+                            row()
+                                .gap(px(12.))
+                                .min_w_0()
+                                .children(links)
+                                .child(drafts_el)
+                                .into_any_element()
+                        } else {
+                            drafts_el
+                        }
                     }
                     _ => {
                         // Push & PR… opens one menu of every repo (DS-10);
@@ -1053,10 +1165,12 @@ pub fn changes(
                 // nothing waits. A pull request review shows it only when a
                 // draft waits, as a secondary button left of Submit review….
                 .when_some(session_id.clone().filter(|_| {
-                    if stacked {
+                    if review.is_some() {
+                        sendable > 0
+                    } else if stacked {
                         crate::panel_stack::whole_picked(&state.review) || sendable > 0
                     } else {
-                        review.is_none() || sendable > 0
+                        true
                     }
                 }), |footer, session| {
                     let agent = state

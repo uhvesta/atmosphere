@@ -1559,20 +1559,25 @@ fn spec_editor(view: &WeakEntity<DiffView>, name: &str, spec: &DiffSpec, bases: 
 /// shown when the patch doesn't parse.
 fn build(repo: &str, file: &FileDiff, variant: Variant) -> (DiffFile, Option<String>) {
     let path = patch::key(repo, &file.path);
+    let language = file.language().syntax_token();
+    let with_language = |built: DiffFile| match language {
+        Some(token) => built.with_language(token),
+        None => built,
+    };
     if variant == Variant::Text
         && let Some(text) = patch::file_text(file)
     {
-        return (DiffFile::unchanged(path, &text), None);
+        return (with_language(DiffFile::unchanged(path, &text)), None);
     }
     let context = if variant == Variant::Hunks { patch::Context::Hunks } else { patch::Context::Full };
     match DiffFile::parse(&patch::file_patch(repo, file, context)) {
-        Ok(mut files) if !files.is_empty() => (files.swap_remove(0), None),
-        Ok(_) => (DiffFile::unchanged(path, ""), None),
+        Ok(mut files) if !files.is_empty() => (with_language(files.swap_remove(0)), None),
+        Ok(_) => (with_language(DiffFile::unchanged(path, "")), None),
         Err(error) => {
             let notice = format!(
                 "The changes to {path} can't be shown: their patch doesn't parse ({error:?}). Refresh the review; if this keeps happening, open the file big to read it whole."
             );
-            (DiffFile::unchanged(path, ""), Some(notice))
+            (with_language(DiffFile::unchanged(path, "")), Some(notice))
         }
     }
 }

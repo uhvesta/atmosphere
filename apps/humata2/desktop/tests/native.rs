@@ -252,6 +252,9 @@ mod agent_switches;
 // FUSEFSWIRE (D904): Settings > Sync.
 #[path = "native/settings_sync.rs"]
 mod settings_sync;
+// BROWSER: Settings > Browser and Browser read / write cards.
+#[path = "native/browser_settings.rs"]
+mod browser_settings;
 #[path = "native/inbox_terminal.rs"]
 mod inbox_terminal;
 #[path = "native/hosts_settings.rs"]

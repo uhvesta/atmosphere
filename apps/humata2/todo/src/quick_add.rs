@@ -44,9 +44,54 @@ fn need_word(w: &str) -> Option<Need> {
     }
 }
 
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+fn match_channel<'a>(lower: &str, channels: &'a [(String, String)]) -> Option<&'a str> {
+    channels
+        .iter()
+        .find(|(id, name)| {
+            name.to_lowercase() == lower
+                || slugify(name) == lower
+                || id.to_lowercase() == lower
+        })
+        .map(|(id, _)| id.as_str())
+}
+
 /// Reads trailing tokens (tag, channel, effort, impact, need, fuzzy/firm day) off a typed line.
 /// Returns None when no title is left.
 pub fn parse(line: &str, today: Day, channels: &[String]) -> Option<Draft> {
+    let pairs: Vec<(String, String)> =
+        channels.iter().map(|c| (c.clone(), c.clone())).collect();
+    parse_with_channels(line, today, &pairs)
+}
+
+/// Reads trailing tokens off a typed line, matching channel tokens case-insensitively
+/// against each `(id, name)` pair's display name, slugified display name, or ID, and
+/// storing the resolved channel ID in `Draft.channel`.
+/// Returns None when no title is left.
+pub fn parse_with_channels(
+    line: &str,
+    today: Day,
+    channels: &[(String, String)],
+) -> Option<Draft> {
     let mut tokens: Vec<&str> = line.split_whitespace().collect();
     let mut draft = Draft {
         title: String::new(),
@@ -67,9 +112,9 @@ pub fn parse(line: &str, today: Day, channels: &[String]) -> Option<Draft> {
         {
             draft.need = Some(need);
         } else if draft.channel.is_none()
-            && let Some(c) = channels.iter().find(|c| c.to_lowercase() == lower)
+            && let Some(id) = match_channel(&lower, channels)
         {
-            draft.channel = Some(c.clone());
+            draft.channel = Some(id.to_owned());
         } else if draft.effort.is_none() && matches!(lower.as_str(), "s" | "m" | "l") {
             draft.effort = Some(match lower.as_str() {
                 "s" => Effort::S,
@@ -178,5 +223,30 @@ mod tests {
         assert_eq!(d4.title, "Migrate db");
         assert_eq!(d4.need, Some(Need::Expected));
         assert_eq!(d4.fuzzy_due, Some(FuzzyDue::NextWeek));
+    }
+
+    #[test]
+    fn parse_with_channels_resolves_name_slug_and_id_to_channel_id() {
+        let today = Day::from_ymd(2026, 11, 19).unwrap();
+        let channels = vec![
+            ("ch_pay".to_owned(), "Payments".to_owned()),
+            ("ch_rew".to_owned(), "Payments Rewrite".to_owned()),
+        ];
+
+        let d1 = parse_with_channels("fix retries Payments fri", today, &channels).unwrap();
+        assert_eq!(d1.title, "Fix retries");
+        assert_eq!(d1.channel.as_deref(), Some("ch_pay"));
+
+        let d2 = parse_with_channels("fix retries payments", today, &channels).unwrap();
+        assert_eq!(d2.title, "Fix retries");
+        assert_eq!(d2.channel.as_deref(), Some("ch_pay"));
+
+        let d3 = parse_with_channels("migrate ledger payments-rewrite", today, &channels).unwrap();
+        assert_eq!(d3.title, "Migrate ledger");
+        assert_eq!(d3.channel.as_deref(), Some("ch_rew"));
+
+        let d4 = parse_with_channels("audit ch_pay", today, &channels).unwrap();
+        assert_eq!(d4.title, "Audit");
+        assert_eq!(d4.channel.as_deref(), Some("ch_pay"));
     }
 }

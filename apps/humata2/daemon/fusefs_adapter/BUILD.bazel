@@ -1,4 +1,7 @@
+load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID", "TEAM_ID")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+_HUMATA2_APP_GROUP = (TEAM_ID or "UNSIGNED") + "." + HUMATA2_BUNDLE_ID
 
 # Humata 2 FUSEFS adapter (T6 + T7 + T9 + T10):
 # - layout: Humata virtual tree projector (s/, m/, channels/, desks/, machines/,
@@ -19,18 +22,23 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     crate_name = "humata2_fusefs_adapter",
+    rustc_env = {
+        "HUMATA2_APP_GROUP": _HUMATA2_APP_GROUP,
+    },
     visibility = ["//apps/humata2:__subpackages__"],
     deps = [
         "//libs/fusefs/cas",
-        "//libs/fusefs/fskit",
         "//libs/fusefs/host",
-        "//libs/fusefs/linux",
         "//libs/fusefs/vfs",
         "@crates//:libc",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["//libs/fusefs/linux"],
+        "@platforms//os:macos": ["//libs/fusefs/fskit"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_binary(
@@ -40,13 +48,15 @@ rust_binary(
     deps = [
         ":fusefs_adapter",
         "//libs/fusefs/cas",
-        "//libs/fusefs/fskit",
         "//libs/fusefs/host",
-        "//libs/fusefs/linux",
         "//libs/fusefs/vfs",
         "@crates//:clap",
         "@crates//:serde_json",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["//libs/fusefs/linux"],
+        "@platforms//os:macos": ["//libs/fusefs/fskit"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

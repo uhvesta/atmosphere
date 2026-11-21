@@ -47,7 +47,7 @@ Complementary "Diff"
     #diff-file-count
       text "1 of 1"
     text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
-    text "acme/api"
+    text "api"
     text "·"
   #review-diff
     #review-repo-acme/api

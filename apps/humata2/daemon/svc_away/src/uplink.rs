@@ -2,6 +2,7 @@
 //! reachable (D213); the newest open replaces the oldest.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
@@ -9,7 +10,7 @@ use humata2_daemon_ports::{Caller, UserVia};
 use crate::pb;
 use humata2_rpc_kit::helpers as status;
 use tokio::sync::{mpsc, watch};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Code, Status};
 
 use super::journal;
@@ -119,108 +120,143 @@ impl Uplinks {
         let policy = Arc::clone(&self.policy);
         let store = Arc::clone(self.policy.store());
         let inbox = Arc::clone(&self.inbox);
-        let mut written = self.link.journal_writes();
-        let mut holders = self.holders.get().cloned();
-        tokio::spawn(async move {
-            let mut from_host = from_host;
-            // Nothing of the journal goes out before the host's Resume says
-            // what it already holds; after it, `sent_through` is how far
-            // this uplink has sent.
-            let mut resumed = false;
-            let mut sent_through = 0_u64;
-            loop {
-                tokio::select! {
-                    () = opened.replaced() => {
-                        // Sent before `to_host` drops, so the stream ends with it.
-                        let _ = to_host
-                            .send(Err(Status::aborted(
-                                "humatad2 ended this uplink: a newer one from the peer link replaced it; the newer one carries on, so no action is needed",
-                            )))
-                            .await;
-                        break;
-                    }
-                    Ok(()) = written.changed(), if resumed => {
-                        if !send_journal(&store, &to_host, &mut sent_through).await {
-                            break;
-                        }
-                    }
-                    changed = holders_changed(&mut holders), if resumed => {
-                        if !changed {
-                            holders = None;
-                        } else if !send_holders(&mut holders, &to_host).await {
-                            break;
-                        }
-                    }
-                    message = from_host.message() => match message {
-                        Ok(Some(pb::HostToMachine {
-                            message: Some(pb::host_to_machine::Message::Resume(resume)),
-                        })) => {
-                            let through = resume.from.map_or(0, |from| from.journal_through);
-                            if !acked(&store, &policy, &*inbox, through).await {
-                                continue;
-                            }
-                            resumed = true;
-                            // A host that resumes lower gets the entries again.
-                            sent_through = through;
-                            if !send_journal(&store, &to_host, &mut sent_through).await {
-                                break;
-                            }
-                            // The list is sent whole on every link, so a host
-                            // that was away learns what changed meanwhile.
-                            if !send_holders(&mut holders, &to_host).await {
-                                break;
-                            }
-                        }
-                        Ok(Some(pb::HostToMachine {
-                            message: Some(pb::host_to_machine::Message::Ack(ack)),
-                        })) => {
-                            acked(&store, &policy, &*inbox, ack.journal_through).await;
-                        }
-                        Ok(Some(pb::HostToMachine {
-                            message: Some(pb::host_to_machine::Message::Policy(snapshot)),
-                        })) => {
-                            let Some(ack) = applied(&policy, &*feed, snapshot).await else {
-                                continue;
-                            };
-                            if to_host.send(Ok(ack)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(Some(pb::HostToMachine {
-                            message: Some(pb::host_to_machine::Message::Answer(relayed)),
-                        })) => {
-                            if let Some(refused) = inbox.answer_relayed(&relayed).await {
-                                // So the host answers its user now, not after its wait.
-                                let message = pb::MachineToHost {
-                                    message: Some(pb::machine_to_host::Message::AnswerRefused(refused)),
-                                };
-                                if to_host.send(Ok(message)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(Some(pb::HostToMachine {
-                            message: Some(pb::host_to_machine::Message::Result(result)),
-                        })) => {
-                            forwarder.answered(result);
-                        }
-                        // The host's other messages are taken in later milestones.
-                        Ok(Some(_)) => {}
-                        Ok(None) | Err(_) => break,
-                    },
+        let written = self.link.journal_writes();
+        let holders = self.holders.get().cloned();
+        tokio::spawn(run_uplink(
+            opened,
+            to_host,
+            forwarder,
+            epoch,
+            feed,
+            policy,
+            store,
+            inbox,
+            written,
+            holders,
+            from_host,
+            |store, policy, inbox, seq| async move { acked(&store, &policy, &*inbox, seq).await },
+        ));
+        Ok(ReceiverStream::new(stream))
+    }
+}
+
+/// Runs one host uplink until the host closes it or a newer uplink replaces it.
+#[allow(clippy::too_many_arguments)]
+async fn run_uplink<S, A, Fut>(
+    opened: super::link::Opened,
+    to_host: mpsc::Sender<Result<pb::MachineToHost, Status>>,
+    forwarder: Arc<Forwarder>,
+    epoch: u64,
+    feed: Arc<dyn EventSink>,
+    policy: Arc<PolicySource>,
+    store: Arc<humata2_store::Store>,
+    inbox: Arc<dyn UplinkInbox>,
+    mut written: watch::Receiver<u64>,
+    mut holders: Option<watch::Receiver<Option<pb::HoldersReport>>>,
+    mut from_host: S,
+    ack: A,
+) where
+    S: Stream<Item = Result<pb::HostToMachine, Status>> + Unpin,
+    A: Fn(Arc<humata2_store::Store>, Arc<PolicySource>, Arc<dyn UplinkInbox>, u64) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    // Nothing of the journal goes out before the host's Resume says
+    // what it already holds; after it, `sent_through` is how far
+    // this uplink has sent.
+    let mut resumed = false;
+    let mut sent_through = 0_u64;
+    loop {
+        tokio::select! {
+            () = opened.replaced() => {
+                // Sent before `to_host` drops, so the stream ends with it.
+                let _ = to_host
+                    .send(Err(Status::aborted(
+                        "humatad2 ended this uplink: a newer one from the peer link replaced it; the newer one carries on, so no action is needed",
+                    )))
+                    .await;
+                break;
+            }
+            Ok(()) = written.changed(), if resumed => {
+                if !send_journal(&store, &to_host, &mut sent_through).await {
+                    break;
                 }
             }
-            // The calls still waiting on this uplink are host_unreachable now.
-            forwarder.detach(epoch);
-            if opened.close() {
-                feed.publish(
-                    pb::Change::Updated,
-                    pb::event::Payload::HostLink(pb::HostLinkChanged { reachable: false }),
-                    None,
-                );
+            changed = holders_changed(&mut holders), if resumed => {
+                if !changed {
+                    holders = None;
+                } else if !send_holders(&mut holders, &to_host).await {
+                    break;
+                }
             }
-        });
-        Ok(ReceiverStream::new(stream))
+            message = from_host.next() => match message {
+                Some(Ok(pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Resume(resume)),
+                })) => {
+                    let through = resume.from.map_or(0, |from| from.journal_through);
+                    // Recording the ack is bookkeeping; a transient store failure
+                    // must not leave `resumed` false and wedge journal/holders
+                    // delivery for the rest of the link (SMB-066). The next Ack
+                    // retries it.
+                    let _ = ack(Arc::clone(&store), Arc::clone(&policy), Arc::clone(&inbox), through).await;
+                    resumed = true;
+                    // A host that resumes lower gets the entries again.
+                    sent_through = through;
+                    if !send_journal(&store, &to_host, &mut sent_through).await {
+                        break;
+                    }
+                    // The list is sent whole on every link, so a host
+                    // that was away learns what changed meanwhile.
+                    if !send_holders(&mut holders, &to_host).await {
+                        break;
+                    }
+                }
+                Some(Ok(pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Ack(ack_msg)),
+                })) => {
+                    let _ = ack(Arc::clone(&store), Arc::clone(&policy), Arc::clone(&inbox), ack_msg.journal_through).await;
+                }
+                Some(Ok(pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Policy(snapshot)),
+                })) => {
+                    let Some(ack_msg) = applied(&policy, &*feed, snapshot).await else {
+                        continue;
+                    };
+                    if to_host.send(Ok(ack_msg)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Answer(relayed)),
+                })) => {
+                    if let Some(refused) = inbox.answer_relayed(&relayed).await {
+                        // So the host answers its user now, not after its wait.
+                        let message = pb::MachineToHost {
+                            message: Some(pb::machine_to_host::Message::AnswerRefused(refused)),
+                        };
+                        if to_host.send(Ok(message)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Some(Ok(pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Result(result)),
+                })) => {
+                    forwarder.answered(result);
+                }
+                // The host's other messages are taken in later milestones.
+                Some(Ok(_)) => {}
+                None | Some(Err(_)) => break,
+            },
+        }
+    }
+    // The calls still waiting on this uplink are host_unreachable now.
+    forwarder.detach(epoch);
+    if opened.close() {
+        feed.publish(
+            pb::Change::Updated,
+            pb::event::Payload::HostLink(pb::HostLinkChanged { reachable: false }),
+            None,
+        );
     }
 }
 
@@ -403,4 +439,198 @@ async fn send_journal(
         *sent_through = seq;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use humata2_access::{ChannelRules, Grant, Policy, PolicyError, RulesState};
+    use humata2_store::{Store, StoreError};
+
+    use super::*;
+    use crate::policy_copy::PolicyGuard;
+
+    struct NoopFeed;
+    impl EventSink for NoopFeed {
+        fn publish(&self, _change: pb::Change, _payload: pb::event::Payload, _actor: Option<pb::Actor>) {}
+    }
+
+    struct NoopInbox;
+    #[tonic::async_trait]
+    impl UplinkInbox for NoopInbox {
+        async fn answer_relayed(&self, _relayed: &pb::InboxAnswerRelay) -> Option<pb::InboxAnswerRefused> {
+            None
+        }
+        async fn revoked(&self, _request: &str, _at: SystemTime) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    struct NoopPolicyGuard {
+        changes: watch::Sender<u64>,
+    }
+
+    impl NoopPolicyGuard {
+        fn new() -> Arc<Self> {
+            let (changes, _) = watch::channel(0);
+            Arc::new(Self { changes })
+        }
+    }
+
+    impl PolicyGuard for NoopPolicyGuard {
+        fn policy_revision(&self) -> u64 {
+            0
+        }
+        fn policy_changes(&self) -> watch::Receiver<u64> {
+            self.changes.subscribe()
+        }
+        fn policy_clone(&self) -> Policy {
+            Policy::default()
+        }
+        fn replace_policy(&self, _policy: Policy) {}
+        fn host_rules_arrived(&self) {}
+        fn drop_local_grants(&self, _answered: &BTreeSet<String>) -> Result<(), PolicyError> {
+            Ok(())
+        }
+        fn encode_rules(&self, _rules: &ChannelRules) -> (Vec<pb::Rule>, pb::AwayRule) {
+            (Vec::new(), pb::AwayRule::default())
+        }
+        fn decode_rules(&self, _rules: &[pb::Rule], _away: Option<&pb::AwayRule>) -> Result<RulesState, String> {
+            Ok(Policy::new().to_state().new_channels)
+        }
+        fn encode_grant(&self, _grant: &Grant, _suspended: bool) -> pb::Grant {
+            pb::Grant::default()
+        }
+        fn decode_grant(
+            &self,
+            _store: &Store,
+            _rules: &Policy,
+            _grant: &pb::Grant,
+        ) -> Result<Option<Grant>, StoreError> {
+            Ok(None)
+        }
+        fn global_contain(&self, _store: &Store) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+        fn put_global_contain(&self, _store: &Store, _on: bool, _revision: u64) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn channel_contain(&self, _store: &Store, _channel: &str) -> Result<Option<bool>, StoreError> {
+            Ok(None)
+        }
+        fn put_channel_contain(
+            &self,
+            _store: &Store,
+            _channel: &str,
+            _on: Option<bool>,
+            _revision: u64,
+        ) -> Result<(), StoreError> {
+            Ok(())
+        }
+    }
+
+    /// SMB-066: when recording the Resume ack fails (`acked() == false`), the
+    /// uplink must still mark `resumed = true` and deliver pending/subsequent
+    /// journal entries and holders reports rather than wedging the link.
+    #[tokio::test]
+    async fn a_failed_resume_ack_does_not_wedge_journal_replay_or_holders() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let link = Arc::new(HostLink::new(false));
+        let seq1 = journal::record_board(&store, &link, "se_1", "board.item_create", vec![1], None, None)
+            .await
+            .unwrap();
+        let seq2 = journal::record_board(&store, &link, "se_1", "board.item_move", vec![2], None, None)
+            .await
+            .unwrap();
+
+        let opened = link.open();
+        let (to_host_tx, mut to_host_rx) = mpsc::channel(16);
+        let (from_host_tx, from_host_rx) = mpsc::channel(16);
+        let forwarder = Arc::new(Forwarder::new(false));
+        let epoch = forwarder.attach(to_host_tx.clone());
+        let policy = PolicySource::new(NoopPolicyGuard::new(), Arc::clone(&store));
+        let (holders_tx, holders_rx) = watch::channel(Some(pb::HoldersReport::default()));
+
+        let task = tokio::spawn(run_uplink(
+            opened,
+            to_host_tx,
+            forwarder,
+            epoch,
+            Arc::new(NoopFeed),
+            policy,
+            Arc::clone(&store),
+            Arc::new(NoopInbox),
+            link.journal_writes(),
+            Some(holders_rx),
+            ReceiverStream::new(from_host_rx),
+            // Simulate `journal::acked` failing on disk.
+            |_store, _policy, _inbox, _seq| async { false },
+        ));
+
+        from_host_tx
+            .send(Ok(pb::HostToMachine {
+                message: Some(pb::host_to_machine::Message::Resume(pb::UplinkResume {
+                    from: Some(pb::UplinkAck {
+                        journal_through: seq1,
+                        ..pb::UplinkAck::default()
+                    }),
+                })),
+            }))
+            .await
+            .unwrap();
+
+        let bound = Duration::from_secs(2);
+        let first = tokio::time::timeout(bound, to_host_rx.recv())
+            .await
+            .expect("unacked entry after Resume must be sent")
+            .unwrap()
+            .unwrap();
+        match first.message {
+            Some(pb::machine_to_host::Message::Journal(entry)) => assert_eq!(entry.seq, seq2),
+            other => panic!("expected Journal(seq2), got {other:?}"),
+        }
+
+        let second = tokio::time::timeout(bound, to_host_rx.recv())
+            .await
+            .expect("initial holders report must be sent after Resume")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(second.message, Some(pb::machine_to_host::Message::Holders(_))),
+            "expected Holders, got {:?}",
+            second.message
+        );
+
+        // Subsequent journal writes must stream because `resumed` is true.
+        let seq3 = journal::record_board(&store, &link, "se_1", "board.item_move", vec![3], None, None)
+            .await
+            .unwrap();
+        let third = tokio::time::timeout(bound, to_host_rx.recv())
+            .await
+            .expect("subsequent journal write must reach host")
+            .unwrap()
+            .unwrap();
+        match third.message {
+            Some(pb::machine_to_host::Message::Journal(entry)) => assert_eq!(entry.seq, seq3),
+            other => panic!("expected Journal(seq3), got {other:?}"),
+        }
+
+        // Subsequent holders updates must also stream.
+        holders_tx.send(Some(pb::HoldersReport::default())).unwrap();
+        let fourth = tokio::time::timeout(bound, to_host_rx.recv())
+            .await
+            .expect("subsequent holders update must reach host")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(fourth.message, Some(pb::machine_to_host::Message::Holders(_))),
+            "expected updated Holders, got {:?}",
+            fourth.message
+        );
+
+        drop(from_host_tx);
+        task.await.unwrap();
+    }
 }

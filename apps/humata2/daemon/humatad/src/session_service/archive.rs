@@ -534,8 +534,15 @@ impl SessionSvc {
             return self.archive_remote(caller, request, loaded, choice, machine).await;
         }
         match loaded.agent.as_ref().map(|agent| agent.state) {
-            Some(AgentState::Launching) => return Err(busy(&id, "still starting")),
-            Some(AgentState::Resuming) => return Err(busy(&id, "being resumed")),
+            // Only refuse when a launch or resume is genuinely in flight; a
+            // stale Launching or Resuming state left by an earlier crash is
+            // archivable just as StopSession accepts it (MACHINEARCHIVE).
+            Some(AgentState::Launching) if humata2_revive::launch_in_flight(&id) => {
+                return Err(busy(&id, "still starting"));
+            }
+            Some(AgentState::Resuming) if !self.left_resuming(&id) => {
+                return Err(busy(&id, "being resumed"));
+            }
             _ => {}
         }
         // Before its agent is recorded, the start may still launch it.
@@ -1122,17 +1129,24 @@ impl SessionSvc {
         let Some(mut agent) = agent else {
             return Ok(());
         };
-        let AgentState::Running { holder_pid } = agent.state else {
-            return Ok(());
-        };
+        let what = format!("session {session}'s terminal");
         // A holder already gone is as stopped as one that was asked to.
-        if let Err(error) = holder_end::shut_or_end(
-            &agent.launch.holder_socket,
-            holder_pid,
-            &format!("session {session}'s terminal"),
-        )
-        .await
-        {
+        // Non-Running states (Exited, ResumeFailed, stale Launching/Resuming,
+        // Stopped) may still have a live holder socket or tab row; end them
+        // too so the holder disappears and the folder can be freed.
+        let end_result = match agent.state {
+            AgentState::Running { holder_pid } => {
+                holder_end::shut_or_end(&agent.launch.holder_socket, holder_pid, &what).await
+            }
+            AgentState::Launching
+            | AgentState::Resuming
+            | AgentState::Exited { .. }
+            | AgentState::ResumeFailed { .. }
+            | AgentState::Stopped => {
+                holder_end::end_holder_at(&agent.launch.holder_socket, &what).await
+            }
+        };
+        if let Err(error) = end_result {
             crate::log::say!("humatad2: {error}");
         }
         agent.state = AgentState::Stopped;
@@ -1474,6 +1488,15 @@ impl SessionSvc {
                 return;
             }
         };
+        // SMB-045: hold the shared folder lock across reclone and archive
+        // removal so a concurrent `free_folder` on a sharer cannot remove the
+        // folder while this restore is recloning into it. Lock ordering matches
+        // `free_folder`: own session lock first, then `folder:<path>`.
+        let folder_guard = self
+            .lifecycle
+            .lock_of(&format!("folder:{}", loaded.record.folder.display()))
+            .lock_owned()
+            .await;
         let repos: Vec<String> = loaded
             .detail
             .iter()
@@ -1527,6 +1550,7 @@ impl SessionSvc {
                 return;
             }
         }
+        drop(folder_guard);
         drop(guard);
         self.tell.poke_pointers(&id);
         self.tell

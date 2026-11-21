@@ -71,8 +71,11 @@ being built (STACKVIEW); `shared/stacks.md` says what the view shows.
 
 ## 5. When the tool answers
 
-- In a review chat it applies at once and the user can Undo it; elsewhere
-  the user gets an offer to open it.
+- In an open review chat it applies at once (the answer carries an `undo_id`
+  and the user can Undo it). Elsewhere — or in a PR review before the review
+  view has reported itself — `review_prepare` creates a draft view (`id` with
+  no `undo_id`); call `view_mark_ready` with that `id` so the user gets an
+  offer to open it.
 - If the tool says the user turned a switch off (Order, for the layers),
   tell them which one and that it is in the review's Info panel. Send the
   `spec` alone and put the layer list in your reply. Don't retry.

@@ -55,3 +55,48 @@ fn a_to_do_ask_event_adds_no_inbox_count_and_posts_a_to_do_notice() {
     assert_eq!(posted.len(), 1, "{posted:?}");
     assert!(matches!(posted[0].target, NotifyTarget::Todo { .. }), "{posted:?}");
 }
+
+#[test]
+fn ask_why_expands_inline_on_todo_without_jumping_to_inbox() {
+    let (mut store, _) = setup();
+    store.send(A::Switch(Route::Todo), |_| {});
+    store.skip_received();
+
+    store.send(
+        A::Todo(humata2_app::TodoAction::AskWhy("req-todo-1".to_owned())),
+        |_| {},
+    );
+    store.skip_received();
+
+    assert_eq!(store.state().route, Route::Todo);
+    assert!(store.state().todo.expanded_why.contains("req-todo-1"));
+}
+
+#[test]
+fn blocked_session_with_pending_to_do_ask_does_not_post_terminal_needs_you() {
+    let (mut store, notifier) = setup();
+    store.send(A::Settings(SettingsAction::ToggleDesktopNotifications), |s| {
+        s.settings.preferences.notify.enabled = true;
+    });
+    store.skip_received();
+    store.send(A::WindowActive(false), |_| {});
+    store.skip_received();
+
+    let mut session = store.state().workspace.sessions[0].clone();
+    session.status = humata2_clients::model::Status::Working;
+    store.send(A::Event(Event::Session(session.clone())), |_| {});
+    store.skip_received();
+
+    let mut ask = to_do_ask(&store);
+    ask.session = session.id.clone();
+    store.send(A::Event(Event::Request(ask)), |_| {});
+    store.skip_received();
+    assert_eq!(notifier.posted().len(), 1);
+    notifier.clear();
+
+    // Agent blocks waiting on that To-do ask: no TerminalNeedsYou notice should fire.
+    session.status = humata2_clients::model::Status::NeedsYou;
+    store.send(A::Event(Event::Session(session)), |_| {});
+    store.skip_received();
+    assert!(notifier.posted().is_empty(), "{:?}", notifier.posted());
+}

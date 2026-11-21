@@ -12,12 +12,14 @@ use tonic::Status;
 use tonic::service::RoutesBuilder;
 
 use crate::away::Forwarder;
+use crate::browser_service::BrowserBridgeSvc;
 use crate::events::Feed;
 use crate::files::Files;
 use crate::guard::Guard;
 use crate::inbox::Inbox;
 use crate::machine_service::MachineSvc;
 use crate::operations::Operations;
+use crate::provider_service::ProviderSvc;
 use crate::remote_work::RemoteWork;
 use crate::repo_service::RepoSvc;
 use crate::restart::Started;
@@ -36,7 +38,13 @@ pub trait ReviewDraftsPort: Send + Sync {
 
 /// Optional `AgentService` (`svc_catalog`).
 pub trait CatalogPlugin: Send + Sync {
-    fn build(&self, agents: Agents, use_builtin: bool) -> (OnChange, RegisterRoutes);
+    fn build(
+        &self,
+        agents: Agents,
+        use_builtin: bool,
+        guard: Arc<Guard>,
+        inbox: Arc<Inbox>,
+    ) -> (OnChange, RegisterRoutes);
 }
 
 /// Concrete core handles passed to [`BoardPlugin::build`].
@@ -60,8 +68,10 @@ pub trait BoardInstance: Send + Sync {
     fn answer_host_calls(
         &self,
         machines: MachineSvc,
+        providers: ProviderSvc,
         files: Arc<Files>,
         transfers: Arc<TransferSvc>,
+        browser: BrowserBridgeSvc,
     );
     fn register(self: Box<Self>, routes: &mut RoutesBuilder);
 }

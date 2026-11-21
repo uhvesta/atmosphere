@@ -1708,7 +1708,11 @@ mod unattended_tests {
                 known_hosts: state.join("known_hosts"),
                 ssh_config: state.join("ssh_config"),
                 peer_keys: state.join("peer-keys"),
-                retry: RetryPolicy::default(),
+                retry: RetryPolicy {
+                    attempts: 2,
+                    first_delay: std::time::Duration::ZERO,
+                    max_delay: std::time::Duration::ZERO,
+                },
             });
             let entry = HostEntry {
                 name: "box-1".to_owned(),

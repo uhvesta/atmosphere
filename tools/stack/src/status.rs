@@ -12,6 +12,7 @@ use crate::gh::{Gh, Pr, PrState};
 use crate::git::Git;
 use crate::local::{self, Branches};
 use crate::restack;
+use crate::state::StackState;
 
 /// One topic's status: its branch, the base its pull request targets, and
 /// whether its branch on the remote is behind the rebuilt head.
@@ -29,6 +30,8 @@ struct Row<'a> {
     base_commit: Option<String>,
     pr: Option<&'a Pr>,
     needs_upload: bool,
+    imported: bool,
+    foreign: bool,
 }
 
 /// The prefix `--offline` uses when stack.toml sets none: it only names the
@@ -38,6 +41,7 @@ const OFFLINE_PREFIX: &str = "local";
 pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
     let config = Config::load()?;
     let git = Git::new(dir);
+    let stack_state = StackState::load(&git)?;
     let in_progress = restack::in_progress(&git)?;
     let remote = config.remote(&args.target);
     let remote = remote.as_str();
@@ -51,7 +55,12 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
             (config.trunk(&args.target, repo.default_branch), prefix)
         }
         None => {
-            let trunk = config.local_trunk(&args.target, &git, remote);
+            let trunk = args
+                .target
+                .trunk
+                .clone()
+                .or_else(|| stack_state.as_ref().and_then(|s| s.trunk.clone()))
+                .unwrap_or_else(|| config.local_trunk(&args.target, &git, remote));
             (trunk, config.prefix(&git, None, OFFLINE_PREFIX)?)
         }
     };
@@ -64,7 +73,7 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
         Some(gh) => gh.my_open_prs()?,
         None => Vec::new(),
     };
-    let branches = Branches::new(prefix, mine.clone());
+    let branches = Branches::with_state(prefix, mine.clone(), stack_state.as_ref());
     let mut prs: BTreeMap<&str, Pr> = BTreeMap::new();
     if let Some(gh) = &gh {
         for topic in &plan.topics {
@@ -74,6 +83,28 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
             };
             if let Some(pr) = found {
                 prs.insert(topic.name.as_str(), pr);
+            }
+        }
+    } else if let Some(state) = &stack_state {
+        for topic in &plan.topics {
+            if let Some(layer) = state.layer_by_topic(&topic.name)
+                && let Some(number) = layer.pr_number
+            {
+                prs.insert(
+                    topic.name.as_str(),
+                    Pr {
+                        number,
+                        url: layer.pr_url.clone().unwrap_or_default(),
+                        state: PrState::Open,
+                        head_ref_name: layer.branch.clone(),
+                        base_ref_name: layer.base.clone(),
+                        title: layer.title.clone().unwrap_or_default(),
+                        body: String::new(),
+                        is_draft: false,
+                        review_decision: None,
+                        author: layer.author.clone().unwrap_or_default(),
+                    },
+                );
             }
         }
     }
@@ -86,7 +117,17 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
     // Offline, what is on the remote is unknown, so every topic with a tip
     // reports `needs upload`.
     let heads = match &gh {
-        Some(_) => Some(local::remote_heads(&git, remote, &branches.prefixes())?),
+        Some(_) => {
+            let mut heads = local::remote_heads(&git, remote, &branches.prefixes())?;
+            for branch in branches.extra_branches() {
+                if !heads.contains_key(&branch)
+                    && let Ok(found) = git.remote_heads(remote, &branch)
+                {
+                    heads.extend(found);
+                }
+            }
+            Some(heads)
+        }
         None => None,
     };
 
@@ -105,6 +146,8 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                 None => trunk.clone(),
             };
             let tip = tips.get(name);
+            let imported = branches.layer(name).is_some();
+            let foreign = branches.is_foreign(name);
             let needs_upload = !merged.contains(name)
                 && match (tip, &heads) {
                     (Some(tip), Some(heads)) => heads.get(&branch) != Some(&tip.head),
@@ -120,6 +163,8 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                 base_commit: tip.map(|tip| tip.base.clone()),
                 pr: prs.get(name),
                 needs_upload,
+                imported,
+                foreign,
             }
         })
         .collect();
@@ -146,6 +191,8 @@ pub(crate) fn run(args: &StatusArgs, dir: &Path) -> Result<(), Error> {
                     "url": row.pr.map(|pr| pr.url.as_str()),
                     "state": row.pr.map(|pr| state_name(pr.state)),
                     "needs_upload": row.needs_upload,
+                    "imported": row.imported,
+                    "foreign": row.foreign,
                 })
             })
             .collect();

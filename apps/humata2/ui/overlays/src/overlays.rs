@@ -103,6 +103,9 @@ const fn kind(overlay: &Overlay) -> Kind {
 pub struct Overlays {
     ui: Rc<Ui>,
     query: Entity<InputState>,
+    palette_scroll: ScrollHandle,
+    palette_cursor: Option<usize>,
+    palette_query: String,
     title: Entity<InputState>,
     fork_branch: Entity<InputState>,
     first_message: Entity<TextareaState>,
@@ -242,6 +245,9 @@ impl Overlays {
         Self {
             ui,
             query,
+            palette_scroll: ScrollHandle::new(),
+            palette_cursor: None,
+            palette_query: String::new(),
             title,
             fork_branch,
             first_message,
@@ -278,6 +284,10 @@ impl Overlays {
         }
         self.shown = top;
         self.owner_open.set(false);
+        if top != Some(Kind::Palette) {
+            self.palette_cursor = None;
+            self.palette_query.clear();
+        }
         match top {
             Some(Kind::Palette) => self.query.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewSession) => self.title.update(cx, |input, cx| input.focus(window, cx)),

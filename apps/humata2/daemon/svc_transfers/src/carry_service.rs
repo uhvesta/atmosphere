@@ -52,6 +52,8 @@ pub struct SessionCarrySvc {
     /// What this machine takes in when a session arrives: the host already
     /// holds the session's record and place in the tree, a box doesn't.
     take: Take,
+    /// Notified after a moved session is forgotten from this machine's store.
+    on_released: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SessionCarrySvc {
@@ -72,7 +74,14 @@ impl SessionCarrySvc {
             homes,
             bin,
             take: if host { Take::AgentOnly } else { Take::Everything },
+            on_released: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Registers a callback invoked after [`Self::release`] forgets a moved
+    /// session from this machine's store (so e.g. the FUSEFS view drops it).
+    pub fn on_released(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.on_released.set(callback);
     }
 
     /// Stages `session` for a move (see [`Starter::pack_for`]). `target` is
@@ -235,7 +244,7 @@ impl SessionCarrySvc {
             channel.to_owned(),
             self.take,
         );
-        blocking(move || -> Result<Vec<String>, Status> {
+        let trashed = blocking(move || -> Result<Vec<String>, Status> {
             let trash = bin.get()?;
             let mut trashed = Vec::new();
             for discard in starter.discards(&session).map_err(failed)? {
@@ -264,7 +273,11 @@ impl SessionCarrySvc {
             humata2_store::fault::point("carry.forgotten");
             Ok(trashed)
         })
-        .await?
+        .await??;
+        if let Some(callback) = self.on_released.get() {
+            callback();
+        }
+        Ok(trashed)
     }
 
     /// Takes back what a move that didn't switch put on this machine

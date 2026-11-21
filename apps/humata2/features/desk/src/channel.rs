@@ -13,6 +13,21 @@ use tca::Effect;
 
 use crate::{Change, Delegate, Desk, DeskAction, DeskState};
 
+/// Status of ensuring a channel's persistent primary Desk session (CHANNELDESK).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChannelDeskStatus {
+    /// Starting or reopening the channel's primary Desk session.
+    Starting,
+    /// Every agent is turned off in Settings › Agents.
+    NoAgent,
+    /// No online machine is available to run the channel's Desk.
+    NoMachine,
+    /// Explicitly closed by the user; waiting to reopen or start fresh.
+    Closed,
+    /// Starting or reopening failed.
+    Failed(String),
+}
+
 /// A channel's Desk session with the session behind it.
 #[derive(Clone, Copy, Debug)]
 pub struct ChannelRow<'a> {
@@ -128,6 +143,24 @@ impl DeskState {
                 .then_with(|| a.session.id.cmp(&b.session.id))
         });
         rows
+    }
+
+    /// A channel's persistent primary Desk session (`target: None`), if one is
+    /// currently open (CHANNELDESK).
+    #[must_use]
+    pub fn primary_channel_desk(&self, channel: &ChannelId) -> Option<ChannelRow<'_>> {
+        self.channel_rows(channel)
+            .into_iter()
+            .find(|row| row.desk.target.is_none())
+    }
+
+    /// A channel's most recently used closed-kept primary Desk session
+    /// (`target: None`), if one exists (CHANNELDESK).
+    #[must_use]
+    pub fn closed_primary_channel_desk(&self, channel: &ChannelId) -> Option<ChannelRow<'_>> {
+        self.channel_closed(channel)
+            .into_iter()
+            .find(|row| row.desk.target.is_none())
     }
 
     /// A channel's closed Desk sessions whose folder is kept (DV-13), most
@@ -382,6 +415,66 @@ impl Desk {
         Effect::future(async move { DeskAction::Started(client.start_channel(request).await) })
     }
 
+    /// Starts a channel's persistent primary Desk session (`target: None`)
+    /// without opening a dialog or navigating away from the channel (CHANNELDESK).
+    pub(super) fn ensure_primary_channel(
+        &self,
+        state: &mut DeskState,
+        channel: ChannelId,
+        title: String,
+        agent: Agent,
+        machine: MachineId,
+    ) -> Effect<DeskAction> {
+        if state.primary_channel_desk(&channel).is_some()
+            || state.channel_status.get(&channel) == Some(&ChannelDeskStatus::Starting)
+        {
+            return Effect::none();
+        }
+        state
+            .channel_status
+            .insert(channel.clone(), ChannelDeskStatus::Starting);
+        let request = NewChannelDesk {
+            channel: channel.clone(),
+            target: None,
+            title,
+            agent,
+            machine,
+            switches: Switches::default(),
+        };
+        let client = self.client.clone();
+        Effect::future(async move {
+            DeskAction::PrimaryChannelStarted {
+                channel,
+                result: client.start_channel(request).await,
+            }
+        })
+    }
+
+    /// Reopens a channel's closed-kept primary Desk session in place without
+    /// navigating away from the channel (CHANNELDESK).
+    pub(super) fn reopen_primary_channel(
+        &self,
+        state: &mut DeskState,
+        channel: ChannelId,
+        session: SessionId,
+    ) -> Effect<DeskAction> {
+        if state.channel_status.get(&channel) == Some(&ChannelDeskStatus::Starting) {
+            return Effect::none();
+        }
+        state
+            .channel_status
+            .insert(channel.clone(), ChannelDeskStatus::Starting);
+        let client = self.client.clone();
+        Effect::future(async move {
+            let result = client.reopen(&session).await;
+            DeskAction::PrimaryChannelReopened {
+                channel,
+                session,
+                result,
+            }
+        })
+    }
+
     /// Close session on a channel Desk session asks first (CD-4).
     pub(super) fn ask_close_channel(state: &mut DeskState, session: SessionId) {
         if state.sheet_open() {
@@ -404,6 +497,16 @@ impl Desk {
         else {
             return Effect::none();
         };
+        // SMB-012: do not mark the sheet `closing = true` when another change
+        // for this session is already in flight, because `change()` would
+        // refuse to send Close and leave the sheet permanently stuck.
+        if state.pending.contains(&session) {
+            if let Some(sheet) = state.channel_close.as_mut() {
+                sheet.error =
+                    Some("A change is still saving for this session. Try again in a moment.".to_owned());
+            }
+            return Effect::none();
+        }
         if let Some(sheet) = state.channel_close.as_mut() {
             sheet.closing = true;
             sheet.error = None;

@@ -142,10 +142,115 @@ struct Shared {
     /// A move is under way.
     moving: AtomicBool,
     /// The process groups stopped by a `Freeze`, while the program is
-    /// frozen for a cross-machine move (D801 J). Typing is refused while
-    /// it is set. Kept in memory: a move onto a new build is refused
-    /// while it is set, so nothing hands it over.
-    frozen: Mutex<Option<BTreeSet<u32>>>,
+    /// frozen for a cross-machine move (D801 J), together with a monotonic
+    /// epoch bumped by `Thaw` so a concurrent thaw aborts an in-flight
+    /// freeze. Typing is refused while `groups` is set. Kept in memory: a
+    /// move onto a new build is refused while it is set, so nothing hands
+    /// it over.
+    frozen: Mutex<Option<FrozenState>>,
+}
+
+#[derive(Default)]
+struct FrozenState {
+    groups: Option<BTreeSet<u32>>,
+    epoch: u64,
+}
+
+fn lock_frozen(frozen: &Mutex<Option<FrozenState>>) -> MutexGuard<'_, Option<FrozenState>> {
+    frozen
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn is_frozen_state(frozen: &Mutex<Option<FrozenState>>) -> bool {
+    lock_frozen(frozen)
+        .as_ref()
+        .is_some_and(|state| state.groups.is_some())
+}
+
+/// Stops the program's process groups while guarding against a concurrent
+/// `thaw_groups` across every snapshot await point.
+async fn freeze_groups<F, Fut>(
+    frozen: &Mutex<Option<FrozenState>>,
+    exited: impl Fn() -> bool,
+    extra_group: Option<u32>,
+    mut take_snapshot: F,
+    mut signal: impl FnMut(u32, Signal),
+) -> Result<(), HolderError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<BTreeSet<u32>, HolderError>>,
+{
+    if exited() {
+        return Ok(());
+    }
+    let start_epoch = {
+        let mut guard = lock_frozen(frozen);
+        let state = guard.get_or_insert_with(FrozenState::default);
+        if state.groups.is_some() {
+            return Ok(());
+        }
+        state.epoch
+    };
+
+    let mut groups = take_snapshot().await?;
+    if let Some(group) = extra_group {
+        groups.insert(group);
+    }
+
+    // Check epoch and record + signal inside the critical section so a
+    // concurrent thaw cannot miss any group we stop or be overwritten.
+    {
+        let mut guard = lock_frozen(frozen);
+        let state = guard.get_or_insert_with(FrozenState::default);
+        if state.epoch != start_epoch || state.groups.is_some() || exited() {
+            return Ok(());
+        }
+        for group in &groups {
+            signal(*group, Signal::STOP);
+        }
+        state.groups = Some(groups.clone());
+    }
+
+    // What started in the meantime is stopped too.
+    if let Ok(snapshot_groups) = take_snapshot().await {
+        let late: Vec<u32> = snapshot_groups
+            .into_iter()
+            .filter(|group| !groups.contains(group))
+            .collect();
+        let mut guard = lock_frozen(frozen);
+        let state = guard.get_or_insert_with(FrozenState::default);
+        if state.epoch != start_epoch {
+            // A thaw ran while awaiting the second snapshot; resume any
+            // groups we stopped unless a newer freeze now owns the state.
+            if state.groups.is_none() {
+                for group in &groups {
+                    signal(*group, Signal::CONT);
+                }
+            }
+            return Ok(());
+        }
+        if let Some(recorded) = state.groups.as_mut() {
+            for group in &late {
+                signal(*group, Signal::STOP);
+            }
+            recorded.extend(late);
+        }
+    }
+    Ok(())
+}
+
+/// Lets a frozen program run again: bumps the freeze epoch and sends SIGCONT
+/// to any stopped groups inside the critical section.
+fn thaw_groups(frozen: &Mutex<Option<FrozenState>>, mut signal: impl FnMut(u32, Signal)) {
+    let mut guard = lock_frozen(frozen);
+    let state = guard.get_or_insert_with(FrozenState::default);
+    state.epoch = state.epoch.wrapping_add(1);
+    if let Some(groups) = state.groups.take() {
+        for group in groups {
+            signal(group, Signal::CONT);
+        }
+    }
 }
 
 impl Shared {
@@ -184,11 +289,15 @@ impl Shared {
             state.saved.is_some().then(|| state.kept.end())
         };
         let file = self.lock().saved.as_mut().and_then(SaveLog::take_unsynced);
-        #[cfg_attr(not(feature = "faults"), allow(unused_variables))]
         let synced = match file {
             Some(file) => file.sync_data().is_ok(),
             None => true,
         };
+        if !synced
+            && let Some(saved) = self.lock().saved.as_mut()
+        {
+            saved.note_sync_failed();
+        }
         // Nothing left to sync counts as synced through the end. A save log
         // that failed does too, and a test then finds its output missing.
         #[cfg(feature = "faults")]
@@ -235,10 +344,7 @@ impl Shared {
     }
 
     fn is_frozen(&self) -> bool {
-        self.frozen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some()
+        is_frozen_state(&self.frozen)
     }
 
     /// Stops the program: SIGSTOP to the process groups `end_by_pid`
@@ -246,70 +352,33 @@ impl Shared {
     /// screen as it is. Freezing a frozen program, or one that has ended,
     /// does nothing.
     async fn freeze(&self) -> Result<(), HolderError> {
-        if self.exit.borrow().is_some() || self.is_frozen() {
-            return Ok(());
-        }
         let own = own_group();
         let pid = std::process::id();
-        let listing = |source| HolderError::Freeze {
-            socket: self.socket.clone(),
-            source,
-        };
-        let mut groups = Snapshot::take()
-            .await
-            .map_err(listing)?
-            .groups_under(pid, own);
-        if let Some(group) = self.group.and_then(|group| u32::try_from(group.as_raw_pid()).ok()) {
-            groups.insert(group);
-        }
-        // Set before the signals, so nothing is typed into a program that
-        // is about to stop.
-        {
-            let mut frozen = self
-                .frozen
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if frozen.is_some() {
-                return Ok(());
-            }
-            *frozen = Some(groups.clone());
-        }
-        for group in &groups {
-            send_group(*group, Signal::STOP);
-        }
-        // What started in the meantime is stopped too.
-        if let Ok(snapshot) = Snapshot::take().await {
-            let late: Vec<u32> = snapshot
-                .groups_under(pid, own)
-                .into_iter()
-                .filter(|group| !groups.contains(group))
-                .collect();
-            for group in &late {
-                send_group(*group, Signal::STOP);
-            }
-            if let Some(frozen) = self
-                .frozen
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .as_mut()
-            {
-                frozen.extend(late);
-            }
-        }
-        Ok(())
+        let extra_group = self
+            .group
+            .and_then(|group| u32::try_from(group.as_raw_pid()).ok());
+        freeze_groups(
+            &self.frozen,
+            || self.exit.borrow().is_some(),
+            extra_group,
+            || {
+                let socket = self.socket.clone();
+                async move {
+                    Snapshot::take()
+                        .await
+                        .map(|snapshot| snapshot.groups_under(pid, own))
+                        .map_err(|source| HolderError::Freeze { socket, source })
+                }
+            },
+            send_group,
+        )
+        .await
     }
 
     /// Lets a frozen program run again: SIGCONT to the groups stopped.
     /// Thawing one that isn't frozen does nothing.
     fn thaw(&self) {
-        let groups = self
-            .frozen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        for group in groups.into_iter().flatten() {
-            send_group(group, Signal::CONT);
-        }
+        thaw_groups(&self.frozen, send_group);
     }
 
     fn write(&self, data: &[u8]) -> Result<(), HolderError> {
@@ -1212,5 +1281,130 @@ mod tests {
             counts = check => counts,
         };
         assert_eq!(counts, (0, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn thaw_during_first_snapshot_aborts_freeze_and_stops_nothing() {
+        use std::collections::BTreeSet;
+        use std::sync::{Arc, Mutex};
+
+        use rustix::process::Signal;
+
+        use super::{FrozenState, freeze_groups, is_frozen_state, thaw_groups};
+
+        let frozen: Arc<Mutex<Option<FrozenState>>> = Arc::new(Mutex::new(None));
+        let signals: Arc<Mutex<Vec<(u32, Signal)>>> = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        let freezing = {
+            let frozen = frozen.clone();
+            let signals = signals.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            tokio::spawn(async move {
+                freeze_groups(
+                    &frozen,
+                    || false,
+                    Some(100),
+                    || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            entered.notify_one();
+                            release.notified().await;
+                            Ok(BTreeSet::from([100]))
+                        }
+                    },
+                    |group, sig| signals.lock().unwrap().push((group, sig)),
+                )
+                .await
+            })
+        };
+
+        entered.notified().await;
+        thaw_groups(&frozen, |group, sig| signals.lock().unwrap().push((group, sig)));
+        release.notify_one();
+
+        freezing.await.unwrap().unwrap();
+        assert!(!is_frozen_state(&frozen));
+        let recorded = signals.lock().unwrap();
+        assert!(
+            !recorded.iter().any(|(_, sig)| *sig == Signal::STOP),
+            "no group should be stopped after thaw during first snapshot: {recorded:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thaw_during_second_snapshot_leaves_no_group_stopped() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::sync::{Arc, Mutex};
+
+        use rustix::process::Signal;
+
+        use super::{FrozenState, freeze_groups, is_frozen_state, thaw_groups};
+
+        let frozen: Arc<Mutex<Option<FrozenState>>> = Arc::new(Mutex::new(None));
+        let signals: Arc<Mutex<Vec<(u32, Signal)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered_second = Arc::new(Notify::new());
+        let release_second = Arc::new(Notify::new());
+
+        let freezing = {
+            let frozen = frozen.clone();
+            let signals = signals.clone();
+            let calls = calls.clone();
+            let entered_second = entered_second.clone();
+            let release_second = release_second.clone();
+            tokio::spawn(async move {
+                freeze_groups(
+                    &frozen,
+                    || false,
+                    Some(100),
+                    || {
+                        let calls = calls.clone();
+                        let entered_second = entered_second.clone();
+                        let release_second = release_second.clone();
+                        async move {
+                            let n = calls.fetch_add(1, Ordering::SeqCst);
+                            if n == 0 {
+                                Ok(BTreeSet::from([100]))
+                            } else {
+                                entered_second.notify_one();
+                                release_second.notified().await;
+                                Ok(BTreeSet::from([100, 200]))
+                            }
+                        }
+                    },
+                    |group, sig| signals.lock().unwrap().push((group, sig)),
+                )
+                .await
+            })
+        };
+
+        entered_second.notified().await;
+        assert!(is_frozen_state(&frozen));
+        thaw_groups(&frozen, |group, sig| signals.lock().unwrap().push((group, sig)));
+        release_second.notify_one();
+
+        freezing.await.unwrap().unwrap();
+        assert!(!is_frozen_state(&frozen));
+
+        let recorded = signals.lock().unwrap();
+        assert!(
+            !recorded.iter().any(|(group, sig)| *group == 200 && *sig == Signal::STOP),
+            "late group 200 must never be stopped after thaw: {recorded:?}"
+        );
+        let mut last_signal: BTreeMap<u32, Signal> = BTreeMap::new();
+        for &(group, sig) in recorded.iter() {
+            last_signal.insert(group, sig);
+        }
+        for (group, sig) in last_signal {
+            assert_eq!(
+                sig,
+                Signal::CONT,
+                "group {group} was left stopped: {recorded:?}"
+            );
+        }
     }
 }

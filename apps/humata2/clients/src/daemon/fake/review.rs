@@ -220,6 +220,11 @@ fn one_repo_diff(
                 )
             }
         }
+        RepoBase::MergeBase(branch) => (
+            branch.clone(),
+            crate::fixture::diffs::against(repo, branch).unwrap_or_default(),
+            Vec::new(),
+        ),
         RepoBase::LastReviewed => {
             let mut files = own_files;
             if let Some(seen) = inner.reviewed.get(session) {
@@ -233,6 +238,7 @@ fn one_repo_diff(
         RepoBase::Rev(rev) => (rev.clone(), Vec::new(), Vec::new()),
         RepoBase::ForkPoint => ("since fork".to_owned(), Vec::new(), Vec::new()),
         RepoBase::Uncommitted => ("uncommitted changes".to_owned(), Vec::new(), Vec::new()),
+        RepoBase::Index => ("staged changes".to_owned(), Vec::new(), Vec::new()),
         // A range has the files a test set for it, none otherwise; an
         // overlay is the changes on disk.
         RepoBase::Range { base, head } => {

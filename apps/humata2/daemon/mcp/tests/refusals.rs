@@ -15,7 +15,6 @@ use humata2_mcp::ErrorKind;
 const USER_ONLY: &[(Capability, &str, &str)] = &[
     (Capability::InboxAnswer, "inbox_answer", "inbox_answer"),
     (Capability::AccessChange, "access_set_rule", "access_change"),
-    (Capability::SettingsChange, "settings_update", "settings_change"),
     (Capability::MarksChange, "marks_set", "marks_change"),
     (Capability::PrSubmit, "review_submit", "pr_submit"),
     (Capability::UserReviewState, "diff_mark_reviewed", "user_review_state"),
@@ -75,14 +74,11 @@ async fn a_rate_limit_says_when_to_retry_and_with_the_same_key() {
         )),
     );
     let mut client = Client::start(&daemon);
-    let tools = client.tools().await;
-    let tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "pr_review_start")
-        .expect("pr_review_start is a tool");
+    let described = client.humata_describe(&["pr_review_start"]).await;
+    let tool = &described["tools"][0];
 
     let result = client
-        .call(json!(1), "pr_review_start", support::minimal(&tool["inputSchema"]))
+        .humata_call(json!(1), "pr_review_start", support::minimal(&tool["inputSchema"]))
         .await;
 
     let error = &structured(&result)["error"];
@@ -100,12 +96,20 @@ async fn no_user_only_operation_is_in_tools_list() {
     let mut client = Client::start(&daemon);
 
     let tools = client.tools().await;
+    let listed = client.humata_list(json!({})).await;
+    let entries = listed["tools"].as_array().unwrap();
 
     let named = USER_ONLY.iter().map(|(_, name, _)| *name).chain(UNNAMED.iter().copied());
     for name in named {
         assert!(
             tools.iter().all(|tool| tool["name"] != name),
-            "{name} is offered"
+            "{name} is offered in tools/list"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|line| !line.as_str().unwrap().starts_with(&format!("{name} "))),
+            "{name} is offered in humata_list"
         );
     }
 }
@@ -118,12 +122,17 @@ async fn calling_a_user_only_operation_by_name_is_refused_and_never_reaches_the_
 
     let named = USER_ONLY.iter().map(|(_, name, _)| *name).chain(UNNAMED.iter().copied());
     for (n, name) in named.enumerate() {
-        let result = client.call(json!(n), name, json!({ "anything": true })).await;
+        let direct = client.call(json!(n * 2), name, json!({ "anything": true })).await;
+        let wrapped = client
+            .humata_call(json!(n * 2 + 1), name, json!({ "anything": true }))
+            .await;
 
-        assert_eq!(result["isError"], true, "{name}");
-        let error = &structured(&result)["error"];
-        assert_eq!(error["kind"], "user_only", "{name}");
-        assert!(error.get("retry").is_none(), "{name}");
+        for result in [direct, wrapped] {
+            assert_eq!(result["isError"], true, "{name}");
+            let error = &structured(&result)["error"];
+            assert_eq!(error["kind"], "user_only", "{name}");
+            assert!(error.get("retry").is_none(), "{name}");
+        }
     }
     assert!(daemon.calls().is_empty());
     assert!(daemon.withdrawals().is_empty());
@@ -168,7 +177,38 @@ async fn a_user_only_operation_is_refused_even_without_a_session_token() {
         }),
     );
 
-    let result = client.call(json!(1), "settings_update", json!({})).await;
+    let result = client.call(json!(1), "access_set_rule", json!({})).await;
 
     assert_eq!(structured(&result)["error"]["kind"], "user_only");
+}
+
+/// SETTINGSFIX Slice 3: settings and agent mutations are no longer hard
+/// `user_only` refusals in MCP.
+#[tokio::test]
+async fn settings_and_agent_mutations_are_not_refused_as_user_only() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    for (n, name) in [
+        "settings_update",
+        "channel_settings_update",
+        "agents_add",
+        "agents_update",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let reply = client.call_raw(json!(n + 1), name, json!({})).await;
+        let kind = reply
+            .get("result")
+            .and_then(|r| r.get("structuredContent"))
+            .and_then(|s| s.get("error"))
+            .and_then(|e| e.get("kind"))
+            .and_then(|k| k.as_str());
+        assert_ne!(
+            kind,
+            Some("user_only"),
+            "{name} should no longer be refused as user_only, got {reply}"
+        );
+    }
 }

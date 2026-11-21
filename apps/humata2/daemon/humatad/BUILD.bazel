@@ -74,6 +74,7 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/agent_hooks",
     "//apps/humata2/daemon/app_peer",
+    "//apps/humata2/daemon/browser_copilot",
     "//apps/humata2/daemon/config_compose",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/marks",
@@ -89,6 +90,9 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/rpc_kit",
     "//apps/humata2/daemon/vt_authority",
     "//apps/humata2/terminal/vt:ghostty_vt",
+    "//apps/humata2/todo",
+    "//apps/humata2/web_todo/server",
+    "//apps/humata2/web_todo/wire",
     "//libs/fusefs/host",
     "@crates//:clap",
     "@crates//:hmac",
@@ -213,9 +217,12 @@ rust_library(
     deps = [
         ":grpc",
         ":humatad_core",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
         "//apps/humata2/daemon/runtime",
         "//apps/humata2/daemon/sessions",
         "//apps/humata2/daemon/svc_catalog",
+        "@crates//:tonic",
     ],
 )
 
@@ -229,9 +236,12 @@ rust_library(
     deps = [
         ":grpc",
         ":humatad_core_faults",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
         "//apps/humata2/daemon/runtime:runtime_faults",
         "//apps/humata2/daemon/sessions:sessions_faults",
         "//apps/humata2/daemon/svc_catalog:svc_catalog_faults",
+        "@crates//:tonic",
     ],
 )
 
@@ -913,6 +923,10 @@ TEST_NEEDS = {
         "HUMATA",
         "RELEASE",
     ],
+    "browser_mcp": [
+        "RELEASE",
+        "SETSID",
+    ],
     "away_policy_copy": [
         "HUMATA",
         "RELEASE",
@@ -1320,6 +1334,7 @@ TEST_NEEDS = {
     "sessions": ["HUMATA"],
     "settings_sections": ["HUMATA"],
     "settings_sync": ["HUMATA"],
+    "settings_web_todo": ["HUMATA"],
     "skills": [
         "HUMATA",
         "RELEASE",
@@ -1456,6 +1471,7 @@ POWER_CUT_SCOPED_TESTS = [
     "channel_desk",
     "channel_desk_close",
     "channel_desk_retarget",
+    "browser_host",
     "channel_folder_follows",
     "channel_grid",
     "channel_rename_live",
@@ -1623,6 +1639,9 @@ CATALOG_SCOPED_TESTS = [
     "repo_owners",
     "repos",
     "screen_questions",
+    "settings_sections",
+    "settings_sync",
+    "settings_web_todo",
     "skills",
     "trash",
 ]
@@ -1891,7 +1910,12 @@ NEED_ENV = {
             "@crates//:tokio-stream",
             "@crates//:tonic",
             "@crates//:tower",
-        ],
+        ] + (
+            ["//apps/humata2/daemon/browser_copilot"] if src.removeprefix("tests/").removesuffix(".rs") in [
+                "browser_host",
+                "browser_mcp",
+            ] else []
+        ),
     )
     for src in glob(["tests/*.rs"])
 ]

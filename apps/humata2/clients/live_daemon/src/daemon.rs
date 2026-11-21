@@ -647,7 +647,12 @@ impl Shared {
         })
     }
 
-    async fn archive(&self, session: SessionId, push_first: bool) -> Result<Archive, DaemonError> {
+    async fn archive(
+        &self,
+        session: SessionId,
+        push_first: bool,
+        end: bool,
+    ) -> Result<Archive, DaemonError> {
         let plan = self.read_archive_plan(&session).await?;
         let choice = if push_first {
             pb::ArchiveChoice::CommitPushPrThenArchive
@@ -665,7 +670,7 @@ impl Shared {
                 }),
                 choice: choice as i32,
                 plan: plan.token,
-                end: None,
+                end: end.then_some(true),
             })
             .await
             .map_err(|status| self.error(&status, "Archiving the session"))?
@@ -1144,9 +1149,13 @@ impl Daemon for LiveDaemon {
     }
 
     fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive> {
+        self.archive_with_end(session, push_first, false)
+    }
+
+    fn archive_with_end(&self, session: &SessionId, push_first: bool, end: bool) -> Reply<Archive> {
         let shared = self.shared.clone();
         let session = session.clone();
-        Box::pin(async move { shared.archive(session, push_first).await })
+        Box::pin(async move { shared.archive(session, push_first, end).await })
     }
 
     fn add_machine(&self, _address: &str) -> Reply<MachineId> {
@@ -1429,6 +1438,16 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.change_sync_settings(change).await })
     }
 
+    fn web_todo_settings(&self) -> Reply<humata2_clients::daemon::WebTodoSnapshot> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.web_todo_snapshot().await })
+    }
+
+    fn set_web_todo_enabled(&self, enabled: bool) -> Reply<humata2_clients::daemon::WebTodoSnapshot> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.change_web_todo_enabled(enabled).await })
+    }
+
     fn todo_automation(&self) -> Reply<humata2_clients::daemon::TodoAutomation> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.todo_automation().await })
@@ -1440,5 +1459,98 @@ impl Daemon for LiveDaemon {
     ) -> Reply<humata2_clients::daemon::TodoAutomation> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.change_todo_automation(section).await })
+    }
+
+    fn full_settings(&self) -> Reply<humata2_clients::daemon::FullSettings> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.full_settings().await })
+    }
+
+    fn update_settings(
+        &self,
+        patch: humata2_clients::daemon::SettingsPatch,
+    ) -> Reply<humata2_clients::daemon::FullSettings> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.update_settings(patch).await })
+    }
+
+    fn refresh_gh_login(&self) -> Reply<humata2_clients::daemon::FullSettings> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.refresh_gh_login().await })
+    }
+
+    fn channel_settings(
+        &self,
+        channel: &ChannelId,
+    ) -> Reply<humata2_clients::daemon::ChannelSettings> {
+        let shared = self.shared.clone();
+        let channel = channel.clone();
+        Box::pin(async move { shared.channel_settings(channel).await })
+    }
+
+    fn update_channel_settings(
+        &self,
+        channel: &ChannelId,
+        patch: humata2_clients::daemon::ChannelSettingsPatch,
+    ) -> Reply<humata2_clients::daemon::ChannelSettings> {
+        let shared = self.shared.clone();
+        let channel = channel.clone();
+        Box::pin(async move { shared.update_channel_settings(channel, patch).await })
+    }
+
+    fn list_detected_browsers(&self) -> Reply<Vec<humata2_clients::model::DetectedBrowser>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.list_detected_browsers().await })
+    }
+
+    fn install_browser_host(
+        &self,
+        kinds: Vec<humata2_clients::model::BrowserKind>,
+    ) -> Reply<Vec<humata2_clients::model::DetectedBrowser>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.install_browser_host(kinds).await })
+    }
+
+    fn uninstall_browser_host(
+        &self,
+        kinds: Vec<humata2_clients::model::BrowserKind>,
+    ) -> Reply<Vec<humata2_clients::model::DetectedBrowser>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.uninstall_browser_host(kinds).await })
+    }
+
+    fn browser_bridge_status(&self) -> Reply<humata2_clients::model::BrowserBridgeStatus> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.browser_bridge_status().await })
+    }
+
+    fn list_pending_cli_logins(&self) -> Reply<Vec<humata2_clients::PendingCliLogin>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.list_pending_cli_logins().await })
+    }
+
+    fn answer_cli_login(&self, id: String, allow: bool) -> Reply<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.answer_cli_login(id, allow).await })
+    }
+
+    fn list_cli_sessions(&self) -> Reply<Vec<humata2_clients::CliSession>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.list_cli_sessions().await })
+    }
+
+    fn end_cli_session(&self, id: String) -> Reply<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.end_cli_session(id).await })
+    }
+
+    fn list_script_tokens(&self) -> Reply<Vec<humata2_clients::ScriptToken>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.list_script_tokens().await })
+    }
+
+    fn revoke_script_token(&self, id: String) -> Reply<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.revoke_script_token(id).await })
     }
 }

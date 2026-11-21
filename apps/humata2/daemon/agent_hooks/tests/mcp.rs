@@ -4,7 +4,9 @@
 
 use std::path::Path;
 
-use humata2_agent_hooks::{MCP_SERVER, claude_mcp_config, codex_mcp, copilot_mcp_config};
+use humata2_agent_hooks::{
+    MCP_SERVER, agy_mcp_config, claude_mcp_config, codex_mcp, copilot_mcp_config,
+};
 use serde_json::Value;
 
 const HUMATAD: &str = "/opt/humata dir/humatad2";
@@ -47,4 +49,13 @@ fn codex_runs_the_same_server_handed_the_token_by_name_and_approved() {
     assert_eq!(names, ["HUMATA_SESSION_TOKEN"], "the variable's name, never its value");
     assert!(server.get("env").is_none());
     assert_eq!(server["default_tools_approval_mode"].as_str(), Some("approve"));
+}
+
+#[test]
+fn agy_runs_the_daemons_mcp_server_without_embedding_the_token() {
+    let config = agy_mcp_config(Path::new(HUMATAD), Path::new(SOCKET));
+    let server = server(&config);
+    assert_eq!(server["command"], HUMATAD, "{config}");
+    assert_eq!(server["args"], serde_json::json!(["mcp", "--socket", SOCKET]), "{config}");
+    assert!(server.get("env").is_none(), "the token stays in the environment: {config}");
 }

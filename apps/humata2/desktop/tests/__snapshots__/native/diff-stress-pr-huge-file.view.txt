@@ -47,7 +47,7 @@ Complementary "Diff"
     #diff-file-count
       text "1 of 1"
     text "refund.rs"
-    text "acme/api"
+    text "api"
     text "·"
     text "src/"
   #review-diff

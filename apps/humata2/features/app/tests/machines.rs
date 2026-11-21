@@ -211,3 +211,97 @@ fn archiving_a_desk_session_from_the_machine_page_stays_on_the_machine_page() {
     store.skip_received();
     assert_eq!(store.state().route, Route::Machine(devbox()));
 }
+
+#[test]
+fn archiving_from_the_machine_page_passes_end_and_handles_unpushed_work() {
+    let workspace = fixture::design();
+    let regular = workspace
+        .sessions
+        .iter()
+        .find(|s| !s.archived && !humata2_clients::desk::is_desk(s))
+        .expect("fixture has a live regular session")
+        .id
+        .clone();
+    let (mut clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
+    clients.machines = Arc::new(FakeMachines::new());
+    fakes.daemon.set_unpushed(&regular, vec![("ledger".into(), "2 uncommitted files".into())]);
+    let mut state = AppState::launch(&clients);
+    let shared = Arc::new(workspace);
+    state.workspace = shared.clone();
+    state.session.workspace = shared;
+    state.route = Route::Machine(devbox());
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    page(
+        &mut store,
+        PageDelegate::Running(humata2_hosts::RunningDelegate::ArchiveSession(regular.clone())),
+    );
+    store.settle();
+    store.skip_received();
+    assert!(
+        store.state().session.archiving.as_ref().is_some_and(|confirm| confirm.end),
+        "unpushed work opens the archive confirm dialog with end=true"
+    );
+
+    store.send(
+        AppAction::Session(humata2_session::SessionAction::ConfirmArchive(false)),
+        |_| {},
+    );
+    store.settle();
+    store.skip_received();
+    assert_eq!(fakes.daemon.last_archive(), Some((regular, false)));
+    assert_eq!(
+        fakes.daemon.last_archive_end(),
+        Some(true),
+        "archiving from the machine page must pass end=true to stop running/exited holders"
+    );
+}
+
+#[test]
+fn a_failed_archive_from_the_machine_page_surfaces_the_error_there() {
+    let workspace = fixture::design();
+    let regular = workspace
+        .sessions
+        .iter()
+        .find(|s| !s.archived && !humata2_clients::desk::is_desk(s))
+        .expect("fixture has a live regular session")
+        .id
+        .clone();
+    let (mut clients, fakes) = humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
+    clients.machines = Arc::new(FakeMachines::new());
+    let mut state = AppState::launch(&clients);
+    let shared = Arc::new(workspace);
+    state.workspace = shared.clone();
+    state.session.workspace = shared;
+    state.route = Route::Machine(devbox());
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    fakes
+        .daemon
+        .fail_next(humata2_clients::Operation::Archive, "git worktree is locked");
+    page(
+        &mut store,
+        PageDelegate::Running(humata2_hosts::RunningDelegate::ArchiveSession(regular.clone())),
+    );
+    store.settle();
+    store.skip_received();
+    if store.state().session.archiving.is_some() {
+        store.send(
+            AppAction::Session(humata2_session::SessionAction::ConfirmArchive(false)),
+            |_| {},
+        );
+        store.settle();
+        store.skip_received();
+    }
+    assert!(
+        store
+            .state()
+            .machine_page
+            .running
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("git worktree is locked")),
+        "archive failure must surface in machine_page.running.error, got {:?}",
+        store.state().machine_page.running.error
+    );
+}

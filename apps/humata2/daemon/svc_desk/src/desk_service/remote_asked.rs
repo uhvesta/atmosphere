@@ -18,11 +18,10 @@ use serde_json::{Value, json};
 use tonic::Status;
 
 use super::DeskSvc;
-use super::remote::failure_of;
+use super::remote::{failure_of, is_definitive_refusal};
 use crate::ports::blocking;
-use crate::ports::RelayError;
 use crate::ports::{Origin, Progress};
-use crate::ports::{HostOp, RemoteError};
+use crate::ports::HostOp;
 use crate::ports::OperationState;
 use crate::ports as status;
 
@@ -163,7 +162,7 @@ fn write(folder: &Path, asked: &Asked) -> Result<(), AskedError> {
 
 /// Every start the last run left unanswered. A file that can't be read is
 /// logged and left in place. Blocking.
-fn read_all(folder: &Path) -> Vec<Asked> {
+pub(super) fn read_all(folder: &Path) -> Vec<Asked> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
@@ -189,7 +188,7 @@ fn read_all(folder: &Path) -> Vec<Asked> {
 }
 
 impl DeskSvc {
-    fn asked_folder(&self) -> PathBuf {
+    pub(super) fn asked_folder(&self) -> PathBuf {
         self.state.join(DIR)
     }
 
@@ -219,7 +218,7 @@ impl DeskSvc {
 
     /// Asks `asked.machine` again for the start, under the same id, once it
     /// links. The machine answers with the session it kept, or starts it.
-    async fn ask_again(&self, progress: Progress, asked: &Asked) -> OperationState {
+    pub(super) async fn ask_again(&self, progress: Progress, asked: &Asked) -> OperationState {
         let Some(remote) = self.remote.clone() else {
             progress.end_cancelled();
             return OperationState::Stuck {
@@ -292,17 +291,17 @@ impl DeskSvc {
                     self.tell.session(&asked.session, pb::Change::Updated, None).await;
                     return OperationState::Finished;
                 }
-                Err(RemoteError::Relay(RelayError::Offline { .. })) => {
+                Err(error) if !is_definitive_refusal(&error) => {
                     let Some(back) = host.take() else {
                         return OperationState::Stuck {
                             reason: format!(
-                                "the start of Desk session {} ended while {} was offline",
+                                "the start of Desk session {} ended while {} was unreachable",
                                 asked.session, asked.machine
                             ),
                         };
                     };
                     progress = back;
-                    // The link went down between its state and the call.
+                    // The link went down or the call ended ambiguously; ask again once linked.
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 Err(error) => {

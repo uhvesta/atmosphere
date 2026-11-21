@@ -38,7 +38,7 @@ impl PaneId {
     pub const fn max_width(self) -> f32 {
         match self {
             Self::Sidebar => 480.0,
-            Self::Panel => 420.0,
+            Self::Panel => 2400.0,
         }
     }
 
@@ -57,6 +57,18 @@ pub const COLLAPSE_SLACK: f32 = 60.0;
 
 /// The narrowest the main area gets before panes shrink.
 pub const MAIN_MIN: f32 = 360.0;
+
+/// The widest fraction of the window width the right-hand side panel can take.
+pub const PANEL_MAX_FRACTION: f32 = 0.5;
+
+/// The widest the right-hand side panel can be in a window of `viewport` px:
+/// up to half the window width, never less than its minimum width.
+#[must_use]
+pub fn panel_max_width(viewport: f32) -> f32 {
+    (viewport * PANEL_MAX_FRACTION)
+        .max(PaneId::Panel.min_width())
+        .min(PaneId::Panel.max_width())
+}
 
 /// One pane's saved size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,7 +201,11 @@ impl Layout {
         } else {
             self.sidebar.width
         };
-        let panel = if panel_hidden { 0. } else { self.panel.width };
+        let panel = if panel_hidden {
+            0.
+        } else {
+            self.panel.width.min(panel_max_width(viewport))
+        };
         let dividers = if !sidebar_hidden { 1. } else { 0. } + if !panel_hidden { 1. } else { 0. };
         let room = (available - left_strip - dividers - MAIN_MIN).max(0.);
         let wanted = sidebar + panel;

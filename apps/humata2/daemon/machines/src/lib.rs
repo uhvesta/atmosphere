@@ -25,6 +25,7 @@ mod quote;
 mod runner;
 mod service;
 mod setup;
+pub mod spec;
 mod stack_config;
 mod system;
 mod takeover;

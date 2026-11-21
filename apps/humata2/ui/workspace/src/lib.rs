@@ -6,6 +6,7 @@ pub(crate) use humata2_ui_core::{
 };
 
 pub mod channel;
+pub mod cli_login;
 pub mod conversation_tab;
 pub mod file_manager;
 pub mod inbox_page;

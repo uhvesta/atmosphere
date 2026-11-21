@@ -189,6 +189,20 @@ fn a_session_page_has_a_back_button() {
     assert!(app.contains("session-back"));
 }
 
+#[test]
+fn session_back_button_hides_when_there_is_nowhere_to_go_back() {
+    let mut app = App::new(fixture::design());
+    // Switching directly (like clicking a session in the sidebar or opening a new PR review)
+    // clears the navigation trail, so there is nowhere to go back to.
+    app.send(AppAction::Switch(Route::Session(SessionId::new("ledger"))));
+    assert!(!app.contains("session-back"));
+
+    // Navigating from another page populates the trail and shows the back button.
+    app.send(AppAction::Navigate(Route::Home));
+    app.send(AppAction::Navigate(Route::Session(SessionId::new("ledger"))));
+    assert!(app.contains("session-back"));
+}
+
 fn first_row_tabs(app: &mut App) -> usize {
     app.ui
         .read(|state| state.session.view().map_or(0, |view| view.groups[0].tabs.len()))

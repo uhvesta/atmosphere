@@ -3,7 +3,9 @@
 //! of the app (PR-1 to PR-26), and following a review's chat when its session
 //! opens.
 
-use humata2_clients::model::{MachineKind, SessionId};
+use humata2_clients::comments::Side;
+use humata2_clients::model::{MachineKind, RepoDiffOptions, RepoDiffSpec, SessionId};
+use humata2_clients::review_chat::{Place, ReviewView};
 use humata2_palette::PullRef;
 use humata2_pr_review::ask::AskAction;
 use humata2_pr_review::dialog::{Delegate as DialogDelegate, DialogAction};
@@ -36,16 +38,64 @@ impl App {
             // The agent moved the view: show that file in the Diff panel.
             // The review feature has no scroll-to-line action yet, so the
             // line of the place is not revealed.
-            AppAction::PrFollower(FollowerAction::Delegate(FollowerDelegate::Show(place))) => self.child(
-                state,
-                AppAction::Review(ReviewAction::SelectFile {
-                    repo: place.repo.clone(),
-                    path: place.path.clone(),
-                }),
-            ),
+            AppAction::PrFollower(FollowerAction::Delegate(FollowerDelegate::Show(place))) => {
+                let select = self.child(
+                    state,
+                    AppAction::Review(ReviewAction::SelectFile {
+                        repo: place.repo.clone(),
+                        path: place.path.clone(),
+                    }),
+                );
+                let report = self.pr_session(state).map_or_else(Effect::none, |session| {
+                    self.report_review_view(state, &session)
+                });
+                select.and(report)
+            }
             // The agent moved the stack to a layer (or Whole stack).
             AppAction::PrFollower(FollowerAction::Delegate(FollowerDelegate::ShowLayer(layer))) => {
-                self.child(state, AppAction::Review(ReviewAction::PickLayer(layer.clone())))
+                let pick = self.child(state, AppAction::Review(ReviewAction::PickLayer(layer.clone())));
+                let report = self.pr_session(state).map_or_else(Effect::none, |session| {
+                    self.report_review_view(state, &session)
+                });
+                pick.and(report)
+            }
+            // The agent prepared (or undid) a review plan for the PR review.
+            AppAction::PrFollower(FollowerAction::Delegate(FollowerDelegate::Plan(plan))) => {
+                let Some(session) = self.pr_session(state) else {
+                    return Effect::none();
+                };
+                let mut effects = Vec::new();
+                match plan {
+                    Some(plan) => {
+                        let mut plan = plan.clone();
+                        crate::views::resolve_plan_repos(state, &session, &mut plan);
+                        let stacked = plan.stack.is_some();
+                        let targets = plan.targets.clone();
+                        state.review.plans.insert(session.clone(), plan);
+                        state.review.layer.remove(&session);
+                        if stacked || targets.is_empty() {
+                            effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
+                        } else {
+                            for RepoDiffSpec { repo, base, .. } in targets {
+                                effects.push(self.child(
+                                    state,
+                                    AppAction::Review(ReviewAction::PickRepoBase {
+                                        session: session.clone(),
+                                        repo,
+                                        base,
+                                    }),
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        state.review.plans.remove(&session);
+                        state.review.layer.remove(&session);
+                        effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
+                    }
+                }
+                effects.push(self.report_review_view(state, &session));
+                Effect::merge(effects)
             }
             // Every review posted: Submit review is done.
             AppAction::PrSubmit(SubmitAction::Delegate(SubmitDelegate::Posted(_))) => {
@@ -80,7 +130,7 @@ impl App {
             .workspace
             .channels
             .iter()
-            .find(|channel| channel.name == PR_REVIEWS_CHANNEL)
+            .find(|channel| channel.name.eq_ignore_ascii_case(PR_REVIEWS_CHANNEL))
             .map(|channel| channel.id.clone());
         let Ok(agent) = state.default_agent(reviews.as_ref()) else {
             let clock = self.clients.clock.clone();
@@ -121,6 +171,91 @@ impl App {
             }),
         );
         let follow = self.child(state, AppAction::PrFollower(FollowerAction::Follow(id.clone())));
-        info.and(follow)
+        let report = self.report_review_view(state, id);
+        info.and(follow).and(report)
+    }
+
+    /// The PR review session currently being followed, or the open session.
+    fn pr_session(&self, state: &AppState) -> Option<SessionId> {
+        state
+            .pr_follower
+            .session
+            .clone()
+            .or_else(|| state.session.open.clone())
+    }
+
+    /// Reports the current PR review view to the daemon so `review_context`
+    /// reflects what the person sees (PR-22).
+    pub(super) fn report_review_view(&self, state: &AppState, session: &SessionId) -> Effect<AppAction> {
+        let view = build_review_view(state, session);
+        let client = self.clients.review_chat.clone();
+        let session = session.clone();
+        Effect::run(move |_| async move {
+            let _ = client.report_view(&session, view).await;
+        })
+    }
+}
+
+/// Builds the [`ReviewView`] snapshot of what `session`'s PR review currently
+/// shows.
+fn build_review_view(state: &AppState, session: &SessionId) -> ReviewView {
+    let plan = state.review.plans.get(session);
+    let layer = state.review.layer_of(session).map(str::to_owned);
+    let targets = if let Some(stack) = plan.and_then(|plan| plan.stack.as_ref()) {
+        match layer.as_deref().and_then(|title| stack.layers.iter().find(|l| l.title == title)) {
+            Some(picked) => picked.repos.iter().map(|repo| repo.spec.clone()).collect(),
+            None => stack.whole.clone(),
+        }
+    } else if let Some(plan) = plan.filter(|plan| !plan.targets.is_empty()) {
+        plan.targets.clone()
+    } else {
+        let targets = state.review.targets_of(session);
+        let mut repos: Vec<String> = Vec::new();
+        if let Some(found) = state.workspace.session(session) {
+            if !found.repo.is_empty() && !repos.contains(&found.repo) {
+                repos.push(found.repo.clone());
+            }
+            for clone in &found.clones {
+                if !clone.repo.is_empty() && !repos.contains(&clone.repo) {
+                    repos.push(clone.repo.clone());
+                }
+            }
+        }
+        for diff in state.workspace.diffs.iter().filter(|diff| &diff.session == session) {
+            if !repos.contains(&diff.repo) {
+                repos.push(diff.repo.clone());
+            }
+        }
+        repos
+            .into_iter()
+            .map(|repo| RepoDiffSpec {
+                base: targets.of(&repo),
+                repo,
+                options: RepoDiffOptions::default(),
+            })
+            .collect()
+    };
+    let open = state
+        .review
+        .saved
+        .selected
+        .get(session)
+        .map(|(repo, path)| Place {
+            repo: repo.clone(),
+            path: path.clone(),
+            visible: None,
+            selection: None,
+            side: Side::New,
+        })
+        .or_else(|| state.pr_follower.shown.clone());
+    ReviewView {
+        targets,
+        open,
+        order: plan.map(|plan| plan.order.clone()).unwrap_or_default(),
+        groups: plan.map(|plan| plan.groups.clone()).unwrap_or_default(),
+        viewed: Vec::new(),
+        highlights: state.pr_follower.highlights.clone(),
+        stack: plan.and_then(|plan| plan.stack.clone()),
+        layer,
     }
 }

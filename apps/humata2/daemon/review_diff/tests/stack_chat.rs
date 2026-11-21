@@ -152,7 +152,7 @@ fn the_stack_and_layer_showing_survive_the_wire() {
     let mut chat = prepared();
     chat.focus_layer(Some("journal".to_owned())).expect("to journal");
     let view = chat.view().clone();
-    let back = wire::view_from_pb(&wire::view_to_pb(&view)).expect("the view reads back");
+    let back = wire::view_from_pb(&wire::view_to_pb(&view, None)).expect("the view reads back");
     assert_eq!(back, view);
 }
 
@@ -166,7 +166,7 @@ fn a_plans_stack_and_a_notes_layer_survive_the_wire() {
         anchor: None,
         layer: Some("codec".to_owned()),
     }];
-    let back = wire::stored_plan_from_pb(&wire::plan_to_pb(&sent, &[false]))
+    let back = wire::stored_plan_from_pb(&wire::plan_to_pb(&sent, &[false], None))
         .expect("the plan reads back");
     assert_eq!(back.stack, sent.stack);
     assert_eq!(back.notes[0].layer.as_deref(), Some("codec"));

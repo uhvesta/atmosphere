@@ -7,10 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    AccessRule, Answer, AskedBy, AskedWhy, CardEffect, CardFact, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
-    HolderSession, HoldersMoved, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
-    MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting, ToDoAsk,
-    ItemId,
+    AccessRule, Answer, AskedBy, AskedWhy, BrowserPreview, CardEffect, CardFact, Capability,
+    ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote, HolderSession, HoldersMoved,
+    ItemId, LineKind, MigrateCard, MigrateFailure, MigratePhase, MigrateStep, MigrateStepState,
+    MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting, ToDoAsk,
 };
 use crate::humata2_grpc::humata::v1 as pb;
 
@@ -190,6 +190,8 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
         Some(P::Push(_)) => return RequestKind::Merge,
         Some(P::BoardChange(change)) if change.deletes_item => return RequestKind::Destroy,
         Some(P::Migrate(_)) => return RequestKind::Migrate,
+        Some(P::BrowserRead(_)) => return RequestKind::BrowserRead,
+        Some(P::BrowserWrite(_)) => return RequestKind::BrowserWrite,
         _ => {}
     }
     match pb::RequestKind::try_from(request.kind).unwrap_or(pb::RequestKind::Unspecified) {
@@ -201,8 +203,8 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
         pb::RequestKind::Session | pb::RequestKind::Channel | pb::RequestKind::Unspecified => {
             RequestKind::Command
         }
-        // BROWSER: Lane C gives these their own kinds.
-        pb::RequestKind::BrowserRead | pb::RequestKind::BrowserWrite => RequestKind::Command,
+        pb::RequestKind::BrowserRead => RequestKind::BrowserRead,
+        pb::RequestKind::BrowserWrite => RequestKind::BrowserWrite,
     }
 }
 
@@ -354,14 +356,8 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
         P::AccessAhead(ahead) => Preview::Text(ahead.target_label.clone()),
         P::Migrate(migrate) => Preview::Migrate(migrate_card(migrate)),
         P::ProviderImport(import) => Preview::Text(provider_import_text(import)),
-        P::BrowserRead(browser) | P::BrowserWrite(browser) => Preview::Text(
-            [browser.action_summary.as_str(), browser.url.as_str(), browser.target_preview.as_str()]
-                .iter()
-                .filter(|part| !part.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
+        P::BrowserRead(browser) => Preview::Browser(browser_preview(browser, true)),
+        P::BrowserWrite(browser) => Preview::Browser(browser_preview(browser, false)),
         P::TodoAction(action) => Preview::Text(
             [action.action.as_str(), action.details.as_str()]
                 .iter()
@@ -378,6 +374,18 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+    }
+}
+
+fn browser_preview(browser: &pb::BrowserPreview, is_read: bool) -> BrowserPreview {
+    BrowserPreview {
+        url: browser.url.clone(),
+        action_summary: browser.action_summary.clone(),
+        target_preview: browser.target_preview.clone(),
+        supports_30m_grant: is_read && browser.supports_30m_grant,
+        action: browser.action.clone(),
+        action_key: browser.action_key.clone(),
+        reason: browser.reason.clone(),
     }
 }
 
@@ -490,7 +498,8 @@ fn answered_ago(request: &pb::InboxRequest, now: i64) -> Option<String> {
 fn answer(request: &pb::InboxRequest) -> Option<Answer> {
     use pb::request_answer::Answer as A;
     match request.answer.as_ref().and_then(|answer| answer.answer.as_ref()) {
-        Some(A::Approve(_) | A::AllowFor30Min(_)) => Some(Answer::Approved),
+        Some(A::Approve(_)) => Some(Answer::Approved),
+        Some(A::AllowFor30Min(_)) => Some(Answer::AllowFor30Min),
         Some(A::Deny(deny)) => Some(Answer::Denied {
             reply: (!deny.note.is_empty()).then(|| deny.note.clone()),
         }),
@@ -655,6 +664,7 @@ fn request_answer(answer: Answer, always: Option<pb::GrantTarget>) -> pb::Reques
     pb::RequestAnswer {
         answer: Some(match answer {
             Answer::Approved => A::Approve(pb::Approve {}),
+            Answer::AllowFor30Min => A::AllowFor30Min(pb::AllowFor30Min {}),
             Answer::Denied { reply } => A::Deny(pb::Deny {
                 note: reply.unwrap_or_default(),
             }),
@@ -1044,6 +1054,55 @@ mod tests {
         assert!(matches!(always.answer, Some(A::Always(ref each)) if each.target == Some(target)));
         let reply = request_answer(Answer::Replied { text: "yes".into() }, None);
         assert!(matches!(reply.answer, Some(A::Reply(ref each)) if each.text == "yes"));
+        let thirty = request_answer(Answer::AllowFor30Min, None);
+        assert!(matches!(thirty.answer, Some(A::AllowFor30Min(_))));
+    }
+
+    #[test]
+    fn browser_read_and_write_requests_map_kind_preview_and_30m_answer() {
+        let mut read = pending();
+        read.kind = pb::RequestKind::BrowserRead as i32;
+        read.preview = Some(pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::BrowserRead(pb::BrowserPreview {
+                url: "https://code.example.test/acme/api/pull/482".into(),
+                action_summary: "Read tab".into(),
+                target_preview: "PR #482".into(),
+                supports_30m_grant: true,
+                action: "read_tab".into(),
+                action_key: "k-read".into(),
+                reason: "check comments".into(),
+            })),
+        });
+        read.answer = Some(pb::RequestAnswer {
+            answer: Some(pb::request_answer::Answer::AllowFor30Min(pb::AllowFor30Min {})),
+        });
+        let mapped_read = request(&read, &BTreeMap::new(), 0);
+        assert_eq!(mapped_read.kind, RequestKind::BrowserRead);
+        assert_eq!(mapped_read.answer, Some(Answer::AllowFor30Min));
+        let preview_read = mapped_read.browser().expect("browser read preview");
+        assert!(preview_read.supports_30m_grant);
+        assert_eq!(preview_read.url, "https://code.example.test/acme/api/pull/482");
+
+        let mut write = pending();
+        write.kind = pb::RequestKind::BrowserWrite as i32;
+        write.preview = Some(pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::BrowserWrite(pb::BrowserPreview {
+                url: "https://code.example.test/acme/api/pull/482".into(),
+                action_summary: "Click Merge".into(),
+                target_preview: "Merge pull request".into(),
+                // Even if wire erroneously set true, client clamps writes to false.
+                supports_30m_grant: true,
+                action: "click".into(),
+                action_key: "k-write".into(),
+                reason: "merge".into(),
+            })),
+        });
+        let mapped_write = request(&write, &BTreeMap::new(), 0);
+        assert_eq!(mapped_write.kind, RequestKind::BrowserWrite);
+        assert!(!mapped_write.answered_in_bulk());
+        let preview_write = mapped_write.browser().expect("browser write preview");
+        assert!(!preview_write.supports_30m_grant);
+        assert_eq!(preview_write.target_preview, "Merge pull request");
     }
 
     #[test]

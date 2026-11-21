@@ -1,0 +1,25 @@
+agent: claude
+cli: 2.1.329
+script: mcp
+label: mcp_permission
+expect: none
+cols: 120
+rows: 40
+---
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/screenparse-corpus-0100/claude/mcp/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and
+▎ prompt injection before executing, runs the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ Call the echo tool of the screenparse MCP server with the text hi, then tell me what it returned.
+  ⎿  Not logged in · Please run /login
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Once fixed, resend your message
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents                                       Not logged in · run /login
+                                                                                                    ◐ medium · /effort

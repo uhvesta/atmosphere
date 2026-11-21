@@ -21,7 +21,28 @@ fn preferences_change_without_losing_other_choices() {
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
-    store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = false);
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            let mut full = humata2_clients::daemon::FullSettings::default();
+            full.terminal.theme = "light".to_owned();
+            full.terminal.font_size = 10;
+            full.revision = 3;
+            s.general.settings = Some(full);
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
+    store.send(A::ToggleWrap, |s| {
+        s.preferences.wrap_diffs = false;
+        if let Some(full) = s.general.settings.as_mut() {
+            full.long_lines = humata2_clients::daemon::LongLinesMode::Scroll;
+            full.revision = 4;
+        }
+    });
     store.finish();
 }
 #[test]
@@ -47,6 +68,17 @@ fn switching_section_closes_an_open_font_list() {
     store.receive(A::Todo(TodoAutomationAction::Loaded(Ok(TodoAutomation::default()))), |s| {
         s.todo.section = Some(TodoAutomation::default());
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
     store.finish();
 }
 

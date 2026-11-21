@@ -84,6 +84,7 @@ impl From<SavedRoute> for Route {
 impl App {
     /// Hands the new workspace to every feature.
     pub(super) fn show(&self, state: &mut AppState) -> Effect<AppAction> {
+        state.sync_todo_channels();
         let workspace = &state.workspace;
         Effect::merge([
             self.child(
@@ -226,6 +227,9 @@ impl App {
             Route::Channel(id) => {
                 state.session.open = None;
                 match state.channel_pages.get(&id).map(|v| v.tab) {
+                    Some(channel::Tab::Desk) => {
+                        effects.push(self.ensure_channel_desk(state, &id, false));
+                    }
                     Some(channel::Tab::Inbox) => effects.push(self.child(
                         state,
                         AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
@@ -300,7 +304,13 @@ impl App {
         let channel = item
             .channel
             .as_ref()
-            .and_then(|name| state.workspace.channels.iter().find(|c| &c.name == name))
+            .and_then(|name| {
+                state
+                    .workspace
+                    .channels
+                    .iter()
+                    .find(|c| c.id.as_str() == name.as_str() || &c.name == name)
+            })
             .map(|c| c.id.clone());
         let machine = channel.as_ref().and_then(|id| {
             state.workspace.channel_machines(id).find(|m| m.online).map(|m| m.id.clone())

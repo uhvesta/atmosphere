@@ -6,6 +6,7 @@ rust_library(
         "src/agent_switches.rs",
         "src/boards.rs",
         "src/channel_repos.rs",
+        "src/cli_auth.rs",
         "src/daemon.rs",
         "src/events.rs",
         "src/history.rs",

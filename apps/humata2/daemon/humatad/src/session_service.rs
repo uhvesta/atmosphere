@@ -1283,18 +1283,17 @@ impl SessionSvc {
         }
     }
 
-    /// Whether `id`'s agent is a resuming record that its restart couldn't
-    /// bring back: the restart names it, and no resume asked of this daemon
-    /// since is running for it. Nothing runs for such a record (a failed
-    /// resume stops its holder), so a resume may take it again, where it would
-    /// otherwise be refused as busy for good.
+    /// Whether `id`'s agent is a resuming record with no live resume or
+    /// start-fresh running for it (for example after a failed restart or a
+    /// failed start-fresh rollback, SMB-046). Nothing runs for such a record,
+    /// so Stop, Archive, and Resume may take it again rather than refusing it
+    /// as busy until the daemon restarts.
     fn left_resuming(&self, id: &str) -> bool {
-        let named = self
+        let restart_settled = self
             .restart
             .get()
-            .and_then(|started| started.get())
-            .is_some_and(|last| stuck_start(last, id).is_some());
-        named && !resuming_now(id)
+            .is_none_or(|started| started.get().is_some());
+        restart_settled && !resuming_now(id)
     }
 
     /// The restart doctor's repair of a session (PER-30, D242): ResumeSession's
@@ -2368,10 +2367,10 @@ fn resuming_now(session: &str) -> bool {
 }
 
 /// Marks a session as being resumed by this daemon until dropped.
-struct ResumingNow(String);
+pub(super) struct ResumingNow(String);
 
 impl ResumingNow {
-    fn enter(session: &str) -> Self {
+    pub(super) fn enter(session: &str) -> Self {
         RESUMING_NOW
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3572,5 +3571,19 @@ mod tests {
         shown.status = pb::SessionStatus::Working as i32;
         stamp_status_since_at(&mut shown, 55_000);
         assert_eq!(ms(&shown), Some(55_000));
+    }
+
+    #[test]
+    fn resuming_now_guard_tracks_active_resume_and_releases_on_drop() {
+        // SMB-046: ResumingNow marks a session active only while a live
+        // resume or start-fresh is running, so a stale Resuming row left by a
+        // failed rollback is no longer treated as busy.
+        let id = "se_smb046_guard_test";
+        assert!(!resuming_now(id));
+        {
+            let _guard = ResumingNow::enter(id);
+            assert!(resuming_now(id));
+        }
+        assert!(!resuming_now(id));
     }
 }

@@ -326,13 +326,17 @@ fn a_description_is_edited_and_saved() {
 }
 
 #[test]
-fn asking_why_and_opening_the_session_change_nothing_here() {
+fn asking_why_toggles_inline_explanation_and_leaves_items_unchanged() {
     let fake = FakeTodo::frame_b1_1();
     let mut store = store(&fake);
     loaded(&mut store);
 
     let before = store.state().items.clone();
+    assert!(!store.state().expanded_why.contains("req-pay-3"));
     store.send(A::AskWhy("req-pay-3".to_owned()), |_| {});
+    assert!(store.state().expanded_why.contains("req-pay-3"));
+    store.send(A::AskWhy("req-pay-3".to_owned()), |_| {});
+    assert!(!store.state().expanded_why.contains("req-pay-3"));
     store.send(A::OpenSession("Ledger entries".to_owned()), |_| {});
     store.send(A::ShowHistory("PAY-3".to_owned()), |_| {});
     assert_eq!(store.state().items, before);
@@ -379,4 +383,54 @@ fn session_none_yet_filter_keeps_only_items_with_no_session() {
     let shown = store.state().shown();
     assert!(!shown.is_empty());
     assert!(shown.iter().all(|t| t.sessions.is_empty()));
+}
+
+#[test]
+fn channel_names_resolve_for_display_filter_chips_quick_add_and_all_channels() {
+    use humata2_todo_feature::{ChannelRef, FilterChip};
+
+    let fake = FakeTodo::frame_b1_1();
+    let mut store = store(&fake);
+    loaded(&mut store);
+
+    store.send(
+        A::SetChannels(vec![
+            ChannelRef { id: "ch_pay".to_owned(), name: "Payments".to_owned() },
+            ChannelRef { id: "ch_empty".to_owned(), name: "Design".to_owned() },
+        ]),
+        |_| {},
+    );
+
+    // channel_name resolves known IDs and falls back to ID when unknown.
+    assert_eq!(store.state().channel_name("ch_pay"), "Payments");
+    assert_eq!(store.state().channel_name("ch_unknown"), "ch_unknown");
+
+    // Filter chip label resolves channel ID to display name while filter keeps ID.
+    store.send(A::SetFilter(channel("ch_pay")), |_| {});
+    let chips = store.state().view.filter.active_chips();
+    assert_eq!(chips, vec![FilterChip::Channel(ChannelPick::Channel("ch_pay".to_owned()))]);
+    assert_eq!(store.state().chip_label(&chips[0]), "Payments");
+    assert_eq!(
+        chips[0].label_with(|id| store.state().channel_name(id), |_| None),
+        "Payments"
+    );
+
+    // all_channels includes 0-item workspace channels alongside item channels.
+    let all = store.state().all_channels();
+    assert!(all.contains(&ChannelRef { id: "ch_empty".to_owned(), name: "Design".to_owned() }));
+    assert!(all.contains(&ChannelRef { id: "ch_pay".to_owned(), name: "Payments".to_owned() }));
+    assert!(all.iter().any(|c| c.id == "web"));
+
+    // Quick-add resolves typed channel name to its channel ID on preview and submit.
+    store.send(A::QuickAddChanged("fix webhook retries Payments fri".to_owned()), |_| {});
+    let preview = store.state().quick_add.preview.clone().expect("preview present");
+    assert_eq!(preview.draft.title, "Fix webhook retries");
+    assert_eq!(preview.draft.channel.as_deref(), Some("ch_pay"));
+
+    store.send(A::QuickAddSubmit, |_| {});
+    store.receive_matching("Created", |a| matches!(a, A::Created(Ok(_))), |_| {});
+    assert!(fake.calls().iter().any(|c| matches!(
+        c,
+        Call::Create(d) if d.title == "Fix webhook retries" && d.channel.as_deref() == Some("ch_pay")
+    )));
 }

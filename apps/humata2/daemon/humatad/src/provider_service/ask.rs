@@ -131,18 +131,3 @@ pub(super) fn stale() -> Status {
         ),
     )
 }
-
-/// The user's own calls import with PreviewProviderImport, not this.
-pub(super) fn not_for_the_user() -> Status {
-    status::failure(
-        Code::FailedPrecondition,
-        status::error(
-            "RequestProviderImport is an agent's ask; the user imports a provider file directly".to_owned(),
-            "preview the file with PreviewProviderImport (humata provider import <file>) and import the plan it gives",
-            pb::error::Kind::InvalidField(pb::InvalidField {
-                field: "caller".to_owned(),
-                problem: pb::invalid_field::Problem::NotAllowedHere as i32,
-            }),
-        ),
-    )
-}

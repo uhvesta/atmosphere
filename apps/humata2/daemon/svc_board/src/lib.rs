@@ -59,8 +59,8 @@ use tonic::{Code, Request, Response, Status};
 
 pub use self::ports::{
     AwayCall, BoardFeed, BoardForwarder, BoardGuard, BoardInbox, Checked, HostCalls, HostFiles,
-    HostMachines, HostRepos, HostTransfers, Method, OwnedItem, Placement, Replayed, Row, Scope,
-    SessionTell,
+    HostMachines, HostProviders, HostRepos, HostTransfers, Method, OwnedItem, Placement, Replayed,
+    Row, Scope, SessionTell,
 };
 pub use self::ports::{FoundPr, ReviewFetchError, ReviewRequestsPort};
 pub use self::pr_reviews_gh::GhReviewRequests;

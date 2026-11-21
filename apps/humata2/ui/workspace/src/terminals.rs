@@ -649,6 +649,9 @@ impl Terminals {
             {
                 Some((id, tab))
             }
+            (Route::Channel(_), Some(Tab::Terminal(tab)), _) => {
+                state.active_channel_desk().map(|id| (id, tab))
+            }
             _ => None,
         };
         for key in reopen {
@@ -665,7 +668,12 @@ impl Terminals {
         let free_hidden = state.settings.preferences.free_hidden_terminals;
         let option_as_alt = state.settings.preferences.option_as_alt;
         let blink = cursor_blink(state.settings.preferences.fast_mode);
-        if let Route::Session(id) = &state.route {
+        let active_session = match &state.route {
+            Route::Session(id) => Some(id.clone()),
+            Route::Channel(_) => state.active_channel_desk(),
+            _ => None,
+        };
+        if let Some(id) = active_session.as_ref() {
             if let Some(session) = state.workspace.session(id) {
                 for tab in 0..=session.shells.len() {
                     let key = (id.clone(), tab);
@@ -694,7 +702,6 @@ impl Terminals {
             let appearance = (look.term_text, look.term, look.term_dim);
             let changed_appearance = entry.appearance != appearance;
             entry.appearance = appearance;
-            let changed_font = entry.font != font;
             entry.font = font;
             let changed_saver = entry.free_hidden != free_hidden;
             entry.free_hidden = free_hidden;
@@ -714,11 +721,10 @@ impl Terminals {
                         // Free when unchanged; a pane made since the last
                         // pass takes the setting here.
                         pane.set_option_as_alt(option_as_alt, cx);
-                        pane.view().update(cx, |view, cx| view.set_cursor_blink(blink, cx));
-                        if changed_font {
-                            pane.view()
-                                .update(cx, |view, cx| view.set_theme(font_theme(font), cx));
-                        }
+                        pane.view().update(cx, |view, cx| {
+                            view.set_cursor_blink(blink, cx);
+                            view.set_theme(font_theme(font), cx);
+                        });
                     });
                 }
                 if changed_appearance {
@@ -1117,8 +1123,12 @@ fn ended_on_purpose(state: &AppState, session: &SessionId, tab: usize) -> bool {
     closing || ended
 }
 
-/// Whether a group of the open session shows this tab right now.
+/// Whether a group of the open session shows this tab right now, or the tab is
+/// the embedded primary Channel Desk terminal (`CHANNELDESK`).
 fn is_visible(state: &AppState, id: &SessionId, tab: usize) -> bool {
+    if state.active_channel_desk().as_ref() == Some(id) && tab == 0 {
+        return true;
+    }
     state.route == Route::Session(id.clone())
         && state.full_screen() != Some(FullScreen::Panel)
         && state.session.views.get(id).is_some_and(|view| {

@@ -343,8 +343,14 @@ impl App {
                     sheet.progress = None;
                     sheet.op = None;
                     sheet.error = Some(error.to_string());
+                    Effect::none()
+                } else {
+                    // SMB-004: if the sheet was dismissed with Esc while
+                    // creating, surface the failure as a toast instead of
+                    // dropping it silently.
+                    let clock = self.clients.clock.clone();
+                    state.toast(error.to_string(), &clock)
                 }
-                Effect::none()
             }
         }
     }

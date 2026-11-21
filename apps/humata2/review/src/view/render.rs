@@ -1255,15 +1255,24 @@ impl ReviewPane {
                 .child(gutter(theme, model.old.clone()))
                 .child(gutter(theme, model.new.clone()))
                 .child(div().w(px(14.)).text_color(color).child(sign))
-                .child(
-                    div()
+                .child({
+                    let dark = (theme.background.r + theme.background.g + theme.background.b) < 1.5;
+                    let language = humata2_highlight::Language::from_path(&key.path);
+                    let spans = humata2_highlight::highlight_line(language, &model.text, dark);
+                    let cell = div()
                         .flex_1()
                         .whitespace_nowrap()
                         .overflow_hidden()
-                        .text_color(color)
-                        .child(model.text.clone())
-                        .test_text(model.text.clone()),
-                )
+                        .text_color(color);
+                    let cell = if spans.is_empty() {
+                        cell.child(model.text.clone())
+                    } else {
+                        cell.child(
+                            gpui_kit::StyledText::new(model.text.clone()).with_highlights(spans),
+                        )
+                    };
+                    cell.test_text(model.text.clone())
+                })
                 .when_some(highlight.filter(|(first, _)| *first).map(|(_, label)| label), |row, label| {
                     row.child(
                         div()

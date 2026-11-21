@@ -386,6 +386,27 @@ fn resizing_the_panel_keeps_the_strip_outside_its_width() {
     );
 }
 
+#[test]
+fn resizing_the_panel_reaches_half_the_window_width() {
+    let mut app = App::new(fixture::standard());
+    app.open("s-auth", Panel::Changes);
+    app.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            let start = window.find("panel-divider").bounds().center();
+            // Drag far left — well past the old 420px cap — should clamp at 50% of 1280px (640px).
+            window.drag(start, point(px(100.), start.y), cx);
+        })
+        .expect("divider is drawn");
+    app.settle();
+    let width = app.ui.read(|state| state.layout.panel.width);
+    assert!(
+        (width - 640.).abs() <= 2.,
+        "width after dragging past 50% of 1280px window: {width}"
+    );
+}
+
 /// RV-5: the panel sends only the open session's drafts via the client.
 #[test]
 fn sending_comments_from_the_panel_delivers_the_open_sessions_drafts() {

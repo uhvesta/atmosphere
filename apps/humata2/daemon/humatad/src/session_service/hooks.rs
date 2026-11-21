@@ -113,8 +113,11 @@ impl SessionSvc {
         // A call of Humata's own tool that only files an Inbox request is
         // let through, whoever keeps the agent's asks: the request it files
         // is the card the user answers, so a second one would ask twice.
+        // D920: safe branch-only push commands also auto-allow unless the
+        // session is a review with push_allowed = false or GitPush is Never.
         if let Some(Hooked::Permission(kind, ask)) = &hooked
-            && only_files_an_inbox_request(&ask.tool)
+            && (only_files_an_inbox_request(&ask.tool, &request.payload)
+                || (self.may_auto_allow_push(&agent) && is_safe_push_ask(ask)))
         {
             let _ = sender.try_send(Ok(final_reply(permission_stdout(*kind, Decision::Allow))));
             return Ok(Response::new(ReceiverStream::new(receiver)));
@@ -177,6 +180,23 @@ impl SessionSvc {
 }
 
 impl SessionSvc {
+    /// True when this session's policy allows auto-allowing safe branch-only
+    /// push commands in hooks (D920): never for `Review { push_allowed: false }`
+    /// and never when the channel's `GitPush` rule is `Decision::Never`.
+    fn may_auto_allow_push(&self, agent: &crate::identity::AgentCaller) -> bool {
+        if agent.review_push == Some(false) {
+            return false;
+        }
+        let channel = agent.session.channel.clone();
+        self.guard.with_policy(|policy, _| {
+            let decision = policy
+                .channel_rules(&channel)
+                .unwrap_or_else(|| policy.new_channel_rules())
+                .decision(humata2_access::Capability::GitPush);
+            decision != Some(humata2_access::Decision::Never)
+        })
+    }
+
     /// D798: raises the "waiting in its terminal" card for a Claude prompt
     /// the agent shows, without holding the hook: the card lives in its own
     /// task, which lets it go when the session reports a turn, a held ask
@@ -270,13 +290,17 @@ enum Hooked {
 
 /// Humata's own MCP tools whose call only files an Inbox request: the
 /// daemon asks the user on that card, so the call itself needs no approval.
-const ONLY_FILE_AN_INBOX_REQUEST: &[humata2_mcp::Operation] = &[humata2_mcp::Operation::ProviderImport];
+const ONLY_FILE_AN_INBOX_REQUEST: &[humata2_mcp::Operation] = &[
+    humata2_mcp::Operation::ProviderImport,
+    humata2_mcp::Operation::ProviderRequestImport,
+];
 
 /// Whether `tool`, as an agent's permission ask names it, is one of
 /// [`ONLY_FILE_AN_INBOX_REQUEST`] on Humata's server: Claude's and Codex's
 /// `mcp__humata__<tool>`, Copilot's `humata/<tool>` or `humata-<tool>`,
-/// OpenCode's `humata_<tool>`.
-fn only_files_an_inbox_request(tool: &str) -> bool {
+/// OpenCode's `humata_<tool>`, or `humata_call` wrapping one of them via
+/// `tool_input.name` / `toolInput.name` / `toolArgs.name`.
+fn only_files_an_inbox_request(tool: &str, payload: &[u8]) -> bool {
     let server = agent_hooks::MCP_SERVER;
     let named = [
         format!("mcp__{server}__"),
@@ -287,11 +311,142 @@ fn only_files_an_inbox_request(tool: &str) -> bool {
     .iter()
     .find_map(|prefix| tool.strip_prefix(prefix.as_str()))
     .map(str::to_owned);
-    named.is_some_and(|name| {
+    let Some(name) = named else {
+        return false;
+    };
+    let is_request_filer = |candidate: &str| {
         ONLY_FILE_AN_INBOX_REQUEST
             .iter()
-            .any(|operation| operation.tool_name() == name)
-    })
+            .any(|operation| operation.tool_name() == candidate)
+    };
+    if is_request_filer(&name) {
+        return true;
+    }
+    if name == "humata_call"
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload)
+    {
+        let inner = json
+            .get("tool_input")
+            .or_else(|| json.get("toolInput"))
+            .or_else(|| json.get("toolArgs"))
+            .and_then(|input| input.get("name"))
+            .and_then(|value| value.as_str());
+        return inner.is_some_and(is_request_filer);
+    }
+    false
+}
+
+/// D920: whether a permission ask is a safe non-force, non-default branch push
+/// command (`humata session push ...` or safe `git push <remote> <branch>`).
+fn is_safe_push_ask(ask: &agent_hooks::Ask) -> bool {
+    is_safe_push_command(&ask.command)
+}
+
+/// D920: strictly safe branch-only push commands auto-allowed by agent hooks:
+/// - `humata session push ...` (Humata's own daemon still enforces policy and
+///   gates PR creation / default branches), OR
+/// - non-force, non-default `git push <remote> <branch>` with no shell
+///   metacharacters, no force/delete/mirror/all flags, no `+ref` or `:ref`,
+///   and no `main`/`master`/`HEAD` target.
+pub(crate) fn is_safe_push_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Reject any shell metacharacter, control character, or chaining operator.
+    if trimmed.chars().any(|ch| {
+        matches!(
+            ch,
+            '&' | '|' | ';' | '$' | '`' | '>' | '<' | '(' | ')' | '\n' | '\r' | '\0'
+        )
+    }) {
+        return false;
+    }
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let bin = tokens[0];
+    if (bin == "humata" || bin.ends_with("/humata"))
+        && tokens.get(1) == Some(&"session")
+        && tokens.get(2) == Some(&"push")
+    {
+        return true;
+    }
+    if !(bin == "git" || bin.ends_with("/git")) {
+        return false;
+    }
+    // Optional `-C <dir>` before `push`.
+    let after_push = if tokens.get(1) == Some(&"-C") {
+        if tokens.get(3) != Some(&"push") {
+            return false;
+        }
+        &tokens[4..]
+    } else if tokens.get(1) == Some(&"push") {
+        &tokens[2..]
+    } else {
+        return false;
+    };
+    let mut positional = Vec::new();
+    for &arg in after_push {
+        if arg.starts_with('-') {
+            // Strict allowlist of safe non-destructive git push flags.
+            let allowed_flag = matches!(
+                arg,
+                "-u" | "--set-upstream"
+                    | "-q"
+                    | "--quiet"
+                    | "-v"
+                    | "--verbose"
+                    | "--porcelain"
+                    | "--no-thin"
+                    | "--progress"
+                    | "--no-progress"
+                    | "--ipv4"
+                    | "--ipv6"
+                    | "-4"
+                    | "-6"
+            );
+            if !allowed_flag {
+                return false;
+            }
+        } else {
+            positional.push(arg);
+        }
+    }
+    // Require an explicit remote and at least one non-default refspec so bare
+    // `git push` on `main`/`master` cannot slip through.
+    if positional.len() < 2 {
+        return false;
+    }
+    let remote = positional[0];
+    if remote.is_empty()
+        || !remote
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        || remote.eq_ignore_ascii_case("main")
+        || remote.eq_ignore_ascii_case("master")
+    {
+        return false;
+    }
+    for &refspec in &positional[1..] {
+        if refspec.is_empty() || refspec.starts_with('+') || refspec.starts_with(':') {
+            return false;
+        }
+        let dest = match refspec.split_once(':') {
+            Some((_, dst)) => dst,
+            None => refspec,
+        };
+        let branch = dest.strip_prefix("refs/heads/").unwrap_or(dest);
+        if branch.is_empty()
+            || branch.eq_ignore_ascii_case("main")
+            || branch.eq_ignore_ascii_case("master")
+            || branch == "HEAD"
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// What `agent`'s permission hook prints for `decision`.
@@ -400,9 +555,11 @@ pub(crate) fn install_mcp_configs(
 ) -> Result<humata2_sessions::HumataTools, HooksError> {
     let claude_mcp = state.join("humata-mcp-claude.json");
     let copilot_mcp = state.join("humata-mcp-copilot.json");
+    let agy_mcp = state.join("humata-mcp-agy.json");
     for (path, contents) in [
         (&claude_mcp, agent_hooks::claude_mcp_config(humatad, socket)),
         (&copilot_mcp, agent_hooks::copilot_mcp_config(humatad, socket)),
+        (&agy_mcp, agent_hooks::agy_mcp_config(humatad, socket)),
     ] {
         if std::fs::read(path).is_ok_and(|have| have == contents.as_bytes()) {
             continue;
@@ -414,6 +571,7 @@ pub(crate) fn install_mcp_configs(
         claude_mcp,
         copilot_mcp,
         codex_mcp: agent_hooks::codex_mcp(humatad, socket),
+        agy_mcp,
     })
 }
 
@@ -454,6 +612,7 @@ mod tests {
         assert!(tools.claude_mcp.starts_with(state.path()));
         assert_eq!(read(&tools.claude_mcp), agent_hooks::claude_mcp_config(humatad, &socket));
         assert_eq!(read(&tools.copilot_mcp), agent_hooks::copilot_mcp_config(humatad, &socket));
+        assert_eq!(read(&tools.agy_mcp), agent_hooks::agy_mcp_config(humatad, &socket));
         assert_eq!(tools.codex_mcp, agent_hooks::codex_mcp(humatad, &socket));
         // Again at the next start: same files, no error.
         install_mcp_configs(state.path(), humatad, &socket).expect("installed");
@@ -497,8 +656,18 @@ mod tests {
             "humata-provider_import",
             "humata_provider_import",
         ] {
-            assert!(only_files_an_inbox_request(tool), "{tool}");
+            assert!(only_files_an_inbox_request(tool, b"{}"), "{tool}");
         }
+        // MCPCOMPRESS: `humata_call` unwraps `tool_input.name` / `toolInput.name` / `toolArgs.name`.
+        let claude_wrapped = br#"{"tool_name":"mcp__humata__humata_call","tool_input":{"name":"provider_import","arguments":{"file_text":"x","reason":"y"}}}"#;
+        let copilot_wrapped = br#"{"toolName":"humata/humata_call","toolInput":{"name":"provider_request_import","arguments":{"file_text":"x","reason":"y"}}}"#;
+        let non_filing_wrapped = br#"{"tool_name":"mcp__humata__humata_call","tool_input":{"name":"machine_create","arguments":{}}}"#;
+        assert!(only_files_an_inbox_request("mcp__humata__humata_call", claude_wrapped));
+        assert!(only_files_an_inbox_request("humata/humata_call", copilot_wrapped));
+        assert!(!only_files_an_inbox_request("mcp__humata__humata_call", non_filing_wrapped));
+        assert!(!only_files_an_inbox_request("mcp__other__humata_call", claude_wrapped));
+        assert!(!only_files_an_inbox_request("mcp__humata__humata_call", b"{}"));
+
         for tool in [
             "Bash",
             "provider_import",
@@ -507,7 +676,7 @@ mod tests {
             "mcp__humata__machine_create",
             "mcp__humata__provider_import_all",
         ] {
-            assert!(!only_files_an_inbox_request(tool), "{tool}");
+            assert!(!only_files_an_inbox_request(tool, b"{}"), "{tool}");
         }
     }
 
@@ -520,5 +689,45 @@ mod tests {
             last.stdout,
             agent_hooks::render_permission(Agent::Claude, &agent_hooks::Decision::Allow)
         );
+    }
+
+    #[test]
+    fn safe_non_force_non_default_push_commands_auto_allow_and_unsafe_ones_stay_gated() {
+        for safe in [
+            "git push origin me/feat",
+            "git push -u origin me/feat",
+            "git push --set-upstream origin HEAD:me/feat",
+            "git -C /tmp/work push origin feature/login",
+            "humata session push --json",
+            "/opt/humata/bin/humata session push --wait 45",
+        ] {
+            assert!(is_safe_push_command(safe), "expected safe: {safe}");
+        }
+        for gated in [
+            "git push --force origin me/feat",
+            "git push -f origin me/feat",
+            "git push -uf origin me/feat",
+            "git push --force-with-lease origin me/feat",
+            "git push --delete origin me/feat",
+            "git push --mirror origin",
+            "git push --all origin",
+            "git push origin +me/feat",
+            "git push origin :me/feat",
+            "git push origin main",
+            "git push origin master",
+            "git push origin HEAD:main",
+            "git push origin refs/heads/master",
+            "git push origin me/feat && rm -rf /",
+            "git push origin me/feat || echo fail",
+            "git push origin me/feat; echo done",
+            "git push origin me/feat | cat",
+            "git push origin $(whoami)/feat",
+            "git push origin `whoami`/feat",
+            "git push",
+            "git push origin",
+            "humata session push && rm -rf /",
+        ] {
+            assert!(!is_safe_push_command(gated), "expected gated: {gated}");
+        }
     }
 }

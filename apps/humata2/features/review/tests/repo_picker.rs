@@ -189,10 +189,12 @@ fn picking_a_branch_gives_only_that_repository_its_base_and_closes_the_menu() {
             RepoDiffSpec {
                 repo: "acme/api".to_owned(),
                 base: RepoBase::Branch("release/2.4".to_owned()),
+                options: Default::default(),
             },
             RepoDiffSpec {
                 repo: "acme/web".to_owned(),
                 base: RepoBase::DefaultBranch,
+                options: Default::default(),
             },
         ])
     );

@@ -97,7 +97,10 @@ message Event {
     // SEAM (MACHINESCRIPTS, D686): a machine's script run started, moved or
     // ended; read it with ListMachineScriptRuns. On TOPIC_MACHINES, to the
     // user only.
-    MachineScriptRunChanged machine_script_run = 34;  // next free: 35
+    MachineScriptRunChanged machine_script_run = 34;
+    // SETTINGSFIX: a `humata login` arrived (CREATED) or settled/withdrew
+    // (DELETED). On TOPIC_INBOX, to the user only.
+    PendingCliLogin pending_cli_login = 35;  // next free: 36
   }
 }
 

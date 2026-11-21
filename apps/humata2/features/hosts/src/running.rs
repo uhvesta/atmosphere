@@ -75,6 +75,9 @@ impl RunningState {
         if self.offline {
             return Vec::new();
         }
+        if holder.archived {
+            return vec![RowAction::EndForGood];
+        }
         match (holder.is_orphan(), holder.stopped) {
             (false, false) => vec![RowAction::Open, RowAction::Stop, RowAction::EndForGood],
             (false, true) if is_shell(holder) => vec![RowAction::Resume, RowAction::EndForGood],

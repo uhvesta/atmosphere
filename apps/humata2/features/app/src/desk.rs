@@ -5,8 +5,8 @@
 
 use humata2_clients::desk;
 use humata2_clients::{FileRoot, Folder};
-use humata2_clients::model::{ForkKind, SessionId};
-use humata2_desk::{Change, Delegate, DeskAction, DeskState, Sort};
+use humata2_clients::model::{ChannelId, ForkKind, MachineId, SessionId};
+use humata2_desk::{Change, ChannelDeskStatus, Delegate, DeskAction, DeskState, Sort};
 use humata2_files::FilesAction;
 use humata2_session::SessionAction;
 use tca::Effect;
@@ -27,9 +27,105 @@ impl AppState {
     pub fn is_desk_session(&self, id: &SessionId) -> bool {
         self.workspace.session(id).is_some_and(desk::is_desk)
     }
+
+    /// The primary open Channel Desk session currently shown inline on a
+    /// channel's Desk tab (`CHANNELDESK`), if any.
+    #[must_use]
+    pub fn active_channel_desk(&self) -> Option<SessionId> {
+        let Route::Channel(channel) = &self.route else {
+            return None;
+        };
+        if self
+            .channel_pages
+            .get(channel)
+            .is_none_or(|view| view.tab != crate::channel::Tab::Desk)
+        {
+            return None;
+        }
+        self.desk
+            .primary_channel_desk(channel)
+            .map(|row| row.session.id.clone())
+    }
 }
 
 impl App {
+    /// Ensures `channel` has a persistent primary Desk session (`target: None`)
+    /// ready to talk to inline on `Tab::Desk` (`CHANNELDESK`).
+    ///
+    /// - Reuses an already-open primary Desk with 0 RPCs.
+    /// - Deduplicates concurrent calls while startup is in flight.
+    /// - When `force` is false, respects an explicit Close or a closed-kept
+    ///   primary Desk so the UI can offer Reopen / Start fresh instead of
+    ///   recreating immediately.
+    pub(super) fn ensure_channel_desk(
+        &self,
+        state: &mut AppState,
+        channel: &ChannelId,
+        force: bool,
+    ) -> Effect<AppAction> {
+        let Some(found) = state.workspace.channel(channel).cloned() else {
+            return Effect::none();
+        };
+        if state.desk.primary_channel_desk(channel).is_some() {
+            state.desk.channel_status.remove(channel);
+            return Effect::none();
+        }
+        if state.desk.channel_status.get(channel) == Some(&ChannelDeskStatus::Starting) {
+            return Effect::none();
+        }
+        if !force {
+            if state.desk.channel_status.get(channel) == Some(&ChannelDeskStatus::Closed) {
+                return Effect::none();
+            }
+            if state.desk.closed_primary_channel_desk(channel).is_some() {
+                return Effect::none();
+            }
+        }
+        let Ok(agent) = state.default_agent(Some(channel)) else {
+            state
+                .desk
+                .channel_status
+                .insert(channel.clone(), ChannelDeskStatus::NoAgent);
+            return Effect::none();
+        };
+        let online = |id: &MachineId| {
+            state
+                .workspace
+                .machine(id)
+                .is_some_and(|machine| machine.online)
+        };
+        let machine = found
+            .machines
+            .iter()
+            .find(|id| online(id))
+            .cloned()
+            .or_else(|| {
+                state
+                    .workspace
+                    .machines
+                    .iter()
+                    .find(|machine| machine.online)
+                    .map(|machine| machine.id.clone())
+            });
+        let Some(machine) = machine else {
+            state
+                .desk
+                .channel_status
+                .insert(channel.clone(), ChannelDeskStatus::NoMachine);
+            return Effect::none();
+        };
+        let title = format!("#{} Desk", found.name);
+        self.child(
+            state,
+            AppAction::Desk(DeskAction::EnsurePrimaryChannel {
+                channel: channel.clone(),
+                title,
+                agent,
+                machine,
+            }),
+        )
+    }
+
     /// New desk session, from Home, the Desk page or a command: the form
     /// starts on the agent Settings picked.
     pub(super) fn start_new_desk_session(&self, state: &mut AppState) -> Effect<AppAction> {
@@ -109,23 +205,31 @@ impl App {
                 session,
                 change: Change::Close,
                 result: Ok(()),
-            } if state.route == Route::Session(session.clone())
-                && state.workspace.desk.channel_sessions.contains_key(session) =>
-            {
-                let Some(channel) = state
+            } if state.workspace.desk.channel_sessions.contains_key(session) => {
+                let Some((channel, is_primary)) = state
                     .workspace
                     .desk
                     .channel_sessions
                     .get(session)
-                    .map(|found| found.channel.clone())
+                    .map(|found| (found.channel.clone(), found.target.is_none()))
                 else {
                     return Effect::none();
                 };
-                state.channel_pages.entry(channel.clone()).or_default().tab =
-                    crate::channel::Tab::Desk;
-                let gone = Route::Session(session.clone());
-                let go = self.leave(state, &gone, Route::Channel(channel));
-                Effect::merge([go, self.load()])
+                if is_primary {
+                    state
+                        .desk
+                        .channel_status
+                        .insert(channel.clone(), ChannelDeskStatus::Closed);
+                }
+                if state.route == Route::Session(session.clone()) {
+                    state.channel_pages.entry(channel.clone()).or_default().tab =
+                        crate::channel::Tab::Desk;
+                    let gone = Route::Session(session.clone());
+                    let go = self.leave(state, &gone, Route::Channel(channel));
+                    Effect::merge([go, self.load()])
+                } else {
+                    self.load()
+                }
             }
             DeskAction::Changed {
                 session,
@@ -147,6 +251,8 @@ impl App {
             // app's own change it still reads again, which also brings the
             // session rows a start or a close changes.
             DeskAction::Started(Ok(_))
+            | DeskAction::PrimaryChannelStarted { result: Ok(_), .. }
+            | DeskAction::PrimaryChannelReopened { result: Ok(()), .. }
             | DeskAction::Changed { result: Ok(()), .. }
             | DeskAction::Copied(Ok(()))
             | DeskAction::CleanedUp(Ok(_)) => self.load(),
@@ -278,13 +384,32 @@ impl App {
         state: &mut AppState,
         id: SessionId,
     ) -> Effect<AppAction> {
+        self.archive_session_with_end(state, id, false)
+    }
+
+    /// Like [`Self::archive_session`], and also ends the session's running
+    /// agent and shells (D801 F) so its row leaves the Machine page.
+    pub(super) fn archive_session_and_end(
+        &self,
+        state: &mut AppState,
+        id: SessionId,
+    ) -> Effect<AppAction> {
+        self.archive_session_with_end(state, id, true)
+    }
+
+    fn archive_session_with_end(
+        &self,
+        state: &mut AppState,
+        id: SessionId,
+        end: bool,
+    ) -> Effect<AppAction> {
         if state.is_desk_session(&id) {
             return self.handle(state, AppAction::Desk(DeskAction::AskClose(id)));
         }
-        let previous = state.session.open.replace(id);
-        let effect = self.child(state, AppAction::Session(SessionAction::Archive));
-        state.session.open = previous;
-        effect
+        self.child(
+            state,
+            AppAction::Session(SessionAction::ArchiveSession { session: id, end }),
+        )
     }
 
     /// Fork, from the palette or a shortcut. A Desk session has none

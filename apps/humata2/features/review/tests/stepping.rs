@@ -184,3 +184,41 @@ fn picking_a_file_folds_the_list_and_so_does_stepping() {
     send(&mut state, A::PrevFile);
     assert!(!state.file_list_open.contains(&session()));
 }
+
+#[test]
+fn resizing_the_file_list_clamps_persists_and_resets() {
+    use humata2_review::{
+        DEFAULT_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH, MIN_FILE_LIST_WIDTH, ReviewSaved,
+        clamp_file_list_width,
+    };
+
+    let mut state = page();
+    assert_eq!(state.file_list_width(), DEFAULT_FILE_LIST_WIDTH);
+    assert_eq!(state.saved.file_list_width, None);
+
+    // Dragging below min clamps to MIN_FILE_LIST_WIDTH.
+    send(&mut state, A::ResizeFileList(80.));
+    assert_eq!(state.file_list_width(), MIN_FILE_LIST_WIDTH);
+    assert_eq!(state.saved.file_list_width, Some(MIN_FILE_LIST_WIDTH as u16));
+
+    // Dragging above max clamps to MAX_FILE_LIST_WIDTH.
+    send(&mut state, A::ResizeFileList(999.));
+    assert_eq!(state.file_list_width(), MAX_FILE_LIST_WIDTH);
+    assert_eq!(state.saved.file_list_width, Some(MAX_FILE_LIST_WIDTH as u16));
+
+    // In-range width rounds and survives JSON round-trip in ReviewSaved.
+    send(&mut state, A::ResizeFileList(412.4));
+    assert_eq!(state.file_list_width(), 412.);
+    let json = serde_json::to_string(&state.saved).expect("serialize ReviewSaved");
+    let restored: ReviewSaved = serde_json::from_str(&json).expect("deserialize ReviewSaved");
+    assert_eq!(restored.file_list_width, Some(412));
+
+    // Non-finite values fall back to default.
+    assert_eq!(clamp_file_list_width(f32::NAN), DEFAULT_FILE_LIST_WIDTH);
+    assert_eq!(clamp_file_list_width(f32::INFINITY), DEFAULT_FILE_LIST_WIDTH);
+
+    // Double-click / reset restores default and clears saved override.
+    send(&mut state, A::ResetFileListWidth);
+    assert_eq!(state.file_list_width(), DEFAULT_FILE_LIST_WIDTH);
+    assert_eq!(state.saved.file_list_width, None);
+}

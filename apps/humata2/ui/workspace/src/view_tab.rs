@@ -36,7 +36,7 @@ pub fn kind_words(content: &ViewContent) -> &'static str {
     match content {
         ViewContent::Walkthrough(_) => "Review",
         ViewContent::Board(_) | ViewContent::SessionBoard { .. } => "To-do",
-        ViewContent::PullRequest => "Pull request",
+        ViewContent::PullRequest(_) => "Pull request",
         ViewContent::ReviewPlan(_) => "Review plan",
         ViewContent::Summary => "View",
     }
@@ -236,6 +236,21 @@ fn steps(record: &ViewRecord) -> Vec<Step> {
                 note: group.note.clone(),
             })
             .collect(),
+        ViewContent::PullRequest(drafts) => drafts
+            .iter()
+            .map(|draft| {
+                let base = if draft.base_branch.trim().is_empty() {
+                    "default branch"
+                } else {
+                    draft.base_branch.as_str()
+                };
+                let status = if draft.draft { " · Draft" } else { "" };
+                Step {
+                    place: format!("{} · base {base}{status}", draft.repo),
+                    note: draft.title.clone(),
+                }
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -338,91 +353,227 @@ pub fn body(
                     .child(step.note.clone()),
             )
         }));
-    let right = steps.get(current).map(|step| {
-        col()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .child(
-                row()
-                    .h(px(34.))
-                    .px(px(14.))
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(rgb(look.line))
-                    .text_size(px(12.5))
-                    .child(div().child(step.place.clone()))
-                    .child(
-                        div()
-                            .text_color(rgb(look.secondary))
-                            .child(format!("Step {} of {}", current + 1, steps.len())),
-                    ),
-            )
-            .child(
-                col()
-                    .flex_1()
-                    .min_h_0()
-                    .p(px(14.))
-                    .child(
-                        col()
-                            .p(px(12.))
-                            .gap(px(4.))
-                            .rounded(px(8.))
-                            .border_1()
+    let right = match &record.content {
+        ViewContent::PullRequest(drafts) => drafts.get(current).map(|draft| {
+            let base = if draft.base_branch.trim().is_empty() {
+                "default branch".to_owned()
+            } else {
+                draft.base_branch.clone()
+            };
+            let status = if draft.draft { "Draft" } else { "Ready for review" };
+            let title = if draft.title.trim().is_empty() {
+                record.view.title.clone()
+            } else {
+                draft.title.clone()
+            };
+            let body_text = if draft.body.trim().is_empty() {
+                "No pull request description.".to_owned()
+            } else {
+                draft.body.clone()
+            };
+            col()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    row()
+                        .h(px(34.))
+                        .px(px(14.))
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(12.5))
+                        .child(
+                            row()
+                                .gap(px(8.))
+                                .items_center()
+                                .child(div().id("pr-draft-repo").test_support().child(draft.repo.clone()))
+                                .child(
+                                    div()
+                                        .id("pr-draft-base")
+                                        .test_support()
+                                        .text_color(rgb(look.secondary))
+                                        .child(format!("base: {base}")),
+                                )
+                                .child(
+                                    div()
+                                        .id("pr-draft-status")
+                                        .test_support()
+                                        .px(px(6.))
+                                        .py(px(1.))
+                                        .rounded(px(4.))
+                                        .bg(rgb(look.fill))
+                                        .text_size(px(11.))
+                                        .text_color(rgb(look.secondary))
+                                        .child(status),
+                                ),
+                        )
+                        .when(drafts.len() > 1, |header| {
+                            header.child(
+                                div()
+                                    .text_color(rgb(look.secondary))
+                                    .child(format!("PR {} of {}", current + 1, drafts.len())),
+                            )
+                        }),
+                )
+                .child(
+                    col()
+                        .id("pr-draft-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .p(px(14.))
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .id("pr-draft-title")
+                                .test_support()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(
+                            col()
+                                .id("pr-draft-body")
+                                .test_support()
+                                .p(px(12.))
+                                .gap(px(4.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(rgb(look.line))
+                                .child(div().child(body_text)),
+                        ),
+                )
+                .when(drafts.len() > 1, |pane| {
+                    pane.child(
+                        row()
+                            .h(px(46.))
+                            .px(px(14.))
+                            .items_center()
+                            .justify_between()
+                            .border_t_1()
                             .border_color(rgb(look.line))
                             .child(
-                                row()
-                                    .gap(px(6.))
-                                    .items_center()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(chrome::icon(IconName::Sparkles, 0xbf5af2, 12.))
-                                    .child(prepared_by(record, session)),
+                                widgets::push_quiet(
+                                    ui,
+                                    "view-prev",
+                                    "‹ Prev",
+                                    AppAction::Views(ViewsAction::Step {
+                                        id: view_id.clone(),
+                                        to: current.saturating_sub(1),
+                                    }),
+                                    look,
+                                )
+                                .disabled(current == 0),
                             )
-                            .child(div().child(step.note.clone())),
-                    ),
-            )
-            .child(
-                row()
-                    .h(px(46.))
-                    .px(px(14.))
-                    .items_center()
-                    .justify_between()
-                    .border_t_1()
-                    .border_color(rgb(look.line))
-                    .child(
-                        widgets::push_quiet(
-                            ui,
-                            "view-prev",
-                            "‹ Prev",
-                            AppAction::Views(ViewsAction::Step {
-                                id: view_id.clone(),
-                                to: current.saturating_sub(1),
-                            }),
-                            look,
-                        )
-                        .disabled(current == 0),
+                            .child(
+                                div()
+                                    .text_color(rgb(look.secondary))
+                                    .child(format!("{} / {}", current + 1, drafts.len())),
+                            )
+                            .child(
+                                widgets::push_primary(
+                                    ui,
+                                    "view-next",
+                                    "Next ›",
+                                    AppAction::Views(ViewsAction::Step {
+                                        id: view_id.clone(),
+                                        to: current + 1,
+                                    }),
+                                    look,
+                                )
+                                .disabled(current >= last),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_color(rgb(look.secondary))
-                            .child(format!("{} / {}", current + 1, steps.len())),
-                    )
-                    .child(
-                        widgets::push_primary(
-                            ui,
-                            "view-next",
-                            "Next ›",
-                            AppAction::Views(ViewsAction::Step {
-                                id: view_id.clone(),
-                                to: current + 1,
-                            }),
-                            look,
+                })
+        }),
+        _ => steps.get(current).map(|step| {
+            col()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    row()
+                        .h(px(34.))
+                        .px(px(14.))
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(12.5))
+                        .child(div().child(step.place.clone()))
+                        .child(
+                            div()
+                                .text_color(rgb(look.secondary))
+                                .child(format!("Step {} of {}", current + 1, steps.len())),
+                        ),
+                )
+                .child(
+                    col()
+                        .flex_1()
+                        .min_h_0()
+                        .p(px(14.))
+                        .child(
+                            col()
+                                .p(px(12.))
+                                .gap(px(4.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(rgb(look.line))
+                                .child(
+                                    row()
+                                        .gap(px(6.))
+                                        .items_center()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(chrome::icon(IconName::Sparkles, 0xbf5af2, 12.))
+                                        .child(prepared_by(record, session)),
+                                )
+                                .child(div().child(step.note.clone())),
+                        ),
+                )
+                .child(
+                    row()
+                        .h(px(46.))
+                        .px(px(14.))
+                        .items_center()
+                        .justify_between()
+                        .border_t_1()
+                        .border_color(rgb(look.line))
+                        .child(
+                            widgets::push_quiet(
+                                ui,
+                                "view-prev",
+                                "‹ Prev",
+                                AppAction::Views(ViewsAction::Step {
+                                    id: view_id.clone(),
+                                    to: current.saturating_sub(1),
+                                }),
+                                look,
+                            )
+                            .disabled(current == 0),
                         )
-                        .disabled(current >= last),
-                    ),
-            )
-    });
+                        .child(
+                            div()
+                                .text_color(rgb(look.secondary))
+                                .child(format!("{} / {}", current + 1, steps.len())),
+                        )
+                        .child(
+                            widgets::push_primary(
+                                ui,
+                                "view-next",
+                                "Next ›",
+                                AppAction::Views(ViewsAction::Step {
+                                    id: view_id.clone(),
+                                    to: current + 1,
+                                }),
+                                look,
+                            )
+                            .disabled(current >= last),
+                        ),
+                )
+        }),
+    };
     row()
         .id("prepared-view-content")
         .flex_1()

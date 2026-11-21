@@ -66,6 +66,9 @@ pub enum Group {
 pub enum Offer {
     /// Allow.
     Allow,
+    /// Allow this session's browser reads for 30 minutes (BROWSER).
+    /// Offered only for `RequestKind::BrowserRead` with `supports_30m_grant`.
+    AllowFor30Min,
     /// Always allow.
     AlwaysAllow,
     /// Deny.
@@ -318,10 +321,48 @@ impl InboxState {
         if request.kind == RequestKind::Question {
             return vec![Offer::Reply];
         }
+        if request.kind == RequestKind::BrowserRead {
+            let allow_30m = request
+                .browser()
+                .is_some_and(|preview| preview.supports_30m_grant)
+                .then_some(Offer::AllowFor30Min);
+            return [Some(Offer::Allow), allow_30m, Some(Offer::Deny)]
+                .into_iter()
+                .flatten()
+                .collect();
+        }
+        if request.kind == RequestKind::BrowserWrite {
+            return vec![Offer::Allow, Offer::Deny];
+        }
         let always = (!request.rule.is_empty()).then_some(Offer::AlwaysAllow);
         [Some(Offer::Allow), always, Some(Offer::Deny), Some(Offer::Reply)]
             .into_iter()
             .flatten()
+            .collect()
+    }
+
+    /// Waiting requests in the current view that `Allow all` approves.
+    /// Excludes `Migrate`, `BrowserWrite`, dismiss-only cards and provider imports.
+    #[must_use]
+    pub fn bulk_approvable(&self) -> Vec<&Request> {
+        self.shown()
+            .into_iter()
+            .filter(|request| request.answer.is_none() && request.answered_in_bulk())
+            .collect()
+    }
+
+    /// Waiting requests in the current view that `Deny all` denies.
+    /// Excludes `Migrate`, dismiss-only cards and provider imports; includes `BrowserWrite`.
+    #[must_use]
+    pub fn bulk_deniable(&self) -> Vec<&Request> {
+        self.shown()
+            .into_iter()
+            .filter(|request| {
+                request.answer.is_none()
+                    && request.kind != RequestKind::Migrate
+                    && !request.dismiss_only
+                    && request.operation != humata2_clients::model::PROVIDER_IMPORT_OPERATION
+            })
             .collect()
     }
 
@@ -537,6 +578,10 @@ pub enum InboxAction {
     Select(RequestId),
     /// Answer a request.
     Answer(RequestId, Answer),
+    /// Approve every waiting request that `answered_in_bulk` allows (skips `BrowserWrite`).
+    ApproveAll,
+    /// Deny every waiting request that bulk deny allows.
+    DenyAll,
     /// Approve and make the request's rule for next time.
     Always(RequestId),
     /// Start writing a reply to deny with.
@@ -960,12 +1005,36 @@ impl Reducer for Inbox {
             | InboxAction::StartReply(id)
                 if state.is_migrate(&id) => {}
             InboxAction::Answer(id, answer) => {
+                if let Some(request) = state.find(&id) {
+                    if matches!(answer, Answer::AllowFor30Min)
+                        && !(request.kind == RequestKind::BrowserRead
+                            && request.browser().is_some_and(|preview| preview.supports_30m_grant))
+                    {
+                        return Effect::none();
+                    }
+                    if matches!(answer, Answer::Always { .. })
+                        && matches!(
+                            request.kind,
+                            RequestKind::BrowserRead | RequestKind::BrowserWrite
+                        )
+                    {
+                        return Effect::none();
+                    }
+                }
                 let answer = match answer {
                     Answer::Approved if state.always.contains(&id) => {
                         match state.workspace.requests.iter().find(|r| r.id == id) {
-                            Some(request) if !request.rule.is_empty() => Answer::Always {
-                                rule: request.rule.clone(),
-                            },
+                            Some(request)
+                                if !request.rule.is_empty()
+                                    && !matches!(
+                                        request.kind,
+                                        RequestKind::BrowserRead | RequestKind::BrowserWrite
+                                    ) =>
+                            {
+                                Answer::Always {
+                                    rule: request.rule.clone(),
+                                }
+                            }
                             _ => Answer::Approved,
                         }
                     }
@@ -973,12 +1042,37 @@ impl Reducer for Inbox {
                 };
                 return self.answer(state, id, answer);
             }
+            InboxAction::ApproveAll => {
+                let ids: Vec<RequestId> = state
+                    .bulk_approvable()
+                    .into_iter()
+                    .map(|request| request.id.clone())
+                    .collect();
+                let effects: Vec<Effect<InboxAction>> = ids
+                    .into_iter()
+                    .map(|id| self.answer(state, id, Answer::Approved))
+                    .collect();
+                return Effect::merge(effects);
+            }
+            InboxAction::DenyAll => {
+                let ids: Vec<RequestId> = state
+                    .bulk_deniable()
+                    .into_iter()
+                    .map(|request| request.id.clone())
+                    .collect();
+                let effects: Vec<Effect<InboxAction>> = ids
+                    .into_iter()
+                    .map(|id| self.answer(state, id, Answer::Denied { reply: None }))
+                    .collect();
+                return Effect::merge(effects);
+            }
             InboxAction::ToggleAlways(id) => {
-                let grantable = state
-                    .workspace
-                    .requests
-                    .iter()
-                    .any(|r| r.id == id && !r.rule.is_empty() && r.answer.is_none());
+                let grantable = state.workspace.requests.iter().any(|r| {
+                    r.id == id
+                        && !r.rule.is_empty()
+                        && r.answer.is_none()
+                        && !matches!(r.kind, RequestKind::BrowserRead | RequestKind::BrowserWrite)
+                });
                 if grantable && !state.always.remove(&id) {
                     state.always.insert(id);
                 }
@@ -998,6 +1092,11 @@ impl Reducer for Inbox {
                 }
             }
             InboxAction::Always(id) => {
+                if state.find(&id).is_some_and(|r| {
+                    matches!(r.kind, RequestKind::BrowserRead | RequestKind::BrowserWrite)
+                }) {
+                    return Effect::none();
+                }
                 let rule = state
                     .workspace
                     .requests

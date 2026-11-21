@@ -80,26 +80,94 @@ fn deserialized_preferences_default_notify_and_preserve_explicit_values() {
 fn row_is_in_notifications_before_permission_alerts_and_reachable_from_palette() {
     assert_eq!(Row::DesktopNotifications.title(), "Desktop notifications");
     assert_eq!(Row::DesktopNotifications.section(), Section::Notifications);
+    assert_eq!(Row::PlaySound.title(), "Play a sound");
+    assert_eq!(Row::PlaySound.section(), Section::Notifications);
 
     let desktop_pos = Row::ALL
         .iter()
         .position(|&r| r == Row::DesktopNotifications)
         .expect("Row::DesktopNotifications in Row::ALL");
+    let sound_pos = Row::ALL
+        .iter()
+        .position(|&r| r == Row::PlaySound)
+        .expect("Row::PlaySound in Row::ALL");
     let alerts_pos = Row::ALL
         .iter()
         .position(|&r| r == Row::PermissionRequestAlerts)
         .expect("Row::PermissionRequestAlerts in Row::ALL");
     assert!(
-        desktop_pos < alerts_pos,
-        "DesktopNotifications should appear before PermissionRequestAlerts in Row::ALL"
+        desktop_pos < sound_pos && sound_pos < alerts_pos,
+        "Row::ALL order should be DesktopNotifications < PlaySound < PermissionRequestAlerts"
     );
 
     let (clients, _) =
         humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
-    store.send(A::Reveal(Row::DesktopNotifications), |s| {
+    store.send(A::Reveal(Row::PlaySound), |s| {
         s.section = Section::Notifications;
-        s.revealed = Some(Row::DesktopNotifications);
+        s.revealed = Some(Row::PlaySound);
+    });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
+    store.finish();
+}
+
+#[test]
+fn play_sound_defaults_off_is_disabled_while_master_off_and_keeps_value() {
+    let (clients, _) =
+        humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
+
+    assert!(!store.state().preferences.notify.play_sound);
+
+    // Master is off: toggling play_sound is ignored.
+    store.send(A::TogglePlaySound, |_| {});
+    assert!(!store.state().preferences.notify.play_sound);
+
+    // Turn master on, then turn play_sound on.
+    store.send(A::ToggleDesktopNotifications, |s| {
+        s.preferences.notify.enabled = true;
+    });
+    store.send(A::TogglePlaySound, |s| {
+        s.preferences.notify.play_sound = true;
+    });
+
+    // Turning master off keeps play_sound = true, and blocks changes while off.
+    store.send(A::ToggleDesktopNotifications, |s| {
+        s.preferences.notify.enabled = false;
+    });
+    assert!(store.state().preferences.notify.play_sound);
+    store.send(A::TogglePlaySound, |_| {});
+    assert!(store.state().preferences.notify.play_sound);
+
+    // Turning master back on preserves play_sound = true.
+    store.send(A::ToggleDesktopNotifications, |s| {
+        s.preferences.notify.enabled = true;
+    });
+    assert!(store.state().preferences.notify.play_sound);
+    store.finish();
+}
+
+#[test]
+fn restore_requests_permission_when_notifications_already_enabled() {
+    let (clients, fakes) =
+        humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
+
+    let mut prefs = Preferences::default();
+    prefs.notify.enabled = true;
+    store.send(A::Restore(prefs.clone()), |s| {
+        s.preferences = prefs;
     });
     store.finish();
+    assert_eq!(fakes.notifier.permission_requests(), 1);
 }

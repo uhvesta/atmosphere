@@ -413,8 +413,7 @@ impl FuseFsSupervisor {
     }
 
     /// Waits until no switch or push is running.
-    #[cfg(test)]
-    fn wait_idle(&self) {
+    pub(crate) fn wait_idle(&self) {
         let mut pending = lock(&self.inner.pending);
         while *pending > 0 {
             pending = self
@@ -717,6 +716,17 @@ fn expect_mount(answer: ControlResponse) -> Result<(), FuseFsError> {
 
 fn make_private_folder(path: &Path) -> Result<(), FuseFsError> {
     use std::os::unix::fs::DirBuilderExt;
+    // A killed FUSE helper leaves the mountpoint returning ENOTCONN/ESTALE
+    // until the replacement helper runs `fusermount3 -uz`; the underlying
+    // directory already exists, so don't let `DirBuilder::create` fail on it.
+    if let Err(err) = std::fs::metadata(path)
+        && matches!(
+            rustix::io::Errno::from_io_error(&err),
+            Some(rustix::io::Errno::NOTCONN | rustix::io::Errno::STALE)
+        )
+    {
+        return Ok(());
+    }
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -756,22 +766,27 @@ pub(crate) fn topology_from_store(
     }];
     let mut wires = Vec::with_capacity(sessions.len());
     for session in sessions {
-        if !machines.iter().any(|known| known.machine_id == session.machine) {
+        let session_machine = if session.machine.is_empty() {
+            machine.to_owned()
+        } else {
+            session.machine
+        };
+        if !machines.iter().any(|known| known.machine_id == session_machine) {
             machines.push(MachineProjection {
-                machine_id: session.machine.clone(),
-                display_name: session.machine.clone(),
+                machine_id: session_machine.clone(),
+                display_name: session_machine.clone(),
                 online: false,
                 machine_root: PathBuf::new(),
             });
         }
-        let local = session.machine == machine;
+        let local = session_machine == machine;
         let holder_pid = tabs
             .iter()
             .find(|tab| tab.session.as_deref() == Some(session.id.as_str()))
             .map_or(0, |tab| tab.holder_pid);
         wires.push(SessionWire {
             session_id: session.id,
-            machine_id: session.machine,
+            machine_id: session_machine,
             channel: Some(session.channel).filter(|channel| !channel.is_empty()),
             desk: None,
             holder_pid,
@@ -1361,5 +1376,39 @@ mod tests {
         let mode = std::fs::metadata(&rig.socket).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         helper.server.shutdown();
+    }
+
+    #[test]
+    fn topology_from_store_projects_empty_machine_session_under_local_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        store
+            .put_session(&humata2_store::SessionRecord {
+                id: "se_moved".into(),
+                channel: "ch_1".into(),
+                machine: String::new(),
+                title: "moved".into(),
+                agent: "shell".into(),
+                folder: dir.path().join("se_moved"),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        let root = dir.path().join("root");
+        let wire = topology_from_store(&store, "ma_local", &root);
+
+        assert!(
+            wire.machines.iter().all(|m| !m.machine_id.is_empty()),
+            "no empty machine_id entry in machines: {:?}",
+            wire.machines
+        );
+        assert_eq!(wire.machines.len(), 1);
+        assert_eq!(wire.machines[0].machine_id, "ma_local");
+        assert!(wire.machines[0].online);
+        assert_eq!(wire.machines[0].machine_root, root);
+
+        assert_eq!(wire.sessions.len(), 1);
+        assert_eq!(wire.sessions[0].session_id, "se_moved");
+        assert_eq!(wire.sessions[0].machine_id, "ma_local");
+        assert_eq!(wire.sessions[0].machine_root, root);
     }
 }

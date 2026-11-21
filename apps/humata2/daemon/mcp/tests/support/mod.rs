@@ -305,6 +305,63 @@ impl Client {
             .expect("tools/list returns tools")
     }
 
+    pub async fn humata_list(&mut self, arguments: Value) -> Value {
+        let result = self.call(json!("hlist"), "humata_list", arguments).await;
+        assert_eq!(result["isError"], false, "{result}");
+        result["structuredContent"].clone()
+    }
+
+    pub async fn humata_describe(&mut self, names: &[&str]) -> Value {
+        let result = self
+            .call(json!("hdesc"), "humata_describe", json!({ "names": names }))
+            .await;
+        assert_eq!(result["isError"], false, "{result}");
+        result["structuredContent"].clone()
+    }
+
+    pub async fn humata_call_raw(&mut self, id: Value, name: &str, arguments: Value) -> Value {
+        self.call_raw(
+            id,
+            "humata_call",
+            json!({ "name": name, "arguments": arguments }),
+        )
+        .await
+    }
+
+    pub async fn humata_call(&mut self, id: Value, name: &str, arguments: Value) -> Value {
+        self.call(
+            id,
+            "humata_call",
+            json!({ "name": name, "arguments": arguments }),
+        )
+        .await
+    }
+
+    /// Discovers every offered tool via `humata_list` and describes them in
+    /// batches of 20 via `humata_describe`.
+    pub async fn all_described_tools(&mut self) -> Vec<Value> {
+        let listed = self.humata_list(json!({})).await;
+        let names: Vec<String> = listed["tools"]
+            .as_array()
+            .expect("humata_list tools")
+            .iter()
+            .filter_map(|line| line.as_str()?.split_whitespace().next().map(str::to_owned))
+            .collect();
+        let mut described = Vec::with_capacity(names.len());
+        for chunk in names.chunks(20) {
+            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let batch = self.humata_describe(&refs).await;
+            described.extend(
+                batch["tools"]
+                    .as_array()
+                    .expect("humata_describe tools")
+                    .iter()
+                    .cloned(),
+            );
+        }
+        described
+    }
+
     /// Closes the agent's side, as when the agent exits, and returns every
     /// message the server sent after the last one read, once it stopped.
     pub async fn close(mut self) -> (Result<(), ServeError>, Vec<Value>) {

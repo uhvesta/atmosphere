@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use humata2_app::{App, AppAction as A, AppState, Route, channel};
 use humata2_clients::model::{ChannelId, SessionId};
-use humata2_clients::{Clients, Fakes, Workspace, fixture};
+use humata2_clients::{Fakes, Workspace, fixture};
 use humata2_desk::DeskAction as D;
 use tca::{TestClock, TestStore};
 
@@ -131,4 +131,199 @@ fn opening_a_session_lists_the_desk_sessions_that_look_after_it() {
         .map(|row| row.session.id.clone())
         .collect();
     assert_eq!(ids, vec![SessionId::new("cdesk-backfill")]);
+}
+
+fn launch_without_desk() -> (TestStore<App>, Fakes) {
+    let workspace: Workspace = fixture::design();
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});
+    store.settle();
+    (store, fakes)
+}
+
+fn infra() -> ChannelId {
+    ChannelId::new("infra")
+}
+
+fn receive_primary_started(store: &mut TestStore<App>) {
+    store.receive_matching(
+        "primary desk started",
+        |a| matches!(a, A::Desk(D::PrimaryChannelStarted { result: Ok(_), .. })),
+        |_| {},
+    );
+    store.receive_matching(
+        "workspace reloaded",
+        |a| matches!(a, A::Loaded(Ok(_))),
+        |_| {},
+    );
+    store.skip_received();
+}
+
+#[test]
+fn opening_a_channels_desk_tab_auto_starts_a_primary_desk_and_reuses_it() {
+    let (mut store, fakes) = launch_without_desk();
+    assert!(store.state().desk.primary_channel_desk(&payments()).is_none());
+
+    // Navigate to channel and switch to its Desk tab.
+    store.send(A::Switch(Route::Channel(payments())), |_| {});
+    store.send(A::Channel(channel::Action::Tab(channel::Tab::Desk)), |_| {});
+    receive_primary_started(&mut store);
+
+    // Stays on the channel's Desk tab (does not hijack route to Route::Session).
+    assert_eq!(store.state().route, Route::Channel(payments()));
+    assert_eq!(
+        store.state().channel_pages.get(&payments()).map(|v| v.tab),
+        Some(channel::Tab::Desk)
+    );
+    let primary_id = store
+        .state()
+        .active_channel_desk()
+        .expect("primary Desk session should be active on Tab::Desk");
+    let record = store
+        .state()
+        .desk
+        .channel_record(&primary_id)
+        .expect("channel Desk record exists");
+    assert_eq!(record.channel, payments());
+    assert_eq!(record.target, None);
+    assert_eq!(store.state().desk.channel_rows(&payments()).len(), 1);
+    assert_eq!(
+        fakes.daemon.workspace().desk.channel_sessions.len(),
+        1,
+        "exactly one Desk session was created"
+    );
+
+    // Switching away to Sessions tab and back to Desk reuses the same session.
+    store.send(
+        A::Channel(channel::Action::Tab(channel::Tab::Sessions)),
+        |_| {},
+    );
+    assert_eq!(store.state().active_channel_desk(), None);
+    store.send(A::Channel(channel::Action::Tab(channel::Tab::Desk)), |_| {});
+    store.settle();
+
+    assert_eq!(store.state().active_channel_desk(), Some(primary_id.clone()));
+    assert_eq!(
+        fakes.daemon.workspace().desk.channel_sessions.len(),
+        1,
+        "revisiting reuses the existing primary Desk without spawning a duplicate"
+    );
+}
+
+#[test]
+fn switching_between_channels_keeps_each_channels_desk_scoped() {
+    let (mut store, fakes) = launch_without_desk();
+
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    receive_primary_started(&mut store);
+    let payments_desk = store
+        .state()
+        .active_channel_desk()
+        .expect("payments primary Desk started");
+
+    store.send(A::OpenChannelDesk(infra()), |_| {});
+    receive_primary_started(&mut store);
+    let infra_desk = store
+        .state()
+        .active_channel_desk()
+        .expect("infra primary Desk started");
+
+    assert_ne!(payments_desk, infra_desk);
+    assert_eq!(
+        store.state().desk.channel_record(&payments_desk).map(|r| &r.channel),
+        Some(&payments())
+    );
+    assert_eq!(
+        store.state().desk.channel_record(&infra_desk).map(|r| &r.channel),
+        Some(&infra())
+    );
+    assert_eq!(fakes.daemon.workspace().desk.channel_sessions.len(), 2);
+
+    // Returning to payments reattaches to payments_desk with 0 new spawns.
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    store.settle();
+    assert_eq!(store.state().active_channel_desk(), Some(payments_desk));
+    assert_eq!(fakes.daemon.workspace().desk.channel_sessions.len(), 2);
+}
+
+#[test]
+fn rapid_duplicate_open_channel_desk_only_starts_one_session() {
+    let (mut store, fakes) = launch_without_desk();
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    assert_eq!(
+        store.state().desk.channel_status.get(&payments()),
+        Some(&humata2_desk::ChannelDeskStatus::Starting)
+    );
+    // Second dispatch before the first settles is deduplicated.
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    store.send(A::Channel(channel::Action::Tab(channel::Tab::Desk)), |_| {});
+    receive_primary_started(&mut store);
+
+    assert_eq!(store.state().desk.channel_rows(&payments()).len(), 1);
+    assert_eq!(fakes.daemon.workspace().desk.channel_sessions.len(), 1);
+}
+
+#[test]
+fn channel_desk_shows_no_agent_status_when_all_agents_are_off() {
+    let (mut store, fakes) = launch_without_desk();
+    let all_off: Vec<humata2_clients::AgentSwitch> = humata2_clients::model::Agent::ALL
+        .into_iter()
+        .filter(|a| *a != humata2_clients::model::Agent::Shell)
+        .map(|a| humata2_clients::AgentSwitch {
+            kind: a.name().to_lowercase(),
+            name: a.name().to_owned(),
+            agent: Some(a),
+            enabled: false,
+            install_when_missing: false,
+            can_install: false,
+            install_command: None,
+            asks_in_inbox: false,
+        })
+        .collect();
+    store.send(
+        A::Settings(humata2_settings::SettingsAction::Agents(
+            humata2_settings::AgentsAction::Loaded(Ok(all_off)),
+        )),
+        |_| {},
+    );
+
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    store.settle();
+
+    assert_eq!(
+        store.state().desk.channel_status.get(&payments()),
+        Some(&humata2_desk::ChannelDeskStatus::NoAgent)
+    );
+    assert!(fakes.daemon.workspace().desk.channel_sessions.is_empty());
+
+    store.send(A::OpenAgentSettings, |_| {});
+    assert_eq!(store.state().route, Route::Settings);
+    assert_eq!(
+        store.state().settings.section,
+        humata2_settings::Section::Agents
+    );
+}
+
+#[test]
+fn channel_desk_shows_no_machine_status_when_all_machines_are_offline() {
+    let mut workspace: Workspace = fixture::design();
+    for m in &mut workspace.machines {
+        m.online = false;
+    }
+    let (clients, fakes) = humata2_clients::fake_clients(workspace, Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});
+    store.settle();
+
+    store.send(A::OpenChannelDesk(payments()), |_| {});
+    store.settle();
+
+    assert_eq!(
+        store.state().desk.channel_status.get(&payments()),
+        Some(&humata2_desk::ChannelDeskStatus::NoMachine)
+    );
+    assert!(fakes.daemon.workspace().desk.channel_sessions.is_empty());
 }

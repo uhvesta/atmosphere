@@ -21,6 +21,7 @@ GPUI_KIT = {
             "//apps/humata2/ui:__subpackages__",
         ],
         deps = [
+            "//apps/humata2/highlight:highlight" + engine,
             "@crates//:thiserror",
             "@crates//:unicode-segmentation",
             "@crates//:unicode-width",

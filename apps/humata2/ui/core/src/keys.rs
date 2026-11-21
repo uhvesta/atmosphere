@@ -95,6 +95,10 @@ gpui_kit::actions!(
         FileListCollapse,
         /// → in the focused file list: unfold the repository, or go to its first file (DS-84).
         FileListExpand,
+        /// ⌘+ / ⌘=: larger terminal and diff font size.
+        ZoomIn,
+        /// ⌘-: smaller terminal and diff font size.
+        ZoomOut,
     ]
 );
 
@@ -121,7 +125,7 @@ pub const DIFF_LIST: &str = "HumataDiffList";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 27] = [
+pub const SHORTCUTS: [(&str, &str); 28] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⌘T", "New terminal tab"),
@@ -131,13 +135,14 @@ pub const SHORTCUTS: [(&str, &str); 27] = [
     ("⌘/", "Keyboard shortcuts"),
     ("⌥⌘→", "Expand all, in the sidebar"),
     ("⌥⌘←", "Collapse all, in the sidebar"),
-    ("⌘0", "Hide or show the sidebar"),
+    ("⌘B ⌘0", "Hide or show the sidebar"),
     ("⌥⌘0", "Hide or show the side panel"),
     ("⌥⌘M", "Move the session to another machine"),
     ("⇧⌘↩", "Terminal full screen"),
     ("⌃⌘↩", "Side panel full screen"),
     ("⌘1 ⌘2 ⌘3", "Home, Inbox, Board"),
     ("⌘,", "Settings"),
+    ("⌘+ ⌘-", "Larger, smaller font"),
     ("⌘L", "Move focus to the sidebar"),
     ("↑ ↓ Home End", "Move in the sidebar"),
     ("← →", "Fold, unfold, parent, child"),
@@ -259,11 +264,16 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-/", ShowShortcuts, None),
         KeyBinding::new("alt-cmd-right", ExpandAll, sidebar),
         KeyBinding::new("alt-cmd-left", CollapseAll, sidebar),
+        KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("cmd-0", ToggleSidebar, None),
         KeyBinding::new("cmd-1", GoHome, None),
         KeyBinding::new("cmd-2", GoInbox, None),
         KeyBinding::new("cmd-3", GoBoard, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("shift-cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
         KeyBinding::new("cmd-l", FocusSidebar, None),
         KeyBinding::new("alt-cmd-0", TogglePanel, None),
         KeyBinding::new("alt-cmd-m", MoveSession, None),
@@ -519,5 +529,21 @@ mod tests {
         for (glyphs, _) in SHORTCUTS {
             assert_eq!(label(glyphs, true), glyphs);
         }
+    }
+
+    #[test]
+    fn font_zoom_shortcuts_bind_plus_equals_and_minus_without_hijacking_cmd_0() {
+        let all = bindings();
+        let has = |glyphs: &str, action: &str| {
+            all.iter().any(|b| {
+                b.action().name() == action
+                    && b.keystrokes().iter().any(|k| mac_glyphs(k.inner()) == glyphs)
+            })
+        };
+        assert!(has("⌘=", super::ZoomIn::name_for_type()));
+        assert!(has("⇧⌘=", super::ZoomIn::name_for_type()));
+        assert!(has("⌘+", super::ZoomIn::name_for_type()));
+        assert!(has("⌘-", super::ZoomOut::name_for_type()));
+        assert!(has("⌘0", super::ToggleSidebar::name_for_type()));
     }
 }

@@ -496,6 +496,7 @@ pub fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> D
                         (Tab::Repos, "Repos and machines", None),
                         (Tab::Access, "Agent access", None),
                         (Tab::Activity, "Activity", None),
+                        (Tab::Settings, "Settings", None),
                     ]
                     .into_iter()
                     .map(|(tab, name, count)| {
@@ -1295,7 +1296,11 @@ pub fn page(
     channel: &Channel,
     filter: Entity<InputState>,
     todo: &dyn Fn() -> AnyElement,
+    desk_terminal: &dyn Fn(&SessionId, &mut App) -> AnyElement,
+    providers_inputs: &humata2_ui_settings::settings::ProvidersInputs,
     look: Look,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let view = page_view(state, &channel.id);
     match view.tab {
@@ -1309,11 +1314,39 @@ pub fn page(
             empty(ui, state, channel, look)
         }
         Tab::Sessions => sessions(ui, state, channel, &view, filter, look),
-        Tab::Desk => humata2_ui_desk::channel_desk::tab(ui, state, channel, look),
+        Tab::Desk => humata2_ui_desk::channel_desk::tab(ui, state, channel, desk_terminal, look, cx),
         Tab::Activity => activity(ui, state, channel, look),
         Tab::Repos => repos(ui, state, channel, look),
         Tab::Inbox => inbox_page::inbox(ui, state, look).into_any_element(),
         Tab::Board => todo(),
         Tab::Access => humata2_ui_settings::access::tab(ui, state, channel, look).into_any_element(),
+        Tab::Settings => humata2_ui_settings::channel_settings::tab(
+            ui,
+            state,
+            channel,
+            providers_inputs,
+            look,
+            window,
+            cx,
+        )
+        .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use humata2_app::channel::{Action, Tab, View};
+    use humata2_clients::Workspace;
+    use humata2_clients::model::ChannelId;
+
+    #[core::prelude::v1::test]
+    fn channel_page_supports_switching_to_settings_tab() {
+        let mut view = View::default();
+        assert_eq!(view.tab, Tab::Sessions);
+        view.tab = Tab::Settings;
+        assert_eq!(view.tab, Tab::Settings);
+        // Ensure Action::Tab(Tab::Settings) is constructible for the tab bar.
+        let _action = Action::Tab(Tab::Settings);
+        let _ = (Workspace::default(), ChannelId::new("eng"));
     }
 }

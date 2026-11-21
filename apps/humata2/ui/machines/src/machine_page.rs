@@ -740,6 +740,7 @@ fn left(
                 .border_color(rgb(look.line))
                 .cursor_pointer()
                 .when(ticked, |line| line.bg(select_mode::tint(look)))
+                .when(!ticked, |line| line.hover(move |item| item.bg(rgb(look.fill))))
                 .children(snap.as_ref().map(|snap| {
                     select_mode::tick_box(look, 14., snap.tick(&session.id))
                 }))

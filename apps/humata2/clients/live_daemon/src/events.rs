@@ -115,13 +115,7 @@ impl Shared {
 
     /// Tells every subscriber the daemon is gone, once, and lets them go.
     fn end_all(&self) {
-        let mut state = self.state();
-        state.subscribed = false;
-        for subscriber in state.subscribers.drain(..) {
-            let _ = subscriber.events.try_send(Err(DaemonError::Offline {
-                machine: self.machine.clone(),
-            }));
-        }
+        end_all_subscribers(&mut self.state(), &self.machine);
     }
 
     /// A new subscriber, starting the daemon subscription if none runs.
@@ -159,7 +153,11 @@ impl Shared {
                     self.spawn(follow(self.clone(), response.into_inner()));
                 }
                 Err(status) => {
-                    self.state().subscribed = false;
+                    // SMB-033 + SMB-003 leak: clear `subscribed` and wake/drain
+                    // all waiting subscribers (including any second caller that
+                    // joined while this subscribe call was in flight, and this
+                    // caller's own entry so dead senders never accumulate).
+                    self.end_all();
                     return Err(self.error(&status, "Following changes"));
                 }
             }
@@ -302,6 +300,14 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
         }
         // D908: the mount state (and any other setting) changed; Settings reads again.
         Some(Payload::Settings(_)) => shared.publish(Event::SettingsChanged),
+        // SETTINGSFIX: a `humata login` arrived or settled/withdrew.
+        Some(Payload::PendingCliLogin(login)) => {
+            if event.change == pb::Change::Deleted as i32 {
+                shared.publish(Event::PendingCliLoginGone(login.id));
+            } else {
+                shared.publish(Event::PendingCliLogin(crate::cli_auth::pending_login(&login)));
+            }
+        }
         // The app has no channel event yet: reload instead.
         Some(Payload::Channel(_) | Payload::Resync(_)) => shared.publish(Event::Resync),
         _ => {}
@@ -328,6 +334,16 @@ fn file_event(changed: &pb::FileChanged) -> Option<Event> {
         Kind::Unspecified => return None,
     };
     Some(Event::Files { session, change })
+}
+
+/// Tells every subscriber the daemon is gone, once, and lets them go.
+fn end_all_subscribers(state: &mut crate::state::State, machine: &humata2_clients::model::MachineId) {
+    state.subscribed = false;
+    for subscriber in state.subscribers.drain(..) {
+        let _ = subscriber.events.try_send(Err(DaemonError::Offline {
+            machine: machine.clone(),
+        }));
+    }
 }
 
 #[cfg(test)]
@@ -388,5 +404,33 @@ mod tests {
         let mut nameless = wire(pb::file_changed::Kind::Created, "a.rs", "");
         nameless.repo = None;
         assert!(file_event(&nameless).is_none());
+    }
+
+    #[tokio::test]
+    async fn end_all_notifies_all_waiting_subscribers_and_drains_queue() {
+        // SMB-033 + SMB-003 leak: when a subscribe RPC fails, calling end_all()
+        // resets `subscribed`, notifies every queued subscriber (including any
+        // second caller that joined while subscribe was in flight) with
+        // Offline, and drains `subscribers` so dead senders do not accumulate.
+        let mut state = crate::state::State::default();
+        let machine = humata2_clients::model::MachineId::new("this-mac");
+        let (tx1, mut rx1) = mpsc::channel(4);
+        let (tx2, mut rx2) = mpsc::channel(4);
+        state.subscribed = true;
+        state.subscribers.push(Subscriber {
+            events: tx1,
+            behind: false,
+        });
+        state.subscribers.push(Subscriber {
+            events: tx2,
+            behind: false,
+        });
+
+        end_all_subscribers(&mut state, &machine);
+
+        assert!(!state.subscribed, "subscribed must be cleared");
+        assert!(state.subscribers.is_empty(), "subscribers must be drained");
+        assert!(matches!(rx1.recv().await, Some(Err(DaemonError::Offline { .. }))));
+        assert!(matches!(rx2.recv().await, Some(Err(DaemonError::Offline { .. }))));
     }
 }

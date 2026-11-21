@@ -78,3 +78,65 @@ fn a_pin_made_on_another_client_shows_in_the_pinned_section() {
     store.skip_in_flight();
     store.finish();
 }
+
+#[test]
+fn archived_conversation_hits_are_excluded_by_default_and_included_when_toggled() {
+    let mut workspace = fixture::design();
+    let live = SessionId::new("brin");
+    let archived = SessionId::new("ledger");
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == archived)
+        .expect("ledger in fixture")
+        .archived = true;
+
+    let (clients, fakes) =
+        humata2_clients::fake_clients(workspace.clone(), Arc::new(TestClock::new()));
+    fakes
+        .history
+        .push_turn(&archived, 2, TurnRole::Agent, "Archived reconcile notes.");
+    fakes
+        .history
+        .push_turn(&live, 2, TurnRole::Agent, "Live reconcile notes.");
+
+    let mut state = AppState::launch(&clients);
+    state.workspace = Arc::new(workspace);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+
+    store.send(A::OpenPalette, |_| {});
+    store.send(
+        A::Palette(PaletteAction::Query("reconcile".to_owned())),
+        |_| {},
+    );
+    store.receive_matching(
+        "the search answered",
+        |a| matches!(a, A::Find(FindAction::Loaded { .. })),
+        |_| {},
+    );
+    store.skip_received();
+
+    // Only the live session's conversation hit is visible by default.
+    let visible = store.state().visible_find_hits();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].1.session, live);
+    assert_eq!(store.state().palette.hits, 1);
+
+    // Toggling Include archived reveals the archived conversation hit too.
+    store.send(A::Palette(PaletteAction::ToggleArchived), |_| {});
+    store.skip_received();
+    assert_eq!(store.state().visible_find_hits().len(), 2);
+    assert_eq!(store.state().palette.hits, 2);
+
+    // Namespace prefix (`>`) suppresses conversation hits.
+    store.send(
+        A::Palette(PaletteAction::Query(">sidebar".to_owned())),
+        |_| {},
+    );
+    store.skip_received();
+    assert!(store.state().visible_find_hits().is_empty());
+    assert_eq!(store.state().palette.hits, 0);
+
+    store.skip_in_flight();
+    store.finish();
+}

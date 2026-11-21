@@ -5555,3 +5555,32 @@ The owner reported: "when i disable claude and codex it defaults to them and fai
 - A Terminal session, and a shell tab inside any session, is started with the same place variables as the session's agent: `HUMATA_FUSE_ROOT` while the tree is mounted, and `HUMATA_MACHINE_NAME`. It gets no composed config home, since no agent runs there.
 - A machine shell belongs to no session and gets neither. A session on another machine gets nothing from this daemon, as before.
 - Why: the mount is how anything in a session reaches the other locations, and the owner works in shells as much as agents do. Before this, only agent tabs got the variable, so a shell had no way to find the mount.
+
+## D917: SCREENPARSE `record_corpus.sh` is unsafe to rerun across all agents until `HOME` and cache isolation are fixed (Judge, 2026-11-20)
+- **Ruling:** `UNSAFE` until 4 exact lines in `daemon/svc_inbox/tests/screenparse/record_corpus.sh` are fixed.
+- **Codex-only note:** under `env -i HOME=$HOME USER=$USER PATH=$PATH TMPDIR=$TMPDIR`, `codex` (`version_of` lines 65/69 and `setup` line 113 setting `HOME="$home"` and `CODEX_HOME="$home/codex"`, with line 109 only reading `$HOME/.codex/auth.json`) no longer writes to `~/.codex`.
+- **Lines to fix before rerunning `record_corpus.sh`:**
+  - `record_corpus.sh:99` (`claude`): `ENVS` sets `CLAUDE_CONFIG_DIR` without `HOME=$home`, leaving `claude` and subprocesses running against real `$HOME`.
+  - `record_corpus.sh:70,132-133` (`copilot`): omits `HOME=$home`, `COPILOT_CACHE_HOME` / `COPILOT_PKG_CACHE_HOME`, and `--no-auto-update`.
+  - `record_corpus.sh:65-66,79,146`: unset/clear `GEMINI_CLI_HOME`, `COPILOT_CACHE_HOME`, `COPILOT_PKG_CACHE_HOME`, `XDG_*`, and `CLAUDE_SECURESTORAGE_CONFIG_DIR`.
+  - `record_corpus.sh:54-57` (`real_changes`): include `"$HOME/.gemini"` in `dirs`, catch new directories as well as `-type f`, and drop broad exclusions that mask real-home writes.
+
+## D918: `providers-e-remove-blocked.view.txt` `Tab "Sync"` diff is approved (Judge, 2026-11-20)
+- **Ruling:** `INTENDED (APPROVED)`.
+- **Why:** `Tab "Sync"` at line 51 of `desktop/tests/__snapshots__/native/providers-e-remove-blocked.view.txt` (between `Tab "Agents"` and `Tab "Machines" selected`) directly reflects adding `(Section::Sync, IconName::FolderTree, "Sync")` 3rd in the Settings navigation rail (`ui/settings/src/settings.rs:662`) under D904. Both the `.view.txt` and `.png` render cleanly with zero regressions.
+
+## D919: `live_diff::spec_to_wire` uses `Upto::Commits` + `Untracked::None` for pinned `Range`/`Overlay` specs (2026-11-20; reversible)
+- **Why:** Opening a prepared stacked `ReviewPlan` view sent `RepoBase::Range` / `RepoBase::Overlay` with hardcoded `Upto::Unstaged` + `Untracked::All`, causing `daemon/review_diff` (`Checkout::pinned_tree`) to refuse every diff with `ConflictingCompare` ("mixes a head or worktree paths with other levels") and leaving the Diff panel stuck.
+- **Fix:** `clients/live_diff/src/diff.rs` sets `upto = Upto::Commits` and `untracked = Untracked::None` when `each.base` is `Range` or `Overlay`, keeping `Unstaged` + `All` for unpinned bases.
+
+## D920: Pushing a session's non-default branch does not ask for permission (owner, 2026-11-20; queued for 0.10.1)
+- **Owner's words:** "humata should not ask for permission to push up branches just saying."
+- **Plan (0.10.1):** Allow non-force branch-only pushes on non-default session branches (`open_pull_request = false`) without an Inbox approval card, while keeping `SessionKind::Review { push_allowed: false }` refused, keeping protected/default branches (`main`/`master`/`origin/HEAD`) and force-pushes guarded, wiring MCP `session_push` in `svc_mcp`, and auto-allowing safe `humata session push` / non-force non-default `git push` in agent hooks.
+
+## D921: 85 updated native UI snapshots for Settings/Channel UI, Diff View UX, and `HIGHLIGHT` are approved (Judge, 2026-11-20)
+- **Ruling:** `APPROVE` across all 85 modified `.png` and `.view.txt` snapshots in `apps/humata2/desktop/tests/__snapshots__/native/` (excluding pre-existing foreign `away-left-out-before.png`).
+- **Why:** Visually and structurally verified zero regressions across all three intentional changes: (1) `Settings › Browser` tab, `Channel › Settings` tab, and `AGENTOFF` dim fallback note (`"Off: it asks in its own terminal"`); (2) short repo names when unique with `org/repo` collision disambiguation (`acme/ledger` vs `ledger` in `stack-layer-counts-full`) plus `Splitter "Resize the file list"` in full-screen diff views; and (3) multi-color syntax highlighting in light and dark themes across diffs (preserving word-diff overlays and wrapped lines), inline code editor, and Markdown source panes.
+
+## D922: 25 updated panel and native UI snapshots for Palette/Sidebar UX, Shortcuts, and Back-button polish are approved (Judge, 2026-11-20)
+- **Ruling:** `APPROVE` across all 25 modified `.png`, `.txt`, and `.view.txt` snapshots in `apps/humata2/desktop/tests/__snapshots__/{panels,native}/`.
+- **Why:** Verified zero visual regressions, clipping, or layout breaks across: (1) short repo name `api` + syntax highlighting + `Splitter "Resize the file list"` in `panels/changes-{light,dark,full-light,full-dark}`; (2) `30-palette` scrollable `ListBox`, `#palette-footer` keyboard legend (`> commands   # channels   @ sessions   / files`), and unchecked `Include archived` toggle; (3) `shortcuts-sheet-{light,dark,scrolled-light}` showing `⌘B ⌘0` (sidebar) and `⌘+ ⌘-` (font zoom); and (4) hiding dead disabled `<` Back buttons when `state.trail.is_empty()` (`31-new-session`) while keeping active Back buttons when navigated from Home (`session_lifecycle`, `session_menu`).

@@ -125,8 +125,9 @@ impl App {
             // needs a client call the Daemon trait doesn't have yet.
             PageDelegate::Running(humata2_hosts::RunningDelegate::Open { session: None, .. }) => Effect::none(),
             PageDelegate::Running(humata2_hosts::RunningDelegate::ArchiveSession(session)) => {
-                // Archive (or close a Desk session) in place without jumping off the Machine page.
-                self.archive_session(state, session)
+                // Archive (or close a Desk session) in place without jumping off the Machine page,
+                // ending its running/exited holders so the row disappears from the machine.
+                self.archive_session_and_end(state, session)
             }
         };
         effect.and(asked)

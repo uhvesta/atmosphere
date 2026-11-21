@@ -109,6 +109,9 @@ impl Desk {
                 if let Some(dialog) = state.close.as_mut().filter(|dialog| dialog.session == id) {
                     dialog.saving = false;
                     dialog.error = Some(error.to_string());
+                } else {
+                    // SMB-011: surface failure if dialog was dismissed while saving.
+                    state.error = Some(error.to_string());
                 }
                 Effect::none()
             }

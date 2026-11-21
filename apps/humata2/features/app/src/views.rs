@@ -3,7 +3,7 @@
 //! filter and each repository's diff base, then shows the view; Revert puts
 //! each of them back and never touches the person's comments.
 
-use humata2_clients::model::{DiffTargets, RepoDiffSpec, Scope, SessionId, ViewId};
+use humata2_clients::model::{DiffTargets, RepoBase, RepoDiffSpec, Scope, SessionId, ViewId};
 use humata2_todo_feature::{ChannelPick, SessionPick, TodoAction, ViewFilter};
 use humata2_clients::views::{PlanView, ViewContent, WalkthroughStep};
 use humata2_review::ReviewAction;
@@ -83,7 +83,8 @@ impl App {
                     && let ViewContent::ReviewPlan(plan) = &record.content
                 {
                     let session = record.view.session.clone();
-                    let plan = plan.clone();
+                    let mut plan = plan.clone();
+                    resolve_plan_repos(state, &session, &mut plan);
                     state.review.plans.insert(session, plan);
                 }
                 Effect::none()
@@ -96,6 +97,7 @@ impl App {
     pub(super) fn step_view(&self, state: &mut AppState, id: &ViewId, to: usize) -> Effect<AppAction> {
         let last = match state.views.record(id).map(|record| &record.content) {
             Some(ViewContent::Walkthrough(steps)) => steps.len().saturating_sub(1),
+            Some(ViewContent::PullRequest(drafts)) => drafts.len().saturating_sub(1),
             _ => 0,
         };
         state.view_step.insert(id.clone(), to.min(last));
@@ -287,7 +289,8 @@ impl App {
                     self.open_view_tab(state, id, &session)
                 }
             }
-            ViewContent::ReviewPlan(plan) => {
+            ViewContent::ReviewPlan(mut plan) => {
+                resolve_plan_repos(state, &session, &mut plan);
                 let targets = plan.targets.clone();
                 let stacked = plan.stack.is_some();
                 state.review.plans.insert(session.clone(), plan);
@@ -299,24 +302,54 @@ impl App {
                     AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
                 );
                 let mut effects = vec![go, panel];
-                if stacked {
-                    // The layers' repositories decide what is read; the
-                    // plan's own bases are not applied as picks.
+                if stacked || targets.is_empty() {
+                    // The layers' repositories (or the session's current bases
+                    // when a plain plan names no targets) decide what is read.
                     effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
-                }
-                for RepoDiffSpec { repo, base } in targets.into_iter().filter(|_| !stacked) {
-                    effects.push(self.child(
-                        state,
-                        AppAction::Review(ReviewAction::PickRepoBase {
-                            session: session.clone(),
-                            repo,
-                            base,
-                        }),
-                    ));
+                } else {
+                    for RepoDiffSpec { repo, base, .. } in targets {
+                        effects.push(self.child(
+                            state,
+                            AppAction::Review(ReviewAction::PickRepoBase {
+                                session: session.clone(),
+                                repo,
+                                base,
+                            }),
+                        ));
+                    }
                 }
                 Effect::merge(effects)
             }
-            ViewContent::Walkthrough(_) | ViewContent::PullRequest | ViewContent::Summary => {
+            ViewContent::PullRequest(drafts) => {
+                let open_tab = self.open_view_tab(state, id, &session);
+                let panel = self.handle(
+                    state,
+                    AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+                );
+                let mut effects = vec![open_tab, panel];
+                if drafts.is_empty() {
+                    effects.push(self.child(state, AppAction::Review(ReviewAction::Retry)));
+                } else {
+                    for draft in drafts {
+                        let repo = resolve_repo(state, &session, &draft.repo);
+                        let base = if draft.base_branch.trim().is_empty() {
+                            RepoBase::DefaultBranch
+                        } else {
+                            RepoBase::Branch(draft.base_branch)
+                        };
+                        effects.push(self.child(
+                            state,
+                            AppAction::Review(ReviewAction::PickRepoBase {
+                                session: session.clone(),
+                                repo,
+                                base,
+                            }),
+                        ));
+                    }
+                }
+                Effect::merge(effects)
+            }
+            ViewContent::Walkthrough(_) | ViewContent::Summary => {
                 self.open_view_tab(state, id, &session)
             }
         }
@@ -482,4 +515,98 @@ fn is_name_suffix(a: &str, b: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('/'))
     };
     after(a, b) || after(b, a)
+}
+
+/// Whether `a` and `b` name the same repository: identical, or one is the
+/// other with an `owner/` prefix.
+fn same_repo(a: &str, b: &str) -> bool {
+    let a = a.strip_prefix('/').unwrap_or(a);
+    let b = b.strip_prefix('/').unwrap_or(b);
+    a == b || is_name_suffix(a, b)
+}
+
+/// Resolves a short repository name (like `"api"` or `"/api"`) against
+/// `session`'s known `owner/name` repositories. Returns the input unchanged
+/// (sans any stray leading `/`) if it already carries an owner or no known
+/// repository matches.
+pub(super) fn resolve_repo(state: &AppState, session: &SessionId, repo: &str) -> String {
+    let trimmed = repo.strip_prefix('/').unwrap_or(repo);
+    if trimmed.contains('/') {
+        return trimmed.to_owned();
+    }
+    let has_owner = |candidate: &str| {
+        candidate
+            .split_once('/')
+            .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty())
+    };
+    let mut known: Vec<&str> = Vec::new();
+    if let Some(found) = state.workspace.session(session) {
+        if !found.repo.is_empty() {
+            known.push(&found.repo);
+        }
+        known.extend(found.clones.iter().map(|clone| clone.repo.as_str()));
+        if let Some(channel) = state.workspace.channel(&found.channel) {
+            known.extend(channel.repos.iter().map(String::as_str));
+        }
+    }
+    known.extend(
+        state
+            .workspace
+            .diffs
+            .iter()
+            .filter(|diff| &diff.session == session)
+            .map(|diff| diff.repo.as_str()),
+    );
+    known.extend(
+        state
+            .workspace
+            .pulls
+            .iter()
+            .filter(|pull| pull.session.as_ref() == Some(session))
+            .map(|pull| pull.repo.as_str()),
+    );
+    known
+        .into_iter()
+        .find(|candidate| has_owner(candidate) && same_repo(candidate, trimmed))
+        .map_or_else(|| trimmed.to_owned(), str::to_owned)
+}
+
+/// Resolves any short repository names inside `plan` against `session`'s known
+/// `owner/name` repositories.
+pub(super) fn resolve_plan_repos(state: &AppState, session: &SessionId, plan: &mut PlanView) {
+    for target in &mut plan.targets {
+        target.repo = resolve_repo(state, session, &target.repo);
+    }
+    for (repo, _) in &mut plan.order {
+        *repo = resolve_repo(state, session, repo);
+    }
+    for group in &mut plan.groups {
+        group.first.0 = resolve_repo(state, session, &group.first.0);
+    }
+    for note in &mut plan.notes {
+        note.repo = resolve_repo(state, session, &note.repo);
+    }
+    for tier in &mut plan.importance {
+        tier.repo = resolve_repo(state, session, &tier.repo);
+    }
+    if let Some(stack) = &mut plan.stack {
+        for spec in &mut stack.whole {
+            spec.repo = resolve_repo(state, session, &spec.repo);
+        }
+        for layer in &mut stack.layers {
+            for part in &mut layer.repos {
+                part.repo = resolve_repo(state, session, &part.repo);
+                part.spec.repo = resolve_repo(state, session, &part.spec.repo);
+            }
+            for (repo, _) in &mut layer.order {
+                *repo = resolve_repo(state, session, repo);
+            }
+            for group in &mut layer.groups {
+                group.first.0 = resolve_repo(state, session, &group.first.0);
+            }
+            for tier in &mut layer.importance {
+                tier.repo = resolve_repo(state, session, &tier.repo);
+            }
+        }
+    }
 }

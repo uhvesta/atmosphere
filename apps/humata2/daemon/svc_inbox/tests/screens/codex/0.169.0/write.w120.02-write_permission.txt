@@ -1,0 +1,48 @@
+agent: codex
+cli: 0.169.0
+script: write
+label: write_permission
+expect: none
+cols: 120
+rows: 40
+---
+  Agent command center  Group: Project  g
+   All 0   Needs you 0   Working 0   Ready 0   Inactive 0                                              tab/⇧tab filter
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  No tasks yet                                                                │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                              │
+  ? help  ↑/↓ move  enter open  n new

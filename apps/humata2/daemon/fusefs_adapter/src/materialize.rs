@@ -24,6 +24,7 @@ pub enum FsMountMode {
     Degraded,
 }
 
+#[cfg(target_os = "linux")]
 impl From<fusefs_linux::MountMode> for FsMountMode {
     fn from(mode: fusefs_linux::MountMode) -> Self {
         match mode {

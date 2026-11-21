@@ -637,3 +637,68 @@ diff --git a/src/diff/mod.rs b/src/diff/mod.rs
                  .child(div().flex_1().min_w_0().child(content)),
          )
          .children(file_annotations(file, code, window, cx))
+diff --git a/src/highlighter/mod.rs b/src/highlighter/mod.rs
+--- a/src/highlighter/mod.rs
++++ b/src/highlighter/mod.rs
+@@ -17,11 +17,27 @@
+ #[cfg(all(feature = "syntect", not(feature = "tree-sitter")))]
+ mod syntect_backend;
+ #[cfg(all(feature = "syntect", not(feature = "tree-sitter")))]
+-pub(crate) use syntect_backend::{highlight_code, input_highlighter_factory};
++pub(crate) use syntect_backend::input_highlighter_factory;
++#[cfg(all(feature = "syntect", not(feature = "tree-sitter")))]
++pub use syntect_backend::{capture_names, highlight_code};
+ 
+ #[cfg(not(any(feature = "tree-sitter", feature = "syntect")))]
+ pub(crate) fn input_highlighter_factory() -> gpui_base::input::InputHighlighterFactory {
+     std::rc::Rc::new(|_| None)
++}
++
++#[cfg(not(any(feature = "tree-sitter", feature = "syntect")))]
++pub fn highlight_code(
++    _language: &str,
++    _code: &str,
++    _resolver: &dyn gpui_base::input::HighlightStyleResolver,
++) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
++    Vec::new()
++}
++
++#[cfg(not(any(feature = "tree-sitter", feature = "syntect")))]
++pub fn capture_names(_language: &str, _text: &str) -> Vec<(std::ops::Range<usize>, gpui::SharedString)> {
++    Vec::new()
+ }
+ 
+ // Native implementation with full tree-sitter support
+diff --git a/src/highlighter/syntect_backend.rs b/src/highlighter/syntect_backend.rs
+--- a/src/highlighter/syntect_backend.rs
++++ b/src/highlighter/syntect_backend.rs
+@@ -47,7 +47,7 @@
+ 
+ /// Styles for one code block of a text view, or nothing for a language
+ /// syntect does not know.
+-pub(crate) fn highlight_code(
++pub fn highlight_code(
+     language: &str,
+     code: &str,
+     resolver: &dyn HighlightStyleResolver,
+@@ -59,7 +59,7 @@
+ }
+ 
+ /// Highlight names for `text`, for presentations that resolve styles later.
+-pub(crate) fn capture_names(language: &str, text: &str) -> Vec<(Range<usize>, SharedString)> {
++pub fn capture_names(language: &str, text: &str) -> Vec<(Range<usize>, SharedString)> {
+     let Some(syntax) = find_syntax(language) else {
+         return Vec::new();
+     };
+@@ -83,6 +83,11 @@
+         "make" => "Makefile",
+         "markdown_inline" => "md",
+         "embedded_template" | "ejs" => "erb",
++        "starlark" | "bzl" | "bazel" | "star" => "py",
++        "terraform" | "tf" | "hcl" | "tfvars" => "Terraform",
++        "dockerfile" => "Dockerfile",
++        "zsh" | "shell" => "bash",
++        "proto" | "protobuf" => "Protobuf",
+         other => other,
+     };
+     [language, canonical.as_ref(), alias]

@@ -48,6 +48,17 @@ pub(crate) struct StackLine {
     pub(crate) current: bool,
 }
 
+/// One layer in a stack update / repush summary table with clickable compare links.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerUpdate {
+    pub(crate) number: u64,
+    pub(crate) topic: String,
+    pub(crate) action: String,
+    pub(crate) old_head: Option<String>,
+    pub(crate) new_head: String,
+    pub(crate) base: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct History {
     pub(crate) rows: Vec<Row>,
@@ -100,6 +111,7 @@ impl History {
 /// A `rebase` or `rebase + changes` cell also names the command that shows
 /// the change between that revision and the one before it, base changes left
 /// out: `` `stack diff <topic> <rev - 1> <rev>` ``.
+#[cfg(test)]
 pub(crate) fn render(
     repo_url: &str,
     trunk: &str,
@@ -107,10 +119,31 @@ pub(crate) fn render(
     stack: &[StackLine],
     history: &History,
 ) -> String {
+    render_with_updates(repo_url, trunk, topic, stack, history, &[])
+}
+
+/// Renders the history comment, optionally including a **Stack Update Summary**
+/// table with clickable inter-version compare/diff links when layers in the
+/// stack were repushed or updated.
+pub(crate) fn render_with_updates(
+    repo_url: &str,
+    trunk: &str,
+    topic: &str,
+    stack: &[StackLine],
+    history: &History,
+    updates: &[LayerUpdate],
+) -> String {
     let mut head_lines = vec![MARKER.to_string()];
     if stack.len() > 1 {
         head_lines.push(format!("**Stack** (base `{trunk}`)"));
         head_lines.extend(stack.iter().map(stack_line));
+    }
+    let has_repush = updates
+        .iter()
+        .any(|u| u.old_head.as_deref().is_some_and(|old| old != u.new_head));
+    if !updates.is_empty() && (has_repush || updates.len() > 1) {
+        head_lines.push(String::new());
+        head_lines.extend(render_update_summary_lines(repo_url, updates));
     }
     head_lines.push(String::new());
     head_lines.push("| Rev | Head | Base | Diff | Pushed (UTC) | Summary |".to_string());
@@ -144,6 +177,41 @@ pub(crate) fn render(
         .chain(row_lines.iter().skip(dropped).map(String::as_str))
         .map(|line| format!("{line}\n"))
         .collect()
+}
+
+/// Renders the **Stack Update Summary** markdown table with clickable compare
+/// links from each repushed layer's previous version to its new head.
+pub(crate) fn render_update_summary_lines(repo_url: &str, updates: &[LayerUpdate]) -> Vec<String> {
+    let mut lines = vec![
+        "**Stack Update Summary**".to_string(),
+        "| PR | Topic | Status | Head | Diff from previous |".to_string(),
+        "| --- | --- | --- | --- | --- |".to_string(),
+    ];
+    for update in updates {
+        let head_link = format!(
+            "[`{}`]({repo_url}/commit/{})",
+            short_sha(&update.new_head),
+            update.new_head
+        );
+        let diff_cell = match update.old_head.as_deref() {
+            Some(old) if old != update.new_head => format!(
+                "[`{}` → `{}`]({repo_url}/compare/{old}...{})",
+                short_sha(old),
+                short_sha(&update.new_head),
+                update.new_head
+            ),
+            Some(_) => "unchanged".to_string(),
+            None => format!(
+                "[full diff]({repo_url}/compare/{}...{})",
+                update.base, update.new_head
+            ),
+        };
+        lines.push(format!(
+            "| #{} | `{}` | {} | {head_link} | {diff_cell} |",
+            update.number, update.topic, update.action
+        ));
+    }
+    lines
 }
 
 /// One tree line: two spaces per depth, the current pull request in bold.
@@ -494,5 +562,42 @@ mod tests {
             render(REPO_URL, "main", "codec", &[], &history_of(vec![kept.clone()])),
         );
         assert_eq!(History::parse(&body).rows, vec![kept]);
+    }
+
+    #[test]
+    fn repush_summary_table_has_clickable_compare_links_and_keeps_history_parseable() {
+        let history = history_of(vec![
+            row(1, 'a', 'b', Diff::Full, "initial"),
+            row(2, 'c', 'b', Diff::Since(1), "repushed"),
+        ]);
+        let updates = vec![
+            LayerUpdate {
+                number: 10,
+                topic: "codec".to_owned(),
+                action: "repushed".to_owned(),
+                old_head: Some(sha('a')),
+                new_head: sha('c'),
+                base: sha('b'),
+            },
+            LayerUpdate {
+                number: 11,
+                topic: "journal".to_owned(),
+                action: "created".to_owned(),
+                old_head: None,
+                new_head: sha('d'),
+                base: sha('c'),
+            },
+        ];
+        let text = render_with_updates(REPO_URL, "main", "codec", &[], &history, &updates);
+        assert!(text.contains("**Stack Update Summary**"), "{text}");
+        assert!(
+            text.contains(&format!("{REPO_URL}/compare/{}...{}", sha('a'), sha('c'))),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{REPO_URL}/compare/{}...{}", sha('c'), sha('d'))),
+            "{text}"
+        );
+        assert_eq!(History::parse(&text).rows, history.rows);
     }
 }

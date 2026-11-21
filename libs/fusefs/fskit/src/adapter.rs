@@ -124,7 +124,12 @@ impl<V: Volume> FsKitAdapter<V> {
                 if let Some(rest) = resource_url.strip_prefix(&prefix)
                     && !rest.is_empty()
                 {
-                    let authority = rest.split('/').next().unwrap_or(&self.volume_name);
+                    let without_query = rest.split('?').next().unwrap_or(rest);
+                    let authority = without_query
+                        .split('/')
+                        .next()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&self.volume_name);
                     Ok(FsKitResponse::Probe {
                         result: ProbeResult::Usable {
                             name: format!("{}-{authority}", self.volume_name),
@@ -213,10 +218,19 @@ impl<V: Volume> FsKitAdapter<V> {
                         self.volume.symlink(&caller, parent, &name, &target)?
                     }
                     FsItemKind::Regular => {
-                        return Err(VfsError::Enosys {
-                            op: "create regular file",
-                            target: VfsTarget::Name(name.clone()),
-                        });
+                        let file_mode = if mode == 0 { 0o644 } else { mode };
+                        let flags = OpenFlags {
+                            read: true,
+                            write: true,
+                            append: false,
+                            truncate: false,
+                            create: true,
+                            exclusive: true,
+                        };
+                        let (attr, fh) =
+                            self.volume.create(&caller, parent, &name, file_mode, flags)?;
+                        let _ = self.volume.release(&caller, attr.ino, fh);
+                        attr
                     }
                 };
                 Ok(FsKitResponse::ItemAttributes { attr })

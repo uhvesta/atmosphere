@@ -153,6 +153,9 @@ impl Desk {
                 if let Some(dialog) = state.clean_up.as_mut() {
                     dialog.deleting = false;
                     dialog.error = Some(error.to_string());
+                } else {
+                    // SMB-011: surface failure if dialog was dismissed while deleting.
+                    state.error = Some(error.to_string());
                 }
                 Effect::none()
             }

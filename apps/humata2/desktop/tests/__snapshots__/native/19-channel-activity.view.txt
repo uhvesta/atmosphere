@@ -41,6 +41,7 @@ Tab "To-do"
 Tab "Repos and machines"
 Tab "Agent access"
 Tab "Activity" selected
+Tab "Settings"
 #channel-activity
   text "Asks to move PAY-3 to Done"
   Button "Review"

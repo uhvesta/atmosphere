@@ -702,6 +702,7 @@ mod tests {
             spec: RepoDiffSpec {
                 repo: repo.to_owned(),
                 base: RepoBase::Range { base: "a0".to_owned(), head: "a1".to_owned() },
+                options: Default::default(),
             },
             pull_request: String::new(),
             files: 2,

@@ -284,8 +284,11 @@ fn top_bar(
     title: String,
     can_go_back: bool,
     sidebar_hidden: bool,
+    reveal_action: AppAction,
+    mac: bool,
     look: Look,
 ) -> impl IntoElement {
+    let show_sidebar_tip = format!("Show sidebar  {}", keys::label("⌘B", mac));
     row()
         .id("top-bar")
         .h(px(theme::TOP_BAR))
@@ -296,30 +299,31 @@ fn top_bar(
         .border_color(rgb(look.line))
         .when(sidebar_hidden, |bar| {
             bar.child(
-                widgets::ghost_in(look, ui, "show-sidebar", "", AppAction::ToggleNavigationOverlay)
+                widgets::ghost_in(look, ui, "show-sidebar", "", reveal_action)
                     .icon(IconName::PanelLeft)
                     .accessibility_label("Show sidebar")
-                    .tooltip("Show sidebar  ⌘0"),
+                    .tooltip(show_sidebar_tip),
             )
         })
-        // A quiet ghost Back, as the session header draws it (DS-58).
-        .child({
+        // A quiet ghost Back, shown only when there is somewhere to go back to (DS-58).
+        .when(can_go_back, |bar| {
             let back = ui.clone();
-            Button::new("back")
-                .ghost()
-                .small()
-                .w(px(24.))
-                .h(px(24.))
-                .p_0()
-                .flex_shrink_0()
-                .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
-                .accessibility_label("Back")
-                .tooltip("Back  ⌘[")
-                .disabled(!can_go_back)
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    back.send(AppAction::Back, cx);
-                })
+            bar.child(
+                Button::new("back")
+                    .ghost()
+                    .small()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .p_0()
+                    .flex_shrink_0()
+                    .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
+                    .accessibility_label("Back")
+                    .tooltip("Back  ⌘[")
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        back.send(AppAction::Back, cx);
+                    }),
+            )
         })
         .child(
             div()
@@ -454,13 +458,24 @@ impl Render for Shell {
         if let Some(target) = target
             && self.focus_target.as_ref() != Some(&target)
         {
-            let wants_terminal = matches!(&target, (Route::Session(_), Some(humata2_session::Tab::Terminal(_)), side) if *side != Some(FullScreen::Panel));
+            let wants_terminal = matches!(
+                &target,
+                (Route::Session(_), Some(humata2_session::Tab::Terminal(_)), side)
+                    if *side != Some(FullScreen::Panel)
+            ) || matches!(
+                &target,
+                (Route::Channel(_), Some(humata2_session::Tab::Terminal(_)), _)
+            );
             let focused = match &target {
                 (Route::Session(id), Some(humata2_session::Tab::Terminal(tab)), side)
                     if *side != Some(FullScreen::Panel) =>
                 {
                     self.terminals.focus(id, *tab, window, cx)
                 }
+                (Route::Channel(_), Some(humata2_session::Tab::Terminal(tab)), _) => self
+                    .ui
+                    .read(|state| state.active_channel_desk())
+                    .is_some_and(|id| self.terminals.focus(&id, *tab, window, cx)),
                 _ => false,
             };
             if !focused {
@@ -503,12 +518,18 @@ impl Render for Shell {
         let panel = selected_panel.filter(|_| full || !columns.panel_hidden);
         let panel_width = columns.panel;
         let collapsed = columns.sidebar_hidden;
-        // How ⌘0 and ⌘L bring a hidden sidebar back (NV-6).
+        // How ⌘B / ⌘0, ⌘L, and the edge reveal button bring a hidden sidebar back (NV-6).
         let reveal = self.ui.read(|state| {
             state
                 .layout
                 .reveal_sidebar(viewport, in_session, state.panel().is_some())
         });
+        let reveal_action = if reveal == Some(Reveal::Overlay) {
+            AppAction::ToggleNavigationOverlay
+        } else {
+            AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar))
+        };
+        let mac = cx.platform_info().is_mac();
         let main_width = if terminal_full {
             viewport
         } else {
@@ -637,7 +658,8 @@ impl Render for Shell {
                     } else if matches!(state.route, Route::Home | Route::Inbox) {
                         crate::lists::toolbar(&ui, state, title, collapsed, look).into_any_element()
                     } else {
-                        top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()
+                        top_bar(&ui, title, can_go_back, collapsed, reveal_action.clone(), mac, look)
+                            .into_any_element()
                     }
                 })
             })
@@ -650,6 +672,7 @@ impl Render for Shell {
                     AppAction::DismissRestoreError,
                 ))
             }))
+            .children(self.ui.read(|state| crate::cli_login::banner(&ui, state, look)))
             .child(div().flex_1().min_h_0().flex().flex_col().child(body));
         let inbox_keys = self
             .ui
@@ -853,7 +876,8 @@ impl Render for Shell {
                 let x = f32::from(event.position.x);
                 let width = match pane {
                     PaneId::Sidebar => x,
-                    PaneId::Panel => viewport - if in_session { 64. } else { 0. } - x,
+                    PaneId::Panel => (viewport - if in_session { 64. } else { 0. } - x)
+                        .min(humata2_app::layout::panel_max_width(viewport)),
                 };
                 this.send(AppAction::Pane(PaneAction::Drag(pane, width)), cx);
             }))
@@ -869,24 +893,33 @@ impl Render for Shell {
                             .child(self.divider(PaneId::Sidebar, cx))
                     })
                     .when(!terminal_full && collapsed, |shell| {
+                        let tip: SharedString =
+                            format!("Show sidebar  {}", keys::label("⌘B", mac)).into();
+                        let strip_action = reveal_action.clone();
                         shell.child(
                             div()
                                 .id("sidebar-strip")
                                 .role(Role::Button)
                                 .aria_label("Show sidebar")
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                        .build(window, cx)
+                                })
                                 .w(px(14.))
                                 .h_full()
                                 .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .justify_center()
+                                .cursor_pointer()
                                 .bg(rgb(look.sidebar))
+                                .hover(move |s| s.bg(rgb(look.fill)))
                                 .border_r_1()
                                 .border_color(rgb(look.line))
                                 .child(chrome::icon(IconName::ChevronRight, look.secondary, 12.))
                                 .on_click({
                                     let ui = ui.clone();
-                                    move |_, _, cx| ui.send(AppAction::ToggleNavigationOverlay, cx)
+                                    move |_, _, cx| ui.send(strip_action.clone(), cx)
                                 })
                                 .test_support(),
                         )

@@ -245,6 +245,11 @@ pub enum Method {
     ListDirectory,
     Stat,
     StartTransfer,
+    GetBrowserBridgeStatus,
+    ExecuteBrowserAction,
+    ListProviders,
+    GetProvidersConfig,
+    RequestProviderImport,
 }
 
 /// Static descriptor for a forwarded / journaled method.
@@ -353,6 +358,31 @@ const ROWS: &[Row] = &[
     Row {
         method: Method::StartTransfer,
         name: "/humata.v1.TransferService/StartTransfer",
+        journal: None,
+    },
+    Row {
+        method: Method::GetBrowserBridgeStatus,
+        name: "/humata.v1.BrowserBridgeService/GetBrowserBridgeStatus",
+        journal: None,
+    },
+    Row {
+        method: Method::ExecuteBrowserAction,
+        name: "/humata.v1.BrowserBridgeService/ExecuteBrowserAction",
+        journal: None,
+    },
+    Row {
+        method: Method::ListProviders,
+        name: "/humata.v1.ProviderService/ListProviders",
+        journal: None,
+    },
+    Row {
+        method: Method::GetProvidersConfig,
+        name: "/humata.v1.ProviderService/GetProvidersConfig",
+        journal: None,
+    },
+    Row {
+        method: Method::RequestProviderImport,
+        name: "/humata.v1.ProviderService/RequestProviderImport",
         journal: None,
     },
 ];
@@ -557,12 +587,44 @@ pub trait HostTransfers: Send + Sync {
     ) -> Result<Response<pb::Transfer>, Status>;
 }
 
-/// The host's services that answer a machine's agents' lookups, file reads
-/// and transfers, as those agents (D768).
+/// Host browser bridge port for forwarded status and action execution (D891).
+#[tonic::async_trait]
+pub trait HostBrowser: Send + Sync {
+    async fn get_browser_bridge_status(
+        &self,
+        request: Request<pb::GetBrowserBridgeStatusRequest>,
+    ) -> Result<Response<pb::GetBrowserBridgeStatusResponse>, Status>;
+    async fn execute_browser_action(
+        &self,
+        request: Request<pb::ExecuteBrowserActionRequest>,
+    ) -> Result<Response<pb::ExecuteBrowserActionResponse>, Status>;
+}
+
+/// Host provider service port for forwarded provider reads and import asks (PROVIDERCLI, D906).
+#[tonic::async_trait]
+pub trait HostProviders: Send + Sync {
+    async fn list_providers(
+        &self,
+        request: Request<pb::ListProvidersRequest>,
+    ) -> Result<Response<pb::ListProvidersResponse>, Status>;
+    async fn get_providers_config(
+        &self,
+        request: Request<pb::GetProvidersConfigRequest>,
+    ) -> Result<Response<pb::ProvidersConfig>, Status>;
+    async fn request_provider_import(
+        &self,
+        request: Request<pb::RequestProviderImportRequest>,
+    ) -> Result<Response<pb::SetProvidersConfigResponse>, Status>;
+}
+
+/// The host's services that answer a machine's agents' lookups, file reads,
+/// transfers, browser bridge actions, and provider import asks (D768, D891, D906).
 pub struct HostCalls {
     pub machines: Arc<dyn HostMachines>,
+    pub providers: Arc<dyn HostProviders>,
     pub files: Arc<dyn HostFiles>,
     pub transfers: Arc<dyn HostTransfers>,
+    pub browser: Arc<dyn HostBrowser>,
 }
 
 // ---------------------------------------------------------------------------

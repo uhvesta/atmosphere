@@ -52,6 +52,7 @@ Tab "Sync"
 Tab "Machines" selected
 Tab "Layout"
 Tab "Agent access"
+Tab "Browser"
 Tab "Storage"
 Tab "Notifications"
 Tab "Keyboard"

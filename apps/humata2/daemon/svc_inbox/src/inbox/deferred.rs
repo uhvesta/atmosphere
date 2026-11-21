@@ -236,13 +236,19 @@ fn card(
     guard: &dyn InboxGuardPort,
     store: &Store,
     id: &str,
-    agent: &AgentCaller,
+    caller: &Caller,
     asked: &AccessRequest,
     decision: Option<Decision>,
     board: Option<BoardAsk>,
     names: &Names,
     working_on: String,
 ) -> pb::InboxRequest {
+    let (requester, operation, title) = match caller {
+        Caller::Agent(agent) => (Some(agent.actor()), agent.operation(), agent.title.clone()),
+        Caller::User(_) => (None, String::new(), "CLI user".to_owned()),
+        Caller::Script(script) => (None, String::new(), format!("Script: {}", script.name)),
+        Caller::Peer => (None, String::new(), "Peer".to_owned()),
+    };
     let capability = guard.capability_pb(asked.capability) as i32;
     let offered = asked.always_let.as_ref();
     let target = offered.map(|target| guard.target_pb(target));
@@ -297,9 +303,9 @@ fn card(
         }),
         kind: kind_of(asked.capability) as i32,
         state: pb::RequestState::Pending as i32,
-        requester: Some(agent.actor()),
-        operation: agent.operation(),
-        action_title: super::asks_title(&agent.title, asked.capability, false),
+        requester,
+        operation,
+        action_title: super::asks_title(&title, asked.capability, false),
         reason,
         preview: Some(pb::RequestPreview {
             preview: Some(preview),
@@ -307,7 +313,7 @@ fn card(
         capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, super::decision_of) as i32,
         always: target.map(|target| pb::AlwaysOption {
-            label: format!("Always allow “{}” {always_label}", agent.title),
+            label: format!("Always allow “{title}” {always_label}"),
             target: Some(target),
         }),
         created_at: Some(ports::now_timestamp()),
@@ -549,34 +555,45 @@ impl Inbox {
         board: Option<BoardAsk>,
         run: Run,
     ) -> Result<pb::RequestId, Status> {
-        let Caller::Agent(agent) = caller else {
-            return Err(status::internal(
-                "a call was deferred for someone who isn't a session's agent",
-                "",
-            ));
+        let (session, key_prefix, working_on) = match caller {
+            Caller::Agent(agent) => {
+                let session = agent.session.id.to_string();
+                let working_on = self.working_on(agent);
+                (session.clone(), session, working_on)
+            }
+            Caller::User(_) => (String::new(), "user".to_owned(), String::new()),
+            Caller::Script(script) => (
+                String::new(),
+                format!("script:{}", script.id),
+                String::new(),
+            ),
+            Caller::Peer => {
+                return Err(status::internal(
+                    "a call was deferred for a peer daemon",
+                    "",
+                ));
+            }
         };
-        let session = agent.session.id.to_string();
-        let key = id_of(key).map(|key| format!("{session}/{key}"));
+        let key = id_of(key).map(|key| format!("{key_prefix}/{key}"));
         if let Some(id) = state.id_with(key.as_deref()) {
             if let Some(entry) = state.requests.iter().find(|entry| entry.id == id) {
                 self.rerun(entry, &asked, run);
             }
             return Ok(pb::RequestId { value: id });
         }
-        if asked.capability == Capability::DeskMoveToChannel {
+        if asked.capability == Capability::DeskMoveToChannel && !session.is_empty() {
             // DK-19: a session has one pending move request; a new one
             // withdraws the old.
             self.withdraw_moves_of(&state.requests, &session).await?;
         }
         let id = new_id();
         let decision = self.rule_now(&asked);
-        let working_on = self.working_on(agent);
         let names = Names::of_host(&self.machine);
         let mut held = Held::new(card(
             self.guard.as_ref(),
             &self.store,
             &id,
-            agent,
+            caller,
             &asked,
             decision,
             board,

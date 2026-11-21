@@ -618,3 +618,111 @@ async fn an_agents_pull_from_the_host_goes_up_with_its_own_side_left_for_the_hos
         .into_inner();
     assert_eq!(got, started);
 }
+
+// BROWSER (D891): host setup RPCs stay host-only on a machine daemon, and
+// unsupported agents (`zsh`) are refused browser bridge access.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browser_setup_stays_host_only_and_unsupported_agents_are_refused_on_machine() {
+    let (machine, _host) = linked().await;
+    let mut bridge = pb::browser_bridge_service_client::BrowserBridgeServiceClient::new(
+        machine.daemon.channel().await,
+    );
+
+    // Host-only management RPCs fail with FailedPrecondition on machine role.
+    let list_err = bridge
+        .list_detected_browsers(pb::ListDetectedBrowsersRequest {})
+        .await
+        .expect_err("ListDetectedBrowsers is host-only");
+    assert_eq!(list_err.code(), Code::FailedPrecondition);
+
+    let install_err = bridge
+        .install_browser_host(pb::InstallBrowserHostRequest::default())
+        .await
+        .expect_err("InstallBrowserHost is host-only");
+    assert_eq!(install_err.code(), Code::FailedPrecondition);
+
+    let uninstall_err = bridge
+        .uninstall_browser_host(pb::UninstallBrowserHostRequest::default())
+        .await
+        .expect_err("UninstallBrowserHost is host-only");
+    assert_eq!(uninstall_err.code(), Code::FailedPrecondition);
+
+    // ASKER is a `zsh` session, which is outside the 4-agent browser scope.
+    let status_err = bridge
+        .get_browser_bridge_status(machine.as_agent(pb::GetBrowserBridgeStatusRequest {}))
+        .await
+        .expect_err("zsh is outside the 4-agent browser scope");
+    assert_eq!(status_err.code(), Code::PermissionDenied);
+}
+
+// PROVIDERCLI (D906): a remote machine forwards `RequestProviderImport` and
+// `ListProviders` up the Uplink for both session agents and local/CLI callers,
+// while direct provider mutations stay host-only.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_provider_import_request_forwards_for_agent_and_user_while_mutations_stay_host_only() {
+    let (machine, mut host) = linked().await;
+    let channel = machine.daemon.channel().await;
+
+    // 1. Agent caller's RequestProviderImport forwards up the Uplink.
+    let mut providers = pb::provider_service_client::ProviderServiceClient::new(channel.clone());
+    let req = pb::RequestProviderImportRequest {
+        text: "[providers.remote]\nlabel = \"Remote\"\nconnect = 'r {name} -- {cmd}'\n".to_owned(),
+        file_name: "remote.toml".to_owned(),
+        reason: "need remote provider".to_owned(),
+        ..Default::default()
+    };
+    let call = machine.as_agent(req.clone());
+    let asking = tokio::spawn(async move { providers.request_provider_import(call).await });
+
+    let forwarded = next_call(&mut host).await;
+    assert_eq!(forwarded.method, "/humata.v1.ProviderService/RequestProviderImport");
+    assert!(matches!(forwarded.principal, Some(pb::forwarded_call::Principal::Agent(_))));
+    assert_eq!(
+        pb::RequestProviderImportRequest::decode(forwarded.request.as_slice()).unwrap(),
+        req
+    );
+    let saved = pb::SetProvidersConfigResponse {
+        problems: Vec::new(),
+        revision: Some(pb::Revision { value: 42 }),
+    };
+    host.send(answer(&forwarded, pb::forwarded_result::Outcome::Response(saved.encode_to_vec())))
+        .await;
+    let got = tokio::time::timeout(WAIT, asking)
+        .await
+        .expect("agent request answered")
+        .unwrap()
+        .expect("host answer returned")
+        .into_inner();
+    assert_eq!(got, saved);
+
+    // 2. Local/CLI user caller's RequestProviderImport forwards up as MachineUser.
+    let mut providers = pb::provider_service_client::ProviderServiceClient::new(channel.clone());
+    let req_user = req.clone();
+    let asking_user = tokio::spawn(async move { providers.request_provider_import(req_user).await });
+
+    let forwarded_user = next_call(&mut host).await;
+    assert_eq!(forwarded_user.method, "/humata.v1.ProviderService/RequestProviderImport");
+    assert!(matches!(
+        forwarded_user.principal,
+        Some(pb::forwarded_call::Principal::User(ref u)) if u.outside_sessions
+    ));
+    host.send(answer(&forwarded_user, pb::forwarded_result::Outcome::Response(saved.encode_to_vec())))
+        .await;
+    let got_user = tokio::time::timeout(WAIT, asking_user)
+        .await
+        .expect("user request answered")
+        .unwrap()
+        .expect("host answer returned")
+        .into_inner();
+    assert_eq!(got_user, saved);
+
+    // 3. Direct host mutations stay host-only on a machine daemon.
+    let mut providers = pb::provider_service_client::ProviderServiceClient::new(channel);
+    let set_err = providers
+        .set_providers_config(pb::SetProvidersConfigRequest::default())
+        .await
+        .expect_err("SetProvidersConfig is host-only");
+    assert_eq!(set_err.code(), Code::FailedPrecondition);
+}

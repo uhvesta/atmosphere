@@ -92,11 +92,11 @@ fn vm_test(vm: &Vm, cond: &str) -> bool {
     vm_do(vm, "check the VM", &format!("if {{ {cond}; }}; then echo yes; else echo no; fi")).trim() == "yes"
 }
 
-/// Waits on the VM, in one remote loop that polls every 2 ms, until `cond`
+/// Waits on the VM, in one remote loop that polls every 50 ms, until `cond`
 /// holds; on giving up it runs `why` (what to print) and fails.
 fn wait_vm(vm: &Vm, what: &str, prelude: &str, cond: &str, why: &str) {
     let script = format!(
-        "{prelude}\nend=$(( $(date +%s) + {WAIT_SECS} ))\nuntil {{ {cond}; }}; do\n  if [ \"$(date +%s)\" -ge \"$end\" ]; then {{ {why}; }} >&2; exit 1; fi\n  sleep 0.002\ndone"
+        "{prelude}\nend=$(( $(date +%s) + {WAIT_SECS} ))\nuntil {{ {cond}; }}; do\n  if [ \"$(date +%s)\" -ge \"$end\" ]; then {{ {why}; }} >&2; exit 1; fi\n  sleep 0.05\ndone"
     );
     vm.on_vm(&script)
         .unwrap_or_else(|error| panic!("timed out waiting on the VM for {what}: {error}"));
@@ -112,7 +112,7 @@ const MOUNT_SAID: &str = "export XDG_RUNTIME_DIR=/run/user/$(id -u); journalctl 
 /// reports the mount refused, printing why the daemon couldn't set it up.
 fn wait_mount_vm(vm: &Vm, what: &str, cond: &str, why: &str) {
     let script = format!(
-        "end=$(( $(date +%s) + {WAIT_SECS} ))\nuntil {{ {cond}; }}; do\n  if {MOUNT_REFUSED}; then {{ echo 'the helper refused the mount; the daemon said:'; {MOUNT_SAID}; {why}; }} >&2; exit 1; fi\n  if [ \"$(date +%s)\" -ge \"$end\" ]; then {{ {why}; }} >&2; exit 1; fi\n  sleep 0.002\ndone"
+        "end=$(( $(date +%s) + {WAIT_SECS} ))\nuntil {{ {cond}; }}; do\n  if {MOUNT_REFUSED}; then {{ echo 'the helper refused the mount; the daemon said:'; {MOUNT_SAID}; {why}; }} >&2; exit 1; fi\n  if [ \"$(date +%s)\" -ge \"$end\" ]; then {{ {why}; }} >&2; exit 1; fi\n  sleep 0.05\ndone"
     );
     vm.on_vm(&script)
         .unwrap_or_else(|error| panic!("waiting on the VM for {what}: {error}"));
@@ -178,19 +178,68 @@ mv "$f.new" "$f""#,
     restart_daemon(vm);
 }
 
-/// Shell text that sets `tok`, `root` from the environment of process `pid`
-/// (a shell the app opened) and defines `st` (the remote's fusefs_status as
-/// compact lowercase text), `is` (its state is one of two names),
-/// `told` (the MCP initialize instructions name the files tools).
+/// Starts a lightweight background FIFO command runner inside the session
+/// shell `pid` so `humata` and `humatad2 mcp` execute within the tab's own
+/// process tree and inherit its environment (preserving SEC-15 lineage).
+fn start_agent_runner(app: &mut App<'_>, vm: &Vm, pid: u32) {
+    vm_do(
+        vm,
+        "prepare the in-session command runner",
+        &format!(
+            r#"set -eu
+mkdir -p "$HOME/.humata2"
+base="$HOME/.humata2/t13-{pid}"
+rm -f "$base.in" "$base.done" "$base.out" "$base.cmd" "$base.ready" "$base.sh"
+mkfifo "$base.in" "$base.done"
+cat > "$base.sh" <<'EOF'
+#!/bin/sh
+base="$HOME/.humata2/t13-{pid}"
+exec </dev/null >/dev/null 2>&1
+: > "$base.ready"
+while IFS= read -r _ < "$base.in"; do
+  sh "$base.cmd" > "$base.out" 2>&1
+  printf '%s\n' "$?" > "$base.done"
+done
+EOF
+chmod +x "$base.sh""#
+        ),
+    );
+    run(app, &format!("sh ~/.humata2/t13-{pid}.sh &"));
+    wait_vm(
+        vm,
+        "the in-session command runner to start",
+        "",
+        &format!("[ -f \"$HOME/.humata2/t13-{pid}.ready\" ]"),
+        &format!("ls -la \"$HOME/.humata2\"/t13-{pid}* 2>&1 || true"),
+    );
+}
+
+/// Shell text that dispatches commands through the in-session FIFO runner of
+/// process `pid` and defines `st` (the remote's fusefs_status as compact
+/// lowercase text), `is` (its state is one of two names), and `told` (the
+/// MCP initialize instructions name the files tools).
 fn session_prelude(pid: u32) -> String {
     format!(
-        r#"env_of() {{ tr '\0' '\n' < /proc/{pid}/environ | sed -n "s/^$1=//p" | head -1; }}
-tok=$(env_of HUMATA_SESSION_TOKEN); root=$(env_of HUMATA_FUSE_ROOT)
-st_raw() {{ HUMATA_SESSION_TOKEN="$tok" HUMATA_SOCKET="{SOCK}" "{BIN}/humata" --json settings get fusefs_status 2>&1; }}
+        r#"base="$HOME/.humata2/t13-{pid}"
+run_in_session() {{
+  cat > "$base.cmd"
+  printf 'go\n' > "$base.in"
+  _rc=$(cat "$base.done")
+  cat "$base.out"
+  return "$_rc"
+}}
+st_raw() {{
+  run_in_session <<'HUMATA_CMD'
+HUMATA_SOCKET="{SOCK}" "{BIN}/humata" --json settings get fusefs_status
+HUMATA_CMD
+}}
 st() {{ st_raw | tr -d ' \n"_' | tr A-Z a-z; }}
 is() {{ st | grep -Eq "state:(state)?($1|$2)[,}}]"; }}
-told() {{ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"0"}}}}}}' \
-  | HUMATA_SESSION_TOKEN="$tok" HUMATA_FUSE_ROOT="$root" timeout 30 "{BIN}/humatad2" mcp --socket "{SOCK}" | head -1 | grep -q files_list; }}
+told() {{
+  run_in_session <<'HUMATA_CMD' | head -1 | grep -q files_list
+printf '%s\n' '{{"jsonrpc":"2.0","id":0,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"0"}}}}}}' | timeout 30 "{BIN}/humatad2" mcp --socket "{SOCK}"
+HUMATA_CMD
+}}
 "#
     )
 }
@@ -358,6 +407,7 @@ fn mounted_shell(runtime: &tokio::runtime::Runtime, rig: &Rig, app: &mut App<'_>
     let helper = wait_mounted(&rig.vm);
     let id = open_a_shell_on_the_vm(app, &rig.machine);
     let pid = shell_pid(app, &fresh_tag("p"));
+    start_agent_runner(app, &rig.vm, pid);
     assert!(
         env_of(&rig.vm, pid, "HUMATA_FUSE_ROOT").is_some(),
         "an agent started while the mount is up gets HUMATA_FUSE_ROOT"
@@ -462,6 +512,7 @@ fn fuse_vm_2_a_remote_power_cut_brings_the_daemon_mount_and_sessions_back() {
     app.show_session(&id);
     focus_terminal(&mut app);
     let pid = current_shell_pid(&mut app);
+    start_agent_runner(&mut app, &rig.vm, pid);
     assert!(
         env_of(&rig.vm, pid, "HUMATA_FUSE_ROOT").is_some(),
         "the resumed session gets the mount variable"
@@ -528,7 +579,6 @@ fn fuse_vm_4_a_moved_session_gets_the_mount_at_its_new_place_and_the_old_mount_d
     wait_mounted(&rig.vm);
     let mac = mac_of(&app, &rig.machine);
     let id = open_a_shell_on_the_vm(&mut app, &mac);
-    let listed = format!("{MNT}/m/{}/s/{}", rig.machine.as_str(), id.as_str());
 
     runtime
         .block_on(app.daemon.move_session(&id, &rig.machine))
@@ -549,6 +599,16 @@ fn fuse_vm_4_a_moved_session_gets_the_mount_at_its_new_place_and_the_old_mount_d
         env_of(&rig.vm, pid, "HUMATA_FUSE_ROOT").is_some(),
         "the session gets the mount variable where it moved to"
     );
+    let vm_machine_id = env_of(&rig.vm, pid, "HUMATA_MACHINE_NAME").unwrap_or_else(|| {
+        vm_do(
+            &rig.vm,
+            "read the VM's machine id",
+            r#"cat "$HOME/.humata2/state/machine-id""#,
+        )
+        .trim()
+        .to_owned()
+    });
+    let listed = format!("{MNT}/m/{vm_machine_id}/s/{}", id.as_str());
     wait_vm(
         &rig.vm,
         "the VM's tree to list the session under the VM",
@@ -637,7 +697,7 @@ fn fuse_vm_5_the_real_mount_reads_and_writes_and_a_twice_killed_helper_is_given_
 /// again.
 fn humata_as_agent(runtime: &tokio::runtime::Runtime, rig: &Rig, pid: u32, args: &str) -> String {
     let script = format!(
-        "{}HUMATA_SESSION_TOKEN=\"$tok\" HUMATA_SOCKET=\"{SOCK}\" \"{BIN}/humata\" --json {args}",
+        "{}run_in_session <<'HUMATA_CMD'\nHUMATA_SOCKET=\"{SOCK}\" \"{BIN}/humata\" --json {args}\nHUMATA_CMD\n",
         session_prelude(pid)
     );
     for _ in 0..4 {
@@ -711,6 +771,7 @@ fn fuse_vm_6_a_machine_with_no_fuse_says_why_and_agents_use_the_files_tools() {
     runtime.block_on(wait_machine(&rig, true, INSTALL));
     let id = open_a_shell_on_the_vm(&mut app, &rig.machine);
     let pid = shell_pid(&mut app, &fresh_tag("p"));
+    start_agent_runner(&mut app, &rig.vm, pid);
     assert!(
         env_of(&rig.vm, pid, "HUMATA_FUSE_ROOT").is_none(),
         "no mount, so no folder to point agents at"

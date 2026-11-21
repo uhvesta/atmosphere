@@ -37,6 +37,10 @@ const RESERVE_AHEAD: u64 = 1 << 20;
 const MOST_AHEAD: u64 = 16 << 20;
 /// How often output written since the last sync is synced.
 pub(crate) const SYNC_EVERY: Duration = Duration::from_millis(500);
+/// Initial wait before retrying after a save error; doubles up to
+/// `RETRY_MAX` while errors persist.
+const RETRY_BASE: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Where a holder on `socket` saves its output.
 pub fn saved_scrollback_path(socket: &Path) -> PathBuf {
@@ -264,6 +268,12 @@ pub(crate) struct SaveParts {
     pub(crate) failed: bool,
 }
 
+/// Backoff state while recovering from a transient save or sync error.
+struct FailedSave {
+    next_retry: Instant,
+    backoff: Duration,
+}
+
 /// The open log a running holder appends its output to.
 pub(crate) struct SaveLog {
     path: PathBuf,
@@ -280,7 +290,7 @@ pub(crate) struct SaveLog {
     /// flood mustn't wait on one per MiB.
     ahead: u64,
     reserved_at: Option<Instant>,
-    failed: bool,
+    failed: Option<FailedSave>,
 }
 
 impl SaveLog {
@@ -320,7 +330,7 @@ impl SaveLog {
             made_unsynced: new,
             ahead: RESERVE_AHEAD,
             reserved_at: None,
-            failed: false,
+            failed: None,
         };
         Ok((log, kept))
     }
@@ -337,7 +347,7 @@ impl SaveLog {
             len: self.len,
             reserved: self.reserved,
             ahead: self.ahead,
-            failed: self.failed,
+            failed: self.failed.is_some(),
         }
     }
 
@@ -350,6 +360,10 @@ impl SaveLog {
                 source,
             },
         )?;
+        let failed = parts.failed.then(|| FailedSave {
+            next_retry: Instant::now(),
+            backoff: RETRY_BASE,
+        });
         Ok(Self {
             path: parts.path,
             file,
@@ -359,38 +373,91 @@ impl SaveLog {
             made_unsynced: false,
             ahead: parts.ahead,
             reserved_at: None,
-            failed: parts.failed,
+            failed,
         })
     }
 
     /// Saves `data`, printed at `offset` and already pushed to `kept`.
-    /// Called before any client is sent it. If saving fails it says so
-    /// once and stops; the terminal goes on without it.
+    /// Called before any client is sent it. If saving fails it logs once
+    /// and backs off, then rewrites the log from `kept` on later output
+    /// once the disk is writable again.
     pub(crate) fn output(&mut self, offset: u64, data: &[u8], kept: &Scrollback) {
-        if self.failed {
+        self.output_at(offset, data, kept, Instant::now());
+    }
+
+    fn output_at(&mut self, offset: u64, data: &[u8], kept: &Scrollback, now: Instant) {
+        if let Some(failed) = self.failed.as_ref() {
+            if now < failed.next_retry {
+                return;
+            }
+            let prev_backoff = failed.backoff;
+            match self.recover(kept) {
+                Ok(()) => {
+                    self.failed = None;
+                    eprintln!(
+                        "humata2_holder: resumed saving this terminal's output to {}",
+                        self.path.display()
+                    );
+                }
+                Err(_) => {
+                    let backoff = (prev_backoff * 2).min(RETRY_MAX);
+                    self.failed = Some(FailedSave {
+                        next_retry: now + backoff,
+                        backoff,
+                    });
+                }
+            }
             return;
         }
-        if let Err(error) = self.save(offset, data, kept) {
-            self.failed = true;
+        if let Err(error) = self.save(offset, data, kept, now) {
+            self.unsynced = false;
+            self.failed = Some(FailedSave {
+                next_retry: now + RETRY_BASE,
+                backoff: RETRY_BASE,
+            });
             eprintln!(
-                "humata2_holder: stopped saving this terminal's output to {}, so a restart will lose what it prints from here: {error}. Free some disk space; the terminal itself goes on",
+                "humata2_holder: couldn't save this terminal's output to {}: {error}. Will retry as more output arrives; free some disk space, the terminal itself goes on",
                 self.path.display()
             );
         }
     }
 
-    fn save(&mut self, offset: u64, data: &[u8], kept: &Scrollback) -> std::io::Result<()> {
+    /// Records that a background `sync_data` failed so the next output
+    /// after backoff rewrites and syncs the log cleanly.
+    pub(crate) fn note_sync_failed(&mut self) {
+        self.unsynced = false;
+        if self.failed.is_none() {
+            let now = Instant::now();
+            self.failed = Some(FailedSave {
+                next_retry: now + RETRY_BASE,
+                backoff: RETRY_BASE,
+            });
+        }
+    }
+
+    fn recover(&mut self, kept: &Scrollback) -> std::io::Result<()> {
+        (self.file, self.len) = rewrite(&self.path, kept, true)?;
+        self.reserved = kept.end();
+        self.unsynced = false;
+        self.made_unsynced = false;
+        self.reserved_at = None;
+        Ok(())
+    }
+
+    fn save(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+        kept: &Scrollback,
+        now: Instant,
+    ) -> std::io::Result<()> {
         let end = offset + data.len() as u64;
         // Compact once the log grows past what's kept plus headroom, clamped so
         // small scrollbacks don't thrash rewrites.
         let headroom = ((kept.limit() / 2) as u64).max(2 << 20);
         let grown = self.len > kept.limit() as u64 + headroom;
         if grown {
-            (self.file, self.len) = rewrite(&self.path, kept, true)?;
-            self.reserved = kept.end();
-            self.unsynced = false;
-            self.made_unsynced = false;
-            return Ok(());
+            return self.recover(kept);
         }
         let mut out = Vec::with_capacity(data.len() + 2 * (HEAD + CHECK));
         let mut at = offset;
@@ -400,8 +467,7 @@ impl SaveLog {
         }
         let reserving = end > self.reserved;
         if reserving {
-            let now = Instant::now();
-            self.ahead = next_ahead(self.ahead, self.reserved_at.map(|at| now - at));
+            self.ahead = next_ahead(self.ahead, self.reserved_at.map(|at| now.saturating_duration_since(at)));
             self.reserved_at = Some(now);
             self.reserved = end + self.ahead;
             put_record(&mut out, RESERVE, self.reserved, &[]);
@@ -426,7 +492,7 @@ impl SaveLog {
 
     /// The file to sync, if anything was written since the last sync.
     pub(crate) fn take_unsynced(&mut self) -> Option<File> {
-        if !std::mem::take(&mut self.unsynced) || self.failed {
+        if !std::mem::take(&mut self.unsynced) || self.failed.is_some() {
             return None;
         }
         self.file.try_clone().ok()
@@ -555,5 +621,124 @@ mod tests {
     #[test]
     fn a_file_that_is_not_a_log_has_no_output() {
         assert!(tail(b"something else", 1024).is_empty());
+    }
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "h2-saved-{tag}-{}-{n}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_transient_save_error_recovers_on_later_output_and_reloads() {
+        let dir = ScratchDir::new("recover");
+        let path = dir.0.join("t.scrollback");
+        let (mut log, mut kept) = SaveLog::open(&path, 4096).unwrap();
+        let t0 = Instant::now();
+
+        let write_chunk = |log: &mut SaveLog, kept: &mut Scrollback, data: &[u8], at: Instant| {
+            let offset = kept.end();
+            kept.push(data);
+            log.output_at(offset, data, kept, at);
+        };
+
+        write_chunk(&mut log, &mut kept, b"before ", t0);
+        assert!(!log.parts().failed);
+
+        // Simulate a transient write failure by swapping the open handle for a
+        // read-only descriptor (append fails with EBADF on every Unix host).
+        log.file = File::open(OpenOptions::new().read(true), &path).unwrap();
+        write_chunk(&mut log, &mut kept, b"during ", t0);
+        assert!(log.parts().failed);
+        assert!(log.take_unsynced().is_none());
+
+        // Before backoff elapses, output does not thrash retries.
+        write_chunk(&mut log, &mut kept, b"waiting ", t0 + Duration::from_millis(100));
+        assert!(log.parts().failed);
+
+        // Once backoff elapses, recovery rewrites the full scrollback and clears failure.
+        let t1 = t0 + RETRY_BASE;
+        write_chunk(&mut log, &mut kept, b"after ", t1);
+        assert!(!log.parts().failed);
+
+        // Subsequent output appends and syncs normally. The first write after
+        // recovery reserves ahead and syncs immediately; the next write within
+        // that reservation leaves unsynced data for the background syncer.
+        write_chunk(&mut log, &mut kept, b"recovered", t1);
+        assert!(log.take_unsynced().is_none());
+        write_chunk(&mut log, &mut kept, b"!", t1);
+        let to_sync = log.take_unsynced().expect("recovered log must track unsynced writes");
+        to_sync.sync_data().unwrap();
+
+        let expected = b"before during waiting after recovered!";
+        let summary = read_saved(&path).unwrap().unwrap();
+        assert_eq!(summary.saved_through, expected.len() as u64);
+        assert!(!summary.tail_damaged);
+        assert_eq!(read_saved_tail(&path, 4096).unwrap().unwrap(), expected);
+
+        let (_, reloaded) = SaveLog::open(&path, 4096).unwrap();
+        let reloaded_bytes: Vec<u8> = reloaded
+            .since(0)
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(reloaded_bytes, expected);
+    }
+
+    #[test]
+    fn repeated_save_errors_back_off_and_still_recover_once_cleared() {
+        let dir = ScratchDir::new("backoff");
+        let path = dir.0.join("t.scrollback");
+        let partial = path.with_extension("scrollback-partial");
+        let (mut log, mut kept) = SaveLog::open(&path, 4096).unwrap();
+        let t0 = Instant::now();
+
+        let write_chunk = |log: &mut SaveLog, kept: &mut Scrollback, data: &[u8], at: Instant| {
+            let offset = kept.end();
+            kept.push(data);
+            log.output_at(offset, data, kept, at);
+        };
+
+        // Block both the open fd and the rewrite temp path.
+        log.file = File::open(OpenOptions::new().read(true), &path).unwrap();
+        fs::create_dir(&partial).unwrap();
+
+        write_chunk(&mut log, &mut kept, b"one ", t0);
+        assert!(log.parts().failed);
+
+        // First retry at RETRY_BASE still fails (partial is a directory) and doubles backoff.
+        let t1 = t0 + RETRY_BASE;
+        write_chunk(&mut log, &mut kept, b"two ", t1);
+        assert!(log.parts().failed);
+
+        // Remove the obstacle, but before the doubled backoff passes it still waits.
+        fs::remove_dir(&partial).unwrap();
+        write_chunk(&mut log, &mut kept, b"three ", t1 + RETRY_BASE);
+        assert!(log.parts().failed);
+
+        // At doubled backoff, recovery succeeds and flushes everything kept.
+        let t2 = t1 + RETRY_BASE * 2;
+        write_chunk(&mut log, &mut kept, b"four", t2);
+        assert!(!log.parts().failed);
+        assert_eq!(
+            read_saved_tail(&path, 4096).unwrap().unwrap(),
+            b"one two three four"
+        );
     }
 }

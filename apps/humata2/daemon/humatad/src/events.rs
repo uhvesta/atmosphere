@@ -431,6 +431,8 @@ impl Filter {
             Some(pb::event::Payload::PolicyCopy(_)) => self.user && self.machines,
             // MACHINESCRIPTS (D686): a machine's script run changed, to the user as Machine is.
             Some(pb::event::Payload::MachineScriptRun(_)) => self.user && self.machines,
+            // SETTINGSFIX: a pending `humata login` arrived or settled, to the user on Inbox.
+            Some(pb::event::Payload::PendingCliLogin(_)) => self.user && self.inbox,
             // D286: a review's pull request heads moved, to whoever may read
             // the session, like its Session events.
             // Bug 23: a clone's files changed, to whoever may read the session.

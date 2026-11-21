@@ -137,7 +137,7 @@ pub(super) fn plan_list(
             .enumerate()
             .map(|(index, diff)| {
                 ringed(
-                    plan_repo_line(ui, state, look, documents, index, diff),
+                    plan_repo_line(ui, state, look, documents, index, diff, diffs),
                     at_repo(cursor, &diff.repo),
                     look,
                 )
@@ -228,7 +228,9 @@ fn plan_repo_line(
     documents: &Documents,
     index: usize,
     diff: &RepoDiff,
+    diffs: &[&RepoDiff],
 ) -> Div {
+    let shown_repo = display_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()));
     row()
         .gap(px(6.))
         .h(px(24.))
@@ -237,14 +239,16 @@ fn plan_repo_line(
         .min_w_0()
         .whitespace_nowrap()
         .child(div().flex_shrink_0().child(icon(IconName::FolderGit2, look.secondary, 12.)))
-        .child(
-            text(repo_label(&diff.repo).to_owned())
+        .child(full_text(
+            text(shown_repo.to_owned())
+                .id(SharedString::from(format!("plan-repo-name-{index}")))
                 .font_weight(FontWeight::SEMIBOLD)
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis(),
-        )
+            repo_label(&diff.repo).to_owned(),
+        ))
         // D868: with one repository the header's chip names the base.
         .when(
             state.workspace.diffs.iter().filter(|each| each.session == diff.session).count() >= 2,

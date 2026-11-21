@@ -1,0 +1,48 @@
+agent: copilot
+cli: 1.0.115-1
+script: bash
+label: after_escape
+expect: none
+cols: 60
+rows: 40
+---
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+  ╭─╮╭─╮
+  ╰─╯╰─╯  Copilot v1.0.115-1 uses AI.
+  █ ▘▝ █  Check for mistakes.
+   ▔▔▔▔
+
+ ● No Copilot instructions found for this repository. Run
+   /init to generate them.
+
+ ● MCP Servers reloaded: 0 servers connected
+
+ ✗ You must be logged in to send messages. Please run
+   /login
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Please use /login to sign in to use Copilot
+ /private/tmp/screenparse-corpus-0100/copilot/bash/work
+ [⎇ main%]  Run on: This computer ctrl+e change environment
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+ Interactive · Manual Approval · / comman… mai-code-2-flash

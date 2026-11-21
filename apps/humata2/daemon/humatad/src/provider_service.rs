@@ -54,7 +54,10 @@ use crate::status;
 
 mod ask;
 mod import;
+mod on_machine;
 mod remove;
+
+pub(crate) use on_machine::OnMachine;
 
 /// What an agent refused a providers change can do instead.
 const SETTINGS_FIX: &str = "ask the user to make the change in Settings › Machines › Providers; to have them add a provider file, use provider_import (humata provider import <file>), which asks them in the Inbox";
@@ -73,7 +76,7 @@ struct Left {
 }
 
 #[derive(Clone)]
-pub(crate) struct ProviderSvc {
+pub struct ProviderSvc {
     guard: Arc<Guard>,
     work: Arc<Work>,
     operations: Arc<Operations>,
@@ -912,20 +915,18 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         }))
     }
 
-    /// MP-23, D792: an agent asks the user to import a provider file. A
-    /// file with problems is refused at once; otherwise the ask waits in
-    /// the Inbox under PROVIDER_IMPORT (Ask me or Never) showing the file
-    /// whole, and approving writes it while the providers file is as it
-    /// was when the agent asked.
+    /// MP-23, D792, D906: any local/remote caller (owner, agent, or script —
+    /// never a peer) asks the owner to import a provider file. A file with
+    /// problems is refused at once; otherwise the ask waits in the Inbox under
+    /// PROVIDER_IMPORT (Ask me or Never) showing the file whole, and only the
+    /// owner's approval writes it while the providers file is unchanged.
     async fn request_provider_import(
         &self,
         request: Request<pb::RequestProviderImportRequest>,
     ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
         let caller = identity::caller(&request)?;
-        match &caller {
-            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::User(_) | Caller::Script(_) => return Err(ask::not_for_the_user()),
-            Caller::Agent(_) => {}
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
         }
         let request = request.into_inner();
         ask::check(&request).map_err(ask::AskError::into_status)?;
@@ -937,12 +938,25 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
             target: Target::Global,
         };
         // Never allowed without asking: an approved ask is only the rerun.
-        let asked = channel_service::gate(&self.guard, &caller, &call, false)?.ok_or_else(|| {
-            status::internal(
-                "an agent's provider import was let through without asking the user, so nothing was asked or added; the import rule offers only Ask me and Never",
-                "",
-            )
-        })?;
+        let asked = match &caller {
+            Caller::Agent(_) => channel_service::gate(&self.guard, &caller, &call, false)?
+                .ok_or_else(|| {
+                    status::internal(
+                        "an agent's provider import was let through without asking the user, so nothing was asked or added; the import rule offers only Ask me and Never",
+                        "",
+                    )
+                })?,
+            Caller::User(_) | Caller::Script(_) => Box::new(AccessRequest {
+                capability: Capability::ProviderImport,
+                channel: humata2_access::ChannelId::new(humata2_sessions::DESK_CHANNEL),
+                requester: humata2_access::SessionId::new(""),
+                call,
+                always_let: None,
+                ahead: false,
+                answer_at: humata2_access::AnswerAt::Host,
+            }),
+            Caller::Peer => unreachable!(),
+        };
         let card = crate::inbox::BoardAsk {
             preview: ask::preview(&request, &plan),
             reason: request.reason.clone(),

@@ -1,0 +1,47 @@
+agent: codex
+cli: 0.169.0
+script: question
+label: free_text_question
+expect: none
+cols: 60
+rows: 40
+---
+ Resume a previous session
+
+ Filter: Cwd   Active  Sort: Updated
+
+ Search: w use the same tool to ask me one open question...
+
+  No results for your search
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────── 0 / 0 · 100% ─
+ enter resume   esc clear   ⌃c exit   tab focus   ←/→ option
+ ⌃o comfy   ⌃t preview   ⌃e exp   ↑/↓ browse

@@ -50,6 +50,17 @@ fn switching_section_closes_the_pop_up() {
     store.receive(A::Todo(TodoAutomationAction::Loaded(Ok(TodoAutomation::default()))), |s| {
         s.todo.section = Some(TodoAutomation::default());
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
     store.finish();
 }
 
@@ -76,5 +87,16 @@ fn the_row_is_in_layout_and_reachable_from_the_palette() {
         s.section = Section::Layout;
         s.revealed = Some(Row::DeskRowsInSidebar);
     });
+    store.receive_matching(
+        "general loaded",
+        |a| matches!(a, A::General(humata2_settings::GeneralAction::Loaded(Ok(_)))),
+        |s| {
+            s.general.settings = Some(humata2_clients::daemon::FullSettings::default());
+            s.general.terminal_font_draft = "Menlo".to_owned();
+            s.general.scrollback_draft = "10000".to_owned();
+            s.general.archive_pr_days_draft = "0".to_owned();
+            s.general.archive_idle_days_draft = "0".to_owned();
+        },
+    );
     store.finish();
 }

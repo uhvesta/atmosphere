@@ -424,6 +424,10 @@ fn listed(
             Some(id) => store.session(id).map_err(read("read a stopped shell's session"))?,
             None => None,
         };
+        let archived = match &record {
+            Some(record) => store.archive(&record.id).map_err(read("read an archive"))?.is_some(),
+            None => false,
+        };
         let folder = store.tab_program(&tab.id).map(|program| program.pwd).unwrap_or_default();
         stopped.push(pb::RunningHolder {
             tab: Some(pb::TabId { value: tab.id.clone() }),
@@ -445,7 +449,7 @@ fn listed(
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: true,
             agent_tab: false,
-            archived: false,
+            archived,
             paused_for_move: false,
         });
     }
@@ -849,5 +853,49 @@ mod tests {
 
         assert_eq!(store.tab("tb_rev").unwrap(), None);
         assert_eq!(crate::agent_tabs::tab_agent(&store, "tb_rev").unwrap(), None);
+    }
+
+    #[test]
+    fn a_stopped_shell_of_an_archived_session_reports_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        session_with_agent(&store, "se_archived", "old-work", AgentState::Stopped);
+        session_with_agent(&store, "se_active", "active-work", AgentState::Stopped);
+        store
+            .put_archive(&humata2_store::ArchiveRow {
+                session_id: "se_archived".to_owned(),
+                archived_unix_ms: 10,
+                state: humata2_store::ArchiveState::Archived,
+                summary: Vec::new(),
+                free_after_unix_ms: 20,
+            })
+            .unwrap();
+        shell(&store, dir.path(), "tb_archived_shell", Some("se_archived"));
+        shell(&store, dir.path(), "tb_active_shell", Some("se_active"));
+        std::fs::write(
+            humata2_holder::stopped_mark_path(&dir.path().join("tb_archived_shell.sock")),
+            b"",
+        )
+        .unwrap();
+        std::fs::write(
+            humata2_holder::stopped_mark_path(&dir.path().join("tb_active_shell.sock")),
+            b"",
+        )
+        .unwrap();
+
+        let rows = listed(&store, Vec::new(), &HashMap::new(), "ma_1", SystemTime::now()).unwrap();
+        let archived_shell = rows
+            .iter()
+            .find(|row| row.tab.as_ref().map(|t| t.value.as_str()) == Some("tb_archived_shell"))
+            .expect("stopped shell of archived session is listed");
+        assert!(archived_shell.stopped);
+        assert!(archived_shell.archived);
+
+        let active_shell = rows
+            .iter()
+            .find(|row| row.tab.as_ref().map(|t| t.value.as_str()) == Some("tb_active_shell"))
+            .expect("stopped shell of active session is listed");
+        assert!(active_shell.stopped);
+        assert!(!active_shell.archived);
     }
 }

@@ -8,6 +8,7 @@ use crate::error::Error;
 use crate::gh::Pr;
 use crate::git::{Git, GitError};
 use crate::plan::Plan;
+use crate::state::{Layer, StackState};
 
 /// A topic's rebuilt branch: `head` sits on `base`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +40,17 @@ pub(crate) struct Branches {
     /// stack branches. With several for one topic: the one on the current
     /// prefix, else the oldest.
     open: BTreeMap<String, Pr>,
+    /// Imported or locally registered layers from `.git/stack/state.json`.
+    layers: BTreeMap<String, Layer>,
 }
 
 impl Branches {
+    #[cfg(test)]
     pub(crate) fn new(prefix: String, mine: Vec<Pr>) -> Branches {
+        Self::with_state(prefix, mine, None)
+    }
+
+    pub(crate) fn with_state(prefix: String, mine: Vec<Pr>, state: Option<&StackState>) -> Branches {
         let mut open: BTreeMap<String, Pr> = BTreeMap::new();
         for pr in mine {
             let Some((pr_prefix, topic)) = split_branch(&pr.head_ref_name) else {
@@ -62,7 +70,16 @@ impl Branches {
                 open.insert(topic, pr);
             }
         }
-        Branches { prefix, open }
+        let layers = state
+            .map(|state| {
+                state
+                    .layers
+                    .iter()
+                    .map(|layer| (layer.topic.clone(), layer.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Branches { prefix, open, layers }
     }
 
     /// The prefix new topics use.
@@ -70,12 +87,34 @@ impl Branches {
         &self.prefix
     }
 
-    /// The topic's branch: its open pull request's head, else
-    /// `<prefix>/stack/<topic>`.
+    /// The topic's branch: its imported layer's branch, else its open pull
+    /// request's head, else `<prefix>/stack/<topic>`.
     pub(crate) fn branch(&self, topic: &str) -> String {
+        if let Some(layer) = self.layers.get(topic) {
+            return layer.branch.clone();
+        }
         self.open
             .get(topic)
             .map_or_else(|| branch_name(&self.prefix, topic), |pr| pr.head_ref_name.clone())
+    }
+
+    /// Whether `topic` belongs to a foreign imported layer.
+    pub(crate) fn is_foreign(&self, topic: &str) -> bool {
+        self.layers.get(topic).is_some_and(|layer| layer.foreign)
+    }
+
+    /// The imported/registered layer for `topic`, if any.
+    pub(crate) fn layer(&self, topic: &str) -> Option<&Layer> {
+        self.layers.get(topic)
+    }
+
+    /// Every non-standard branch name recorded in imported state, for fetching
+    /// and inspecting remote heads.
+    pub(crate) fn extra_branches(&self) -> Vec<String> {
+        self.layers
+            .values()
+            .map(|layer| layer.branch.clone())
+            .collect()
     }
 
     /// The topic's open pull request, when it has one.
@@ -160,9 +199,16 @@ pub(crate) fn rebuild(
 }
 
 /// Checks that the first commit of each topic has the template's required
-/// sections. The first topic that lacks one is the error.
-pub(crate) fn require_sections(template: &Template, plan: &Plan) -> Result<(), Error> {
+/// sections. Topics in `skip` (e.g. foreign imported layers) are skipped.
+pub(crate) fn require_sections(
+    template: &Template,
+    plan: &Plan,
+    skip: &BTreeSet<String>,
+) -> Result<(), Error> {
     for topic in &plan.topics {
+        if skip.contains(&topic.name) {
+            continue;
+        }
         let Some(commit) = topic.commits.first() else {
             continue;
         };
@@ -194,6 +240,7 @@ mod tests {
             body: String::new(),
             is_draft: false,
             review_decision: None,
+            author: String::new(),
         }
     }
 

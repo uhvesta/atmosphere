@@ -1,0 +1,33 @@
+agent: claude
+cli: 2.1.329
+script: question
+label: after_free_text
+expect: none
+cols: 80
+rows: 40
+---
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/screenparse-corpus-0100/claude/question/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks
+▎ each tool call for risky actions and prompt injection before executing, runs
+▎ the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ Using your tool for asking the user a question, ask me one multiple-choice
+  question: red or blue? Then stop.
+  ⎿  Not logged in · Please run /login
+
+❯ Now use the same tool to ask me one open question that I answer by typing
+  free text: what is my pet's name? Then stop.
+  ⎿  Not logged in · Please run /login
+
+❯ otter
+  ⎿  Not logged in · Please run /login
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Once fixed, resend your message
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)              Not logged in · run /login

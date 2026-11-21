@@ -72,6 +72,7 @@ async fn the_view_the_app_reports_comes_back_in_the_context(
         targets: vec![RepoDiffSpec {
             repo: repo.to_owned(),
             base: RepoBase::DefaultBranch,
+            options: Default::default(),
         }],
         open: Some(Place {
             repo: repo.to_owned(),

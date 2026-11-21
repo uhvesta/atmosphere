@@ -11,6 +11,14 @@ and drafts comments; **only the owner posts a review**.
 
 - `<pr>` is a URL or `owner/repo#123`; several pull requests make one
   review session.
+- **Native stack review:** pointing `humata review start` at any PR in a
+  native GitHub stack or a base-chained stack opens the whole stack layer by
+  layer in Humata's review view. `render-humata-review` also renders imported
+  stacks layer by layer.
+- **Bootstrapping a session from a remote stack:** run
+  `stack import <pr-url-or-number>` inside the session checkout to copy the
+  remote stack locally so `stack status`, `stack diff`, `stack restack`, and
+  `render-humata-review` work on it immediately.
 - `--machine` is required: where the review session runs. Use your own
   machine (from `humata whoami`) unless the owner named another.
 - `--message` is the review agent's first prompt: what to look at and what

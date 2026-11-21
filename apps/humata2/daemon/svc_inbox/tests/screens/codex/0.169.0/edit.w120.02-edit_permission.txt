@@ -1,0 +1,48 @@
+agent: codex
+cli: 0.169.0
+script: edit
+label: edit_permission
+expect: none
+cols: 120
+rows: 40
+---
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.169.0 -> 0.171.0         │
+│ Run brew upgrade --cask codex to update.        │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+
+  >_ OpenAI Codex (v0.169.0)
+     /private/tmp/screenparse-corpus-0100/codex/edit/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› In notes.txt, change the word hello to goodbye. Edit the file directly, do nothing else.
+
+  GPT-6-Luna default · /private/tmp/screenparse-corpus-0100/codex/edit/work

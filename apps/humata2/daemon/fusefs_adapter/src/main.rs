@@ -51,6 +51,10 @@ struct Cli {
     #[arg(long, global = true)]
     mountpoint: Option<PathBuf>,
 
+    /// Optional Unix socket path for the macOS FSKit `.appex` bridge server.
+    #[arg(long, global = true)]
+    bridge_socket: Option<PathBuf>,
+
     /// Filesystem backend mode (`fskit`, `linux`, or `degraded`).
     #[arg(long, value_enum, default_value_t = default_cli_mode(), global = true)]
     mode: CliMode,
@@ -122,7 +126,7 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::from(2);
             };
-            run_serve(socket, mountpoint, mode, once)
+            run_serve(socket, mountpoint, cli.bridge_socket, mode, once)
         }
         Command::Status { json } => {
             let Some(socket) = cli.socket else {
@@ -144,9 +148,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_serve(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, once: bool) -> ExitCode {
-    let resource_url = format!("fusefs://{mode}/humata2");
-    let config = MountConfig::new(&mountpoint, resource_url);
+fn run_serve(
+    socket: PathBuf,
+    mountpoint: PathBuf,
+    bridge_socket: Option<PathBuf>,
+    mode: FsMountMode,
+    once: bool,
+) -> ExitCode {
     let host = match HumataVolumeHost::new(
         std::process::id(),
         HumataTopology::default(),
@@ -165,9 +173,10 @@ fn run_serve(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, once: bool
         last_daemon_pid: None,
         epoch: 0,
     });
-    let backend = mount_backend(mode, &host);
-    let supervisor = Arc::new(MountSupervisor::new(config, backend));
     let router = Arc::new(CapabilityRouter::new());
+    let (resource_url, backend) = mount_backend(mode, &host, &router, &socket, bridge_socket);
+    let config = MountConfig::new(&mountpoint, resource_url);
+    let supervisor = Arc::new(MountSupervisor::new(config, backend));
     let handler = Arc::new(
         ControlHandler::new(supervisor, router).with_extension(extension_callback(host)),
     );
@@ -204,20 +213,80 @@ fn run_serve(socket: PathBuf, mountpoint: PathBuf, mode: FsMountMode, once: bool
 }
 
 /// On Linux the helper mounts and serves the volume itself through
-/// `fusermount3`; everywhere else the system mount tool does it.
+/// `fusermount3`; on macOS it starts the FSKit bridge server and mounts
+/// `humatafs://humata2`; everywhere else the system mount tool does it.
 #[cfg(target_os = "linux")]
-fn mount_backend(mode: FsMountMode, host: &Arc<HumataVolumeHost>) -> Arc<dyn MountBackend> {
+fn mount_backend(
+    mode: FsMountMode,
+    host: &Arc<HumataVolumeHost>,
+    _router: &Arc<CapabilityRouter>,
+    _control_socket: &PathBuf,
+    _bridge_socket: Option<PathBuf>,
+) -> (String, Arc<dyn MountBackend>) {
+    let url = format!("fusefs://{mode}/humata2");
     if mode == FsMountMode::Linux {
-        return Arc::new(humata2_fusefs_adapter::linux_mount::LinuxFuseBackend::new(
-            host.clone(),
-        ));
+        return (
+            url,
+            Arc::new(humata2_fusefs_adapter::linux_mount::LinuxFuseBackend::new(
+                host.clone(),
+            )),
+        );
     }
-    Arc::new(PosixMountBackend::new(mode.to_string()))
+    (url, Arc::new(PosixMountBackend::new(mode.to_string())))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn mount_backend(mode: FsMountMode, _host: &Arc<HumataVolumeHost>) -> Arc<dyn MountBackend> {
-    Arc::new(PosixMountBackend::new(mode.to_string()))
+#[cfg(target_os = "macos")]
+fn mount_backend(
+    mode: FsMountMode,
+    host: &Arc<HumataVolumeHost>,
+    router: &Arc<CapabilityRouter>,
+    control_socket: &PathBuf,
+    bridge_socket: Option<PathBuf>,
+) -> (String, Arc<dyn MountBackend>) {
+    if mode == FsMountMode::FsKit {
+        let sock = bridge_socket.unwrap_or_else(|| {
+            humata2_fusefs_adapter::macos_mount::default_bridge_socket(control_socket)
+        });
+        let url = fusefs_fskit::MountSpec::for_humatafs_with_socket(
+            humata2_fusefs_adapter::macos_mount::HUMATA_FSKIT_AUTHORITY,
+            &sock,
+            "/tmp",
+        )
+        .map(|s| s.resource_url)
+        .unwrap_or_else(|_| {
+            format!(
+                "{}://{}",
+                humata2_fusefs_adapter::macos_mount::HUMATA_FSKIT_FS_TYPE,
+                humata2_fusefs_adapter::macos_mount::HUMATA_FSKIT_AUTHORITY
+            )
+        });
+        return (
+            url,
+            Arc::new(humata2_fusefs_adapter::macos_mount::MacFsKitBackend::new(
+                host.clone(),
+                router.clone(),
+                sock,
+            )),
+        );
+    }
+    (
+        format!("fusefs://{mode}/humata2"),
+        Arc::new(PosixMountBackend::new(mode.to_string())),
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn mount_backend(
+    mode: FsMountMode,
+    _host: &Arc<HumataVolumeHost>,
+    _router: &Arc<CapabilityRouter>,
+    _control_socket: &PathBuf,
+    _bridge_socket: Option<PathBuf>,
+) -> (String, Arc<dyn MountBackend>) {
+    (
+        format!("fusefs://{mode}/humata2"),
+        Arc::new(PosixMountBackend::new(mode.to_string())),
+    )
 }
 
 /// Decodes the updates humatad2 pushes and applies them to the volume host.

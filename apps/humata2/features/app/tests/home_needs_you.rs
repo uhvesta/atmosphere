@@ -111,3 +111,28 @@ fn nothing_pending_and_nothing_needing_you_is_empty() {
     let workspace: Workspace = fixture::empty();
     assert!(needs_you(&workspace).is_empty());
 }
+
+#[test]
+fn a_session_blocked_only_on_a_to_do_ask_stays_off_home_needs_you() {
+    let (mut workspace, _session, mut request) = one_session(Status::NeedsYou);
+    request.to_do = Some(humata2_clients::model::ToDoAsk::NewItem);
+    workspace.requests = vec![request];
+
+    assert!(needs_you(&workspace).is_empty());
+}
+
+#[test]
+fn a_session_with_both_a_to_do_ask_and_an_inbox_request_still_needs_you() {
+    let (mut workspace, session, inbox_req) = one_session(Status::NeedsYou);
+    let mut todo_req = inbox_req.clone();
+    todo_req.id = humata2_clients::model::RequestId::new("todo-ask-1");
+    todo_req.to_do = Some(humata2_clients::model::ToDoAsk::NewItem);
+    workspace.requests = vec![todo_req, inbox_req.clone()];
+
+    let summary = needs_you(&workspace);
+    assert!(matches!(
+        summary.rows.as_slice(),
+        [NeedsRow::Session { session: listed, request: Some(asked) }]
+            if listed.id == session.id && asked.id == inbox_req.id
+    ));
+}

@@ -115,8 +115,15 @@ pub(super) fn read_failed_block(
 
 /// A repository whose read failed while the others were read (DS-35): its
 /// name, why it failed, and Try again, which reads the session again.
-pub(super) fn repo_error_row(ui: &Rc<Ui>, look: Look, repo: &str, message: &str) -> AnyElement {
+pub(super) fn repo_error_row(
+    ui: &Rc<Ui>,
+    look: Look,
+    repo: &str,
+    message: &str,
+    all_repos: &[&str],
+) -> AnyElement {
     let retry = ui.clone();
+    let shown_repo = display_repo_name(repo, all_repos.iter().copied());
     col()
         .id(SharedString::from(format!("repo-error-{repo}")))
         .gap(px(2.))
@@ -128,7 +135,7 @@ pub(super) fn repo_error_row(ui: &Rc<Ui>, look: Look, repo: &str, message: &str)
                 .h(px(26.))
                 .child(icon(IconName::FolderGit2, look.secondary, 12.))
                 .child(full_text(
-                    text(repo_label(repo).to_owned())
+                    text(shown_repo.to_owned())
                         .id(SharedString::from(format!("repo-error-name-{repo}")))
                         .font_weight(FontWeight::SEMIBOLD)
                         .min_w_0()

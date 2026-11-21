@@ -83,3 +83,29 @@
 The codex+copilot `probe` run was stopped by the before/after check: `~/.codex/tmp/arg0-macos/codex-arg00PsbI3/.lock` (a new dir) was written in the same second the run started, even with `CODEX_HOME` set to the scratch copy. It could also be the running Codex app-server. Waiting for main's call. Codex 0.169 also rejects `--ask-for-approval untrusted`; it accepts only on-request or never.
 
 **2026-11-20 cause found.** The runner's own `<agent> --version` call ran under the real HOME and made the `~/.codex/tmp/arg0-macos/codex-arg0*` folders (00PsbI3, wT0FaD). The app-server didn't make them: they were born a second before the run's own copies, and only its two 11-19 folders are held open. Both stay untouched. Version calls now run in `$SCRATCH/version-home`, and codex runs set `HOME` and `CODEX_HOME` to scratch. The re-probe of codex and copilot passed the check with no exclusions.
+
+**2026-11-20 D917 isolation fixes.** Hardened `record_corpus.sh` per the D917 Judge ruling:
+- Isolated `HOME=$home` for all agents (including `claude` and `copilot`); `claude` also supports `SCREENPARSE_CLAUDE_TOKEN` / `ANTHROPIC_API_KEY` env token auth (keeping `CLAUDE_SECURESTORAGE_CONFIG_DIR` in scratch) and falls back to keychain lookup with `HOME` and `CLAUDE_CONFIG_DIR` still isolated in `$home`.
+- Isolated Copilot in both `version_of` and `setup` with `HOME`, `COPILOT_HOME`, `COPILOT_CACHE_HOME`, `COPILOT_PKG_CACHE_HOME`, `COPILOT_AUTO_UPDATE=false`, and `--no-auto-update`.
+- Unset host CLI/XDG path vars at script start and explicitly overrode `GEMINI_CLI_HOME`, `COPILOT_CACHE_HOME`, `COPILOT_PKG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `CLAUDE_SECURESTORAGE_CONFIG_DIR` in both `version_of` and `setup` so non-`env -i` runs cannot leak host paths.
+- Updated `real_changes` to include `"$HOME/.gemini"`, detect modified/created directories and symlinks in addition to files, and removed the broad `grep -vE` exclusions.
+- Verified with `bash -n`. Ready for main to review/re-verify and rerun.
+
+**2026-11-20 batch 2 (corpus labeling, parser fixes, fast replay & live target):**
+- **Corpus reviewed & labeled** (`apps/humata2/daemon/svc_inbox/tests/screens/{claude/2.1.329,codex/0.169.0,copilot/1.0.115-1}/`):
+  - Pruned 14 empty/broken captures (`copilot/1.0.115-1/login.w*.01-no_login.txt` and 10 empty narrow-width `copilot` `01-launch` captures).
+  - Labeled all 318 remaining real captures (`236 none`, `62 prompt:folder_trust`, `8 prompt:onboarding`, `4 prompt:permission`, `4 prompt:mcp`, `4 prompt:login`; zero `unknown`).
+- **Parser fixes** (`apps/humata2/daemon/runtime/src/screen_question.rs`):
+  - Extended `ASKED` so `asked_on` recognizes Claude Code 2.1.329 (`"Quick safety check: Is this a project you created or one you trust?"`) and Codex 0.169.0 (`"Trust this folder? Codex can read, edit, and run files here"`) folder trust dialogs in addition to Copilot's.
+  - Added `PromptKind`, `ScreenPrompt`, `prompt_on(screen) -> Option<ScreenPrompt>`, and `extract_choices(screen)` (handling numbered `❯`/`›`/`>` menus and Claude's unnumbered `❯` lists).
+  - Fixed detection of Codex 0.169.0's ASCII `> 1.` login prompt (`PromptKind::Login`), Codex MCP tool permission (`PromptKind::Mcp`), Codex command permission (`PromptKind::Permission`), and Claude 2.1.329's first-run theme picker (`PromptKind::Onboarding`), with `has_active_prompt` delegating to `prompt_on`.
+- **Fast-tier replay test & slow-tier live target**:
+  - `apps/humata2/daemon/svc_inbox/tests/screen_replay.rs`: deterministic fast-tier test (`screen_replay_test`, zero model calls, zero sleeps) verifying all 318 recorded screens against `prompt_on` / `has_active_prompt` / `asked_on`, choice extraction across widths 60/80/120/200, and `ScreenAsk` prompt hold + clear transitions (folder trust and MCP hook ask) using paused Tokio time + `Notify`.
+  - `apps/humata2/daemon/svc_inbox/tests/screenparse/live_test.sh`: slow-tier `screenparse_live` wrapper (`manual`, `external`, `slow`, `local`, `no-sandbox`) that skips cleanly (exit 0) when agent logins/binaries are absent.
+  - `apps/humata2/daemon/svc_inbox/BUILD.bazel`: added `:screen_replay_test` and `:screenparse_live`.
+- **Targets for main to test:**
+  - `//apps/humata2/daemon/runtime:runtime_unit_test`
+  - `//apps/humata2/daemon/svc_inbox:svc_inbox_unit_test`
+  - `//apps/humata2/daemon/svc_inbox:screenparse_unit_test`
+  - `//apps/humata2/daemon/svc_inbox:screen_replay_test`
+  - `//apps/humata2/daemon/svc_inbox:screenparse_live` (optional/manual slow tier)

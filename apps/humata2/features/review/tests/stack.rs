@@ -34,6 +34,7 @@ fn range(repo: &str, base: &str, head: &str) -> RepoDiffSpec {
             base: base.to_owned(),
             head: head.to_owned(),
         },
+        options: Default::default(),
     }
 }
 

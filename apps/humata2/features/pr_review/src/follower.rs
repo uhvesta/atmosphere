@@ -192,6 +192,8 @@ pub enum Delegate {
     Show(Place),
     /// Show this stack layer in the review; `None` is Whole stack.
     ShowLayer(Option<String>),
+    /// Apply or clear the agent's review plan.
+    Plan(Option<PlanView>),
 }
 
 /// The follower's reducer.
@@ -299,7 +301,11 @@ impl Follower {
                     None => Reverse::Nothing,
                 }
             }
-            Some(ReviewChangeKind::Plan(plan)) => Reverse::Plan(state.plan.replace(plan)),
+            Some(ReviewChangeKind::Plan(plan)) => {
+                let before = state.plan.replace(plan.clone());
+                effect = Effect::send(FollowerAction::Delegate(Delegate::Plan(Some(plan))));
+                Reverse::Plan(before)
+            }
             Some(ReviewChangeKind::Layer(layer)) => {
                 let before = std::mem::replace(&mut state.layer, layer.clone());
                 effect = Effect::send(FollowerAction::Delegate(Delegate::ShowLayer(layer)));
@@ -364,8 +370,8 @@ impl Follower {
                 Effect::none()
             }
             Reverse::Plan(plan) => {
-                state.plan = plan;
-                Effect::none()
+                state.plan.clone_from(&plan);
+                Effect::send(FollowerAction::Delegate(Delegate::Plan(plan)))
             }
             Reverse::Layer(layer) => {
                 state.layer.clone_from(&layer);

@@ -23,9 +23,11 @@ mod access;
 mod agent_asks;
 mod agent_switches;
 mod boards;
+mod browser;
 mod channels;
 // REPOS (CH-6): Add a GitHub repo to a channel.
 mod channel_repos;
+mod cli_auth;
 mod desk;
 mod docs;
 mod inbox;
@@ -39,9 +41,11 @@ mod running;
 // REPOS (CH-21)
 mod session_repos;
 mod sessions;
+mod settings_full;
 mod setup;
 mod stop;
 mod sync;
+mod web_todo;
 mod todo_automation;
 mod terminal_link;
 mod terminals;
@@ -91,6 +95,7 @@ struct Inner {
     last_move: Option<(SessionId, MachineId)>,
     last_continue: Option<(SessionId, ChannelId, Option<u32>)>,
     last_archive: Option<(SessionId, bool)>,
+    last_archive_end: Option<bool>,
     terminal_input: HashMap<(SessionId, usize), Vec<u8>>,
     sent_keys: std::collections::HashSet<String>,
     /// Shell tabs whose shell has exited, with its code.
@@ -116,8 +121,21 @@ struct Inner {
     switches: Vec<AgentSwitch>,
     /// FUSEFS: Settings › Sync and the mount switch.
     sync: crate::daemon::SyncSnapshot,
+    /// WEBTODO (D905): host daemon's loopback To-do web UI switch and URL.
+    web_todo: crate::daemon::WebTodoSnapshot,
     /// TODO2WIRE: Settings › General › To-do.
     todo_automation: crate::daemon::TodoAutomation,
+    /// SETTINGSFIX: full global settings, gh default prefix, and per-channel settings.
+    full_settings: crate::daemon::FullSettings,
+    gh_default_prefix: String,
+    channel_settings: HashMap<ChannelId, crate::daemon::ChannelSettings>,
+    /// BROWSER: Settings › Browser detected browsers.
+    browsers: Vec<crate::model::DetectedBrowser>,
+    /// SETTINGSFIX: pending and live `humata login` sessions and script tokens.
+    pending_cli_logins: Vec<crate::daemon::PendingCliLogin>,
+    cli_login_answers: Vec<(String, bool)>,
+    cli_sessions: Vec<crate::daemon::CliSession>,
+    script_tokens: Vec<crate::daemon::ScriptToken>,
     github_repos: Vec<String>,
     /// Document versions (DV-2 to DV-8).
     docs: docs::Store,
@@ -168,6 +186,7 @@ impl FakeDaemon {
                 last_move: None,
                 last_continue: None,
                 last_archive: None,
+                last_archive_end: None,
                 terminal_input: HashMap::new(),
                 sent_keys: std::collections::HashSet::new(),
                 exited_tabs: HashMap::new(),
@@ -185,7 +204,16 @@ impl FakeDaemon {
                 codex_needs_trust: false,
                 switches: agent_switches::defaults(),
                 sync: crate::daemon::SyncSnapshot::default(),
+                web_todo: crate::daemon::WebTodoSnapshot::default(),
                 todo_automation: crate::daemon::TodoAutomation::default(),
+                full_settings: crate::daemon::FullSettings::default(),
+                gh_default_prefix: String::new(),
+                channel_settings: HashMap::new(),
+                browsers: browser::defaults(),
+                pending_cli_logins: Vec::new(),
+                cli_login_answers: Vec::new(),
+                cli_sessions: Vec::new(),
+                script_tokens: Vec::new(),
                 docs: docs::Store::default(),
                 github_repos: [
                     "acme/ledger",
@@ -293,6 +321,22 @@ impl FakeDaemon {
         self.inner().failures.insert(operation, error);
     }
 
+    /// Sets the fake's GitHub default branch prefix (e.g. `"alice/"`) for `refresh_gh_login`.
+    pub fn set_gh_default_prefix(&self, prefix: impl Into<String>) {
+        self.inner().gh_default_prefix = prefix.into();
+    }
+
+    /// Replaces the fake's full global settings snapshot.
+    pub fn set_full_settings(&self, settings: crate::daemon::FullSettings) {
+        self.inner().full_settings = settings;
+    }
+
+    /// Reads the fake's current full global settings snapshot synchronously.
+    #[must_use]
+    pub fn full_settings_snapshot(&self) -> crate::daemon::FullSettings {
+        self.inner().full_settings.clone()
+    }
+
     /// Says how much disk archiving `session` will free, as people read it ("1.4 GB").
     /// Makes the daemon say Codex's hooks still need trusting, or not (D202).
     pub fn set_codex_needs_trust(&self, on: bool) {
@@ -314,6 +358,11 @@ impl FakeDaemon {
     /// Presets the agents' switches (AGENTSET); the next `agent_switches` gives these.
     pub fn set_agent_switches(&self, switches: Vec<AgentSwitch>) {
         self.inner().switches = switches;
+    }
+
+    /// Presets the detected browsers for Settings › Browser (BROWSER).
+    pub fn set_detected_browsers(&self, browsers: Vec<crate::model::DetectedBrowser>) {
+        self.inner().browsers = browsers;
     }
 
     /// Says which GitHub repositories `gh` sees on the host, as `owner/name`,
@@ -374,6 +423,10 @@ impl FakeDaemon {
     #[must_use]
     pub fn last_archive(&self) -> Option<(SessionId, bool)> {
         self.inner().last_archive.clone()
+    }
+
+    pub fn last_archive_end(&self) -> Option<bool> {
+        self.inner().last_archive_end
     }
 
     /// Says what `session`'s changes against origin/main are now.
@@ -751,12 +804,42 @@ impl Daemon for FakeDaemon {
         sync::set_sync_settings(self, change)
     }
 
+    fn web_todo_settings(&self) -> Reply<crate::daemon::WebTodoSnapshot> {
+        web_todo::web_todo_settings(self)
+    }
+
+    fn set_web_todo_enabled(&self, enabled: bool) -> Reply<crate::daemon::WebTodoSnapshot> {
+        web_todo::set_web_todo_enabled(self, enabled)
+    }
+
     fn todo_automation(&self) -> Reply<crate::daemon::TodoAutomation> {
         todo_automation::todo_automation(self)
     }
 
     fn set_todo_automation(&self, section: crate::daemon::TodoAutomation) -> Reply<crate::daemon::TodoAutomation> {
         todo_automation::set_todo_automation(self, section)
+    }
+
+    fn list_detected_browsers(&self) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        browser::list_detected_browsers(self)
+    }
+
+    fn install_browser_host(
+        &self,
+        kinds: Vec<crate::model::BrowserKind>,
+    ) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        browser::install_browser_host(self, kinds)
+    }
+
+    fn uninstall_browser_host(
+        &self,
+        kinds: Vec<crate::model::BrowserKind>,
+    ) -> Reply<Vec<crate::model::DetectedBrowser>> {
+        browser::uninstall_browser_host(self, kinds)
+    }
+
+    fn browser_bridge_status(&self) -> Reply<crate::model::BrowserBridgeStatus> {
+        browser::browser_bridge_status(self)
     }
 
     fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch> {
@@ -851,7 +934,11 @@ impl Daemon for FakeDaemon {
     }
 
     fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive> {
-        sessions::archive(self, session, push_first)
+        sessions::archive(self, session, push_first, false)
+    }
+
+    fn archive_with_end(&self, session: &SessionId, push_first: bool, end: bool) -> Reply<Archive> {
+        sessions::archive(self, session, push_first, end)
     }
 
     fn add_machine(&self, address: &str) -> Reply<MachineId> {
@@ -1047,6 +1134,57 @@ impl Daemon for FakeDaemon {
 
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()> {
         transfers::retry_transfer(self, transfer)
+    }
+
+    fn full_settings(&self) -> Reply<crate::daemon::FullSettings> {
+        settings_full::full_settings(self)
+    }
+
+    fn update_settings(
+        &self,
+        patch: crate::daemon::SettingsPatch,
+    ) -> Reply<crate::daemon::FullSettings> {
+        settings_full::update_settings(self, patch)
+    }
+
+    fn refresh_gh_login(&self) -> Reply<crate::daemon::FullSettings> {
+        settings_full::refresh_gh_login(self)
+    }
+
+    fn channel_settings(&self, channel: &ChannelId) -> Reply<crate::daemon::ChannelSettings> {
+        settings_full::channel_settings(self, channel)
+    }
+
+    fn update_channel_settings(
+        &self,
+        channel: &ChannelId,
+        patch: crate::daemon::ChannelSettingsPatch,
+    ) -> Reply<crate::daemon::ChannelSettings> {
+        settings_full::update_channel_settings(self, channel, patch)
+    }
+
+    fn list_pending_cli_logins(&self) -> Reply<Vec<crate::daemon::PendingCliLogin>> {
+        cli_auth::list_pending_cli_logins(self)
+    }
+
+    fn answer_cli_login(&self, id: String, allow: bool) -> Reply<()> {
+        cli_auth::answer_cli_login(self, id, allow)
+    }
+
+    fn list_cli_sessions(&self) -> Reply<Vec<crate::daemon::CliSession>> {
+        cli_auth::list_cli_sessions(self)
+    }
+
+    fn end_cli_session(&self, id: String) -> Reply<()> {
+        cli_auth::end_cli_session(self, id)
+    }
+
+    fn list_script_tokens(&self) -> Reply<Vec<crate::daemon::ScriptToken>> {
+        cli_auth::list_script_tokens(self)
+    }
+
+    fn revoke_script_token(&self, id: String) -> Reply<()> {
+        cli_auth::revoke_script_token(self, id)
     }
 }
 

@@ -105,7 +105,15 @@ async fn a_desk_start_cut_on_a_box_is_named_stuck_by_its_restart_and_a_fresh_sta
         .await
         .expect("the host lists its Desk sessions")
         .into_inner();
-    assert!(listed.sessions.is_empty(), "the host kept no record of the start it was answered for: {:?}", listed.sessions);
+    // SMB-051: on a transient link drop mid-start, the host keeps the pending
+    // session record and its Asked journal so recovery can reconcile under the
+    // same id once the box comes back.
+    assert_eq!(
+        listed.sessions.len(),
+        1,
+        "the host keeps its pending record across a transient link drop: {:?}",
+        listed.sessions
+    );
 
     // The session box-1 kept: its folder holds the repository the start made.
     let kept: Vec<_> = rig

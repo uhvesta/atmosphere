@@ -189,6 +189,15 @@ async fn starting_a_review_makes_the_pr_reviews_channel_and_one_session_on_every
     let fixture = Fixture::new().await;
     assert!(fixture.pr_reviews_channels().await.is_empty());
 
+    let mut events = pb::event_service_client::EventServiceClient::new(fixture.daemon.channel().await)
+        .subscribe(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Channels as i32],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
     let session = fixture.start_review(&[API, LEDGER]).await;
 
     let channels = fixture.pr_reviews_channels().await;
@@ -196,6 +205,23 @@ async fn starting_a_review_makes_the_pr_reviews_channel_and_one_session_on_every
     let channel = &channels[0];
     assert_eq!(session.channel, channel.id);
     assert_eq!(channel.folder, "pr-reviews");
+
+    // The first PR review publishes the newly created PR Reviews channel on the
+    // event feed so live clients immediately show it in the sidebar and header.
+    let told = tokio::time::timeout(common::WAIT, async {
+        loop {
+            let event = events.message().await.unwrap().expect("the feed ended");
+            if let Some(pb::event::Payload::Channel(told)) = event.payload {
+                break (event.change, told);
+            }
+        }
+    })
+    .await
+    .expect("first PR review publishes a Channel event");
+    assert_eq!(told.0, pb::Change::Created as i32);
+    assert_eq!(told.1.id, channel.id);
+    assert_eq!(told.1.folder, "pr-reviews");
+    assert!(told.1.is_pr_reviews);
     let mut repos = channel.repos.clone();
     repos.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(repos, [repo_ref("acme", "api"), repo_ref("acme", "ledger")]);

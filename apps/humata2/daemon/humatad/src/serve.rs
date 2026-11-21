@@ -348,6 +348,9 @@ pub async fn run(
     let stop_folder = crate::stop::StopFolder::new(&state);
     let stop_mode = crate::stop::boot::read_mode(&stop_folder);
     let stopped_now = matches!(stop_mode, crate::stop::boot::Mode::Stopped(_));
+    // Mint `<state>/browser-host.token` (0o600) before binding the socket so
+    // any browser host or test connecting as soon as the socket accepts finds it.
+    let browser_host_token = identity::ensure_browser_host_token(&state)?;
     // Bound before the store is opened, so a second daemon on the same
     // socket stops here; and only the daemon that has the socket keeps
     // the log.
@@ -411,7 +414,8 @@ pub async fn run(
         Arc::new(Kernel),
         role,
     )
-    .with_admin(admin);
+    .with_admin(admin)
+    .with_browser_host_token(&browser_host_token);
     // D144: a connection that completes the relay's proof is the host's.
     // The session check inside it uses the interceptor as it is now, with
     // no relay, so there is no cycle.
@@ -561,15 +565,7 @@ pub async fn run(
         .with_session_homes(crate::wire_stop_restart::launch_home)
         .with_existing_session_homes(crate::config_sync::existing_home_of);
     // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
-    // D782: a write to agents.toml reaches every linked machine, once the
-    // machines are served (below).
-    let (agents_changed, register_catalog) = match plugins.catalog {
-        Some(plugin) => {
-            let (changed, register) = plugin.build(agents.clone(), args.agents.is_none());
-            (changed, Some(register))
-        }
-        None => (crate::agent_switches::OnChange::default(), None),
-    };
+    let catalog_agents = agents.clone();
     // D782's upgrade: D199's one "ask in the agent" switch becomes every
     // kind's own `asks_in_inbox`, once.
     if let Err(error) = crate::inbox::permission::move_global_switch(&store, &agents) {
@@ -583,6 +579,8 @@ pub async fn run(
     // D782: the Inbox reads each agent's own "Ask in the Inbox".
     let inbox_agents = agents.clone();
     let ready_agents = agents.clone();
+    // AGENTOFF (D915): a flipped switch re-tells every channel's start agent.
+    let channel_agents = agents.clone();
     let reports = state.join("restarts");
     private_folder(&reports)?;
     // D373: which holder file each holder is spawned from.
@@ -632,6 +630,7 @@ pub async fn run(
         .with_held(start_messages.clone())
         .with_signal(ready_signal.clone());
     let feed = Arc::new(Feed::default());
+    logins.set_feed(feed.clone());
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
     // AW-8: the policy copy, made here on the host, put in force on a machine.
     let policy_copy = crate::wire_away::build_policy_source(guard.clone(), store.clone());
@@ -674,6 +673,20 @@ pub async fn run(
     );
     // D782: each ask reads its agent's own switch.
     inbox.use_agents(inbox_agents);
+    // D782 / SETTINGSFIX Slice 3: AgentService writes reach linked machines
+    // and route agent edits through SettingsChange Inbox gating.
+    let (agents_changed, register_catalog) = match plugins.catalog {
+        Some(plugin) => {
+            let (changed, register) = plugin.build(
+                catalog_agents,
+                args.agents.is_none(),
+                guard.clone(),
+                inbox.clone(),
+            );
+            (changed, Some(register))
+        }
+        None => (crate::agent_switches::OnChange::default(), None),
+    };
     start_messages.tell(inbox.clone(), store.clone(), machine.clone());
     ready_signal.tell(inbox.clone(), store.clone(), machine.clone(), ready_agents);
     // D261: a stopped boot ends every holder, withdraws the Inbox's pending
@@ -979,6 +992,12 @@ pub async fn run(
     });
     // REPOS (RL-12, D568): on a machine, its RepoService sends up the Uplink.
     let repo_forwarder = uplinks.forwarder();
+    // BROWSER (D891): on a machine, its BrowserBridgeService forwards status
+    // and approved action execution up the Uplink to the host Mac.
+    let browser_forwarder = uplinks.forwarder();
+    // PROVIDERCLI (D906): on a machine, its ProviderService forwards provider
+    // reads and import asks up the Uplink to the host Mac.
+    let provider_forwarder = uplinks.forwarder();
     // DK-14, D182: the Desk's sessions, beside the session service.
     let desk_tokens = Arc::new(crate::restart::Tokens::new(
         store.clone(),
@@ -1082,9 +1101,32 @@ pub async fn run(
         }));
     }
     fusefs.follow(&feed);
-    fusefs.set_enabled(crate::config_sync::saved_fusefs_enabled(&state));
-    let settings = crate::settings_service::SettingsSvc::new(
+    carry_svc.on_released({
+        let fusefs = fusefs.clone();
+        Arc::new(move || fusefs.push_topology())
+    });
+    let fusefs_enabled = crate::config_sync::saved_fusefs_enabled(&state);
+    fusefs.set_enabled(fusefs_enabled);
+    // WEBTODO (D905): only the root/host daemon serves the loopback To-do web UI.
+    let web_todo = if role == pb::DaemonRole::Host {
+        let board_source = crate::web_todo::DaemonBoardSource::new(store.clone(), &feed);
+        let controller = Arc::new(humata2_web_todo_server::WebTodoController::new(
+            tokio::runtime::Handle::current(),
+            crate::web_todo::bind_addr(),
+            crate::web_todo::load_assets(),
+            board_source,
+        ));
+        if crate::web_todo::saved_enabled(&state) {
+            let boot_controller = Arc::clone(&controller);
+            let _ = tokio::task::spawn_blocking(move || boot_controller.set_enabled(true)).await;
+        }
+        Some(controller)
+    } else {
+        None
+    };
+    let mut settings = crate::settings_service::SettingsSvc::new(
         guard.clone(),
+        inbox.clone(),
         store.clone(),
         machine.clone(),
         feed.clone(),
@@ -1102,6 +1144,21 @@ pub async fn run(
         let fusefs = fusefs.clone();
         Arc::new(move || fusefs.mount_status_wire())
     });
+    if let Some(web_todo) = &web_todo {
+        settings = settings
+            .with_web_todo_switch({
+                let web_todo = Arc::clone(web_todo);
+                Arc::new(move |on| web_todo.set_enabled(on))
+            })
+            .with_web_todo_status({
+                let web_todo = Arc::clone(web_todo);
+                Arc::new(move || crate::web_todo::status_to_wire(web_todo.status()))
+            });
+        web_todo.on_status_change({
+            let (settings, runtime) = (settings.clone(), tokio::runtime::Handle::current());
+            Arc::new(move || settings.tell_in_background(runtime.clone()))
+        });
+    }
     // D908: the mount moves on its own (Starting to Mounted, a helper that
     // died); the app hears it as a Settings event.
     fusefs.on_status_change({
@@ -1244,7 +1301,23 @@ pub async fn run(
             // D782: a changed agents.toml goes to every linked machine now,
             // not only at its next link-up.
             let pushes = work.clone();
-            agents_changed.set(move || machine_service::agents_changed(&pushes));
+            let (retell_feed, retell_store, retell_agents) =
+                (feed.clone(), store.clone(), channel_agents.clone());
+            agents_changed.set(move || {
+                machine_service::agents_changed(&pushes);
+                // AGENTOFF (D915): a switch that flips can change every
+                // channel's start agent, so the app hears each again.
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let (feed, store, agents) = (
+                        retell_feed.clone(),
+                        retell_store.clone(),
+                        retell_agents.clone(),
+                    );
+                    runtime.spawn_blocking(move || {
+                        crate::channel_service::tell_every_channel(&feed, &store, &agents, None);
+                    });
+                }
+            });
             let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone(), inbox.clone());
             let skills = crate::skills_service::SkillsSvc::new(
                 guard.clone(),
@@ -1277,7 +1350,23 @@ pub async fn run(
                 skills,
             ))
         }
-        _ => None,
+        _ => {
+            let (retell_feed, retell_store, retell_agents) =
+                (feed.clone(), store.clone(), channel_agents.clone());
+            agents_changed.set(move || {
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let (feed, store, agents) = (
+                        retell_feed.clone(),
+                        retell_store.clone(),
+                        retell_agents.clone(),
+                    );
+                    runtime.spawn_blocking(move || {
+                        crate::channel_service::tell_every_channel(&feed, &store, &agents, None);
+                    });
+                }
+            });
+            None
+        }
     };
     // D768: only the host keeps machines and links them, so a machine's
     // agents look machines up, read other machines' files and copy between
@@ -1285,10 +1374,20 @@ pub async fn run(
     if let Some((_machine_svc, _, _)) = &machines {
         // Sessions already wired via new_machine_svc OnceLock.
     }
+    let browser_bridge = crate::browser_service::BrowserBridgeSvc::new(
+        inbox.clone(),
+        crate::browser_service::BrowserHostLayout::from_env(&state, &humatad),
+    );
     match &machines {
-        Some((machine_svc, _, _)) => {
+        Some((machine_svc, provider_svc, _)) => {
             if let Some(board) = &board_plugin {
-                board.answer_host_calls(machine_svc.clone(), files.clone(), transfers.clone());
+                board.answer_host_calls(
+                    machine_svc.clone(),
+                    provider_svc.clone(),
+                    files.clone(),
+                    transfers.clone(),
+                    browser_bridge.clone(),
+                );
             }
         }
         None if role == pb::DaemonRole::Machine => {
@@ -1314,10 +1413,35 @@ pub async fn run(
     // which the interceptor can't see the path of. The last, next to the
     // services, ends their streams when the daemon leaves (D270).
     // D241: every recovery of a cut operation has noted itself pending by
-    // now, so the restart report that follows names each one.
-    last_start.recoveries_noted();
+    // now, so the restart report that follows names each one. When FUSEFS is
+    // enabled at boot, wait for the initial mount attempt to settle before
+    // reviving sessions so resumed holders inherit `HUMATA_FUSE_ROOT`.
+    if fusefs_enabled {
+        let fusefs = fusefs.clone();
+        let started = last_start.clone();
+        tokio::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || fusefs.wait_idle()).await;
+            started.recoveries_noted();
+        });
+    } else {
+        last_start.recoveries_noted();
+    }
     let (leaving, cut_streams) = crate::stop::streams::Leaving::signal();
     let mut routes = tonic::service::Routes::builder();
+    if role == pb::DaemonRole::Host {
+        routes.add_service(
+            pb::browser_bridge_service_server::BrowserBridgeServiceServer::new(browser_bridge),
+        );
+    } else {
+        routes.add_service(
+            pb::browser_bridge_service_server::BrowserBridgeServiceServer::new(
+                crate::browser_service::BrowserBridgeOnMachine::new(
+                    inbox.clone(),
+                    browser_forwarder,
+                ),
+            ),
+        );
+    }
     routes
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
             crate::wire_stop_restart::new_daemon(machine.clone(), role)
@@ -1415,9 +1539,15 @@ pub async fn run(
             .add_service(pb::skills_service_server::SkillsServiceServer::new(
                 skills,
             )),
-        None => not_built::register_host_only(router.add_service(
-            pb::machine_service_server::MachineServiceServer::new(box_machines),
-        )),
+        None => not_built::register_host_only(
+            router
+                .add_service(pb::machine_service_server::MachineServiceServer::new(
+                    box_machines,
+                ))
+                .add_service(pb::provider_service_server::ProviderServiceServer::new(
+                    crate::provider_service::OnMachine::new(provider_forwarder),
+                )),
+        ),
     };
     let router = not_built::register(router);
 
@@ -1449,8 +1579,12 @@ pub async fn run(
     let shutdown = {
         let feed = feed.clone();
         let socket = socket.clone();
+        let web_todo = web_todo.clone();
         async move {
             stop.await;
+            if let Some(web_todo) = web_todo {
+                web_todo.shutdown();
+            }
             feed.end_subscriptions();
             leaving.now();
             unlink_socket(&socket, socket_id);

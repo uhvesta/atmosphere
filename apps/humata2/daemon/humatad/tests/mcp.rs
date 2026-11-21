@@ -255,21 +255,32 @@ async fn an_agent_types_into_its_own_session_through_mcp() {
     let typed = fixture.daemon.dir.path().join("typed");
 
     let tools = mcp.request(1, "tools/list", json!({})).await;
+    let listed = mcp.call(2, "humata_list", json!({})).await;
     let result = mcp
         .call(
-            2,
-            "session_type",
-            json!({ "session": SESSION, "text": format!("printf ok > {}\r", typed.display()) }),
+            3,
+            "humata_call",
+            json!({
+                "name": "session_type",
+                "arguments": { "session": SESSION, "text": format!("printf ok > {}\r", typed.display()) },
+            }),
         )
         .await;
 
-    let names: Vec<&str> = tools["tools"]
+    let meta_names: Vec<&str> = tools["tools"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.contains(&"session_type"));
+    assert_eq!(meta_names, ["humata_call", "humata_describe", "humata_list"]);
+    let names: Vec<&str> = listed["structuredContent"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str()?.split_whitespace().next())
+        .collect();
+    assert!(names.contains(&"session_type"), "{names:?}");
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(result["structuredContent"]["outcome"], "applied");
     assert_eq!(read_when_written(&typed).await, "ok");
@@ -325,16 +336,44 @@ async fn tools_list_offers_only_tools_the_daemon_runs() {
     );
 
     let listed = mcp.request(2, "tools/list", json!({})).await;
-    let tools = listed["tools"].as_array().unwrap();
-    let names: Vec<&str> = tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
-    assert!(!names.contains(&"journal_status"), "{names:?}");
-    assert!(names.contains(&"whoami"), "{names:?}");
-    assert!(names.contains(&"topology_get"), "{names:?}");
+    let meta_names: Vec<&str> = listed["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(meta_names, ["humata_call", "humata_describe", "humata_list"]);
+
+    let hlist = mcp.call(3, "humata_list", json!({})).await;
+    let names: Vec<String> = hlist["structuredContent"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str()?.split_whitespace().next().map(str::to_owned))
+        .collect();
+    assert!(!names.iter().any(|n| n == "journal_status"), "{names:?}");
+    assert!(names.iter().any(|n| n == "whoami"), "{names:?}");
+    assert!(names.iter().any(|n| n == "topology_get"), "{names:?}");
+    assert!(names.iter().any(|n| n == "inbox_wait"), "{names:?}");
 
     // Every listed tool that only reads and needs no arguments runs; none
     // of them answers "not built".
+    let mut described = Vec::new();
     let mut id = 10;
-    for tool in tools {
+    for chunk in names.chunks(20) {
+        id += 1;
+        let batch = mcp
+            .call(id, "humata_describe", json!({ "names": chunk }))
+            .await;
+        described.extend(
+            batch["structuredContent"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+    }
+    for tool in described {
         let reads = tool["annotations"]["readOnlyHint"] == true;
         let needs_nothing = tool["inputSchema"]["required"]
             .as_array()
@@ -344,7 +383,9 @@ async fn tools_list_offers_only_tools_the_daemon_runs() {
         }
         id += 1;
         let name = tool["name"].as_str().unwrap();
-        let result = mcp.call(id, name, json!({})).await;
+        let result = mcp
+            .call(id, "humata_call", json!({ "name": name, "arguments": {} }))
+            .await;
         assert_ne!(
             result["structuredContent"]["error"]["kind"], "peer_version_unsupported",
             "{name} is listed but not built: {result}"
@@ -816,6 +857,171 @@ async fn an_agents_provider_import_waits_in_the_inbox_and_approving_adds_the_pro
         .unwrap();
     let done = mcp.response(1).await;
 
+    assert_eq!(done["isError"], false, "{done}");
+    assert_eq!(done["structuredContent"]["result"]["imported"], true, "{done}");
+    let config = providers
+        .get_providers_config(pb::GetProvidersConfigRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(config.toml, file);
+}
+
+/// PROVIDERCLI (D906): every read-only offline provider helper tool works over
+/// MCP (`provider_guide`, `provider_schema`, `provider_example`, `provider_check`,
+/// `provider_render`, `provider_parse`), and `provider_request_import` files a
+/// host Inbox card identical to `provider_import`.
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_cli_mcp_helpers_and_request_import_work_end_to_end() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    // 1. provider_guide
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": { "name": "provider_guide", "arguments": {} },
+    }))
+    .await;
+    let guide = mcp.response(10).await;
+    assert_eq!(guide["isError"], false, "{guide}");
+    assert!(
+        guide["structuredContent"]["result"]["guide"]
+            .as_str()
+            .is_some_and(|s| s.contains("Humata Machine Providers Guide")),
+        "{guide}"
+    );
+
+    // 2. provider_schema
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": { "name": "provider_schema", "arguments": { "json": true } },
+    }))
+    .await;
+    let schema = mcp.response(11).await;
+    assert_eq!(schema["isError"], false, "{schema}");
+    assert!(schema["structuredContent"]["result"]["schema"].is_object(), "{schema}");
+
+    // 3. provider_example (list, then specific)
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": { "name": "provider_example", "arguments": {} },
+    }))
+    .await;
+    let list = mcp.response(12).await;
+    assert_eq!(list["isError"], false, "{list}");
+    assert!(
+        list["structuredContent"]["result"]["examples"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "{list}"
+    );
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "tools/call",
+        "params": { "name": "provider_example", "arguments": { "kind": "lima" } },
+    }))
+    .await;
+    let lima = mcp.response(13).await;
+    assert_eq!(lima["isError"], false, "{lima}");
+    let lima_toml = lima["structuredContent"]["result"]["toml"]
+        .as_str()
+        .expect("lima toml")
+        .to_owned();
+
+    // 4. provider_check
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "tools/call",
+        "params": { "name": "provider_check", "arguments": { "toml": lima_toml } },
+    }))
+    .await;
+    let check = mcp.response(14).await;
+    assert_eq!(check["isError"], false, "{check}");
+    assert_eq!(check["structuredContent"]["result"]["ok"], true, "{check}");
+
+    // 5. provider_render
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 15,
+        "method": "tools/call",
+        "params": {
+            "name": "provider_render",
+            "arguments": {
+                "toml": lima_toml,
+                "action": "connect",
+                "machine": "devbox",
+            },
+        },
+    }))
+    .await;
+    let rendered = mcp.response(15).await;
+    assert_eq!(rendered["isError"], false, "{rendered}");
+    assert_eq!(rendered["structuredContent"]["result"]["provider"], "lima", "{rendered}");
+    assert_eq!(rendered["structuredContent"]["result"]["action"], "connect", "{rendered}");
+
+    // 6. provider_parse
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 16,
+        "method": "tools/call",
+        "params": {
+            "name": "provider_parse",
+            "arguments": { "kind": "status", "output": "running\n" },
+        },
+    }))
+    .await;
+    let parsed = mcp.response(16).await;
+    assert_eq!(parsed["isError"], false, "{parsed}");
+    assert_eq!(parsed["structuredContent"]["result"]["state"], "running", "{parsed}");
+
+    // 7. provider_request_import files a host Inbox card and applies on approval
+    let channel = fixture.daemon.channel().await;
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(channel.clone());
+    let mut providers = pb::provider_service_client::ProviderServiceClient::new(channel);
+    let file = "[providers.acme]\nlabel = \"Acme\"\ncreate = 'acme-make {name}'\nconnect = 'acme-reach {name} -- {cmd}'\n";
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 17,
+        "method": "tools/call",
+        "params": {
+            "name": "provider_request_import",
+            "arguments": { "file_text": file, "file_name": "acme.toml", "reason": "add Acme provider" },
+        },
+    }))
+    .await;
+    let deadline = Instant::now() + WAIT;
+    let asked = loop {
+        let waiting = inbox
+            .list_requests(pb::ListRequestsRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .requests;
+        if let Some(found) = waiting.into_iter().next() {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "provider_request_import never reached the Inbox");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(asked.capability(), pb::Capability::ProviderImport);
+    inbox
+        .answer_request(answered(
+            asked.id.as_ref().unwrap(),
+            pb::request_answer::Answer::Approve(pb::Approve {}),
+        ))
+        .await
+        .unwrap();
+    let done = mcp.response(17).await;
     assert_eq!(done["isError"], false, "{done}");
     assert_eq!(done["structuredContent"]["result"]["imported"], true, "{done}");
     let config = providers

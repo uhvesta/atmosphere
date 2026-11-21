@@ -30,6 +30,9 @@ fn to_io(err: mount::MountError) -> io::Error {
 
 impl MountBackend for LinuxFuseBackend {
     fn mount(&self, config: &MountConfig) -> io::Result<Option<u32>> {
+        if self.is_stale_mount(&config.mountpoint)? {
+            self.cleanup_stale_mount(&config.mountpoint)?;
+        }
         if let Err(err) = fs::metadata(&config.mountpoint)
             && err.kind() == io::ErrorKind::NotFound
         {

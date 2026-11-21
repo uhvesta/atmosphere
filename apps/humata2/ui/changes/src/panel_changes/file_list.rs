@@ -9,6 +9,36 @@ pub(super) fn repo_label(repo: &str) -> &str {
     repo.strip_prefix('/').unwrap_or(repo)
 }
 
+/// The short name of a repository: `humata2` for `org/humata2`, `large` for `/large`.
+fn short_repo_name(repo: &str) -> &str {
+    let label = repo_label(repo);
+    label.rsplit('/').next().unwrap_or(label)
+}
+
+/// How a repository is displayed beside the others in `all`: only the short
+/// repo name (`humata2` for `org/humata2`), unless two or more repositories in
+/// `all` share that short name, in which case `org/repo` is shown to
+/// disambiguate them.
+pub(super) fn display_repo_name<'a, 'b>(
+    repo: &'a str,
+    all: impl IntoIterator<Item = &'b str>,
+) -> &'a str {
+    let short = short_repo_name(repo);
+    let collision = all
+        .into_iter()
+        .any(|other| other != repo && short_repo_name(other) == short);
+    if collision { repo_label(repo) } else { short }
+}
+
+/// Effective width of the full-screen Diff file list column for a panel of
+/// `panel_width` logical pixels: clamped to `[MIN_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH]`
+/// and bounded so the code pane keeps at least 160 px when the window is narrow.
+pub(super) fn effective_file_list_width(saved_width: f32, panel_width: f32) -> f32 {
+    let clamped = humata2_review::clamp_file_list_width(saved_width);
+    let max_for_window = (panel_width - 160.).max(humata2_review::MIN_FILE_LIST_WIDTH);
+    clamped.min(max_for_window)
+}
+
 /// A path split into its directory, with the trailing `/` (empty when there
 /// is none), and its file name.
 pub(super) fn split_path(path: &str) -> (&str, &str) {
@@ -685,6 +715,7 @@ pub(super) fn file_bar(
         .position(|(repo, path)| *repo == diff.repo && *path == file.path)
         .map_or(1, |at| at + 1);
     let (dir, file_name) = split_path(&file.path);
+    let shown_repo = display_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()));
     let toggle = ui.clone();
     row()
         .id("diff-file-bar")
@@ -723,7 +754,7 @@ pub(super) fn file_bar(
                 .gap(px(4.))
                 .when(!compact, |line| {
                     line.child(full_text(
-                        secondary(look, repo_label(&diff.repo))
+                        secondary(look, shown_repo)
                             .id("diff-file-bar-repo")
                             .flex_shrink_0()
                             .max_w(relative(0.25))
@@ -835,7 +866,9 @@ pub(super) fn file_filter_field(ui: &Rc<Ui>, look: Look, documents: &Documents, 
 
 #[cfg(test)]
 mod tests {
-    use super::{file_note, repo_label, split_path};
+    use super::{
+        display_repo_name, effective_file_list_width, file_note, repo_label, split_path,
+    };
     use humata2_clients::model::{DiffLine, FileChange, FileDiff, LineKind};
 
     fn code_line(text: &str) -> DiffLine {
@@ -852,6 +885,50 @@ mod tests {
         assert_eq!(repo_label("/large"), "large");
         assert_eq!(repo_label("acme/api"), "acme/api");
         assert_eq!(repo_label("api"), "api");
+    }
+
+    #[core::prelude::v1::test]
+    fn display_repo_name_omits_owner_when_unique_and_disambiguates_collisions() {
+        // Unique repo names omit `org/`.
+        assert_eq!(display_repo_name("org/humata2", ["org/humata2"]), "humata2");
+        assert_eq!(
+            display_repo_name("org/humata2", ["org/humata2", "acme/web"]),
+            "humata2"
+        );
+        assert_eq!(
+            display_repo_name("acme/web", ["org/humata2", "acme/web"]),
+            "web"
+        );
+        assert_eq!(display_repo_name("/large", ["/large"]), "large");
+
+        // Colliding short repo names show `org/repo`, while non-colliding siblings stay short.
+        let repos = ["acme/api", "other/api", "acme/web"];
+        assert_eq!(display_repo_name("acme/api", repos), "acme/api");
+        assert_eq!(display_repo_name("other/api", repos), "other/api");
+        assert_eq!(display_repo_name("acme/web", repos), "web");
+
+        // Local repo colliding with an org repo disambiguates the org repo.
+        let mixed = ["/api", "acme/api"];
+        assert_eq!(display_repo_name("/api", mixed), "api");
+        assert_eq!(display_repo_name("acme/api", mixed), "acme/api");
+    }
+
+    #[core::prelude::v1::test]
+    fn file_list_width_clamps_to_bounds() {
+        use humata2_review::{
+            DEFAULT_FILE_LIST_WIDTH, MAX_FILE_LIST_WIDTH, MIN_FILE_LIST_WIDTH,
+        };
+
+        assert_eq!(effective_file_list_width(100., 1200.), MIN_FILE_LIST_WIDTH);
+        assert_eq!(effective_file_list_width(360., 1200.), 360.);
+        assert_eq!(effective_file_list_width(900., 1200.), MAX_FILE_LIST_WIDTH);
+        assert_eq!(
+            effective_file_list_width(f32::NAN, 1200.),
+            DEFAULT_FILE_LIST_WIDTH
+        );
+        // Narrow panel still keeps room for the code pane while honoring min width.
+        assert_eq!(effective_file_list_width(500., 500.), 340.);
+        assert_eq!(effective_file_list_width(500., 300.), MIN_FILE_LIST_WIDTH);
     }
 
     #[test]

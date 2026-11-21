@@ -41,6 +41,7 @@ Tab "To-do"
 Tab "Repos and machines"
 Tab "Agent access"
 Tab "Activity"
+Tab "Settings"
 #channel-sessions
   #channel-session-filter
     #input

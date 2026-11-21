@@ -17,11 +17,17 @@ const GLOBAL_KEYS: &str = "one of default_agent.agent, default_agent.model, term
      retention_defaults.archive_pr_reviews_after_days, \
      retention_defaults.archive_idle_sessions_after_days, long_lines, skills.auto_sync, \
      skills.exclude_patterns, notifications.quiet_from, notifications.quiet_until, \
-     notifications.vip_breaks_quiet_hours, security.contain_agents";
+     notifications.vip_breaks_quiet_hours, security.contain_agents, \
+     todo_automation.on_pr_merged, todo_automation.on_todo_closed_archive_sessions, \
+     todo_automation.auto_wake_on_ci_fail, todo_automation.auto_wake_on_review_comments, \
+     todo_automation.idle_nudge_days, sync.sync_enabled, sync.skills, sync.instructions, \
+     sync.mcp, sync.settings, sync.skills_mode, fusefs_enabled";
 
 const CHANNEL_KEYS: &str = "one of default_agent.agent, default_agent.model, branch_prefix, \
      retention.archive_pr_reviews_after_days, retention.archive_idle_sessions_after_days, \
-     contain_agents";
+     contain_agents, todo_automation.on_pr_merged, \
+     todo_automation.on_todo_closed_archive_sessions, todo_automation.auto_wake_on_ci_fail, \
+     todo_automation.auto_wake_on_review_comments, todo_automation.idle_nudge_days";
 
 /// The value the channel's own setting is dropped with, so the global one
 /// applies again.
@@ -73,6 +79,30 @@ pub(super) async fn get<D: Daemon, C: Console>(
     pick(all, key, GLOBAL_KEYS).map(Done::reply)
 }
 
+fn parse_todo_mode(field: &'static str, value: &str) -> Result<i32, CliError> {
+    match value {
+        "ask" => Ok(pb::TodoSyncMode::Ask as i32),
+        "auto" => Ok(pb::TodoSyncMode::Auto as i32),
+        _ => Err(CliError::BadValue {
+            field,
+            value: value.into(),
+            expected: "ask or auto",
+        }),
+    }
+}
+
+fn parse_sync_skills_mode(value: &str) -> Result<i32, CliError> {
+    match value {
+        "host_wins" => Ok(pb::SyncSkillsMode::HostWins as i32),
+        "host_only" => Ok(pb::SyncSkillsMode::HostOnly as i32),
+        _ => Err(CliError::BadValue {
+            field: "sync.skills_mode",
+            value: value.into(),
+            expected: "host_wins or host_only",
+        }),
+    }
+}
+
 /// The update for one global key, with only that key's part set.
 fn global_update(
     current: pb::Settings,
@@ -88,6 +118,8 @@ fn global_update(
     let retention = current.retention_defaults.unwrap_or_default();
     let skills = current.skills.unwrap_or_default();
     let notifications = current.notifications.unwrap_or_default();
+    let todo = current.todo_automation.unwrap_or_default();
+    let sync = current.sync.unwrap_or_default();
     match key {
         "default_agent.agent" => {
             update.default_agent = Some(pb::DefaultAgent {
@@ -198,6 +230,84 @@ fn global_update(
                 contain_agents: parse::on_off("security.contain_agents", value)?,
             });
         }
+        "todo_automation.on_pr_merged" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                on_pr_merged: parse_todo_mode("todo_automation.on_pr_merged", value)?,
+                ..todo
+            });
+        }
+        "todo_automation.on_todo_closed_archive_sessions" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                on_todo_closed_archive_sessions: parse_todo_mode(
+                    "todo_automation.on_todo_closed_archive_sessions",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.auto_wake_on_ci_fail" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                auto_wake_on_ci_fail: parse::on_off(
+                    "todo_automation.auto_wake_on_ci_fail",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.auto_wake_on_review_comments" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                auto_wake_on_review_comments: parse::on_off(
+                    "todo_automation.auto_wake_on_review_comments",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.idle_nudge_days" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                idle_nudge_days: parse::number("todo_automation.idle_nudge_days", value)?,
+                ..todo
+            });
+        }
+        "sync.sync_enabled" => {
+            update.sync = Some(pb::SyncSettings {
+                sync_enabled: parse::on_off("sync.sync_enabled", value)?,
+                ..sync
+            });
+        }
+        "sync.skills" => {
+            update.sync = Some(pb::SyncSettings {
+                skills: parse::on_off("sync.skills", value)?,
+                ..sync
+            });
+        }
+        "sync.instructions" => {
+            update.sync = Some(pb::SyncSettings {
+                instructions: parse::on_off("sync.instructions", value)?,
+                ..sync
+            });
+        }
+        "sync.mcp" => {
+            update.sync = Some(pb::SyncSettings {
+                mcp: parse::on_off("sync.mcp", value)?,
+                ..sync
+            });
+        }
+        "sync.settings" => {
+            update.sync = Some(pb::SyncSettings {
+                settings: parse::on_off("sync.settings", value)?,
+                ..sync
+            });
+        }
+        "sync.skills_mode" => {
+            update.sync = Some(pb::SyncSettings {
+                skills_mode: parse_sync_skills_mode(value)?,
+                ..sync
+            });
+        }
+        "fusefs_enabled" => {
+            update.fusefs_enabled = Some(parse::on_off("fusefs_enabled", value)?);
+        }
         _ => return Err(unknown(key, GLOBAL_KEYS)),
     }
     Ok(update)
@@ -250,6 +360,7 @@ fn channel_update(
     };
     let agent = current.default_agent.unwrap_or_default();
     let retention = current.retention.unwrap_or_default();
+    let todo = current.todo_automation.unwrap_or_default();
     let inherit = value == INHERIT;
     match key {
         "default_agent.agent" | "default_agent.model" if inherit => {
@@ -292,6 +403,54 @@ fn channel_update(
         "contain_agents" if inherit => update.clear_contain_agents = true,
         "contain_agents" => {
             update.contain_agents = Some(parse::on_off("contain_agents", value)?);
+        }
+        "todo_automation.on_pr_merged"
+        | "todo_automation.on_todo_closed_archive_sessions"
+        | "todo_automation.auto_wake_on_ci_fail"
+        | "todo_automation.auto_wake_on_review_comments"
+        | "todo_automation.idle_nudge_days"
+            if inherit =>
+        {
+            update.clear_todo_automation = true;
+        }
+        "todo_automation.on_pr_merged" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                on_pr_merged: parse_todo_mode("todo_automation.on_pr_merged", value)?,
+                ..todo
+            });
+        }
+        "todo_automation.on_todo_closed_archive_sessions" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                on_todo_closed_archive_sessions: parse_todo_mode(
+                    "todo_automation.on_todo_closed_archive_sessions",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.auto_wake_on_ci_fail" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                auto_wake_on_ci_fail: parse::on_off(
+                    "todo_automation.auto_wake_on_ci_fail",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.auto_wake_on_review_comments" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                auto_wake_on_review_comments: parse::on_off(
+                    "todo_automation.auto_wake_on_review_comments",
+                    value,
+                )?,
+                ..todo
+            });
+        }
+        "todo_automation.idle_nudge_days" => {
+            update.todo_automation = Some(pb::TodoAutomationSettings {
+                idle_nudge_days: parse::number("todo_automation.idle_nudge_days", value)?,
+                ..todo
+            });
         }
         _ => return Err(unknown(key, CHANNEL_KEYS)),
     }
@@ -387,5 +546,50 @@ mod tests {
             serde_json::json!("Menlo")
         );
         assert!(pick(all, Some("terminal.nope".into()), GLOBAL_KEYS).is_err());
+    }
+
+    #[test]
+    fn global_todo_sync_and_fusefs_keys_update_their_sections() {
+        let current = pb::Settings {
+            todo_automation: Some(pb::TodoAutomationSettings {
+                on_pr_merged: pb::TodoSyncMode::Ask as i32,
+                idle_nudge_days: 3,
+                ..Default::default()
+            }),
+            sync: Some(pb::SyncSettings {
+                sync_enabled: true,
+                skills: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let todo_u = global_update(current.clone(), "todo_automation.on_pr_merged", "auto").unwrap();
+        assert_eq!(
+            todo_u.todo_automation.as_ref().map(|t| t.on_pr_merged),
+            Some(pb::TodoSyncMode::Auto as i32)
+        );
+        assert_eq!(todo_u.todo_automation.as_ref().map(|t| t.idle_nudge_days), Some(3));
+
+        let sync_u = global_update(current.clone(), "sync.skills_mode", "host_only").unwrap();
+        assert_eq!(
+            sync_u.sync.as_ref().map(|s| s.skills_mode),
+            Some(pb::SyncSkillsMode::HostOnly as i32)
+        );
+        assert_eq!(sync_u.sync.as_ref().map(|s| s.sync_enabled), Some(true));
+
+        let fuse_u = global_update(current, "fusefs_enabled", "on").unwrap();
+        assert_eq!(fuse_u.fusefs_enabled, Some(true));
+    }
+
+    #[test]
+    fn channel_todo_automation_supports_override_and_inherit() {
+        let current = pb::ChannelSettings::default();
+        let set = channel_update(current.clone(), "todo_automation.idle_nudge_days", "7").unwrap();
+        assert_eq!(set.todo_automation.as_ref().map(|t| t.idle_nudge_days), Some(7));
+        assert!(!set.clear_todo_automation);
+
+        let cleared = channel_update(current, "todo_automation.on_pr_merged", INHERIT).unwrap();
+        assert!(cleared.clear_todo_automation);
+        assert!(cleared.todo_automation.is_none());
     }
 }

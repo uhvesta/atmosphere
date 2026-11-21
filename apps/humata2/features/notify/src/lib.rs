@@ -379,7 +379,9 @@ fn evaluate_silent(
                 | RequestKind::FileEdit
                 | RequestKind::Network
                 | RequestKind::Merge
-                | RequestKind::Destroy => config.inbox_requests,
+                | RequestKind::Destroy
+                | RequestKind::BrowserRead
+                | RequestKind::BrowserWrite => config.inbox_requests,
             };
             if !allowed {
                 return None;
