@@ -29,6 +29,7 @@ fn as_agent<T>(message: T, token: &str) -> tonic::Request<T> {
 struct Scene {
     daemon: &'static Daemon,
     world: &'static World,
+    channel: pb::ChannelId,
     asker: pb::SessionId,
     target: pb::SessionId,
     /// The target's agent, as its hooks speak for it.
@@ -81,6 +82,7 @@ impl Scene {
         let mut scene = Self {
             daemon,
             world,
+            channel: channel.id.unwrap(),
             asker,
             target,
             target_token,
@@ -220,6 +222,15 @@ async fn a_note_waits_for_the_targets_turn_to_end_then_is_typed_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agents_note_asks_the_user_first_and_names_the_sending_session() {
     let scene = Scene::new().await;
+    pb::access_service_client::AccessServiceClient::new(scene.daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(scene.channel.clone()),
+            capability: pb::Capability::SessionNote as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let refused = scene
         .sessions()
         .await

@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use humata2_clients::model::{ChannelId, RequestKind, ResumeFailure, Session, SessionId, Status};
 use humata2_clients::{DaemonError, DesktopNotice, Event, Workspace};
-use humata2_notify::{FrontmostContext, NotifyEvent};
+use humata2_notify::{FrontmostContext, NotifyEvent, trace_gate};
 use humata2_session::{Panel, SessionAction};
 use tca::{Effect, StreamEnd};
 
@@ -31,10 +32,20 @@ fn session_channel_meta(
 fn session_meta(
     workspace: &Workspace,
     session_id: &SessionId,
+    channel_id: &ChannelId,
 ) -> (String, Option<ChannelId>, Option<String>) {
     match workspace.session(session_id) {
         Some(session) => session_channel_meta(workspace, session),
-        None => (session_id.as_str().to_owned(), None, None),
+        None if *channel_id == humata2_clients::desk::channel() => {
+            (session_id.as_str().to_owned(), None, None)
+        }
+        None => {
+            let name = workspace
+                .channel(channel_id)
+                .map(|c| c.name.clone())
+                .or_else(|| Some(channel_id.as_str().to_owned()));
+            (session_id.as_str().to_owned(), Some(channel_id.clone()), name)
+        }
     }
 }
 
@@ -81,18 +92,30 @@ impl App {
             }
             _ => None,
         };
+        let viewing_inbox = state.route == Route::Inbox;
+        let viewing_session_inbox = state.panel() == Some(Panel::Inbox);
+        // When the full Inbox list (global, channel, or session panel) is open,
+        // leave `viewing_request` as `None` so list-level suppression applies
+        // to every incoming request visible in that list; callers focused on a
+        // single request detail can set `viewing_request = Some(id)`.
         FrontmostContext {
             app_active: state.window_active,
-            viewing_inbox: state.route == Route::Inbox,
+            viewing_inbox,
             viewing_home: state.route == Route::Home,
             viewing_session,
-            viewing_session_inbox: state.panel() == Some(Panel::Inbox),
+            viewing_session_inbox,
             viewing_channel_inbox,
             viewing_todo: state.route == Route::Todo,
+            viewing_request: None,
         }
     }
 
     pub(super) fn post_notice(&self, notice: DesktopNotice) -> Effect<AppAction> {
+        trace_gate(
+            "app_post_notice",
+            "dispatch",
+            &format!("id={} sound={:?}", notice.id, notice.sound),
+        );
         let notifier = self.clients.notifier.clone();
         Effect::run(move |_send| async move {
             notifier.post(notice);
@@ -111,6 +134,11 @@ impl App {
 
     pub(super) fn clear_visible_notices(&self, state: &mut AppState) -> Effect<AppAction> {
         if !state.window_active {
+            trace_gate(
+                "clear_visible_notices",
+                "skip",
+                &format!("window_active=false route={:?}", state.route),
+            );
             return Effect::none();
         }
         let mut withdraw = Vec::new();
@@ -161,6 +189,17 @@ impl App {
             }
             _ => {}
         }
+        if !withdraw.is_empty() {
+            trace_gate(
+                "clear_visible_notices",
+                "withdraw",
+                &format!(
+                    "window_active=true route={:?} count={}",
+                    state.route,
+                    withdraw.len()
+                ),
+            );
+        }
         self.withdraw_notices(withdraw)
     }
 
@@ -201,17 +240,30 @@ impl App {
                             humata2_desk::ChannelDeskStatus::Closed,
                         );
                     }
-                    withdraw_ids.extend(humata2_notify::clear_session(
+                    let cleared = humata2_notify::clear_session(
                         &mut state.notify_burst,
                         &session.id,
-                    ));
+                    );
+                    if !cleared.is_empty() {
+                        trace_gate(
+                            "event_session",
+                            "clear_session",
+                            &format!(
+                                "session={} reason=archived count={}",
+                                session.id.as_str(),
+                                cleared.len()
+                            ),
+                        );
+                    }
+                    withdraw_ids.extend(cleared);
                     Self::evict_session(state, &session.id);
                 } else if live {
                     let (session_title, channel_id, channel_name) =
                         session_channel_meta(&state.workspace, &session);
                     if prev_resume_failed.is_none()
                         && let Some(failure) = session.resume_failed
-                        && let Some(notice) = humata2_notify::evaluate(
+                    {
+                        let evaluated = humata2_notify::evaluate(
                             &state.settings.preferences.notify,
                             &frontmost,
                             &mut state.notify_burst,
@@ -223,9 +275,15 @@ impl App {
                                 reason: resume_failure_reason(failure),
                             },
                             now_secs,
-                        )
-                    {
-                        notices.push(notice);
+                        );
+                        trace_gate(
+                            "event_session_resume_failed",
+                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            &format!("session={}", session.id.as_str()),
+                        );
+                        if let Some(notice) = evaluated {
+                            notices.push(notice);
+                        }
                     }
                     if prev_status != Some(Status::NeedsYou) && session.status == Status::NeedsYou {
                         let has_pending_inbox_request = state.workspace.waiting().any(|request| {
@@ -239,8 +297,14 @@ impl App {
                                 && request.answer.is_none()
                                 && request.is_to_do_ask()
                         });
-                        if !has_pending_to_do_ask
-                            && let Some(notice) = humata2_notify::evaluate(
+                        if has_pending_to_do_ask {
+                            trace_gate(
+                                "event_session_needs_you",
+                                "suppressed",
+                                &format!("session={} reason=pending_todo_ask", session.id.as_str()),
+                            );
+                        } else {
+                            let evaluated = humata2_notify::evaluate(
                                 &state.settings.preferences.notify,
                                 &frontmost,
                                 &mut state.notify_burst,
@@ -253,15 +317,25 @@ impl App {
                                     has_pending_inbox_request,
                                 },
                                 now_secs,
-                            )
-                        {
-                            notices.push(notice);
+                            );
+                            trace_gate(
+                                "event_session_needs_you",
+                                if evaluated.is_some() { "notify" } else { "suppressed" },
+                                &format!(
+                                    "session={} has_pending_inbox={has_pending_inbox_request}",
+                                    session.id.as_str()
+                                ),
+                            );
+                            if let Some(notice) = evaluated {
+                                notices.push(notice);
+                            }
                         }
                     }
                     if let Status::Exited { code } = session.status
                         && code != 0
                         && prev_status != Some(Status::Exited { code })
-                        && let Some(notice) = humata2_notify::evaluate(
+                    {
+                        let evaluated = humata2_notify::evaluate(
                             &state.settings.preferences.notify,
                             &frontmost,
                             &mut state.notify_burst,
@@ -274,9 +348,15 @@ impl App {
                                 already_resume_failed: session.resume_failed.is_some(),
                             },
                             now_secs,
-                        )
-                    {
-                        notices.push(notice);
+                        );
+                        trace_gate(
+                            "event_session_abnormal_exit",
+                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            &format!("session={} code={code}", session.id.as_str()),
+                        );
+                        if let Some(notice) = evaluated {
+                            notices.push(notice);
+                        }
                     }
                     if session.status == Status::Working
                         && session.resume_failed.is_none()
@@ -288,10 +368,22 @@ impl App {
                                 && !request.operation.starts_with("board.")
                         })
                     {
-                        withdraw_ids.extend(humata2_notify::clear_session(
+                        let cleared = humata2_notify::clear_session(
                             &mut state.notify_burst,
                             &session.id,
-                        ));
+                        );
+                        if !cleared.is_empty() {
+                            trace_gate(
+                                "event_session",
+                                "clear_session",
+                                &format!(
+                                    "session={} reason=working count={}",
+                                    session.id.as_str(),
+                                    cleared.len()
+                                ),
+                            );
+                        }
+                        withdraw_ids.extend(cleared);
                     }
                 }
                 snapshot = Some(session.id.clone());
@@ -306,15 +398,27 @@ impl App {
                     .requests
                     .iter()
                     .any(|saved| saved.id == request.id);
+                let answered = request.answer.is_some();
+                let is_todo_ask = request.is_to_do_ask();
+                let is_board_op = request.operation.starts_with("board.");
+                let is_migrate = request.kind == RequestKind::Migrate;
+                trace_gate(
+                    "event_request",
+                    "enter",
+                    &format!(
+                        "id={} live={live} is_new={is_new} answered={answered} todo={is_todo_ask} board={is_board_op} migrate={is_migrate}",
+                        request.id.as_str()
+                    ),
+                );
                 if state.settings.preferences.permission_request_alerts
-                    && request.answer.is_none()
+                    && !answered
                     && !matches!(request.kind, RequestKind::Question)
-                    && !request.is_to_do_ask()
+                    && !is_todo_ask
                     && is_new
                 {
                     permission_alert = Some(format!("Permission requested: {}", request.title));
                 }
-                if request.answer.is_some() {
+                if answered {
                     withdraw_ids.extend(humata2_notify::clear_request(
                         &mut state.notify_burst,
                         &request.id,
@@ -331,7 +435,7 @@ impl App {
                             humata2_clients::model::ToDoAsk::Item(id) => Some(id.clone()),
                             humata2_clients::model::ToDoAsk::NewItem => None,
                         };
-                        if let Some(desktop_notice) = humata2_notify::evaluate(
+                        let evaluated = humata2_notify::evaluate(
                             &state.settings.preferences.notify,
                             &frontmost,
                             &mut state.notify_burst,
@@ -345,38 +449,58 @@ impl App {
                                 body: notice.body,
                             },
                             now_secs,
-                        ) {
+                        );
+                        trace_gate(
+                            "event_request_todo",
+                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            &format!("id={}", request.id.as_str()),
+                        );
+                        if let Some(desktop_notice) = evaluated {
                             notices.push(desktop_notice);
                         }
+                    } else {
+                        trace_gate(
+                            "event_request_todo",
+                            "no_inbox_notice",
+                            &format!("id={}", request.id.as_str()),
+                        );
                     }
-                } else if live
-                    && is_new
-                    && request.kind != RequestKind::Migrate
-                    && !request.is_to_do_ask()
-                                && !request.operation.starts_with("board.")
-                    && let Some(notice) = humata2_inbox::notification(&state.workspace, &request)
-                {
-                    let (session_title, channel_id, channel_name) =
-                        session_meta(&state.workspace, &request.session);
-                    if let Some(desktop_notice) = humata2_notify::evaluate(
-                        &state.settings.preferences.notify,
-                        &frontmost,
-                        &mut state.notify_burst,
-                        NotifyEvent::InboxRequest {
-                            request_id: request.id.clone(),
-                            session_id: request.session.clone(),
-                            session_title,
-                            channel_id,
-                            channel_name,
-                            kind: request.kind.clone(),
-                            operation: request.operation.clone(),
-                            answered: false,
-                            title: notice.title,
-                            body: notice.body,
-                        },
-                        now_secs,
-                    ) {
-                        notices.push(desktop_notice);
+                } else if live && is_new && !is_migrate && !is_todo_ask && !is_board_op {
+                    if let Some(notice) = humata2_inbox::notification(&state.workspace, &request) {
+                        let (session_title, channel_id, channel_name) =
+                            session_meta(&state.workspace, &request.session, &request.channel);
+                        let evaluated = humata2_notify::evaluate(
+                            &state.settings.preferences.notify,
+                            &frontmost,
+                            &mut state.notify_burst,
+                            NotifyEvent::InboxRequest {
+                                request_id: request.id.clone(),
+                                session_id: request.session.clone(),
+                                session_title,
+                                channel_id,
+                                channel_name,
+                                kind: request.kind.clone(),
+                                operation: request.operation.clone(),
+                                answered: false,
+                                title: notice.title,
+                                body: notice.body,
+                            },
+                            now_secs,
+                        );
+                        trace_gate(
+                            "event_request_inbox",
+                            if evaluated.is_some() { "notify" } else { "suppressed" },
+                            &format!("id={}", request.id.as_str()),
+                        );
+                        if let Some(desktop_notice) = evaluated {
+                            notices.push(desktop_notice);
+                        }
+                    } else {
+                        trace_gate(
+                            "event_request_inbox",
+                            "no_inbox_notice",
+                            &format!("id={}", request.id.as_str()),
+                        );
                     }
                 }
                 let workspace = Arc::make_mut(&mut state.workspace);
@@ -535,10 +659,22 @@ impl App {
                 AppAction::Session(SessionAction::Delegate(humata2_session::Delegate::Left)),
             ));
         }
+        let has_permission_alert = permission_alert.is_some();
         if let Some(text) = permission_alert {
             effects.push(state.toast(text, &self.clients.clock));
         }
         for notice in notices {
+            if live
+                && frontmost.app_active
+                && state.settings.preferences.notify.in_app_toasts
+                && !has_permission_alert
+            {
+                effects.push(state.toast_for(
+                    notice.title.clone(),
+                    &self.clients.clock,
+                    Duration::from_secs(humata2_notify::DECK_TOAST_DURATION_SECS),
+                ));
+            }
             effects.push(self.post_notice(notice));
         }
         if !withdraw_ids.is_empty() {

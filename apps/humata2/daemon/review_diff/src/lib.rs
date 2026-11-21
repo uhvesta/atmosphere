@@ -67,7 +67,7 @@ pub use comments::{
     UserComment,
 };
 pub use diff::Matching;
-pub use looks::Look;
+pub use looks::{LayerLook, Look, reconcile_looks_after_restack};
 pub use error::{DiffError, PlanError};
 pub use model::{
     Budget, Cursor, DiffLine, FileChunk, FileStatus, FileSummary, Hunk, LineKind, RepoDiff, Side,
@@ -82,8 +82,8 @@ pub use plan::{
 };
 pub use snapshot::KEPT_SNAPSHOTS;
 pub use stack::{
-    CheckedStack, Drift, DriftKind, FilePlan, Layer, LayerRepo, Part, Resolved, Stack,
-    StackError,
+    CheckedStack, Drift, DriftKind, FilePlan, Layer, LayerRepo, LayerRestack, Part,
+    REBASED_DIFF_UNCHANGED_NOTE, Resolved, RestackStatus, Stack, StackError,
 };
 pub use spec::{
     Base, BaseContext, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace,

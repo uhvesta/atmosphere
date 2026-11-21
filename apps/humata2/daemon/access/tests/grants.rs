@@ -19,13 +19,28 @@ fn granted(verdict: &Verdict) -> bool {
     )
 }
 
+fn ask_policy() -> Policy {
+    let mut policy = policy();
+    let rules = Rules::Channel(payments());
+    for cap in [
+        Capability::SessionNote,
+        Capability::FilesReadOtherSession,
+        Capability::FilesCopyIn,
+    ] {
+        policy
+            .set_rule(&user(), &rules, cap, Decision::Ask)
+            .expect("Ask is offered");
+    }
+    policy
+}
+
 fn asks_again(verdict: &Verdict) -> bool {
     matches!(verdict, Verdict::Ask(_))
 }
 
 #[test]
 fn always_let_covers_the_folder_asked_for_and_nothing_beside_it() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let b_agent = as_agent(b());
     let grant = grant_for(&mut policy, &b_agent, &read(file_of(&a(), "src/lib/mod.rs")));
 
@@ -58,7 +73,7 @@ fn always_let_covers_the_folder_asked_for_and_nothing_beside_it() {
 
 #[test]
 fn a_grant_belongs_to_one_session_and_forks_get_none() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     grant_for(&mut policy, &as_agent(b()), &call);
 
@@ -79,7 +94,7 @@ fn a_grant_belongs_to_one_session_and_forks_get_none() {
 
 #[test]
 fn a_grant_can_not_be_wider_than_the_offer() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let asked = request(check(
         &policy,
         &as_agent(b()),
@@ -119,7 +134,7 @@ fn a_grant_can_not_be_wider_than_the_offer() {
 
 #[test]
 fn approving_once_makes_no_grant() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     let asked = request(check(&policy, &as_agent(b()), &call, &on_mac()));
     let approval = policy
@@ -131,7 +146,7 @@ fn approving_once_makes_no_grant() {
 
 #[test]
 fn a_grant_records_who_asked_which_request_where_and_when() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let asked = request(check(&policy, &as_agent(b()), &note_to(a()), &on_mac()));
     let offered = asked.always_let.clone().expect("offered");
     let grant = policy
@@ -162,7 +177,7 @@ fn a_grant_records_who_asked_which_request_where_and_when() {
 
 #[test]
 fn nothing_offered_means_no_always_let() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     // IN-22 names no target for moving a session.
     let asked = request(check(
         &policy,
@@ -185,7 +200,7 @@ fn nothing_offered_means_no_always_let() {
 
 #[test]
 fn revoking_a_grant_takes_effect_on_the_next_call() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     let grant = grant_for(&mut policy, &as_agent(b()), &call);
     assert!(granted(&check(&policy, &as_agent(b()), &call, &on_mac())));
@@ -201,7 +216,7 @@ fn revoking_a_grant_takes_effect_on_the_next_call() {
 
 #[test]
 fn a_never_rule_suspends_grants_until_it_changes_back() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     let grant = grant_for(&mut policy, &as_agent(b()), &call);
     let rules = Rules::Channel(payments());
@@ -225,7 +240,7 @@ fn a_never_rule_suspends_grants_until_it_changes_back() {
 
 #[test]
 fn grants_end_with_their_session() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     grant_for(&mut policy, &as_agent(b()), &call);
     let ended = policy.end_grants_of(&b().id);
@@ -235,7 +250,7 @@ fn grants_end_with_their_session() {
 
 #[test]
 fn a_moved_session_keeps_its_grants() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     grant_for(&mut policy, &as_agent(b()), &call);
     // b moves to the box: same session, other machine.
@@ -248,7 +263,7 @@ fn a_moved_session_keeps_its_grants() {
 
 #[test]
 fn approving_checks_the_rule_as_it_is_now() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let call = note_to(a());
     let asked = request(check(&policy, &as_agent(b()), &call, &on_mac()));
     policy
@@ -279,7 +294,7 @@ fn approving_checks_the_rule_as_it_is_now() {
 
 #[test]
 fn asking_ahead_grants_what_always_let_would() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let start = use_on(
         Capability::SessionStartOtherMachine,
         Target::Start {
@@ -384,7 +399,7 @@ fn agent_calls() -> Vec<Call> {
 
 #[test]
 fn no_sequence_of_agent_calls_widens_a_grant() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     let b_agent = as_agent(b());
     let b_self = humata2_access::Agent {
         session: b(),
@@ -427,7 +442,7 @@ fn only_a_present_user_can_change_the_policy() {
 #[test]
 fn a_grant_made_on_a_machine_applies_there_at_once_and_replays_to_the_mac() {
     // The box's copy of the policy, the Mac away.
-    let mut on_box = policy();
+    let mut on_box = ask_policy();
     let call = note_to(d());
     let asked = request(check(&on_box, &as_agent(c()), &call, &on_box_away()));
     assert_eq!(asked.answer_at, humata2_access::AnswerAt::Machine(the_box()));
@@ -463,14 +478,14 @@ fn a_grant_made_on_a_machine_applies_there_at_once_and_replays_to_the_mac() {
     assert!(granted(&check(&on_box, &as_agent(c()), &call, &on_box_away())));
 
     // At replay the Mac takes it in as the same grant.
-    let mut mac_policy = policy();
+    let mut mac_policy = ask_policy();
     let replayed = mac_policy.replay_grant(&grant).expect("a machine grant replays");
     assert_eq!(replayed.target, grant.target);
     assert_eq!(replayed.requester, grant.requester);
     assert!(granted(&check(&mac_policy, &as_agent(c()), &call, &on_mac())));
 
     // A grant made on the Mac is not replayable: replay can't mint grants.
-    let mut other = policy();
+    let mut other = ask_policy();
     let mac_grant = grant_for(&mut other, &as_agent(b()), &note_to(a()));
     assert!(matches!(
         mac_policy.replay_grant(&mac_grant),
@@ -480,7 +495,7 @@ fn a_grant_made_on_a_machine_applies_there_at_once_and_replays_to_the_mac() {
 
 #[test]
 fn stored_policy_comes_back_the_same_and_bad_state_is_refused() {
-    let mut policy = policy();
+    let mut policy = ask_policy();
     grant_for(&mut policy, &as_agent(b()), &note_to(a()));
     let state = policy.to_state();
     assert_eq!(Policy::from_state(state.clone()).expect("valid"), policy);

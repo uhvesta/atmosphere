@@ -91,6 +91,29 @@ export function web_todo_backend() {
   return new URL(location.href).searchParams.get('backend') || 'auto';
 }
 
+export function web_todo_location_path() {
+  return `${location.pathname || '/'}${location.search || ''}`;
+}
+
+export function web_todo_push_route(path) {
+  try {
+    const cur = `${location.pathname || '/'}${location.search || ''}`;
+    if (cur !== path) {
+      history.pushState(null, '', path);
+    }
+  } catch (_) {}
+}
+
+export function web_todo_send_ws(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    try {
+      socket.send(payload);
+      return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 export function web_todo_connect(url, onEvent) {
   stopped = false;
   currentUrl = url;
@@ -128,9 +151,27 @@ extern "C" {
     fn web_todo_panic(message: &str);
     fn web_todo_ws_url() -> String;
     fn web_todo_backend() -> String;
+    fn web_todo_location_path() -> String;
+    fn web_todo_push_route(path: &str);
+    fn web_todo_send_ws(payload: &str) -> bool;
     fn web_todo_connect(url: &str, on_event: &JsClosure);
     fn web_todo_drain() -> String;
     fn web_todo_disconnect();
+}
+
+pub(crate) fn current_location_path() -> String {
+    web_todo_location_path()
+}
+
+pub(crate) fn push_browser_route(path: &str) {
+    web_todo_push_route(path);
+}
+
+pub(crate) fn send_client_message(msg: &ClientMessage) -> bool {
+    match serde_json::to_string(msg) {
+        Ok(json) => web_todo_send_ws(&json),
+        Err(_) => false,
+    }
 }
 
 type JsClosure = Closure<dyn FnMut()>;

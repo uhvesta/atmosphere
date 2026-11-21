@@ -497,6 +497,42 @@ sh_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
+# End-to-end `humata login` acceptance in the desktop app against an isolated
+# `humatad2_admin --admin-pid` daemon.
+rust_test(
+    name = "live_cli_login_test",
+    size = "medium",
+    srcs = ["tests/live_cli_login.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_cli_login.rs",
+    data = [
+        "//apps/humata2/cli:humata",
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    tags = ["exclusive"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
 # The Inbox in the app on a real humatad2 (ASK T5.3, SPEC flow 26.4): an
 # agent's `humata` call waits in the Inbox, the person opens the requester
 # from the card and allows there, and the waiting call returns.

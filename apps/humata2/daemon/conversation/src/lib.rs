@@ -172,12 +172,34 @@ pub struct PackedFile {
     pub size: u64,
 }
 
+/// Per-session artifacts folder resolution for an agent CLI (ATM-1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionArtifacts {
+    /// The provider name (`"Claude"`, `"Codex"`, `"Copilot"`).
+    pub provider: &'static str,
+    /// Primary artifacts folder to expose as the read-only `SessionAgentState` root.
+    pub root: PathBuf,
+    /// All directories to watch for live updates, deduplicated, starting with `root`.
+    pub watch_dirs: Vec<PathBuf>,
+    /// Additional conversation-specific files/dirs outside `root` if any
+    /// (e.g. Claude's `file-history/<id>/`, `todos/<id>-agent-*.json`, `plans/<slug>.md`).
+    pub side_paths: Vec<PathBuf>,
+}
+
 /// What Humata can do with one CLI's conversation files.
 ///
 /// Every method leaves the files it reads as they were, writes new files
 /// through a `.partial` beside them that is renamed into place, and refuses
 /// rather than overwrite a file that is already there.
 pub trait Adapter: Send + Sync {
+    /// Resolves the per-session artifacts folder and watch directories for
+    /// conversation `id` of the CLI running at `at` (ATM-1).
+    ///
+    /// Refuses an invalid `id` with [`ConversationError::BadId`]. Unlike
+    /// [`Adapter::locate`], this succeeds even when the transcript file has
+    /// not been written yet, returning the expected root directory.
+    fn artifacts_folder(&self, at: &Placement, id: &str) -> Result<SessionArtifacts, ConversationError>;
+
     /// The conversation `id` of the CLI running at `at`, with all its files.
     ///
     /// Refuses an `id` that isn't one plain file name
@@ -323,9 +345,155 @@ pub fn adapter(format: Format) -> &'static dyn Adapter {
     }
 }
 
+/// Returns whether `agent` is explicitly unsupported for per-session artifacts
+/// resolution (ATM-2).
+///
+/// Antigravity (`agy` / `antigravity`) is explicitly unsupported for
+/// per-session artifacts resolution: although `agy` writes per-session
+/// artifacts under `~/.gemini/antigravity-cli/brain/<id>`, Humata launches
+/// `agy` with `ConversationFormat::None` and no conversation-id hook or flag,
+/// so no per-session id is known to resolve. Plain shells (`shell`, `zsh`,
+/// `bash`, `fish`, `sh`) likewise have no agent conversation artifacts.
+pub fn is_unsupported_agent(agent: &str) -> bool {
+    matches!(
+        agent.trim().to_ascii_lowercase().as_str(),
+        "agy" | "antigravity" | "shell" | "zsh" | "bash" | "fish" | "sh"
+    )
+}
+
+/// Infers the [`Format`] for an agent name (case-insensitive).
+///
+/// Returns `None` for unsupported agents (including Antigravity `agy` and
+/// shells; see [`is_unsupported_agent`]) or unrecognized names.
+pub fn format_for_agent(agent: &str) -> Option<Format> {
+    match agent.trim().to_ascii_lowercase().as_str() {
+        "claude" | "claude-code" => Some(Format::ClaudeJsonl),
+        "codex" => Some(Format::CodexRollout),
+        "copilot" => Some(Format::CopilotSessionState),
+        _ => None,
+    }
+}
+
+/// Infers the [`Format`] from `conversation_file` path conventions when `agent`
+/// alone does not identify it.
+fn format_from_conversation_file(conversation_file: &Path) -> Option<Format> {
+    if conversation_file.as_os_str().is_empty() {
+        return None;
+    }
+    let name = conversation_file.file_name()?.to_str()?;
+    // Copilot: <copilot>/session-state/<id>/events.jsonl
+    if name == "events.jsonl"
+        && conversation_file
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some("session-state")
+    {
+        return Some(Format::CopilotSessionState);
+    }
+    // Codex: <codex>/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl
+    if name.starts_with("rollout-")
+        && name.ends_with(".jsonl")
+        && conversation_file
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some("sessions")
+    {
+        return Some(Format::CodexRollout);
+    }
+    // Claude: <config>/projects/<dashed>/<id>.jsonl
+    if name.ends_with(".jsonl")
+        && conversation_file
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some("projects")
+    {
+        return Some(Format::ClaudeJsonl);
+    }
+    None
+}
+
+/// Derives the CLI home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`)
+/// from `conversation_file` when its layout matches `format`.
+fn derive_cli_home(format: Format, conversation_file: &Path) -> Option<PathBuf> {
+    if conversation_file.as_os_str().is_empty() {
+        return None;
+    }
+    match format {
+        Format::ClaudeJsonl => {
+            // <custom>/projects/<proj>/<id>.jsonl
+            let projects = conversation_file.parent()?.parent()?;
+            (projects.file_name().and_then(|n| n.to_str()) == Some("projects"))
+                .then(|| projects.parent().map(Path::to_path_buf))?
+        }
+        Format::CodexRollout => {
+            // <custom>/sessions/YYYY/MM/DD/rollout-*.jsonl
+            let sessions = conversation_file.parent()?.parent()?.parent()?.parent()?;
+            (sessions.file_name().and_then(|n| n.to_str()) == Some("sessions"))
+                .then(|| sessions.parent().map(Path::to_path_buf))?
+        }
+        Format::CopilotSessionState => {
+            // <custom>/session-state/<id>/events.jsonl
+            let state = conversation_file.parent()?.parent()?;
+            (state.file_name().and_then(|n| n.to_str()) == Some("session-state"))
+                .then(|| state.parent().map(Path::to_path_buf))?
+        }
+    }
+}
+
+/// Convenience helper that resolves per-session artifacts from launch metadata
+/// (ATM-1, ATM-2).
+///
+/// Infers [`Format`] from `agent` (case-insensitive: `"claude"` /
+/// `"claude-code"` → [`Format::ClaudeJsonl`], `"codex"` →
+/// [`Format::CodexRollout`], `"copilot"` → [`Format::CopilotSessionState`]) or
+/// from `conversation_file` path conventions when `agent` is unrecognized.
+///
+/// When `cli_home` is `None` and `conversation_file` is non-empty and matches
+/// the provider's layout, derives `cli_home` from `conversation_file` (for
+/// example, `<custom>/projects/<proj>/<id>.jsonl` yields `<custom>` as
+/// `CLAUDE_CONFIG_DIR`).
+///
+/// Returns `None` for an empty or invalid `conversation_id` or for unsupported
+/// agents (including Antigravity `agy` / `antigravity` and shells `shell` /
+/// `zsh`; see [`is_unsupported_agent`]).
+pub fn resolve_from_launch(
+    agent: &str,
+    conversation_id: &str,
+    conversation_file: &Path,
+    folder: &Path,
+    home: &Path,
+    cli_home: Option<&Path>,
+) -> Option<SessionArtifacts> {
+    if conversation_id.is_empty() || is_unsupported_agent(agent) {
+        return None;
+    }
+    let format = format_for_agent(agent).or_else(|| format_from_conversation_file(conversation_file))?;
+    let resolved_cli_home = cli_home
+        .map(Path::to_path_buf)
+        .or_else(|| derive_cli_home(format, conversation_file));
+    let placement = Placement {
+        home: home.to_path_buf(),
+        cli_home: resolved_cli_home,
+        folder: folder.to_path_buf(),
+    };
+    adapter(format).artifacts_folder(&placement, conversation_id).ok()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    const UUID_1: &str = "019a8c32-1234-7abc-8def-0123456789ab";
 
     #[test]
     fn formats_are_named_as_agent_kinds_name_them() {
@@ -336,6 +504,182 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_string(&format).unwrap(), name);
             assert_eq!(serde_json::from_str::<Format>(name).unwrap(), format);
+        }
+    }
+
+    #[test]
+    fn claude_default_and_side_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let folder = tmp.path().join("work/repo");
+        fs::create_dir_all(&folder).unwrap();
+        let id = "sess-42";
+        let config = home.join(".claude");
+        let project = config.join("projects").join(claude_project_name(&folder));
+        fs::create_dir_all(&project).unwrap();
+        let transcript = project.join(format!("{id}.jsonl"));
+        fs::write(&transcript, "{\"type\":\"user\",\"slug\":\"my-plan\"}\n").unwrap();
+
+        let fh_dir = config.join("file-history").join(id);
+        fs::create_dir_all(&fh_dir).unwrap();
+        let fh_file = fh_dir.join("snap1");
+        fs::write(&fh_file, "backup").unwrap();
+
+        let todos_dir = config.join("todos");
+        fs::create_dir_all(&todos_dir).unwrap();
+        let todo_match = todos_dir.join(format!("{id}-agent-1.json"));
+        let todo_other = todos_dir.join("other-agent-1.json");
+        fs::write(&todo_match, "[]").unwrap();
+        fs::write(&todo_other, "[]").unwrap();
+
+        let plans_dir = config.join("plans");
+        fs::create_dir_all(&plans_dir).unwrap();
+        let plan_file = plans_dir.join("my-plan.md");
+        fs::write(&plan_file, "# Plan").unwrap();
+
+        let artifacts = resolve_from_launch("claude", id, Path::new(""), &folder, &home, None).unwrap();
+        assert_eq!(artifacts.provider, "Claude");
+        assert_eq!(artifacts.root, project);
+        assert_eq!(artifacts.watch_dirs, vec![project, fh_dir, todos_dir, plans_dir]);
+        assert!(artifacts.side_paths.contains(&fh_file));
+        assert!(artifacts.side_paths.contains(&todo_match));
+        assert!(!artifacts.side_paths.contains(&todo_other));
+        assert!(artifacts.side_paths.contains(&plan_file));
+    }
+
+    #[test]
+    fn claude_custom_config_dir_and_derived_from_conversation_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let custom = tmp.path().join("custom-claude");
+        let folder = tmp.path().join("work/app");
+        let id = "sess-custom";
+        let project = custom.join("projects").join(claude_project_name(&folder));
+        fs::create_dir_all(&project).unwrap();
+        let transcript = project.join(format!("{id}.jsonl"));
+        fs::write(&transcript, "{}\n").unwrap();
+
+        // Explicit cli_home
+        let explicit = resolve_from_launch("claude-code", id, Path::new(""), &folder, &home, Some(&custom)).unwrap();
+        assert_eq!(explicit.provider, "Claude");
+        assert_eq!(explicit.root, project);
+
+        // Derived from conversation_file when cli_home is None
+        let derived = resolve_from_launch("Claude", id, &transcript, &folder, &home, None).unwrap();
+        assert_eq!(derived.provider, "Claude");
+        assert_eq!(derived.root, project);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_canonical_path_fallback() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let real_folder = tmp.path().join("real-work");
+        fs::create_dir_all(&real_folder).unwrap();
+        let link_folder = tmp.path().join("link-work");
+        symlink(&real_folder, &link_folder).unwrap();
+
+        let canon = fs::canonicalize(&real_folder).unwrap();
+        let id = "sess-canon";
+        let project = home.join(".claude/projects").join(claude_project_name(&canon));
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join(format!("{id}.jsonl")), "{}\n").unwrap();
+
+        let artifacts = resolve_from_launch("claude", id, Path::new(""), &link_folder, &home, None).unwrap();
+        assert_eq!(artifacts.root, project);
+    }
+
+    #[test]
+    fn codex_rollout_dir_and_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let codex_home = tmp.path().join("custom-codex");
+        let folder = tmp.path().join("work");
+
+        // Fallback to <home>/.codex/sessions when rollout doesn't exist yet
+        let fallback = resolve_from_launch("codex", UUID_1, Path::new(""), &folder, &home, None).unwrap();
+        assert_eq!(fallback.provider, "Codex");
+        assert_eq!(fallback.root, home.join(".codex/sessions"));
+        assert_eq!(fallback.watch_dirs, vec![home.join(".codex/sessions")]);
+        assert!(fallback.side_paths.is_empty());
+
+        // Existing rollout under CODEX_HOME/sessions/YYYY/MM/DD/
+        let day_dir = codex_home.join("sessions/2026/11/21");
+        fs::create_dir_all(&day_dir).unwrap();
+        let rollout = day_dir.join(format!("rollout-2026-11-21T08-00-00-{UUID_1}.jsonl"));
+        fs::write(&rollout, "{}\n").unwrap();
+
+        let resolved = resolve_from_launch("codex", UUID_1, Path::new(""), &folder, &home, Some(&codex_home)).unwrap();
+        assert_eq!(resolved.provider, "Codex");
+        assert_eq!(resolved.root, day_dir);
+        assert_eq!(resolved.watch_dirs, vec![day_dir.clone()]);
+
+        // Derived CODEX_HOME from conversation_file
+        let derived = resolve_from_launch("codex", UUID_1, &rollout, &folder, &home, None).unwrap();
+        assert_eq!(derived.root, day_dir);
+    }
+
+    #[test]
+    fn copilot_default_and_custom_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let copilot_home = tmp.path().join("custom-copilot");
+        let folder = tmp.path().join("work");
+
+        let default = resolve_from_launch("copilot", UUID_1, Path::new(""), &folder, &home, None).unwrap();
+        assert_eq!(default.provider, "Copilot");
+        assert_eq!(default.root, home.join(".copilot/session-state").join(UUID_1));
+        assert_eq!(default.watch_dirs, vec![default.root.clone()]);
+        assert!(default.side_paths.is_empty());
+
+        let custom = resolve_from_launch("Copilot", UUID_1, Path::new(""), &folder, &home, Some(&copilot_home)).unwrap();
+        assert_eq!(custom.root, copilot_home.join("session-state").join(UUID_1));
+
+        let events = copilot_home.join("session-state").join(UUID_1).join("events.jsonl");
+        let derived = resolve_from_launch("copilot", UUID_1, &events, &folder, &home, None).unwrap();
+        assert_eq!(derived.root, copilot_home.join("session-state").join(UUID_1));
+    }
+
+    #[test]
+    fn antigravity_and_shell_are_explicitly_unsupported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let folder = tmp.path().join("work");
+
+        for agent in ["agy", "AGY", "antigravity", "shell", "zsh", "bash"] {
+            assert!(is_unsupported_agent(agent));
+            assert!(format_for_agent(agent).is_none());
+            assert!(resolve_from_launch(agent, UUID_1, Path::new(""), &folder, &home, None).is_none());
+        }
+    }
+
+    #[test]
+    fn bad_ids_and_path_traversal_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let folder = tmp.path().join("work");
+        let at = Placement {
+            home: home.clone(),
+            cli_home: None,
+            folder: folder.clone(),
+        };
+
+        for bad in ["", "../foo", "a/b", "..", "."] {
+            for format in [Format::ClaudeJsonl, Format::CodexRollout, Format::CopilotSessionState] {
+                assert!(
+                    matches!(
+                        adapter(format).artifacts_folder(&at, bad),
+                        Err(ConversationError::BadId { .. })
+                    ),
+                    "expected BadId for {format:?} with id {bad:?}"
+                );
+            }
+            for agent in ["claude", "codex", "copilot"] {
+                assert!(resolve_from_launch(agent, bad, Path::new(""), &folder, &home, None).is_none());
+            }
         }
     }
 }

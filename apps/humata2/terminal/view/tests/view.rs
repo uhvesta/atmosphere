@@ -887,3 +887,119 @@ fn focus_handoff_routes_immediate_text_and_rejects_stale_ime_callbacks(cx: &mut 
         .unwrap()
     });
 }
+
+#[gpui_kit::test]
+fn web_link_hover_omits_link_hint_tooltip(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx, grid_with(&["https://example.com"]));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, window, 4, 0, cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: at,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(
+            window.try_find("terminal-link-hint").is_none(),
+            "hovering an https:// link must not render terminal-link-hint"
+        );
+    })
+    .expect("the test window is open");
+}
+
+struct FileLinkGrid {
+    inner: FakeGrid,
+    link: String,
+}
+
+impl Grid for FileLinkGrid {
+    fn sync(&mut self) {
+        self.inner.sync();
+    }
+    fn size(&self) -> terminal_grid::Size {
+        self.inner.size()
+    }
+    fn row(&self, y: u16) -> Option<&terminal_grid::Row> {
+        self.inner.row(y)
+    }
+    fn cursor(&self) -> Cursor {
+        self.inner.cursor()
+    }
+    fn hyperlink(&self, at: terminal_grid::ViewportPoint) -> Option<String> {
+        (at.y == 0 && usize::from(at.x) < self.link.len()).then(|| self.link.clone())
+    }
+    fn cursor_style(&self) -> CursorStyle {
+        self.inner.cursor_style()
+    }
+    fn colors(&self) -> &terminal_grid::Colors {
+        self.inner.colors()
+    }
+    fn selection(&self, y: u16) -> Option<terminal_grid::Span> {
+        self.inner.selection(y)
+    }
+    fn dirty(&self) -> terminal_grid::Dirty {
+        self.inner.dirty()
+    }
+    fn is_row_dirty(&self, y: u16) -> bool {
+        self.inner.is_row_dirty(y)
+    }
+    fn clear_dirty(&mut self) {
+        self.inner.clear_dirty();
+    }
+}
+
+struct FileLinkHost;
+
+impl TerminalHost<FileLinkGrid> for FileLinkHost {
+    fn key(&mut self, _: &mut FileLinkGrid, _: terminal_grid::KeyEvent<'_>) {}
+}
+
+#[gpui_kit::test]
+fn file_link_hover_shows_link_hint_tooltip(cx: &mut TestAppContext) {
+    let uri = "file:///tmp/demo.rs:42";
+    let grid = FileLinkGrid {
+        inner: grid_with(&[uri]),
+        link: uri.to_owned(),
+    };
+    let (handle, view) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(px(560.), px(280.)),
+            })),
+            ..Default::default()
+        };
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| TerminalView::new(grid, FileLinkHost, Theme::default(), window, cx))
+        })
+        .expect("the test window opens")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let cell = view.read(cx).cell_size().expect("a frame was drawn");
+        let origin = window.find("terminal").bounds().origin;
+        let at = point(
+            origin.x + px(4.5 * cell.width),
+            origin.y + px(0.5 * cell.height),
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: at,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(
+            window.try_find("terminal-link-hint").is_some(),
+            "hovering a file:// link must render terminal-link-hint"
+        );
+    })
+    .expect("the test window is open");
+}

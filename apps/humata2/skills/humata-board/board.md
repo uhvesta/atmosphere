@@ -129,8 +129,8 @@ dependency in Done.
 | Anything on your own session's board | Allowed |
 | Read your channel's board, the Global board, other channels' boards | Allowed |
 | Add an item to your channel's board | Allowed |
-| Edit, move or delete a channel item **you** made | Allowed |
-| Edit, move or delete a channel item someone else made (the owner or another agent) | Asks the owner |
+| Edit, move or delete a channel item **you** or another agent made; close an agent-created To-do | Allowed |
+| Edit, move or delete a channel item the owner made | Asks the owner |
 | Any change on the Global board or another channel's board | Asks the owner |
 
 The owner can change these defaults per channel. A change that asks exits

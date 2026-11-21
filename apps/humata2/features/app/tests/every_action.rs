@@ -519,6 +519,9 @@ fn key(name: &str) -> Option<Key> {
         }
         // ⌘+ / ⌘- step the terminal & diff font size (also in Settings › Layout › Terminal font).
         "ZoomIn" | "ZoomOut" => Key::Not,
+        // S / ⌥S on a focused milestone on the To-do board (ATM-10):
+        // milestone-scoped, so no app-wide palette entry.
+        "StartMilestoneSession" | "StartMilestonePlainSession" => Key::Not,
         "NewSession" => Key::Runs(Command::NewSession),
         "NewChannel" => Key::Runs(Command::NewChannel),
         "Back" => Key::Runs(Command::Back),

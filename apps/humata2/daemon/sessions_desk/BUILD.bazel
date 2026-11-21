@@ -7,6 +7,7 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/humatad:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/svc_desk:__pkg__",
     ],
     deps = [
         "//apps/humata2/daemon/durable",
@@ -34,6 +35,7 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/humatad:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/svc_desk:__pkg__",
     ],
     deps = [
         "//apps/humata2/daemon/durable:durable_faults",

@@ -70,10 +70,12 @@ Complementary "Diff"
       text "−0"
       CheckBox "Not looked at"
   text "client.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   Button "Open in editor" description="Open in editor"
   text "api"
   text "·"
-  text "src/"
+  #diff-open-file
+    text "Open file ↗"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "acme/api/src/client.rs"
     #change-hunk-0
@@ -147,6 +149,9 @@ Complementary "Diff"
   #diff-looks-bar
     Button "Looks good"
     Label "0 of 2 files looked at"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Send to claude" disabled
   Button "Push & PR…"
   Button "Add repo…"

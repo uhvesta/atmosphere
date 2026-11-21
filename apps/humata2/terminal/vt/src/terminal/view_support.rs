@@ -167,3 +167,125 @@ impl Terminal {
         .map_err(|source| Error::EncodeFocus { source })
     }
 }
+
+/// Recognize a plain-text file path or `file://` URI in visible cells,
+/// joining soft-wrapped rows.
+pub(super) fn plain_file_link(grid: &Terminal, at: ViewportPoint) -> Option<String> {
+    use terminal_grid::Grid as _;
+
+    let row = grid.row(at.y)?;
+    if usize::from(at.x) >= row.cells.len() {
+        return None;
+    }
+    let mut first = at.y;
+    while first > 0 && grid.row(first - 1).is_some_and(|r| r.wrapped) {
+        first -= 1;
+    }
+    let mut text = String::new();
+    let mut hit = 0;
+    for y in first..grid.size().rows {
+        let row = grid.row(y)?;
+        for (x, cell) in row.cells.iter().enumerate() {
+            if y == at.y && x == usize::from(at.x) {
+                hit = text.len();
+            }
+            if cell.columns() > 0 {
+                text.push_str(if cell.text.is_empty() {
+                    " "
+                } else {
+                    &cell.text
+                });
+            }
+            if text.len() > 16 * 1024 {
+                return None;
+            }
+        }
+        if !row.wrapped {
+            break;
+        }
+    }
+
+    let delimit = |c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`');
+    let begin = text[..hit].rfind(delimit).map_or(0, |i| {
+        i + text[i..].chars().next().map_or(0, char::len_utf8)
+    });
+    let end = text[hit..].find(delimit).map_or(text.len(), |i| hit + i);
+    let mut token = &text[begin..end];
+    token = token.trim_start_matches(['(', '[', '{']);
+    token = token.trim_end_matches(['.', ',', ';', '!', ':']);
+    for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+        while token.ends_with(close)
+            && token.chars().filter(|c| *c == close).count()
+                > token.chars().filter(|c| *c == open).count()
+        {
+            token = &token[..token.len() - 1];
+        }
+    }
+    token = token.trim_end_matches(['.', ',', ';', '!', ':']);
+    let start = token.as_ptr() as usize - text.as_ptr() as usize;
+    if token.is_empty() || hit < start || hit >= start + token.len() {
+        return None;
+    }
+    is_plain_file_link(token).then(|| token.to_string())
+}
+
+fn is_plain_file_link(token: &str) -> bool {
+    if token.chars().any(char::is_control) {
+        return false;
+    }
+    if token.len() > 7 && token[..7].eq_ignore_ascii_case("file://") {
+        return true;
+    }
+    if token.contains("://") {
+        return false;
+    }
+    let path = strip_line_suffix(token);
+    if path.is_empty() || path.contains(':') {
+        return false;
+    }
+    if path.starts_with('/') {
+        return path.split('/').any(|seg| !seg.is_empty());
+    }
+    if path.contains('/') {
+        return path
+            .split('/')
+            .any(|seg| !seg.is_empty() && seg != "." && seg != "..");
+    }
+    let Some((stem, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && stem.bytes().any(|b| b.is_ascii_alphanumeric())
+        && (1..=10).contains(&ext.len())
+        && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+        && ext.bytes().any(|b| b.is_ascii_alphabetic())
+}
+
+fn strip_line_suffix(token: &str) -> &str {
+    let Some((head, tail)) = token.rsplit_once(':') else {
+        return token;
+    };
+    if head.is_empty() || tail.is_empty() {
+        return token;
+    }
+    if is_digits(tail) {
+        if let Some((head2, line)) = head.rsplit_once(':')
+            && !head2.is_empty()
+            && is_digits(line)
+        {
+            return head2;
+        }
+        return head;
+    }
+    if let Some((start, end)) = tail.split_once('-')
+        && is_digits(start)
+        && is_digits(end)
+    {
+        return head;
+    }
+    token
+}
+
+fn is_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}

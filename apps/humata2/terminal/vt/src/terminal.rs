@@ -1041,6 +1041,7 @@ impl Grid for Terminal {
     fn hyperlink(&self, at: ViewportPoint) -> Option<String> {
         self.hyperlink_uri(at)
             .or_else(|| terminal_grid::plain_link(self, at))
+            .or_else(|| view_support::plain_file_link(self, at))
     }
 
     fn sync(&mut self) {

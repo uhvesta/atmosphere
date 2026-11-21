@@ -52,6 +52,9 @@ pub enum Root {
     /// What was pasted into a session's terminals (D335). The user only,
     /// like the home folder.
     Pastes(SessionRef),
+    /// An agent's own session artifacts folder (ATM-3). Read-only, user-only
+    /// by default; agents cannot reach it without an explicit rule.
+    AgentState(SessionRef),
     /// Where files sent from another machine land, `received/<machine>/`
     /// (PL-4). The user only, like the home folder.
     Received,
@@ -233,7 +236,7 @@ impl GrantTarget {
                     Capability::FilesReadOtherSession
                         | Capability::FilesReadOtherMachine
                         | Capability::FilesCopyIn
-                ) && !matches!(scope.root, Root::Outside | Root::Home | Root::Pastes(_) | Root::Received)
+                ) && !matches!(scope.root, Root::Outside | Root::Home | Root::Pastes(_) | Root::AgentState(_) | Root::Received)
             }
             GrantTarget::Session(_) => {
                 matches!(capability, Capability::SessionNote | Capability::SessionType)

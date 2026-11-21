@@ -595,11 +595,6 @@ pub fn copilot_plugin(humata: &Path, socket: &Path) -> Vec<PluginFile> {
             "timeoutSec": timeout,
         })
     };
-    let permission = json!({
-        "type": "command",
-        "bash": permission_command(Agent::Copilot, humata, socket),
-        "timeoutSec": HOLD_SECONDS,
-    });
     // Matched to `ask_user` only, so no other tool call waits on a CLI run;
     // the daemon reads the tool name all the same (D761).
     let question = json!({
@@ -625,7 +620,6 @@ pub fn copilot_plugin(humata: &Path, socket: &Path) -> Vec<PluginFile> {
             "postToolUse": [turn("working", 10)],
             "agentStop": [turn("idle", 10), conversation],
             "errorOccurred": [turn("idle", 10)],
-            "permissionRequest": [permission, turn("needs-input", 10)],
         },
     });
     let plugin = json!({
@@ -643,4 +637,38 @@ pub fn copilot_plugin(humata: &Path, socket: &Path) -> Vec<PluginFile> {
             contents: serde_json::to_string_pretty(&hooks).unwrap_or_default(),
         },
     ]
+}
+
+/// Returns `true` if any Copilot plugin file contains a generic permission hook.
+#[must_use]
+pub fn copilot_plugin_has_permission_hook(files: &[PluginFile]) -> bool {
+    files.iter().any(|file| {
+        if file.contents.contains("permissionRequest")
+            || file.contents.contains("PermissionRequest")
+            || file.contents.contains("hook copilot permission")
+        {
+            return true;
+        }
+        serde_json::from_str::<Value>(&file.contents)
+            .ok()
+            .and_then(|value| {
+                let hooks = value.get("hooks")?.as_object()?;
+                Some(
+                    hooks.contains_key("permissionRequest")
+                        || hooks.contains_key("PermissionRequest"),
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Returns `true` if a Claude settings JSON object registers a `PermissionRequest` hook.
+#[must_use]
+pub fn claude_settings_has_permission_hook(settings: &Value) -> bool {
+    settings
+        .get("hooks")
+        .and_then(Value::as_object)
+        .is_some_and(|hooks| {
+            hooks.contains_key("PermissionRequest") || hooks.contains_key("permissionRequest")
+        })
 }

@@ -31,6 +31,10 @@ struct Cell {
     expect: Expect,
 }
 
+fn type_into(session: humata2_access::SessionRef) -> Call {
+    use_on(Capability::SessionType, Target::Session(session))
+}
+
 fn stop(session: humata2_access::SessionRef) -> Call {
     use_on(Capability::SessionDeleteOther, Target::Session(session))
 }
@@ -129,7 +133,7 @@ fn rows() -> Vec<Row> {
             context: on_mac(),
             no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::User)),
             default_allow: (add_to_payments_board(), allowed(Source::User)),
-            ask_me: (note_to(b()), allowed(Source::User)),
+            ask_me: (type_into(b()), allowed(Source::User)),
             never: (stop(b()), allowed(Source::User)),
             user_only: (change_access(), allowed(Source::User)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -140,7 +144,7 @@ fn rows() -> Vec<Row> {
             context: on_mac(),
             no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::Owned)),
             default_allow: (add_to_payments_board(), allowed(Source::Rule)),
-            ask_me: (note_to(b()), asks(Capability::SessionNote)),
+            ask_me: (type_into(b()), asks(Capability::SessionType)),
             never: (stop(b()), Expect::Refused(never_rule)),
             user_only: (change_access(), Expect::Refused(user_only)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -149,12 +153,9 @@ fn rows() -> Vec<Row> {
             actor: "agent, another session on the same machine",
             principal: as_agent(b()),
             context: on_mac(),
-            no_rule: (
-                read(file_of(&a(), "src/main.rs")),
-                asks(Capability::FilesReadOtherSession),
-            ),
+            no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::Rule)),
             default_allow: (add_to_payments_board(), allowed(Source::Rule)),
-            ask_me: (note_to(a()), asks(Capability::SessionNote)),
+            ask_me: (type_into(a()), asks(Capability::SessionType)),
             never: (stop(a()), Expect::Refused(never_rule)),
             user_only: (change_access(), Expect::Refused(user_only)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -168,7 +169,7 @@ fn rows() -> Vec<Row> {
                 asks(Capability::FilesReadOtherMachine),
             ),
             default_allow: (add_to_payments_board(), allowed(Source::Rule)),
-            ask_me: (note_to(a()), asks(Capability::SessionNote)),
+            ask_me: (type_into(a()), asks(Capability::SessionType)),
             never: (stop(a()), Expect::Refused(never_rule)),
             user_only: (change_access(), Expect::Refused(user_only)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -181,7 +182,7 @@ fn rows() -> Vec<Row> {
             context: on_mac(),
             no_rule: (write(file_of(&a(), "src/main.rs")), allowed(Source::Owned)),
             default_allow: (add_to_payments_board(), allowed(Source::Rule)),
-            ask_me: (note_to(b()), asks(Capability::SessionNote)),
+            ask_me: (type_into(b()), asks(Capability::SessionType)),
             never: (stop(b()), Expect::Refused(never_rule)),
             user_only: (change_access(), Expect::Refused(user_only)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -192,7 +193,7 @@ fn rows() -> Vec<Row> {
             context: on_mac(),
             no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::User)),
             default_allow: (add_to_payments_board(), allowed(Source::User)),
-            ask_me: (note_to(b()), allowed(Source::User)),
+            ask_me: (type_into(b()), allowed(Source::User)),
             never: (stop(b()), allowed(Source::User)),
             user_only: (change_access(), allowed(Source::User)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -207,8 +208,8 @@ fn rows() -> Vec<Row> {
                 Expect::Allowed(Source::Rule, Effect::Journal),
             ),
             ask_me: (
-                note_to(d()),
-                Expect::Ask(Capability::SessionNote, AnswerAt::Machine(the_box())),
+                type_into(d()),
+                Expect::Ask(Capability::SessionType, AnswerAt::Machine(the_box())),
             ),
             never: (stop(d()), Expect::Refused(never_rule)),
             user_only: (change_access(), Expect::Refused(user_only)),
@@ -223,7 +224,7 @@ fn rows() -> Vec<Row> {
                 Expect::Refused(|r| matches!(r, Refusal::ScriptTokenHasNoSession)),
             ),
             default_allow: (add_to_payments_board(), allowed(Source::ScriptToken)),
-            ask_me: (note_to(b()), Expect::Refused(token_lacks)),
+            ask_me: (type_into(b()), Expect::Refused(token_lacks)),
             never: (stop(b()), Expect::Refused(token_lacks)),
             user_only: (change_access(), Expect::Refused(user_only)),
             peer: (peer_report(), Expect::Refused(peer_only)),
@@ -236,7 +237,7 @@ fn rows() -> Vec<Row> {
             context: on_mac(),
             no_rule: (read(file_of(&a(), "src/main.rs")), Expect::Refused(peer_cannot_call)),
             default_allow: (add_to_payments_board(), Expect::Refused(peer_cannot_call)),
-            ask_me: (note_to(b()), Expect::Refused(peer_cannot_call)),
+            ask_me: (type_into(b()), Expect::Refused(peer_cannot_call)),
             never: (stop(b()), Expect::Refused(peer_cannot_call)),
             user_only: (change_access(), Expect::Refused(peer_cannot_call)),
             peer: (peer_report(), allowed(Source::PeerLink)),

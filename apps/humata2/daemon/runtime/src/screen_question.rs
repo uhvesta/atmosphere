@@ -90,6 +90,8 @@ pub enum PromptKind {
     Login,
     /// First-run CLI onboarding / setup picker (e.g., Claude theme picker).
     Onboarding,
+    /// Startup authorization prompt (e.g., Antigravity `agy` "Do you authorize me").
+    Authorization,
 }
 
 impl PromptKind {
@@ -103,6 +105,7 @@ impl PromptKind {
             Self::Question => "question",
             Self::Login => "login",
             Self::Onboarding => "onboarding",
+            Self::Authorization => "authorization",
         }
     }
 }
@@ -142,6 +145,17 @@ const PLAN_PHRASES: &[&str] = &[
     "approve this plan",
     "proceed with this plan",
     "ready to code?",
+];
+
+/// Startup authorization phrases shown on supported agent CLI screens
+/// (e.g., Antigravity `agy` "Do you authorize me").
+const AUTHORIZATION_PHRASES: &[&str] = &[
+    "do you authorize",
+    "authorize me",
+    "authorize antigravity",
+    "authorize agy",
+    "authorize this workspace",
+    "authorize this session",
 ];
 
 /// General interactive prompt phrases (questions / confirmation footers).
@@ -196,6 +210,11 @@ pub fn prompt_on(screen: &str) -> Option<ScreenPrompt> {
         .any(|phrase| lower.contains(phrase))
     {
         Some(PromptKind::Permission)
+    } else if AUTHORIZATION_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+    {
+        Some(PromptKind::Authorization)
     } else if QUESTION_PHRASES.iter().any(|phrase| lower.contains(phrase))
         || has_numbered_choice_selector(&shown)
         || has_confirmation_suffix(&lower)
@@ -598,5 +617,30 @@ mod tests {
                 "No (Esc)",
             ]
         );
+    }
+
+    #[test]
+    fn agy_startup_authorization_prompts_classify_as_authorization() {
+        let agy_inline = "Antigravity (agy)\nDo you authorize me to work in this workspace? [y/N]";
+        let p = prompt_on(agy_inline).expect("agy inline auth prompt");
+        assert_eq!(p.kind, PromptKind::Authorization);
+        assert_eq!(p.kind.as_str(), "authorization");
+        assert!(has_active_prompt(agy_inline));
+
+        let agy_numbered = "\
+Antigravity startup
+Do you authorize me for this session?
+❯ 1. Yes, authorize for this session
+  2. No, exit";
+        let p = prompt_on(agy_numbered).expect("agy numbered auth prompt");
+        assert_eq!(p.kind, PromptKind::Authorization);
+        assert_eq!(
+            p.choices,
+            vec!["Yes, authorize for this session", "No, exit"]
+        );
+
+        let agy_hotkey = "Authorize Antigravity for /tmp/work? (y) Yes / (n) No";
+        let p = prompt_on(agy_hotkey).expect("agy hotkey auth prompt");
+        assert_eq!(p.kind, PromptKind::Authorization);
     }
 }

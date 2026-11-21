@@ -89,7 +89,8 @@ fn a_session_target_and_the_switches_reach_the_daemon() {
     assert_eq!(one.channel, payments());
     assert!(one.switches.type_into_terminal);
     assert!(!one.switches.read_files);
-    assert!(one.switches.send_notes);
+    assert!(one.switches.start_and_fork);
+    assert!(!one.switches.send_notes);
 }
 
 #[test]

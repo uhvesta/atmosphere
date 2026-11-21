@@ -214,7 +214,7 @@ fn repo_path_of(place: &Place, store: &Store) -> pb::RepoPath {
 /// Builds a `FileAccessPreview` for an asked `Call::ReadFiles(place)`.
 fn file_read_preview(place: &Place, store: &Store) -> pb::FileAccessPreview {
     let source_session = match &place.root {
-        Root::Clone(session) | Root::Pastes(session) => Some(pb::SessionId {
+        Root::Clone(session) | Root::Pastes(session) | Root::AgentState(session) => Some(pb::SessionId {
             value: session.id.to_string(),
         }),
         _ => None,

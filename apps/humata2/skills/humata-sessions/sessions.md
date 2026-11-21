@@ -137,12 +137,14 @@ turn "the payments repo" into `owner/name`; if more than one fits, ask.
 | --- | --- |
 | See your channel, its sessions, machines; read and search your channel's sessions | Allowed |
 | List channels; read other channels | Allowed |
+| Start or fork a session on your machine in your channel | Allowed |
+| Send a note or question to another session in your channel | Allowed |
+| Rename your session, add or drop a repo, own copy | Allowed |
+| Stop or archive your own session | Allowed |
 | Search or read sessions of other channels | Asks the owner |
-| Start or fork a session, continue in another channel | Asks the owner |
-| Note, ask or type into another session | Asks the owner |
-| Rename your session, add or drop a repo, own copy | Asks the owner |
-| Stop, archive or delete your own session | Asks the owner |
-| Stop or archive another session; restore or rebuild one | Asks the owner |
+| Start or fork a session on another machine, or continue in another channel | Asks the owner |
+| Type into another session's terminal | Asks the owner |
+| Stop or archive another session; move a session to another machine | Asks the owner |
 | Create a channel; add a repo to a channel | Asks the owner |
 | Delete another session | Never |
 | Rename a channel, remove a repo or a machine from it, change its settings | Never |

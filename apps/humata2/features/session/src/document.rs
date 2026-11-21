@@ -42,10 +42,10 @@ pub struct DocumentEntry {
     view: DocumentView,
 }
 
-/// A Markdown file: `.md` or `.markdown`, any case.
+/// A Markdown file: `.md`, `.mdx`, or `.markdown`, any case.
 pub fn is_markdown(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown")
+    lower.ends_with(".md") || lower.ends_with(".mdx") || lower.ends_with(".markdown")
 }
 
 impl SessionView {

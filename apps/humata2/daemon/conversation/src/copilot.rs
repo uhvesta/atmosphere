@@ -233,7 +233,7 @@ use crate::files::{
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead, Packed,
-    PackedFile, Placement, Turn,
+    PackedFile, Placement, SessionArtifacts, Turn,
 };
 
 /// The biggest file a carry rewrites. A bigger one is refused, never copied
@@ -645,6 +645,17 @@ const WORKSPACE_MAPPINGS: &[(&str, &[&str])] =
 pub(crate) struct CopilotSessionState;
 
 impl Adapter for CopilotSessionState {
+    fn artifacts_folder(&self, at: &Placement, id: &str) -> Result<SessionArtifacts, ConversationError> {
+        check_id(id)?;
+        let root = copilot_dir(at).join(STATE).join(id);
+        Ok(SessionArtifacts {
+            provider: "Copilot",
+            watch_dirs: vec![root.clone()],
+            root,
+            side_paths: Vec::new(),
+        })
+    }
+
     /// The files of `session-state/<id>/` under the Copilot dir of `at`,
     /// the transcript first. The id must be a lowercase hyphenated UUID.
     fn locate(&self, at: &Placement, id: &str) -> Result<Conversation, ConversationError> {

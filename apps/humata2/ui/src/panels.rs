@@ -342,6 +342,7 @@ mod tests {
                 .into_iter()
                 .map(|(id, held)| (SessionId::new(id), held))
                 .collect::<BTreeMap<_, _>>(),
+            ..CommentsState::default()
         }
     }
 

@@ -281,6 +281,9 @@ fn was(target: &Target) -> pb::EntityRef {
         Some(Root::MainClone(main)) => main.channel.clone().map(Entity::Channel),
         Some(Root::SessionPastes(pastes)) => pastes.session.clone().map(Entity::Session),
         Some(Root::SessionFolder(folder)) => folder.session.clone().map(Entity::Session),
+        Some(Root::SessionAgentState(agent_state)) => {
+            agent_state.session.clone().map(Entity::Session)
+        }
         // The home folder belongs to no session or channel.
         Some(Root::Home(_) | Root::Received(_)) => None,
         None => None,

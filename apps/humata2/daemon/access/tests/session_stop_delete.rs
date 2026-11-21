@@ -53,8 +53,19 @@ fn an_agent_deleting_another_session_is_refused_by_the_never_rule() {
 
 #[test]
 fn an_agent_ending_its_own_session_goes_by_its_own_rule_whichever_it_names() {
+    // OwnSessionEnd defaults to Allow (ATM-30).
     for call in [stop(a()), delete(a())] {
         let verdict = check(&policy(), &as_agent(a()), &call, &on_mac());
+        assert!(
+            matches!(verdict, Verdict::Allowed { source: Source::Rule, effect: Effect::Apply }),
+            "{call:?}: {verdict:?}"
+        );
+    }
+    // Setting OwnSessionEnd to Ask makes both calls ask for OwnSessionEnd.
+    let mut policy = policy();
+    set(&mut policy, Capability::OwnSessionEnd, Decision::Ask);
+    for call in [stop(a()), delete(a())] {
+        let verdict = check(&policy, &as_agent(a()), &call, &on_mac());
         assert!(asks(Capability::OwnSessionEnd).met_by(&verdict), "{call:?}: {verdict:?}");
     }
 }

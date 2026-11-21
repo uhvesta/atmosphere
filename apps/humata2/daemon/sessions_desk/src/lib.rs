@@ -2,6 +2,7 @@ mod channel_desk;
 mod desk;
 mod desk_move;
 pub mod doc_repo;
+pub mod tab_limits;
 
 pub use channel_desk::ChannelDeskStart;
 pub use desk::{
@@ -10,6 +11,7 @@ pub use desk::{
     folder_bytes, held_work, new_row, repo_clone, repos_under, scratch_child,
 };
 pub use desk_move::{DeskMoveError, DeskMoveRepo, desk_move_repos, repoint_clone};
+pub use tab_limits::{MAX_TABS_PER_KIND, TabCapError, check_tab_cap, flat_tab_cap};
 
 pub(crate) struct DeskOps<'a>(pub(crate) &'a humata2_sessions_core::Starter);
 

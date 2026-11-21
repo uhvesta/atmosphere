@@ -29,8 +29,8 @@ pub const PR_REVIEWS_FOLDER: &str = "pr-reviews";
 enum StartReviewError {
     #[error("the request names no pull request to review")]
     NoPullRequests,
-    #[error("the review names {repo} twice, and a review keeps one clone of each repository")]
-    RepoTwice { repo: String },
+    #[error("the review names {pr} more than once")]
+    DuplicatePr { pr: String },
     #[error("{asked} and {held} share the name {name:?}, and the PR reviews channel keeps one clone folder per repository name")]
     SameName {
         asked: String,
@@ -54,11 +54,11 @@ impl StartReviewError {
     fn into_status(self, machine: &str) -> Status {
         match self {
             Self::NoPullRequests => missing("prs"),
-            Self::RepoTwice { .. } => invalid_field(
+            Self::DuplicatePr { .. } => invalid_field(
                 "prs",
                 pb::invalid_field::Problem::NotAllowedHere,
                 chain(&self),
-                "start one review per pull request of that repository, or review them one after the other",
+                "list each pull request once in the review request",
             ),
             Self::SameName { .. } => invalid_field(
                 "prs",
@@ -75,6 +75,54 @@ impl StartReviewError {
 /// `owner/name`.
 fn slug(owner: &str, name: &str) -> String {
     format!("{owner}/{name}")
+}
+
+/// Builds the `ReviewPr` list from the resolved request, rejecting exact
+/// duplicate `(owner, name, number)` entries while allowing multiple PRs in
+/// the same repository (e.g. a stacked PR chain).
+fn collect_review_prs(
+    asked: &[pb::PullRequestRef],
+    infos: &[pb::PullRequestInfo],
+) -> Result<Vec<ReviewPr>, StartReviewError> {
+    let mut prs = Vec::with_capacity(asked.len());
+    for (pr, info) in asked.iter().zip(infos) {
+        let repo = pr.repo.clone().unwrap_or_default();
+        if prs.iter().any(|held: &ReviewPr| {
+            held.owner == repo.owner && held.name == repo.name && held.number == pr.number
+        }) {
+            return Err(StartReviewError::DuplicatePr {
+                pr: format!("{}/{}#{}", repo.owner, repo.name, pr.number),
+            });
+        }
+        prs.push(ReviewPr {
+            owner: repo.owner,
+            name: repo.name,
+            number: pr.number,
+            base_branch: info.base_branch.clone(),
+            head_branch: info.head_branch.clone(),
+            // The start records the head each clone really got.
+            head_sha: info.head_sha.clone(),
+            checked_sha: info.head_sha.clone(),
+            state: info.state,
+            submit_started_unix_ms: None,
+        });
+    }
+    Ok(prs)
+}
+
+/// Deduplicates `(owner, name)` pairs from `prs`, preserving first-seen order
+/// so `prepare_channel` registers and clones each connected repository once.
+fn dedupe_wanted(prs: &[ReviewPr]) -> Vec<(String, String)> {
+    let mut wanted: Vec<(String, String)> = Vec::new();
+    for pr in prs {
+        if !wanted
+            .iter()
+            .any(|(owner, name)| owner == &pr.owner && name == &pr.name)
+        {
+            wanted.push((pr.owner.clone(), pr.name.clone()));
+        }
+    }
+    wanted
 }
 
 /// The PR reviews channel with `wanted` among its repositories. Made on first
@@ -255,35 +303,9 @@ impl PullRequests {
                 .await?;
             infos.push(info);
         }
-        let mut prs = Vec::new();
-        for (asked, info) in request.prs.iter().zip(&infos) {
-            let repo = asked.repo.clone().unwrap_or_default();
-            if prs
-                .iter()
-                .any(|held: &ReviewPr| held.owner == repo.owner && held.name == repo.name)
-            {
-                return Err(StartReviewError::RepoTwice {
-                    repo: slug(&repo.owner, &repo.name),
-                }
-                .into_status(&self.inner.machine));
-            }
-            prs.push(ReviewPr {
-                owner: repo.owner,
-                name: repo.name,
-                number: asked.number,
-                base_branch: info.base_branch.clone(),
-                head_branch: info.head_branch.clone(),
-                // The start records the head each clone really got.
-                head_sha: info.head_sha.clone(),
-                checked_sha: info.head_sha.clone(),
-                state: info.state,
-                submit_started_unix_ms: None,
-            });
-        }
-        let wanted: Vec<(String, String)> = prs
-            .iter()
-            .map(|pr| (pr.owner.clone(), pr.name.clone()))
-            .collect();
+        let prs = collect_review_prs(&request.prs, &infos)
+            .map_err(|error| error.into_status(&self.inner.machine))?;
+        let wanted = dedupe_wanted(&prs);
 
         let _one_at_a_time = self.inner.channel.lock().await;
         let (store, starter, machine, agent) = (
@@ -419,5 +441,97 @@ mod tests {
         assert_eq!(expanded.repos.len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn pr_ref(owner: &str, name: &str, number: u32) -> pb::PullRequestRef {
+        pb::PullRequestRef {
+            repo: Some(pb::RepoRef {
+                owner: owner.to_owned(),
+                name: name.to_owned(),
+            }),
+            number,
+            ..pb::PullRequestRef::default()
+        }
+    }
+
+    fn pr_info(
+        owner: &str,
+        name: &str,
+        number: u32,
+        base_branch: &str,
+        head_branch: &str,
+    ) -> pb::PullRequestInfo {
+        pb::PullRequestInfo {
+            pr: Some(pr_ref(owner, name, number)),
+            title: format!("PR #{number}"),
+            author: "alice".to_owned(),
+            base_branch: base_branch.to_owned(),
+            head_branch: head_branch.to_owned(),
+            head_sha: format!("sha{number}"),
+            files: 1,
+            added: 5,
+            removed: 1,
+            state: pb::PullRequestState::Open as i32,
+            checks: String::new(),
+        }
+    }
+
+    #[test]
+    fn three_pr_stack_in_same_repo_deduplicates_wanted_and_registers_once() {
+        let asked = vec![
+            pr_ref("acme", "api", 101),
+            pr_ref("acme", "api", 102),
+            pr_ref("acme", "api", 103),
+        ];
+        let infos = vec![
+            pr_info("acme", "api", 101, "main", "feat-1"),
+            pr_info("acme", "api", 102, "feat-1", "feat-2"),
+            pr_info("acme", "api", 103, "feat-2", "feat-3"),
+        ];
+
+        let prs = collect_review_prs(&asked, &infos).expect("stack in same repo is allowed");
+        assert_eq!(prs.len(), 3);
+
+        let wanted = dedupe_wanted(&prs);
+        assert_eq!(wanted, vec![("acme".to_owned(), "api".to_owned())]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("humata.db")).unwrap());
+        let starter = FakeStarter {
+            store: store.clone(),
+        };
+        let (channel, created, updated) =
+            prepare_channel(&store, &starter, "this-mac", "claude", &wanted).unwrap();
+        assert!(created);
+        assert!(updated);
+        assert_eq!(channel.repos.len(), 1);
+        assert_eq!(channel.repos[0].owner, "acme");
+        assert_eq!(channel.repos[0].name, "api");
+    }
+
+    #[test]
+    fn rejects_exact_duplicate_pr_in_request() {
+        let asked = vec![pr_ref("acme", "api", 101), pr_ref("acme", "api", 101)];
+        let infos = vec![
+            pr_info("acme", "api", 101, "main", "feat-1"),
+            pr_info("acme", "api", 101, "main", "feat-1"),
+        ];
+        let err = collect_review_prs(&asked, &infos).unwrap_err();
+        assert!(matches!(err, StartReviewError::DuplicatePr { .. }));
+    }
+
+    #[test]
+    fn preserves_same_name_rejection_across_different_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("humata.db")).unwrap());
+        let starter = FakeStarter {
+            store: store.clone(),
+        };
+        let wanted = vec![
+            ("acme".to_owned(), "api".to_owned()),
+            ("other".to_owned(), "api".to_owned()),
+        ];
+        let err = prepare_channel(&store, &starter, "this-mac", "claude", &wanted).unwrap_err();
+        assert!(matches!(err, StartReviewError::SameName { .. }));
     }
 }

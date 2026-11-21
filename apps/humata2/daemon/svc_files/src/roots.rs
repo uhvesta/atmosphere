@@ -268,6 +268,69 @@ impl Roots {
                     writable: true,
                 });
             }
+            Some(R::SessionAgentState(agent_state)) => {
+                let id = agent_state
+                    .session
+                    .map(|session| session.value)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| missing(&format!("{field}.session_agent_state.session")))?;
+                let record = self.session_record(&id)?;
+                let session = session_ref(&record, &self.machine);
+                let session_machine = session.machine.as_str().to_owned();
+                if given.as_ref().is_some_and(|given| *given != session_machine) {
+                    return Err(invalid_field(
+                        &format!("{field}.machine"),
+                        Problem::NotAllowedHere,
+                        format!("session {id} is on machine {session_machine}, not {named}"),
+                        "leave the machine out, or name the session's own",
+                    ));
+                }
+                let conversation_id = agent_state.conversation_id;
+                let folder = match session_machine == self.machine {
+                    true => {
+                        let Some(artifacts) = session_agent_artifacts(
+                            &self.store,
+                            &self.home,
+                            &id,
+                            &conversation_id,
+                        )?
+                        else {
+                            return Err(not_found(
+                                pb::EntityKind::RootFolder,
+                                &id,
+                                format!(
+                                    "session {id} has no agent artifacts folder on this machine"
+                                ),
+                                "only supported agents with an active conversation expose agent files",
+                            ));
+                        };
+                        artifacts.root
+                    }
+                    false => PathBuf::new(),
+                };
+                return Ok(Placed {
+                    place: Place {
+                        machine: session.machine.clone(),
+                        root: Root::AgentState(session),
+                        path: path.clone(),
+                        entry,
+                    },
+                    folder,
+                    path,
+                    shown: shown(&location.path),
+                    location: pb::FileLocation {
+                        machine: Some(pb::MachineId {
+                            value: session_machine,
+                        }),
+                        root: Some(R::SessionAgentState(pb::SessionAgentState {
+                            session: Some(pb::SessionId { value: id }),
+                            conversation_id,
+                        })),
+                        path: location.path,
+                    },
+                    writable: false,
+                });
+            }
             Some(R::ChannelShared(shared)) => {
                 let channel =
                     self.channel(shared.channel, &format!("{field}.channel_shared.channel"))?;
@@ -507,7 +570,7 @@ impl Placed {
     }
 
     pub fn require_writable(&self, field: &str) -> Result<(), Status> {
-        read_only(self.writable, field)
+        read_only(self.writable, &self.place.root, field)
     }
 
     pub fn into_target(self) -> Target {
@@ -522,16 +585,74 @@ impl Placed {
     }
 }
 
-fn read_only(writable: bool, field: &str) -> Result<(), Status> {
+/// Resolves the agent's on-disk artifact folder for `session` and
+/// `conversation_id` (empty means the session's current conversation).
+pub fn session_agent_artifacts(
+    store: &Store,
+    home: &Path,
+    session: &str,
+    conversation_id: &str,
+) -> Result<Option<humata2_conversation::SessionArtifacts>, Status> {
+    let Some(agent) = store
+        .agent(session)
+        .map_err(|err| store_error(err, session, "look up the session's agent"))?
+    else {
+        return Ok(None);
+    };
+    let (conv_id, conv_file): (String, PathBuf) = if conversation_id.is_empty()
+        || conversation_id == agent.launch.conversation_id
+    {
+        (
+            agent.launch.conversation_id.clone(),
+            agent.launch.conversation_file.clone(),
+        )
+    } else {
+        let previous = store
+            .previous_conversations(session)
+            .map_err(|err| store_error(err, session, "look up previous conversations"))?;
+        let Some(found) = previous
+            .into_iter()
+            .find(|prev| prev.conversation_id == conversation_id)
+        else {
+            return Ok(None);
+        };
+        (found.conversation_id, found.path)
+    };
+    Ok(humata2_conversation::resolve_from_launch(
+        &agent.launch.agent,
+        &conv_id,
+        &conv_file,
+        &agent.launch.folder,
+        home,
+        None,
+    ))
+}
+
+/// Directories to watch for live file changes in `session`'s current agent
+/// artifacts folder (empty if unsupported or missing).
+pub fn session_agent_watch_dirs(store: &Store, home: &Path, session: &str) -> Vec<PathBuf> {
+    session_agent_artifacts(store, home, session, "")
+        .ok()
+        .flatten()
+        .map(|artifacts| artifacts.watch_dirs)
+        .unwrap_or_default()
+}
+
+fn read_only(writable: bool, root: &Root, field: &str) -> Result<(), Status> {
     if writable {
         return Ok(());
     }
-    Err(invalid_field(
-        field,
-        Problem::NotAllowedHere,
-        "a main clone is the read-only reference new clones start from, so nothing in it can be changed here",
-        "make the change in a session's clone, or in the channel's shared folder",
-    ))
+    let (message, fix) = match root {
+        Root::AgentState(_) => (
+            "agent session folders are read-only, so nothing in them can be changed here",
+            "agent session files are managed by the agent CLI and can only be viewed",
+        ),
+        _ => (
+            "a main clone is the read-only reference new clones start from, so nothing in it can be changed here",
+            "make the change in a session's clone, or in the channel's shared folder",
+        ),
+    };
+    Err(invalid_field(field, Problem::NotAllowedHere, message, fix))
 }
 
 /// A file or folder in one of this machine's roots.
@@ -641,7 +762,7 @@ impl Target {
     }
 
     pub fn require_writable(&self, field: &str) -> Result<(), Status> {
-        read_only(self.writable, field)
+        read_only(self.writable, &self.place.root, field)
     }
 }
 
@@ -662,4 +783,249 @@ pub fn outside(path: &str) -> Status {
 /// A file system failure the caller can't fix from the request.
 pub fn io_failure(err: &io::Error, doing: &str, path: &Path) -> Status {
     internal(format!("couldn't {doing} {}: {err}", path.display()), "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humata2_access::{
+        Agent, Call, ChannelId, Context, Host, Policy, Principal, Refusal, SessionId, SessionKind,
+        SessionRef, Verdict,
+    };
+    use humata2_store::{AgentLaunch, AgentRecord, AgentState};
+
+    const UUID_1: &str = "11111111-1111-1111-1111-111111111111";
+    const UUID_2: &str = "22222222-2222-2222-2222-222222222222";
+
+    fn setup_roots(tmp: &Path) -> (Arc<Store>, PathBuf, Roots) {
+        let store = Arc::new(Store::open(&tmp.join("store.sqlite")).unwrap());
+        let home = tmp.join("home");
+        let channels = tmp.join("channels");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&channels).unwrap();
+        let roots = Roots::new(store.clone(), "this-mac".to_owned(), channels, home.clone());
+        (store, home, roots)
+    }
+
+    fn seed_session(store: &Store, id: &str, folder: &Path) {
+        fs::create_dir_all(folder).unwrap();
+        store
+            .put_session(&SessionRecord {
+                id: id.to_owned(),
+                channel: "ch1".to_owned(),
+                machine: "this-mac".to_owned(),
+                title: "test".to_owned(),
+                agent: "claude".to_owned(),
+                folder: folder.to_owned(),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+    }
+
+    fn seed_agent(store: &Store, session: &str, agent: &str, conv_id: &str, conv_file: &Path, folder: &Path) {
+        store
+            .put_agent(&AgentRecord {
+                session: session.to_owned(),
+                tab: format!("tab-{session}"),
+                state: AgentState::Running { holder_pid: 1 },
+                launch: AgentLaunch {
+                    agent: agent.to_owned(),
+                    folder: folder.to_owned(),
+                    conversation_id: conv_id.to_owned(),
+                    conversation_file: conv_file.to_owned(),
+                    ..AgentLaunch::default()
+                },
+                generation: 1,
+                interruptions: Vec::new(),
+                updated_unix_ms: 1,
+            })
+            .unwrap();
+    }
+
+    fn agent_state_loc(session: &str, conversation_id: &str, path: &str) -> pb::FileLocation {
+        pb::FileLocation {
+            machine: None,
+            root: Some(pb::file_location::Root::SessionAgentState(
+                pb::SessionAgentState {
+                    session: Some(pb::SessionId {
+                        value: session.to_owned(),
+                    }),
+                    conversation_id: conversation_id.to_owned(),
+                },
+            )),
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn resolves_per_provider_fixtures_and_rejects_agy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, home, roots) = setup_roots(tmp.path());
+        let work = tmp.path().join("work");
+        seed_session(&store, "s-claude", &work);
+        seed_session(&store, "s-codex", &work);
+        seed_session(&store, "s-copilot", &work);
+        seed_session(&store, "s-agy", &work);
+
+        // Claude with custom config dir derived from conversation_file
+        let claude_cfg = tmp.path().join("custom-claude");
+        let claude_proj = claude_cfg
+            .join("projects")
+            .join(humata2_conversation::claude_project_name(&work));
+        fs::create_dir_all(&claude_proj).unwrap();
+        let claude_file = claude_proj.join(format!("{UUID_1}.jsonl"));
+        fs::write(&claude_file, "{}\n").unwrap();
+        seed_agent(&store, "s-claude", "claude", UUID_1, &claude_file, &work);
+        let t_claude = roots
+            .target(Some(agent_state_loc("s-claude", "", "")), "location", Entry::Folder)
+            .unwrap();
+        assert_eq!(t_claude.existing().unwrap(), fs::canonicalize(&claude_proj).unwrap());
+        assert!(!t_claude.writable);
+
+        // Codex rollout dir
+        let codex_day = home.join(".codex/sessions/2026/11/21");
+        fs::create_dir_all(&codex_day).unwrap();
+        let codex_file = codex_day.join(format!("rollout-2026-11-21T08-00-00-{UUID_1}.jsonl"));
+        fs::write(&codex_file, "{}\n").unwrap();
+        seed_agent(&store, "s-codex", "codex", UUID_1, &codex_file, &work);
+        let t_codex = roots
+            .target(Some(agent_state_loc("s-codex", "", "")), "location", Entry::Folder)
+            .unwrap();
+        assert_eq!(t_codex.existing().unwrap(), fs::canonicalize(&codex_day).unwrap());
+
+        // Copilot session-state/<id>/
+        let copilot_dir = home.join(".copilot/session-state").join(UUID_1);
+        fs::create_dir_all(&copilot_dir).unwrap();
+        let copilot_file = copilot_dir.join("events.jsonl");
+        fs::write(&copilot_file, "{}\n").unwrap();
+        seed_agent(&store, "s-copilot", "copilot", UUID_1, &copilot_file, &work);
+        let t_copilot = roots
+            .target(Some(agent_state_loc("s-copilot", "", "")), "location", Entry::Folder)
+            .unwrap();
+        assert_eq!(t_copilot.existing().unwrap(), fs::canonicalize(&copilot_dir).unwrap());
+
+        // agy is unsupported -> NotFound
+        seed_agent(&store, "s-agy", "agy", UUID_1, Path::new(""), &work);
+        let err = roots
+            .target(Some(agent_state_loc("s-agy", "", "")), "location", Entry::Folder)
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), Code::NotFound);
+    }
+
+    #[test]
+    fn agent_state_root_is_read_only_and_contained() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, home, roots) = setup_roots(tmp.path());
+        let work = tmp.path().join("work");
+        seed_session(&store, "s1", &work);
+
+        let copilot_dir = home.join(".copilot/session-state").join(UUID_1);
+        fs::create_dir_all(&copilot_dir).unwrap();
+        let inside_file = copilot_dir.join("events.jsonl");
+        fs::write(&inside_file, "hello\n").unwrap();
+        seed_agent(&store, "s1", "copilot", UUID_1, &inside_file, &work);
+
+        // Read works
+        let target = roots
+            .target(
+                Some(agent_state_loc("s1", "", "events.jsonl")),
+                "location",
+                Entry::File,
+            )
+            .unwrap();
+        assert_eq!(target.resolve(true).unwrap(), fs::canonicalize(&inside_file).unwrap());
+
+        // Write is refused (read-only)
+        let write_err = target.require_writable("location").unwrap_err();
+        assert_eq!(write_err.code(), Code::InvalidArgument);
+        assert!(
+            write_err.message().contains("agent session folders are read-only"),
+            "unexpected message: {}",
+            write_err.message()
+        );
+
+        // Containment: symlink pointing outside the root is refused with PermissionDenied
+        let secret = tmp.path().join("secret.txt");
+        fs::write(&secret, "top-secret\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, copilot_dir.join("escape.txt")).unwrap();
+            let escape = roots
+                .target(
+                    Some(agent_state_loc("s1", "", "escape.txt")),
+                    "location",
+                    Entry::File,
+                )
+                .unwrap();
+            assert_eq!(escape.existing().unwrap_err().code(), Code::PermissionDenied);
+            assert_eq!(escape.resolve(true).unwrap_err().code(), Code::PermissionDenied);
+        }
+    }
+
+    #[test]
+    fn previous_conversation_stays_accessible_after_rotation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, home, roots) = setup_roots(tmp.path());
+        let work = tmp.path().join("work");
+        seed_session(&store, "s1", &work);
+
+        let old_dir = home.join(".copilot/session-state").join(UUID_1);
+        let new_dir = home.join(".copilot/session-state").join(UUID_2);
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+        let old_file = old_dir.join("events.jsonl");
+        let new_file = new_dir.join("events.jsonl");
+        fs::write(&old_file, "old\n").unwrap();
+        fs::write(&new_file, "new\n").unwrap();
+
+        store
+            .push_previous_conversation("s1", UUID_1, &old_file, 100)
+            .unwrap();
+        seed_agent(&store, "s1", "copilot", UUID_2, &new_file, &work);
+
+        let current = roots
+            .target(Some(agent_state_loc("s1", "", "")), "location", Entry::Folder)
+            .unwrap();
+        assert_eq!(current.existing().unwrap(), fs::canonicalize(&new_dir).unwrap());
+
+        let prev = roots
+            .target(Some(agent_state_loc("s1", UUID_1, "")), "location", Entry::Folder)
+            .unwrap();
+        assert_eq!(prev.existing().unwrap(), fs::canonicalize(&old_dir).unwrap());
+    }
+
+    #[test]
+    fn access_policy_allows_app_and_refuses_agent_for_agent_state() {
+        let session = SessionRef {
+            id: SessionId::new("s1"),
+            channel: ChannelId::new("ch1"),
+            machine: MachineId::new("this-mac"),
+        };
+        let call = Call::ReadFiles(Place {
+            machine: MachineId::new("this-mac"),
+            root: Root::AgentState(session.clone()),
+            path: RepoPath::new("events.jsonl").unwrap(),
+            entry: Entry::File,
+        });
+        let mut policy = Policy::new();
+        policy.add_channel(ChannelId::new("ch1")).unwrap();
+        let context = Context {
+            here: MachineId::new("this-mac"),
+            host: Host::Here,
+        };
+
+        assert!(matches!(
+            policy.check(&Principal::App, &call, &context),
+            Ok(Verdict::Allowed { .. })
+        ));
+        let agent = Principal::Agent(Agent {
+            session,
+            kind: SessionKind::Ordinary,
+        });
+        assert!(matches!(
+            policy.check(&agent, &call, &context),
+            Ok(Verdict::Refused(Refusal::OutsideHumataFolders { .. }))
+        ));
+    }
 }

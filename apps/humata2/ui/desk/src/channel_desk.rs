@@ -6,14 +6,17 @@ use crate::{
     chrome,
     desk::runs,
     theme::{Look, ORANGE},
+    todo_pane,
     widgets::{self, col, row},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_clients::model::{Channel, SessionId, Status};
-use humata2_desk::{ChannelDeskStatus, ChannelRow, DeskAction};
+use humata2_clients::model::{Agent, Channel, MachineId, SessionId, Status};
+use humata2_desk::{
+    ChannelDeskStatus, ChannelRow, DeskAction, KindDisabledReason, compute_tab_strip,
+};
 use std::rc::Rc;
 
 fn dim(look: Look, text: impl Into<SharedString>) -> Div {
@@ -283,14 +286,255 @@ fn document_row(ui: &Rc<Ui>, name: &str, item: &ChannelRow<'_>, look: Look) -> A
         .into_any_element()
 }
 
+fn default_host_for(state: &AppState, channel: &Channel) -> Option<MachineId> {
+    let online = |id: &MachineId| {
+        state
+            .workspace
+            .machine(id)
+            .is_some_and(|machine| machine.online)
+    };
+    channel
+        .machines
+        .iter()
+        .find(|id| online(id))
+        .cloned()
+        .or_else(|| {
+            state
+                .workspace
+                .machines
+                .iter()
+                .find(|machine| machine.online)
+                .map(|machine| machine.id.clone())
+        })
+}
+
+fn tab_agent_label(agent: Agent) -> &'static str {
+    if agent == Agent::Shell {
+        "Terminal (zsh)"
+    } else {
+        agent.name()
+    }
+}
+
+/// Agent tab strip above the primary Channel Desk bar (DESKTABS, MULTIAGENT).
+fn tab_strip(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    channel: &Channel,
+    tabs: &[ChannelRow<'_>],
+    active_id: Option<&SessionId>,
+    look: Look,
+) -> AnyElement {
+    let picker_open = state.desk.tab_picker_open.as_ref() == Some(&channel.id);
+    let enabled_agents = state.settings.agents.offered();
+    let open_agents: Vec<Agent> = tabs.iter().map(|row| row.session.agent).collect();
+    let summary = compute_tab_strip(&open_agents, &enabled_agents);
+    let host = default_host_for(state, channel);
+
+    let tab_chips: Vec<AnyElement> = tabs
+        .iter()
+        .map(|item| {
+            let is_active = active_id == Some(&item.session.id);
+            let select_ui = ui.clone();
+            let select_action = AppAction::Desk(DeskAction::SelectChannelTab {
+                channel: channel.id.clone(),
+                session: item.session.id.clone(),
+            });
+            let close_ui = ui.clone();
+            let close_action = AppAction::Desk(DeskAction::AskClose(item.session.id.clone()));
+            let label = if item.session.agent == Agent::Shell {
+                "Terminal".to_owned()
+            } else {
+                item.session.agent.name().to_owned()
+            };
+
+            row()
+                .id(SharedString::from(format!(
+                    "channel-desk-tab-{}",
+                    item.session.id.as_str()
+                )))
+                .role(Role::Tab)
+                .aria_label(label.clone())
+                .gap(px(6.))
+                .px(px(10.))
+                .h(px(28.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(rgb(if is_active { look.accent } else { look.line }))
+                .bg(rgb(if is_active { look.card } else { look.panel }))
+                .cursor_pointer()
+                .child(chrome::status(item.session.status))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .font_weight(if is_active {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .whitespace_nowrap()
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "channel-desk-tab-close-{}",
+                            item.session.id.as_str()
+                        )))
+                        .role(Role::Button)
+                        .aria_label("Close tab")
+                        .px(px(2.))
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary))
+                        .cursor_pointer()
+                        .child("×")
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            close_ui.send(close_action.clone(), cx);
+                        })
+                        .test_support(),
+                )
+                .on_click(move |_, _, cx| select_ui.send(select_action.clone(), cx))
+                .test_support()
+                .into_any_element()
+        })
+        .collect();
+
+    let toggle_ui = ui.clone();
+    let toggle_channel = channel.id.clone();
+    let plus_button = div()
+        .id("channel-desk-tab-add")
+        .role(Role::Button)
+        .aria_label("New Desk agent tab")
+        .px(px(8.))
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.panel))
+        .cursor_pointer()
+        .text_size(px(13.))
+        .text_color(rgb(look.text))
+        .child("+")
+        .on_click(move |_, _, cx| {
+            toggle_ui.send(
+                AppAction::Desk(DeskAction::ToggleTabPicker(Some(toggle_channel.clone()))),
+                cx,
+            );
+        })
+        .test_support();
+
+    let popover = picker_open.then(|| {
+        let option_rows: Vec<AnyElement> = summary
+            .options
+            .iter()
+            .map(|opt| {
+                let disabled = opt.disabled_reason.is_some() || host.is_none();
+                let status_text = match opt.disabled_reason {
+                    Some(KindDisabledReason::AtKindLimit) => Some("2 of 2 open".to_owned()),
+                    Some(KindDisabledReason::OffInSettings) => Some("Off in Settings".to_owned()),
+                    Some(KindDisabledReason::AtTotalLimit { .. }) => Some("Tab cap reached".to_owned()),
+                    None if opt.open_count == 1 => Some("1 open".to_owned()),
+                    None => None,
+                };
+                let open_ui = ui.clone();
+                let open_action = host.clone().map(|machine| {
+                    AppAction::Desk(DeskAction::OpenChannelTab {
+                        channel: channel.id.clone(),
+                        agent: opt.agent,
+                        machine,
+                        enabled_agents: enabled_agents.clone(),
+                    })
+                });
+                row()
+                    .id(SharedString::from(format!(
+                        "channel-desk-tab-option-{}",
+                        opt.agent.command()
+                    )))
+                    .role(Role::Button)
+                    .aria_label(tab_agent_label(opt.agent))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .gap(px(8.))
+                    .opacity(if disabled { 0.5 } else { 1. })
+                    .when(!disabled, |el| {
+                        el.cursor_pointer().on_click(move |_, _, cx| {
+                            if let Some(action) = &open_action {
+                                open_ui.send(action.clone(), cx);
+                            }
+                        })
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .child(tab_agent_label(opt.agent)),
+                    )
+                    .children(status_text.map(|text| dim(look, text)))
+                    .test_support()
+                    .into_any_element()
+            })
+            .collect();
+
+        let footer = format!(
+            "{} of {} tabs open · max 2 per agent kind. Starts immediately on this channel's default host.",
+            summary.total_open, summary.total_cap
+        );
+
+        col()
+            .id("channel-desk-tab-picker")
+            .w(px(300.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(look.line))
+            .bg(rgb(look.card))
+            .py(px(4.))
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(5.))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(look.secondary))
+                    .child("New Desk agent tab"),
+            )
+            .children(option_rows)
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(rgb(look.line))
+                    .child(dim(look, footer)),
+            )
+            .test_support()
+    });
+
+    col()
+        .id("channel-desk-tab-strip")
+        .gap(px(6.))
+        .flex_shrink_0()
+        .child(
+            row()
+                .gap(px(6.))
+                .children(tab_chips)
+                .child(plus_button),
+        )
+        .children(popover)
+        .into_any_element()
+}
+
 /// Inline primary Channel Desk panel (`CHANNELDESK`): header bar with status,
-/// Copy path, Open full session, Close, New desk session, and the live
+/// Copy path, To-do split toggle, Open full session, Close, and the live
 /// embedded terminal underneath.
 fn primary_panel(
     ui: &Rc<Ui>,
     state: &AppState,
+    channel: &Channel,
     item: &ChannelRow<'_>,
-    new_button: AnyElement,
     terminal: &dyn Fn(&SessionId, &mut App) -> AnyElement,
     look: Look,
     cx: &mut App,
@@ -302,8 +546,16 @@ fn primary_panel(
     );
     let busy = state.desk.pending.contains(&session.id);
     let path = item.desk.desk.folder.path().to_owned();
+    let pane_state = state.desk.todo_pane(&channel.id);
+    let todo_label = if !pane_state.visible && pane_state.unseen_agent_changes > 0 {
+        format!("To-do · {}", pane_state.unseen_agent_changes)
+    } else {
+        "To-do".to_owned()
+    };
+    let todo_action = AppAction::Desk(DeskAction::ToggleTodoPane(channel.id.clone()));
     let open_action = AppAction::Desk(DeskAction::Open(session.id.clone()));
     let close_action = AppAction::Desk(DeskAction::AskClose(session.id.clone()));
+    let todo_ui = ui.clone();
     let open_ui = ui.clone();
     let close_ui = ui.clone();
 
@@ -357,6 +609,31 @@ fn primary_panel(
         .child(div().flex_1())
         .child(
             div()
+                .id("channel-desk-todo-toggle")
+                .role(Role::Button)
+                .aria_label(todo_label.clone())
+                .flex_shrink_0()
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(rgb(if pane_state.visible {
+                    look.accent
+                } else {
+                    look.line
+                }))
+                .text_color(rgb(if pane_state.visible {
+                    look.accent
+                } else {
+                    look.text
+                }))
+                .cursor_pointer()
+                .child(todo_label)
+                .on_click(move |_, _, cx| todo_ui.send(todo_action.clone(), cx))
+                .test_support(),
+        )
+        .child(
+            div()
                 .id("channel-desk-primary-open")
                 .role(Role::Button)
                 .aria_label("Open full session")
@@ -382,13 +659,12 @@ fn primary_panel(
                 })
                 .test_support(),
         )
-        .child(new_button)
         .test_support();
 
     col()
         .id("channel-desk-primary")
-        .w_full()
         .flex_1()
+        .min_w_0()
         .min_h(px(240.))
         .rounded(px(9.))
         .border_1()
@@ -415,7 +691,6 @@ fn primary_status(
     ui: &Rc<Ui>,
     state: &AppState,
     channel: &Channel,
-    new_button: AnyElement,
     look: Look,
 ) -> AnyElement {
     let status = state.desk.channel_status.get(&channel.id);
@@ -584,8 +859,7 @@ fn primary_status(
                                 .test_text(title),
                         )
                         .child(dim(look, detail)),
-                )
-                .child(new_button),
+                ),
         )
         .when(!actions.is_empty(), |box_| {
             box_.child(row().gap(px(8.)).children(actions))
@@ -594,7 +868,8 @@ fn primary_status(
         .into_any_element()
 }
 
-/// The tab: embedded persistent primary Channel Desk terminal (`CHANNELDESK`),
+/// The tab: agent tab strip + embedded persistent Channel Desk terminal
+/// (`CHANNELDESK`, `DESKTABS`), optional To-do List-only split pane (`DESKTODO`),
 /// plus any additional/targeted Desk sessions, documents, and closed sessions.
 pub fn tab(
     ui: &Rc<Ui>,
@@ -605,24 +880,9 @@ pub fn tab(
     cx: &mut App,
 ) -> AnyElement {
     let rows = state.desk.channel_rows(&channel.id);
-    let primary = state.desk.primary_channel_desk(&channel.id);
-    // With every agent off there is no default to send; the Settings pick goes
-    // along and the app's Desk handling refuses it with a toast.
-    let agent = state
-        .default_agent(Some(&channel.id))
-        .unwrap_or(state.settings.preferences.default_agent);
-    let new = widgets::push_quiet(
-        ui,
-        "channel-desk-new",
-        "New desk session",
-        AppAction::Desk(DeskAction::StartChannelNew {
-            channel: channel.id.clone(),
-            target: None,
-            agent,
-        }),
-        look,
-    )
-    .into_any_element();
+    let tabs = state.desk.channel_tabs(&channel.id);
+    let primary = state.desk.active_channel_tab_row(&channel.id);
+    let pane_state = state.desk.todo_pane(&channel.id);
     let documents = state.desk.channel_documents(&channel.id);
     let closed = state.desk.channel_closed(&channel.id);
     let documents_group = (!documents.is_empty()).then(|| {
@@ -644,9 +904,32 @@ pub fn tab(
         )
     });
 
+    let strip = tab_strip(
+        ui,
+        state,
+        channel,
+        &tabs,
+        primary.as_ref().map(|row| &row.session.id),
+        look,
+    );
+
     let primary_view = match primary {
-        Some(item) => primary_panel(ui, state, &item, new, terminal, look, cx),
-        None => primary_status(ui, state, channel, new, look),
+        Some(item) => {
+            let panel = primary_panel(ui, state, channel, &item, terminal, look, cx);
+            if pane_state.visible {
+                row()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .gap(px(12.))
+                    .child(panel)
+                    .child(todo_pane::pane(ui, state, channel, &pane_state, look))
+                    .into_any_element()
+            } else {
+                panel
+            }
+        }
+        None => primary_status(ui, state, channel, look),
     };
 
     // Show the Desk sessions table whenever there are additional/targeted
@@ -703,6 +986,7 @@ pub fn tab(
             .p(px(16.))
             .gap(px(12.))
             .text_size(px(12.5))
+            .child(strip)
             .child(primary_view)
             .children(extras)
             .into_any_element()
@@ -715,6 +999,7 @@ pub fn tab(
             .p(px(16.))
             .gap(px(12.))
             .text_size(px(12.5))
+            .child(strip)
             .child(primary_view)
             .children(sessions_group)
             .children(documents_group)

@@ -27,7 +27,11 @@ pub use call::{
     NetworkTarget, PathScope, Place, RepoBranch, Root, Target,
 };
 pub use capability::{AwayRule, Capability, ChannelRules, Decision, Tier};
-pub use channel_desk::{ChannelDeskAccess, ChannelDeskSwitch, ChannelDeskSwitches};
+pub use channel_desk::{
+    ChannelDeskAccess, ChannelDeskSwitch, ChannelDeskSwitches, PERMISSION_PROMPT_EXIT_CODE,
+    PERMISSION_PROMPT_PROTECTED_CODE, TerminalTypeRefusal, check_terminal_type_safety,
+    requires_explicit_consent,
+};
 pub use error::{AnswerError, CheckError, PolicyError};
 pub use ids::{AgentId, ChannelId, GrantId, MachineId, RepoRef, RequestId, SessionId, SessionRef};
 pub use path::{RepoPath, RepoPathError};

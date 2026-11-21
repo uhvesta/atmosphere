@@ -310,6 +310,9 @@ const LOCAL_READ_ONLY: &[(&str, &str)] = &[
     (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
     (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
     (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
+    (pb::board_service_server::SERVICE_NAME, "ListItems"),
+    (pb::board_service_server::SERVICE_NAME, "GetItem"),
+    (pb::board_service_server::SERVICE_NAME, "GetItemHistory"),
 ];
 
 fn route_of(path: &str) -> Option<(&str, &str)> {
@@ -1559,6 +1562,9 @@ mod tests {
             (pb::operation_service_server::SERVICE_NAME, "ListOperations"),
             (pb::settings_service_server::SERVICE_NAME, "GetSettings"),
             (pb::settings_service_server::SERVICE_NAME, "GetChannelSettings"),
+            (pb::board_service_server::SERVICE_NAME, "ListItems"),
+            (pb::board_service_server::SERVICE_NAME, "GetItem"),
+            (pb::board_service_server::SERVICE_NAME, "GetItemHistory"),
         ] {
             assert!(
                 is_local_read_only_route(allowed_route),
@@ -1569,7 +1575,10 @@ mod tests {
             // Contents need a login (D893).
             (pb::session_service_server::SERVICE_NAME, "ReadConversation"),
             (pb::inbox_service_server::SERVICE_NAME, "ListRequests"),
-            (pb::board_service_server::SERVICE_NAME, "ListItems"),
+            (pb::board_service_server::SERVICE_NAME, "CreateItem"),
+            (pb::board_service_server::SERVICE_NAME, "UpdateItem"),
+            (pb::board_service_server::SERVICE_NAME, "MoveItem"),
+            (pb::board_service_server::SERVICE_NAME, "DeleteItem"),
             (pb::settings_service_server::SERVICE_NAME, "UpdateSettings"),
             (pb::settings_service_server::SERVICE_NAME, "UpdateChannelSettings"),
             (pb::channel_service_server::SERVICE_NAME, "CreateChannel"),

@@ -758,9 +758,52 @@ pub(super) fn push_scrim(ui: &Rc<Ui>) -> impl IntoElement {
         .test_support()
 }
 
-/// The Push & PR menu above the footer: one row per repository with its own
-/// push button, which pushes that repository only.
+/// The anchored Push confirmation popover above the footer: shows the exact
+/// PRs/layers to push, unreviewed/open-note warnings, Draft vs Ready toggle
+/// (defaulting to Draft PRs), Cancel, and primary Push button.
 pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&RepoDiff]) -> impl IntoElement {
+    let session = state.session.open.as_ref();
+    let open_notes = session.map_or(0, |id| state.comments.sendable(id).len());
+    let summary = session
+        .map(|id| state.review.push_confirmation_summary(id, open_notes))
+        .unwrap_or(humata2_review::PushConfirmationSummary {
+            entries: Vec::new(),
+            unreviewed_count: 0,
+            open_notes,
+            draft: state.review.push_draft_mode,
+        });
+    let stacked = crate::panel_stack::hides_base_picker(&state.review);
+    let count = summary.entries.len().max(diffs.len());
+    let pr_noun = if count == 1 { "PR" } else { "PRs" };
+    let title = if stacked {
+        format!("Push stack & open {count} {pr_noun} on GitHub")
+    } else {
+        format!("Push & open {count} {pr_noun} on GitHub")
+    };
+    let primary_label = if summary.draft {
+        format!("Push & open {count} draft {pr_noun}")
+    } else {
+        format!("Push & open {count} {pr_noun}")
+    };
+    let warning = if summary.unreviewed_count > 0 || summary.open_notes > 0 {
+        let mut parts = Vec::new();
+        if summary.unreviewed_count > 0 {
+            let n = summary.unreviewed_count;
+            parts.push(format!("{n} {} not looked at", if n == 1 { "layer" } else { "layers" }));
+        }
+        if summary.open_notes > 0 {
+            let n = summary.open_notes;
+            parts.push(format!("{n} open {}", if n == 1 { "note" } else { "notes" }));
+        }
+        Some(parts.join(" \u{b7} "))
+    } else {
+        None
+    };
+    let draft_ui = ui.clone();
+    let ready_ui = ui.clone();
+    let cancel_ui = ui.clone();
+    let push_all_ui = ui.clone();
+    let repos_to_push: Vec<String> = diffs.iter().map(|d| d.repo.clone()).collect();
     col()
         .id("changes-push-list")
         .role(Role::ListBox)
@@ -768,9 +811,9 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
         .absolute()
         .bottom(px(28.))
         .left(px(0.))
-        .w(px(280.))
-        .p(px(4.))
-        .gap(px(1.))
+        .w(px(340.))
+        .p(px(10.))
+        .gap(px(6.))
         .rounded(px(8.))
         .bg(rgb(look.card))
         .border_1()
@@ -778,13 +821,62 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
         .shadow_lg()
         .occlude()
         .text_size(px(12.5))
+        .child(
+            col()
+                .gap(px(2.))
+                .child(text(title).font_weight(FontWeight::SEMIBOLD))
+                .child(secondary(look, "Humata never merges.")),
+        )
+        .when_some(warning, |box_el, msg| {
+            box_el.child(
+                row()
+                    .id("push-popover-warning")
+                    .test_support()
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(6.))
+                    .bg(rgb(0xfff4e0))
+                    .border_1()
+                    .border_color(rgb(0xf0c975))
+                    .text_size(px(11.5))
+                    .text_color(rgb(0x8a5300))
+                    .child(text(msg)),
+            )
+        })
+        .children(summary.entries.iter().enumerate().map(|(index, entry)| {
+            let status_text = if entry.looked_at {
+                "\u{2713} Looked at"
+            } else {
+                "Not looked at"
+            };
+            let status_color = if entry.looked_at { 0x28a745 } else { look.secondary };
+            row()
+                .id(SharedString::from(format!("push-entry-{index}")))
+                .test_support()
+                .gap(px(8.))
+                .h(px(24.))
+                .px(px(4.))
+                .child(
+                    text(entry.label.clone())
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis(),
+                )
+                .child(div().flex_1())
+                .child(
+                    text(status_text)
+                        .text_size(px(11.))
+                        .text_color(rgb(status_color)),
+                )
+        }))
         .children(diffs.iter().map(|diff| {
             let shown_repo =
                 display_repo_name(&diff.repo, diffs.iter().map(|each| each.repo.as_str()));
             row()
                 .gap(px(8.))
                 .h(px(28.))
-                .px(px(8.))
+                .px(px(4.))
                 .child(full_text(
                     text(shown_repo.to_owned())
                         .id(SharedString::from(format!("push-list-repo-{}", diff.repo)))
@@ -797,6 +889,99 @@ pub(super) fn push_menu(ui: &Rc<Ui>, state: &AppState, look: Look, diffs: &[&Rep
                 .child(div().flex_1())
                 .child(push_control(ui, state, look, &diff.repo))
         }))
+        .child(
+            row()
+                .gap(px(6.))
+                .pt(px(4.))
+                .border_t_1()
+                .border_color(rgb(look.line))
+                .child(secondary(look, "Open PRs as:"))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("push-mode-draft")
+                        .role(Role::Button)
+                        .test_support()
+                        .px(px(7.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .when(summary.draft, |el| {
+                            el.bg(rgb(look.fill))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(look.text))
+                        })
+                        .when(!summary.draft, |el| el.text_color(rgb(look.secondary)))
+                        .on_click(move |_, _, cx| {
+                            draft_ui.send(AppAction::Review(ReviewAction::SetPushDraftMode(true)), cx)
+                        })
+                        .child("Draft PRs"),
+                )
+                .child(
+                    div()
+                        .id("push-mode-ready")
+                        .role(Role::Button)
+                        .test_support()
+                        .px(px(7.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .when(!summary.draft, |el| {
+                            el.bg(rgb(look.fill))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(look.text))
+                        })
+                        .when(summary.draft, |el| el.text_color(rgb(look.secondary)))
+                        .on_click(move |_, _, cx| {
+                            ready_ui.send(AppAction::Review(ReviewAction::SetPushDraftMode(false)), cx)
+                        })
+                        .child("Ready for review"),
+                ),
+        )
+        .child(
+            row()
+                .gap(px(8.))
+                .pt(px(4.))
+                .justify_end()
+                .child(
+                    action(
+                        &cancel_ui,
+                        "push-popover-cancel",
+                        "Cancel",
+                        AppAction::Review(ReviewAction::ClosePushMenu),
+                        look,
+                        false,
+                    ),
+                )
+                .child(
+                    div()
+                        .id("push-popover-confirm")
+                        .role(Role::Button)
+                        .test_support()
+                        .px(px(10.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(6.))
+                        .bg(rgb(look.accent))
+                        .text_color(rgb(0xffffff))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            for repo in &repos_to_push {
+                                push_all_ui.send(
+                                    AppAction::Review(ReviewAction::Push { repo: repo.clone() }),
+                                    cx,
+                                );
+                            }
+                            push_all_ui.send(AppAction::Review(ReviewAction::ClosePushMenu), cx);
+                        })
+                        .child(primary_label),
+                ),
+        )
         .test_support()
 }
 

@@ -212,7 +212,7 @@ use crate::files::{
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead, Packed, PackedFile, Placement,
-    Turn,
+    SessionArtifacts, Turn,
 };
 
 /// The biggest file a carry rewrites. A bigger one is refused, never copied
@@ -353,6 +353,40 @@ impl ClaudeJsonl {
 }
 
 impl Adapter for ClaudeJsonl {
+    fn artifacts_folder(&self, at: &Placement, id: &str) -> Result<SessionArtifacts, ConversationError> {
+        check_id(id)?;
+        let (mut resolved, transcript) = locate_transcript(at, id)?;
+        let transcript_exists = is_there(&transcript)?;
+        if !transcript_exists && !is_there(&project_dir(&resolved))? {
+            let real = canonical(at);
+            if real.folder != at.folder && is_there(&project_dir(&real))? {
+                resolved = real;
+            }
+        }
+        let root = project_dir(&resolved);
+        let config = config_dir(&resolved);
+        let mut side_paths = side_files_for(&resolved, id, transcript_exists.then_some(transcript.as_path()))?;
+        side_paths.sort();
+
+        let mut watch_dirs = vec![root.clone()];
+        for candidate in [
+            config.join("file-history").join(id),
+            config.join("todos"),
+            config.join("plans"),
+        ] {
+            if candidate.is_dir() && !watch_dirs.contains(&candidate) {
+                watch_dirs.push(candidate);
+            }
+        }
+
+        Ok(SessionArtifacts {
+            provider: "Claude",
+            root,
+            watch_dirs,
+            side_paths,
+        })
+    }
+
     fn locate(&self, at: &Placement, id: &str) -> Result<Conversation, ConversationError> {
         check_id(id)?;
         let (at, transcript) = locate_transcript(at, id)?;
@@ -1023,6 +1057,10 @@ fn is_another_conversations(path: &Path, project: &Path, id: &str) -> Result<boo
 /// `file-history/<id>/` backups, its `todos/<id>-agent-*.json` and the plan
 /// named by the transcript's `slug`.
 fn side_files(at: &Placement, id: &str, transcript: &Path) -> Result<Vec<PathBuf>, ConversationError> {
+    side_files_for(at, id, Some(transcript))
+}
+
+fn side_files_for(at: &Placement, id: &str, transcript: Option<&Path>) -> Result<Vec<PathBuf>, ConversationError> {
     let config = config_dir(at);
     let mut found = Vec::new();
     let history = config.join("file-history").join(id);
@@ -1044,7 +1082,9 @@ fn side_files(at: &Placement, id: &str, transcript: &Path) -> Result<Vec<PathBuf
         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
         Err(source) => return Err(io_error("list the folder", &todos, source)),
     }
-    if let Some(slug) = slug_of(transcript)? {
+    if let Some(transcript) = transcript
+        && let Some(slug) = slug_of(transcript)?
+    {
         let plan = config.join("plans").join(format!("{slug}.md"));
         if is_there(&plan)? {
             found.push(plan);

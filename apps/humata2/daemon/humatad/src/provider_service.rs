@@ -179,22 +179,26 @@ impl ProviderSvc {
         if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::PeerCannotCall));
         }
-        if let Some(asked) = self.gate(caller, request.name.trim(), MachineActionKind::Create, approved)? {
-            return Ok(Gated::Ask(asked));
-        }
-        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
-            return Ok(Gated::Done(operation));
-        }
         let provider_id = request
             .provider
             .map(|provider| provider.value)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| status::missing("provider"))?;
+        let resolved_name = self
+            .work
+            .resolve_provider_name(&provider_id, &request.name)
+            .map_err(|error| status_of(&error))?;
+        if let Some(asked) = self.gate(caller, resolved_name.trim(), MachineActionKind::Create, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
+            return Ok(Gated::Done(operation));
+        }
         let provider = self.provider(&provider_id)?;
         let plan = self
             .work
             .machines
-            .plan_create(&provider, &request.name, request.params.into_iter().collect())
+            .plan_create(&provider, &resolved_name, request.params.into_iter().collect())
             .map_err(|error| status_of(&error))?;
         let name = plan.machine.as_str().to_owned();
         let progress = match self.start(

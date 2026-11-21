@@ -25,7 +25,10 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
 use humata2_clients::model::Agent;
 use humata2_clients::pull_requests::{PullRequestInfo, PullRequestRef, PullRequestState};
-use humata2_pr_review::dialog::{Candidate, DialogAction, DialogState, Fetch, PasteProblem, Start};
+use humata2_pr_review::dialog::{
+    Candidate, DetectedStack, DialogAction, DialogState, Fetch, PasteProblem, StackImportMode,
+    Start,
+};
 use humata2_pr_review::submit::Step;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -279,6 +282,12 @@ impl Overlays {
                     )),
             ),
         };
+        if let Some(stack) = &state.detected_stack
+            && stack.is_multi_layer()
+        {
+            let main_pr = state.main.as_ref().map(|c| &c.pr);
+            body = body.child(stack_detected_card(stack, main_pr, look, ui));
+        }
         body = body
             .child(form_row(look, "Also review", self.also_review(state, look, ui, cx)))
             .child(form_row(look, "Machine", self.machine_row(state, &machines, look, ui, cx)))
@@ -324,7 +333,16 @@ impl Overlays {
         if let Start::Failed(error) = &state.start {
             body = body.child(alert("pr-review-start-error", error.to_string()));
         }
-        let start_label = if starting { "Starting\u{2026}" } else { "Start the review" };
+        let start_label = if starting {
+            "Starting\u{2026}".to_owned()
+        } else if let Some(stack) = &state.detected_stack
+            && stack.is_multi_layer()
+            && stack.mode == StackImportMode::WholeStack
+        {
+            format!("Import stack ({} PRs)", stack.layers.len())
+        } else {
+            "Start the review".to_owned()
+        };
         let body = body
             .child(
                 row()
@@ -625,6 +643,179 @@ impl Overlays {
             },
         ))
     }
+}
+
+/// The stack-import card shown when the pasted PR belongs to a multi-layer stack.
+fn stack_detected_card(
+    stack: &DetectedStack,
+    main_pr: Option<&PullRequestRef>,
+    look: Look,
+    ui: &Rc<Ui>,
+) -> impl IntoElement {
+    let whole_selected = stack.mode == StackImportMode::WholeStack;
+    let header = row()
+        .gap(px(8.))
+        .items_center()
+        .child(chrome::icon(IconName::GitPullRequest, look.accent, 12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(12.))
+                .child(format!(
+                    "Stacked PRs detected \u{b7} {} layers (bottom to top)",
+                    stack.layers.len()
+                )),
+        )
+        .child(
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .bg(rgb(look.fill))
+                .text_size(px(10.5))
+                .text_color(rgb(look.secondary))
+                .child(stack.source.clone()),
+        );
+
+    let toggle = row()
+        .gap(px(6.))
+        .child(stack_mode_pill(
+            "pr-review-stack-whole",
+            "Import whole stack",
+            whole_selected,
+            StackImportMode::WholeStack,
+            look,
+            ui,
+        ))
+        .child(stack_mode_pill(
+            "pr-review-stack-single",
+            "Review single PR",
+            !whole_selected,
+            StackImportMode::SinglePr,
+            look,
+            ui,
+        ));
+
+    let mut layers = col().gap(px(4.));
+    for (index, layer) in stack.layers.iter().enumerate() {
+        let is_main = main_pr == Some(&layer.pr);
+        let dimmed = !whole_selected && !is_main;
+        let text_color = if dimmed { look.tertiary } else { look.secondary };
+        let title_color = if dimmed { look.tertiary } else { look.text };
+        let badge_bg = if dimmed { look.fill } else { look.accent };
+        let badge_fg = if dimmed { look.tertiary } else { 0xffffff };
+
+        let mut layer_row = row()
+            .gap(px(7.))
+            .items_center()
+            .text_size(px(11.5))
+            .child(
+                row()
+                    .size(px(16.))
+                    .flex_shrink_0()
+                    .rounded(px(8.))
+                    .justify_center()
+                    .items_center()
+                    .bg(rgb(badge_bg))
+                    .text_size(px(10.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(badge_fg))
+                    .child(format!("{}", index + 1)),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(title_color))
+                    .child(format!("#{}", layer.pr.number)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_color(rgb(title_color))
+                    .child(layer.title.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.))
+                    .text_color(rgb(text_color))
+                    .child(format!("{} \u{2192} {}", layer.head_branch, layer.base_branch)),
+            );
+
+        if is_main {
+            layer_row = layer_row.child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(5.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .bg(rgb(look.fill))
+                    .text_size(px(10.))
+                    .text_color(rgb(look.secondary))
+                    .child("pasted"),
+            );
+        }
+
+        layers = layers.child(layer_row);
+    }
+
+    card(look)
+        .id("pr-review-stack-detected")
+        .role(Role::Group)
+        .aria_label(format!(
+            "Stacked PRs detected, {} layers",
+            stack.layers.len()
+        ))
+        .test_support()
+        .p(px(10.))
+        .gap(px(8.))
+        .child(header)
+        .child(toggle)
+        .child(layers)
+}
+
+/// One option in the stack import mode segmented pill.
+fn stack_mode_pill(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    mode: StackImportMode,
+    look: Look,
+    ui: &Rc<Ui>,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    row()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .aria_selected(selected)
+        .test_support()
+        .px(px(10.))
+        .h(px(24.))
+        .rounded(px(6.))
+        .items_center()
+        .cursor_pointer()
+        .text_size(px(11.5))
+        .font_weight(if selected {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        })
+        .bg(rgb(if selected { look.accent } else { look.fill }))
+        .text_color(rgb(if selected { 0xffffff } else { look.secondary }))
+        .child(label)
+        .on_click(move |_, _, cx| {
+            ui.send(
+                AppAction::PrDialog(DialogAction::SetStackImportMode(mode)),
+                cx,
+            );
+        })
 }
 
 /// One pull request under Also review: a chip with a remove button.

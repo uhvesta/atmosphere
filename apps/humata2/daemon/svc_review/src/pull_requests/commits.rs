@@ -236,9 +236,12 @@ fn patch_ids(clone: &Path, log: &str) -> Result<BTreeMap<String, String>, Commit
         .collect())
 }
 
-/// The commits of `pr` in its clone in `folder`, base..HEAD, oldest first.
-/// Blocking.
-fn head_of(folder: &Path, pr: &ReviewPr) -> Result<Head, CommitsError> {
+/// The commits of `pr` in its clone in `folder`, base..head, oldest first.
+/// When `refs/humata/pr-<n>` exists in the clone, resolves `base..refs/humata/pr-<n>`
+/// (using the parent PR's `refs/humata/pr-<parent>` when `pr` is stacked in `stack`,
+/// or `origin/<base_branch>` otherwise), falling back to `HEAD` when `refs/humata/pr-<n>`
+/// does not exist. Blocking.
+fn head_of_in_stack(folder: &Path, pr: &ReviewPr, stack: &[ReviewPr]) -> Result<Head, CommitsError> {
     if pr.base_branch.is_empty() {
         return Err(CommitsError::NoBase { pr: key_of(pr) });
     }
@@ -247,10 +250,41 @@ fn head_of(folder: &Path, pr: &ReviewPr) -> Result<Head, CommitsError> {
         pr: key_of(pr),
         source,
     };
-    let base = heads::base_ref_blocking(&clone, &pr.base_branch).map_err(git_failed)?;
-    let range = format!("{base}..HEAD");
-    let head =
-        heads::git(&clone, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(git_failed)?;
+    let layer_ref = heads::pr_ref_name(pr.number);
+    let layer_head = heads::git(
+        &clone,
+        &["rev-parse", "--verify", &format!("{layer_ref}^{{commit}}")],
+    )
+    .ok();
+    let (base, head_ref, head) = if let Some(head_sha) = layer_head {
+        let parent_ref = stack
+            .iter()
+            .find(|other| {
+                other.owner == pr.owner
+                    && other.name == pr.name
+                    && other.number != pr.number
+                    && other.head_branch == pr.base_branch
+            })
+            .map(|parent| heads::pr_ref_name(parent.number))
+            .filter(|parent_ref| {
+                heads::git(
+                    &clone,
+                    &["rev-parse", "--verify", &format!("{parent_ref}^{{commit}}")],
+                )
+                .is_ok()
+            });
+        let base = match parent_ref {
+            Some(parent_ref) => parent_ref,
+            None => heads::base_ref_blocking(&clone, &pr.base_branch).map_err(git_failed)?,
+        };
+        (base, layer_ref, head_sha)
+    } else {
+        let base = heads::base_ref_blocking(&clone, &pr.base_branch).map_err(git_failed)?;
+        let head =
+            heads::git(&clone, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(git_failed)?;
+        (base, "HEAD".to_owned(), head)
+    };
+    let range = format!("{base}..{head_ref}");
     let listed = heads::git(&clone, &["log", "--reverse", "--format=%H%x00%s", &range])
         .map_err(git_failed)?;
     let log = heads::git(
@@ -280,6 +314,12 @@ fn head_of(folder: &Path, pr: &ReviewPr) -> Result<Head, CommitsError> {
         head,
         commits,
     })
+}
+
+/// The commits of `pr` in its clone in `folder`, base..HEAD (or `refs/humata/pr-<n>`
+/// when present), oldest first. Blocking.
+fn head_of(folder: &Path, pr: &ReviewPr) -> Result<Head, CommitsError> {
+    head_of_in_stack(folder, pr, &[])
 }
 
 /// New shas on the head whose patch was marked under another sha: the
@@ -512,7 +552,8 @@ pub(super) fn mark_whole_blocking(
         else {
             continue;
         };
-        let head = head_of(folder, pr).map_err(|error| error.status(machine))?;
+        let head =
+            head_of_in_stack(folder, pr, &review.prs).map_err(|error| error.status(machine))?;
         let who = by.get_or_insert_with(|| marked_by(actor));
         let whole = Marking {
             shas: None,
@@ -586,6 +627,7 @@ fn mark_once(
     store: &Store,
     folder: &Path,
     pr: &ReviewPr,
+    stack: &[ReviewPr],
     call: MarkCall,
     actor: &pb::Actor,
 ) -> Result<pb::PullRequestCommits, CommitsError> {
@@ -596,7 +638,7 @@ fn mark_once(
     {
         return decoded(pr, &answer);
     }
-    let head = head_of(folder, pr)?;
+    let head = head_of_in_stack(folder, pr, stack)?;
     let by = marked_by(actor);
     let lock = marking(pr);
     let _marking = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -656,16 +698,16 @@ fn mark_once(
 }
 
 impl PullRequests {
-    /// The session's folder and the review's pull request `reference`
-    /// names, once the caller may make `capability`'s call on the session
-    /// (read it, when `None`).
+    /// The session's folder, the review's pull request `reference` names, and
+    /// all PRs in the review, once the caller may make `capability`'s call on
+    /// the session (read it, when `None`).
     async fn pr_named(
         &self,
         caller: &Caller,
         session: Option<&pb::SessionId>,
         reference: Option<&pb::PullRequestRef>,
         capability: Option<Capability>,
-    ) -> Result<(PathBuf, ReviewPr), Status> {
+    ) -> Result<(PathBuf, ReviewPr, Vec<ReviewPr>), Status> {
         let (record, review) = self.review_records(session).await?;
         let target = session_ref(&record, &self.inner.machine);
         let call = match capability {
@@ -689,7 +731,7 @@ impl PullRequests {
                 let pr = format!("{}/{}#{}", repo.owner, repo.name, reference.number);
                 CommitsError::NoSuchPr { pr }.status(&self.inner.machine)
             })?;
-        Ok((record.folder, pr))
+        Ok((record.folder, pr, review.prs))
     }
 
     /// ListPullRequestCommits: anyone who may read the review, its agent
@@ -699,12 +741,12 @@ impl PullRequests {
         caller: &Caller,
         request: pb::ListPullRequestCommitsRequest,
     ) -> Result<pb::PullRequestCommits, Status> {
-        let (folder, pr) = self
+        let (folder, pr, stack) = self
             .pr_named(caller, request.session.as_ref(), request.pr.as_ref(), None)
             .await?;
         let (store, machine) = (self.inner.store.clone(), self.inner.machine.clone());
         blocking(move || {
-            let head = head_of(&folder, &pr)?;
+            let head = head_of_in_stack(&folder, &pr, &stack)?;
             let lock = marking(&pr);
             let saved = {
                 let _marking = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -728,7 +770,7 @@ impl PullRequests {
         caller: &Caller,
         request: pb::MarkCommitsReviewedRequest,
     ) -> Result<pb::PullRequestCommits, Status> {
-        let (folder, pr) = self
+        let (folder, pr, stack) = self
             .pr_named(
                 caller,
                 request.session.as_ref(),
@@ -749,7 +791,7 @@ impl PullRequests {
         };
         let who = actor(caller);
         let (store, machine) = (self.inner.store.clone(), self.inner.machine.clone());
-        blocking(move || mark_once(&store, &folder, &pr, call, &who))
+        blocking(move || mark_once(&store, &folder, &pr, &stack, call, &who))
             .await?
             .map_err(|error| error.status(&machine))
     }
@@ -784,5 +826,99 @@ mod tests {
         );
         let same = marking(&pr(482));
         assert!(same.try_lock().is_err(), "the same pull request waits");
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn head_of_in_stack_resolves_per_layer_commits_and_falls_back_to_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        let work = tmp.path().join("work");
+        let session_folder = tmp.path().join("session");
+        let clone = session_folder.join("api");
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&session_folder).unwrap();
+
+        git_ok(&origin, &["init", "--bare"]);
+        git_ok(&work, &["init", "-b", "main"]);
+        git_ok(&work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+
+        std::fs::write(work.join("base.txt"), "base\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "base commit"]);
+        git_ok(&work, &["push", "origin", "main"]);
+
+        // Layer 1 (PR #101): 1 commit
+        git_ok(&work, &["checkout", "-b", "feat-1"]);
+        std::fs::write(work.join("a.txt"), "a\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 1 commit"]);
+        git_ok(&work, &["push", "origin", "HEAD:refs/pull/101/head"]);
+
+        // Layer 2 (PR #102): 2 commits
+        git_ok(&work, &["checkout", "-b", "feat-2"]);
+        std::fs::write(work.join("b1.txt"), "b1\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 2 commit 1"]);
+        std::fs::write(work.join("b2.txt"), "b2\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 2 commit 2"]);
+        git_ok(&work, &["push", "origin", "HEAD:refs/pull/102/head"]);
+
+        // Single clone under session_folder/api
+        git_ok(
+            &session_folder,
+            &["clone", origin.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+
+        let mut pr1 = pr(101);
+        pr1.base_branch = "main".to_owned();
+        pr1.head_branch = "feat-1".to_owned();
+        let mut pr2 = pr(102);
+        pr2.base_branch = "feat-1".to_owned();
+        pr2.head_branch = "feat-2".to_owned();
+        let stack = vec![pr1.clone(), pr2.clone()];
+
+        heads::fetch_stack_layer_refs_blocking(&clone, &stack).unwrap();
+
+        let h1 = head_of_in_stack(&session_folder, &pr1, &stack).unwrap();
+        let subjects1: Vec<&str> = h1.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects1, vec!["layer 1 commit"]);
+
+        let h2 = head_of_in_stack(&session_folder, &pr2, &stack).unwrap();
+        let subjects2: Vec<&str> = h2.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects2, vec!["layer 2 commit 1", "layer 2 commit 2"]);
+
+        // Fallback to HEAD when refs/humata/pr-<n> does not exist.
+        git_ok(&clone, &["checkout", "-b", "solo-branch"]);
+        std::fs::write(clone.join("solo.txt"), "solo\n").unwrap();
+        git_ok(&clone, &["add", "."]);
+        git_ok(&clone, &["commit", "-m", "solo commit on HEAD"]);
+        let mut solo = pr(999);
+        solo.base_branch = "main".to_owned();
+        solo.head_branch = "solo-branch".to_owned();
+        let h_solo = head_of(&session_folder, &solo).unwrap();
+        let solo_subjects: Vec<&str> = h_solo.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(solo_subjects, vec!["solo commit on HEAD"]);
     }
 }

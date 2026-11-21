@@ -28,3 +28,4 @@ pub use host::{PaneEvent, PendingPaste, Pty};
 pub use pane::{FindStatus, TerminalPane};
 pub use script::Script;
 pub use tabs::{TabId, TabSpec, TabStrip, TabsEvent, TerminalTabs};
+pub use terminal_view::is_web_or_mail_uri;

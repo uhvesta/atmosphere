@@ -290,8 +290,32 @@ impl RepoPicker {
     }
 }
 
+/// One PR/layer entry in the anchored Push confirmation popover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushPrEntry {
+    /// Layer title (or repository name for non-stacked reviews).
+    pub label: String,
+    /// Repositories touched by this entry.
+    pub repos: Vec<String>,
+    /// Whether this layer/repo has been looked at.
+    pub looked_at: bool,
+}
+
+/// Summary for the anchored `Push N PRs…` confirmation popover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushConfirmationSummary {
+    /// Exact PRs/layers to push.
+    pub entries: Vec<PushPrEntry>,
+    /// Number of unreviewed layers/repos in `entries`.
+    pub unreviewed_count: usize,
+    /// Number of open notes/drafts.
+    pub open_notes: usize,
+    /// Whether PRs will be opened as Draft PRs (`true`) or Ready for review (`false`).
+    pub draft: bool,
+}
+
 /// The review page's state.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReviewState {
     /// Where the diffs come from.
     pub workspace: Arc<Workspace>,
@@ -371,6 +395,60 @@ pub struct ReviewState {
     /// keyed by `(session, repo, path)`. Cleared for a session when its diffs
     /// refresh. Not saved.
     pub diff_file_contents: HashMap<(SessionId, String, String), Result<String, String>>,
+    /// Layers that were rebased with an unchanged diff fingerprint, keyed by
+    /// `(session, layer_title)`. Preserves `LayerLook::LooksGood` while showing
+    /// the quiet `Rebased · diff unchanged` subline.
+    pub rebased_unchanged_layers: HashSet<(SessionId, String)>,
+    /// Whether the anchored Push confirmation popover opens PRs as Draft PRs
+    /// (`true`, default) or Ready for review (`false`).
+    pub push_draft_mode: bool,
+    /// Whether the consolidated `Details ⤢` drawer/panel is open.
+    pub details_open: bool,
+    /// Whether the diff is shown in Split (`true`) vs Unified (`false`) layout (`⌥⌘S`).
+    pub split_diff: bool,
+    /// Human-readable GitHub feedback check age per session (e.g. `"2m ago"`).
+    pub github_checked_ago: HashMap<SessionId, String>,
+}
+
+impl Default for ReviewState {
+    fn default() -> Self {
+        Self {
+            workspace: Arc::default(),
+            session: None,
+            rows: None,
+            generation: 0,
+            wrap: false,
+            saved: ReviewSaved::default(),
+            targets: HashMap::new(),
+            fetch: HashMap::new(),
+            base_menu: false,
+            push_menu: false,
+            repo_picker: None,
+            pushes: HashMap::new(),
+            plans: HashMap::new(),
+            collapsed: HashSet::new(),
+            layer: HashMap::new(),
+            skim_open: HashSet::new(),
+            ask_again_error: HashMap::new(),
+            change: HashMap::new(),
+            file_list_open: HashSet::new(),
+            file_filter: HashMap::new(),
+            list_cursor: HashMap::new(),
+            agent_tab_menu: false,
+            last_agent_tab: None,
+            looked: HashMap::new(),
+            layer_looks: HashMap::new(),
+            base_before_looked: HashMap::new(),
+            looks_read: HashSet::new(),
+            markdown_mode: HashMap::new(),
+            diff_file_contents: HashMap::new(),
+            rebased_unchanged_layers: HashSet::new(),
+            push_draft_mode: true,
+            details_open: false,
+            split_diff: false,
+            github_checked_ago: HashMap::new(),
+        }
+    }
 }
 
 /// The changes (hunks) of a file: its hunk headers, or one when it has none.
@@ -403,6 +481,71 @@ impl ReviewState {
         self.base_before_looked.remove(session);
         self.looks_read.remove(session);
         self.markdown_mode.remove(session);
+        self.rebased_unchanged_layers.retain(|(id, _)| id != session);
+        self.github_checked_ago.remove(session);
+    }
+
+    /// Whether `title` of `session` was marked rebased with an unchanged diff.
+    #[must_use]
+    pub fn is_layer_rebased_unchanged(&self, session: &SessionId, title: &str) -> bool {
+        self.rebased_unchanged_layers
+            .contains(&(session.clone(), title.to_owned()))
+    }
+
+    /// Summary for the anchored `Push N PRs…` confirmation popover: exact
+    /// PRs/layers to push, unreviewed-layer warnings, open note count, and
+    /// Draft vs Ready mode.
+    #[must_use]
+    pub fn push_confirmation_summary(
+        &self,
+        session: &SessionId,
+        open_notes: usize,
+    ) -> PushConfirmationSummary {
+        let entries: Vec<PushPrEntry> = if let Some(stack) = self
+            .stack_of(session)
+            .filter(|stack| !stack.layers.is_empty())
+        {
+            stack
+                .layers
+                .iter()
+                .map(|layer| PushPrEntry {
+                    label: layer.title.clone(),
+                    repos: layer.repos.iter().map(|r| r.repo.clone()).collect(),
+                    looked_at: looks::layer_look(self, session, &layer.title)
+                        == looks::LayerLook::LooksGood,
+                })
+                .collect()
+        } else {
+            let read = self.fetch.get(session).and_then(|f| f.diffs.as_deref());
+            let diffs: Vec<&RepoDiff> = match read {
+                Some(diffs) => diffs.iter().filter(|d| &d.session == session).collect(),
+                None => self
+                    .workspace
+                    .diffs
+                    .iter()
+                    .filter(|d| &d.session == session)
+                    .collect(),
+            };
+            diffs
+                .into_iter()
+                .map(|diff| PushPrEntry {
+                    label: diff.repo.clone(),
+                    repos: vec![diff.repo.clone()],
+                    looked_at: !diff.files.is_empty()
+                        && diff
+                            .files
+                            .iter()
+                            .all(|f| looks::is_looked(self, session, &diff.repo, &f.path, f)),
+                })
+                .collect()
+        };
+        let unreviewed_count = entries.iter().filter(|e| !e.looked_at).count();
+        PushConfirmationSummary {
+            entries,
+            unreviewed_count,
+            open_notes,
+            draft: self.push_draft_mode,
+        }
     }
 
     /// The row `session`'s file list has its keyboard cursor on, if the
@@ -1110,6 +1253,19 @@ pub enum ReviewAction {
     AgentTabPicked(Agent),
     /// Close the Push & PR menu.
     ClosePushMenu,
+    /// Mark a stack layer as rebased with an unchanged diff fingerprint.
+    MarkLayerRebasedUnchanged {
+        /// The layer's title.
+        layer: String,
+    },
+    /// Set whether the Push confirmation popover opens PRs as Draft (`true`) or Ready (`false`).
+    SetPushDraftMode(bool),
+    /// Toggle the consolidated `Details ⤢` drawer/panel.
+    ToggleDetails,
+    /// Toggle between Unified (`false`) and Split (`true`) diff layout (`⌥⌘S`).
+    ToggleSplitDiff,
+    /// Trigger an on-demand refresh of GitHub PR feedback for the open session.
+    RefreshGithubFeedback,
     /// Mark the open session's changes reviewed (RV-6).
     MarkReviewed,
     /// Looks good (D852): every file of the diff shown is looked at, and the
@@ -1890,6 +2046,27 @@ impl Reducer for Review {
                 state.last_agent_tab = Some(agent);
             }
             ReviewAction::ClosePushMenu => state.push_menu = false,
+            ReviewAction::MarkLayerRebasedUnchanged { layer } => {
+                if let Some(session) = state.session.clone() {
+                    state.rebased_unchanged_layers.insert((session, layer));
+                }
+            }
+            ReviewAction::SetPushDraftMode(draft) => {
+                state.push_draft_mode = draft;
+            }
+            ReviewAction::ToggleDetails => {
+                state.details_open = !state.details_open;
+            }
+            ReviewAction::ToggleSplitDiff => {
+                state.split_diff = !state.split_diff;
+            }
+            ReviewAction::RefreshGithubFeedback => {
+                if let Some(session) = state.session.clone() {
+                    state
+                        .github_checked_ago
+                        .insert(session, "checking…".to_owned());
+                }
+            }
             ReviewAction::MarkReviewed => {
                 state.base_menu = false;
                 return self.mark_reviewed(state);
@@ -1921,6 +2098,9 @@ impl Reducer for Review {
                             looked.remove(&(repo, path));
                         }
                     }
+                    state
+                        .rebased_unchanged_layers
+                        .retain(|(id, _)| id != &session);
                     return self.save_looks(state, &session);
                 }
             }

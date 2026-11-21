@@ -215,6 +215,23 @@ fn stack_row(
         }))
         .children(look_note.map(|(words, color)| look_note_el(index, words, color, has_counts)));
     let mut body = col().w_full().child(head);
+    let rebased_unchanged = entry.number.is_some()
+        && look_note.is_some_and(|(words, _)| words == "✓ Looks good")
+        && review
+            .session
+            .as_ref()
+            .is_some_and(|session| review.is_layer_rebased_unchanged(session, &entry.title));
+    if rebased_unchanged {
+        body = body.child(
+            secondary(look, "Rebased \u{b7} diff unchanged")
+                .id(SharedString::from(format!("stack-row-rebased-{index}")))
+                .test_support()
+                .text_size(px(10.5))
+                .text_color(rgb(look.tertiary))
+                .pl(px(22.))
+                .pb(px(2.)),
+        );
+    }
     // Without a purpose the picked row stays one line, like the others.
     if on && !entry.purpose.is_empty() {
         body = body.child(

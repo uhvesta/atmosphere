@@ -694,3 +694,59 @@ fn the_host_menu_opens_and_closes_on_a_pick_or_cancel_and_not_while_running() {
     store.skip_received();
     assert!(fake.calls().is_empty());
 }
+
+#[test]
+fn name_placeholder_matches_selected_target_kind() {
+    let lima = AddMachineState {
+        open: true,
+        choice: Some(Choice::Provider {
+            id: "lima".to_owned(),
+            params: std::collections::BTreeMap::new(),
+        }),
+        ..AddMachineState::default()
+    };
+    assert_eq!(lima.name_placeholder(), "Auto-named (lima-1, lima-2, …) if blank");
+    assert!(!lima.name_placeholder().contains("take it from the host"));
+
+    let cloud = open_on_cloud(&[]);
+    assert_eq!(cloud.name_placeholder(), "Name for the machine");
+
+    let ssh = open_with_host("devbox-2");
+    assert_eq!(ssh.name_placeholder(), "Leave empty to use the host name");
+
+    let none = AddMachineState { open: true, ..AddMachineState::default() };
+    assert_eq!(none.name_placeholder(), "Leave empty to use the host name");
+}
+
+#[test]
+fn lima_provider_add_with_blank_name_sends_none_and_closes_with_auto_name() {
+    let (mut store, fake) = store(AddMachineState::default());
+    fake.set_choices(Choices {
+        hosts: vec![],
+        providers: vec![Provider {
+            id: "lima".to_owned(),
+            label: "Lima VM".to_owned(),
+            interactive: false,
+            params: vec![],
+            unset: Vec::new(),
+        }],
+    });
+    fake.script_add(added_events("lima-1"));
+    store.send(A::Open, |_| {});
+    store.receive_matching("loaded", |a| matches!(a, A::Loaded(_)), |_| {});
+    store.send(A::SelectProvider("lima".to_owned()), |_| {});
+    store.send(A::Start, |_| {});
+    store.receive(A::Delegate(Delegate::Added(MachineId::new("lima-1"))), |_| {});
+    store.receive(A::Delegate(Delegate::Toast("Added lima-1.".to_owned())), |_| {});
+    assert_eq!(*store.state(), AddMachineState::default());
+
+    let calls = fake.calls();
+    let Some(Call::Add(request)) = calls.iter().find(|c| matches!(c, Call::Add(_))) else {
+        panic!("no add was made");
+    };
+    assert_eq!(request.name, None);
+    assert!(matches!(
+        &request.target,
+        AddTarget::Provider { provider, .. } if provider == "lima"
+    ));
+}

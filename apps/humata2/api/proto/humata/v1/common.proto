@@ -471,6 +471,10 @@ message FileLocation {
     // only, like home: an agent that names it gets
     // Error.outside_humata_folders.
     MachineReceived received = 10;
+    // ATM-3: an agent's read-only session artifacts folder (plans, todos,
+    // transcripts). User-only by default; agents get
+    // Error.outside_humata_folders unless an explicit rule allows it.
+    SessionAgentState session_agent_state = 11;
   }
   // Relative to the root; "..", absolute paths and symlinks out fail with
   // Error.outside_humata_folders.
@@ -496,6 +500,11 @@ message MachineHome {}
 message SessionPastes { SessionId session = 1; }
 
 message SessionFolder { SessionId session = 1; }
+
+message SessionAgentState {
+  SessionId session = 1;
+  string conversation_id = 2;
+}
 
 // The received place for files that came from machine `from` (PL-4). `from`
 // is one machine id: no "/" and no "..".

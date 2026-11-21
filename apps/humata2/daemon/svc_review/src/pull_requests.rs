@@ -31,8 +31,10 @@ use crate::ports::{
 
 mod clone_git;
 mod commits;
+pub mod feedback;
 mod github;
 mod heads;
+pub mod inbox_poll;
 mod poll;
 mod resolve;
 mod start;
@@ -40,6 +42,15 @@ mod submit;
 
 pub use clone_git::ReviewRemote;
 pub(super) use clone_git::remote_for as relayed_for;
+pub use feedback::{
+    CollapsedBots, FeedbackError, FeedbackThread, PrFeedback, PrLifecycleState, ThreadComment,
+    TopLevelReview, deduplicate_threads, fetch_pr_feedback, parse_pr_feedback,
+};
+pub use inbox_poll::{
+    InboxNotification, InboxNotificationKind, InboxPollError, InboxPollState, PollFetchResult,
+    PollTrigger, PrPollCursor, ReviewInboxPoller, ReviewRequestEntry, WatchedPr,
+    DEFAULT_POLL_INTERVAL,
+};
 pub use start::PR_REVIEWS_FOLDER;
 
 /// The service's shared state.

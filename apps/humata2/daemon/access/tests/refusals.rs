@@ -230,9 +230,9 @@ fn an_agent_pulls_another_machines_file_into_its_own_shared() {
         &on_mac(),
     );
     match verdict {
-        Verdict::Ask(request) => assert_eq!(request.capability, Capability::FilesCopyIn),
+        Verdict::Ask(request) => assert_eq!(request.capability, Capability::FilesReadOtherMachine),
         Verdict::Allowed { .. } => {}
-        other => panic!("expected the pull to go ahead or ask for copy-in, got {other:?}"),
+        other => panic!("expected the pull to go ahead or ask for cross-machine read, got {other:?}"),
     }
 }
 
@@ -407,7 +407,19 @@ fn board_items_an_agent_made_are_its_to_edit() {
         &edit(a().id),
         &on_mac()
     )));
-    let asked = request(check(&policy, &as_agent(a()), &edit(b().id), &on_mac()));
+    // Another agent's item in the same channel is allowed by default (ATM-30).
+    assert!(allowed(Source::Rule).met_by(&check(
+        &policy,
+        &as_agent(a()),
+        &edit(b().id),
+        &on_mac()
+    )));
+    // An owner-created item still asks by default.
+    let owner_item = Call::Board {
+        board: BoardRef::Channel(payments()),
+        act: BoardAct::Edit { created_by: None },
+    };
+    let asked = request(check(&policy, &as_agent(a()), &owner_item, &on_mac()));
     assert_eq!(asked.capability, Capability::ChannelBoardEditOthers);
     assert_eq!(
         asked.always_let,
@@ -589,7 +601,11 @@ fn rule_changes_offer_only_what_the_rule_has() {
 #[test]
 fn a_deleted_channel_takes_its_rules_and_grants_with_it() {
     let mut policy = policy();
-    grant_for(&mut policy, &as_agent(b()), &note_to(a()));
+    grant_for(
+        &mut policy,
+        &as_agent(b()),
+        &use_on(Capability::SessionType, Target::Session(a())),
+    );
     let ended = policy.remove_channel(&payments()).expect("payments exists");
     assert_eq!(ended.len(), 1);
     assert_eq!(policy.grants().count(), 0);
@@ -610,12 +626,10 @@ fn the_capability_list_matches_the_trace_matrix() {
         "no capability is listed twice"
     );
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
-    // TRACE.md §2's rows.
-    // TODO_SUGGEST joined Default Allow, TODO_CLOSE Ask me.
-    assert_eq!(count(Tier::DefaultAllow), 16);
-    // GLOBAL_BOARD_WRITE joined Ask me with D155, CHANNEL_REPO_ADD with D304,
-    // SESSION_STOP_OTHER with D306 (SESSION_DELETE_OTHER took its Never place).
-    assert_eq!(count(Tier::AskMe), 20);
+    // TRACE.md §2's rows + 10 safe local same-channel capabilities promoted by PERMAUDIT (ATM-30).
+    assert_eq!(count(Tier::DefaultAllow), 26);
+    // Outward-facing, cross-machine, and destructive AskMe capabilities.
+    assert_eq!(count(Tier::AskMe), 10);
     // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305, PROVIDER_IMPORT
     // with D792, SETTINGS_CHANGE with SETTINGSFIX.
     assert_eq!(count(Tier::AskNoAllow), 4);

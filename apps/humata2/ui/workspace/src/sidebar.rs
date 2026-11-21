@@ -702,7 +702,7 @@ impl Render for Sidebar {
         let (route, waiting, machines) = ui.read(|s| {
             (
                 s.route.clone(),
-                humata2_inbox::waiting(&s.workspace),
+                humata2_inbox::waiting(&s.workspace) + s.pending_cli_logins.len(),
                 s.workspace
                     .machines
                     .iter()

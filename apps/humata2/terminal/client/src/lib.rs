@@ -450,7 +450,7 @@ impl RemoteWorkspace {
                         ReplicaEvent::Focused{..}=>this.trace_focus(id,"terminal-focused"),
                         ReplicaEvent::StateChanged(_)=>{if let Some(pane)=entity.read(cx).pane(){this.panes.insert(id,pane.downgrade());}else{this.panes.remove(&id);}cx.notify();},
                         ReplicaEvent::Pane(PaneEvent::ClipboardWrite{text,..})=>cx.write_to_clipboard(ClipboardItem::new_string(text.clone())),
-                        ReplicaEvent::Pane(PaneEvent::OpenLink(uri))=>{let scheme=uri.split(':').next().unwrap_or_default();if ["http","https","mailto"].iter().any(|s|scheme.eq_ignore_ascii_case(s))&&!uri.chars().any(char::is_control){cx.open_url(uri);}},
+                        ReplicaEvent::Pane(PaneEvent::OpenLink(uri))=>{if terminal_pane::is_web_or_mail_uri(uri){cx.open_url(uri);}},
                         ReplicaEvent::Pane(PaneEvent::Failed(error))=>this.fail(error.to_string(),cx),
                         ReplicaEvent::Pane(PaneEvent::PasteFiles(_)|PaneEvent::PasteImage{..})=>this.fail("This viewer pastes text. File/image transfer requires a host upload integration.".into(),cx),
                         ReplicaEvent::Failed(error)=>this.fail(error.to_string(),cx),

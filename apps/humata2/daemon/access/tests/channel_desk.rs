@@ -11,8 +11,10 @@ use std::collections::BTreeSet;
 
 use humata2_access::{
     Agent, AgentId, BoardAct, BoardRef, Call, Capability, ChannelDeskAccess, ChannelDeskSwitch,
-    ChannelDeskSwitches, ChannelId, Decision, Policy, Principal, Rules, SessionId, SessionKind,
-    SessionRef, Source, Target, Verdict,
+    ChannelDeskSwitches, ChannelId, Decision, PERMISSION_PROMPT_EXIT_CODE,
+    PERMISSION_PROMPT_PROTECTED_CODE, Policy, Principal, Rules, SessionId, SessionKind, SessionRef,
+    Source, Target, TerminalTypeRefusal, Verdict, check_terminal_type_safety,
+    requires_explicit_consent,
 };
 use support::*;
 
@@ -128,68 +130,107 @@ fn edit_bs_item(board: BoardRef) -> Call {
     }
 }
 
-fn with_rule(capability: Capability, decision: Decision) -> Policy {
+fn with_rules(settings: &[(Capability, Decision)]) -> Policy {
     let mut policy = policy();
-    policy
-        .set_rule(&user(), &Rules::Channel(payments()), capability, decision)
-        .expect("the user sets the channel's rule");
+    for &(capability, decision) in settings {
+        policy
+            .set_rule(&user(), &Rules::Channel(payments()), capability, decision)
+            .expect("the user sets the channel's rule");
+    }
     policy
 }
 
+fn with_rule(capability: Capability, decision: Decision) -> Policy {
+    with_rules(&[(capability, decision)])
+}
+
 #[test]
-fn a_new_desk_session_reads_files_and_sends_notes_and_nothing_more() {
+fn a_new_desk_session_reads_files_and_starts_sessions_and_asks_for_notes() {
     let defaults = ChannelDeskSwitches::default();
-    assert!(defaults.read_files && defaults.send_notes);
+    assert!(defaults.read_files && defaults.start_and_fork);
     assert!(
-        !(defaults.type_into_terminal
-            || defaults.start_and_fork
+        !(defaults.send_notes
+            || defaults.type_into_terminal
             || defaults.stop_and_archive
             || defaults.change_board_items)
     );
 }
 
 #[test]
-fn the_default_switches_read_and_note_the_target_without_asking() {
-    let policy = policy();
+fn the_default_switches_read_and_start_without_asking_and_ask_for_notes() {
+    let policy = with_rule(Capability::SessionNote, Decision::Ask);
     let agent = for_a(ChannelDeskSwitches::default());
-    for call in [read(file_of(&a(), "README.md")), note_to(a())] {
+    for call in [read(file_of(&a(), "README.md")), start(Some(a().id))] {
         let verdict = check(&policy, &agent, &call, &on_mac());
         assert!(by_switch(&verdict), "{call:?}: {verdict:?}");
     }
+    let note_verdict = check(&policy, &agent, &note_to(a()), &on_mac());
+    assert!(asks(&note_verdict), "notes require explicit consent by default: {note_verdict:?}");
+    let other_machine_start = use_on(
+        Capability::SessionStartOtherMachine,
+        Target::Start {
+            channel: payments(),
+            machine: humata2_access::MachineId::new("devbox"),
+            agent: AgentId::new("claude"),
+            fork_of: None,
+        },
+    );
+    let other_machine_verdict = check(&policy, &for_channel(ChannelDeskSwitches::default()), &other_machine_start, &on_mac());
+    assert!(asks(&other_machine_verdict), "other machine follows channel rule: {other_machine_verdict:?}");
 }
 
 #[test]
 fn a_session_target_covers_its_forks() {
     let policy = policy();
     let agent = for_a(ChannelDeskSwitches::default());
-    let verdict = check(&policy, &agent, &note_to(a_fork()), &on_mac());
+    let verdict = check(&policy, &agent, &read(file_of(&a_fork(), "README.md")), &on_mac());
+    assert!(by_switch(&verdict), "{verdict:?}");
+    let with_notes = for_a(ChannelDeskSwitches {
+        send_notes: true,
+        ..ChannelDeskSwitches::default()
+    });
+    let verdict = check(&policy, &with_notes, &note_to(a_fork()), &on_mac());
     assert!(by_switch(&verdict), "{verdict:?}");
 }
 
 #[test]
 fn a_session_outside_the_target_is_left_to_the_channel_rule() {
-    let policy = policy();
+    let policy = with_rules(&[
+        (Capability::FilesReadOtherSession, Decision::Ask),
+        (Capability::SessionNote, Decision::Ask),
+        (Capability::SessionType, Decision::Ask),
+        (Capability::ChannelBoardEditOthers, Decision::Ask),
+        (Capability::SessionStopOther, Decision::Ask),
+    ]);
     let agent = for_a(all_on());
     for call in [
         read(file_of(&b(), "README.md")),
         note_to(b()),
         type_into(b()),
         edit_bs_item(BoardRef::Session(b())),
+        stop(b()),
     ] {
         let verdict = check(&policy, &agent, &call, &on_mac());
         assert!(asks(&verdict), "{call:?}: {verdict:?}");
     }
-    let policy = with_rule(Capability::SessionStopOther, Decision::Ask);
-    let verdict = check(&policy, &agent, &stop(b()), &on_mac());
-    assert!(asks(&verdict), "{verdict:?}");
 }
 
 #[test]
 fn the_channel_as_target_covers_every_session_of_the_channel() {
-    let policy = policy();
+    let policy = with_rule(Capability::SessionNote, Decision::Ask);
     let agent = for_channel(ChannelDeskSwitches::default());
     for session in [a(), b()] {
-        let verdict = check(&policy, &agent, &note_to(session.clone()), &on_mac());
+        let verdict = check(&policy, &agent, &read(file_of(&session, "README.md")), &on_mac());
+        assert!(by_switch(&verdict), "{session:?}: {verdict:?}");
+        let note_verdict = check(&policy, &agent, &note_to(session.clone()), &on_mac());
+        assert!(asks(&note_verdict), "{session:?}: {note_verdict:?}");
+    }
+    let with_notes = for_channel(ChannelDeskSwitches {
+        send_notes: true,
+        ..ChannelDeskSwitches::default()
+    });
+    for session in [a(), b()] {
+        let verdict = check(&policy, &with_notes, &note_to(session.clone()), &on_mac());
         assert!(by_switch(&verdict), "{session:?}: {verdict:?}");
     }
 }
@@ -221,14 +262,18 @@ fn a_channel_desk_session_is_not_a_session_of_the_channel() {
 
 #[test]
 fn a_switch_that_is_off_leaves_it_to_the_channel_rule() {
-    let policy = policy();
+    let policy = with_rules(&[
+        (Capability::FilesReadOtherSession, Decision::Ask),
+        (Capability::SessionNote, Decision::Ask),
+        (Capability::SessionType, Decision::Ask),
+    ]);
     let agent = for_a(all_off());
     for call in [read(file_of(&a(), "README.md")), note_to(a()), type_into(a())] {
         let verdict = check(&policy, &agent, &call, &on_mac());
         assert!(asks(&verdict), "{call:?}: {verdict:?}");
     }
-    let policy = with_rule(Capability::SessionNote, Decision::Allow);
-    let verdict = check(&policy, &agent, &note_to(a()), &on_mac());
+    let policy = with_rule(Capability::FilesReadOtherSession, Decision::Allow);
+    let verdict = check(&policy, &agent, &read(file_of(&a(), "README.md")), &on_mac());
     assert!(
         matches!(
             verdict,
@@ -300,7 +345,7 @@ fn the_stop_switch_stops_the_target_once_the_rule_is_not_never() {
 
 #[test]
 fn with_a_session_target_the_start_switch_only_forks_it_and_its_forks() {
-    let policy = policy();
+    let policy = with_rule(Capability::SessionStartSameMachine, Decision::Ask);
     let agent = for_a(ChannelDeskSwitches {
         start_and_fork: true,
         ..ChannelDeskSwitches::default()
@@ -330,7 +375,7 @@ fn with_the_channel_as_target_the_start_switch_starts_and_forks_any() {
 
 #[test]
 fn the_board_switch_changes_others_items_where_it_covers() {
-    let policy = policy();
+    let policy = with_rule(Capability::ChannelBoardEditOthers, Decision::Ask);
     let on = ChannelDeskSwitches {
         change_board_items: true,
         ..ChannelDeskSwitches::default()
@@ -353,4 +398,27 @@ fn no_switch_answers_inbox_requests() {
     let call = use_on(Capability::InboxAnswer, Target::Channel(payments()));
     let verdict = check(&policy, &for_channel(all_on()), &call, &on_mac());
     assert!(refused(&verdict), "{verdict:?}");
+}
+
+#[test]
+fn typing_into_a_session_with_a_permission_prompt_is_hard_refused() {
+    assert_eq!(PERMISSION_PROMPT_PROTECTED_CODE, "permission_prompt_protected");
+    assert_eq!(PERMISSION_PROMPT_EXIT_CODE, 4);
+    let refusal = check_terminal_type_safety(true, "Restart doctor").unwrap_err();
+    assert_eq!(
+        refusal,
+        TerminalTypeRefusal::PermissionPromptProtected {
+            target_title: "Restart doctor".to_owned(),
+        }
+    );
+    assert!(refusal.to_string().contains("exit 4"));
+    assert_eq!(check_terminal_type_safety(false, "Restart doctor"), Ok(()));
+    let access = ChannelDeskAccess {
+        target: None,
+        covers: None,
+        switches: ChannelDeskSwitches::default(),
+    };
+    assert!(requires_explicit_consent(&access, Capability::SessionNote));
+    assert!(requires_explicit_consent(&access, Capability::SessionType));
+    assert!(!requires_explicit_consent(&access, Capability::InboxAnswer));
 }

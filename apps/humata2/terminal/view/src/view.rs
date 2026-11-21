@@ -1348,7 +1348,11 @@ impl<G: Grid + 'static> Render for TerminalView<G> {
                 )
                 .size_full(),
             )
-            .children(self.hovered_link.as_ref().map(|(_, uri)| {
+            .children(
+                self.hovered_link
+                    .as_ref()
+                    .filter(|(_, uri)| !crate::is_web_or_mail_uri(uri))
+                    .map(|(_, uri)| {
                 div()
                     .id("terminal-link-hint")
                     .test_support()

@@ -71,6 +71,50 @@ pub enum Blocker {
     Starting,
 }
 
+/// How a detected pull request stack should be imported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StackImportMode {
+    /// Import every layer in the stack, bottom-to-top.
+    #[default]
+    WholeStack,
+    /// Review only the single pasted pull request.
+    SinglePr,
+}
+
+/// One layer in a detected pull request stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedStackLayer {
+    /// The pull request for this layer.
+    pub pr: PullRequestRef,
+    /// The pull request title.
+    pub title: String,
+    /// The layer's head branch.
+    pub head_branch: String,
+    /// The layer's base branch.
+    pub base_branch: String,
+    /// The pull request author.
+    pub author: String,
+}
+
+/// A stack of pull requests detected from the pasted pull request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedStack {
+    /// Layers stored bottom-to-top (base layer at index 0, top layer last).
+    pub layers: Vec<DetectedStackLayer>,
+    /// Where the stack metadata came from (e.g. `"graphite"`, `"branch-chain"`).
+    pub source: String,
+    /// Whether to import the whole stack or only the pasted pull request.
+    pub mode: StackImportMode,
+}
+
+impl DetectedStack {
+    /// Whether the detected stack contains more than one layer.
+    #[must_use]
+    pub fn is_multi_layer(&self) -> bool {
+        self.layers.len() > 1
+    }
+}
+
 /// The dialog's state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DialogState {
@@ -80,6 +124,8 @@ pub struct DialogState {
     pub main: Option<Candidate>,
     /// The pull requests under "Also review".
     pub also: Vec<Candidate>,
+    /// A stack detected for the main pull request, if any.
+    pub detected_stack: Option<DetectedStack>,
     /// Why the last paste wasn't added.
     pub paste_problem: Option<PasteProblem>,
     /// The machine the clones are made on.
@@ -106,6 +152,7 @@ impl Default for DialogState {
             open: false,
             main: None,
             also: Vec::new(),
+            detected_stack: None,
             paste_problem: None,
             machine: None,
             agent: Agent::Claude,
@@ -147,6 +194,26 @@ impl DialogState {
             .chain(&self.also)
             .map(|candidate| &candidate.pr)
             .collect()
+    }
+
+    /// The pull requests to pass to `start_review`, expanding a multi-layer
+    /// detected stack bottom-to-top when [`StackImportMode::WholeStack`] is active.
+    #[must_use]
+    pub fn effective_pull_requests(&self) -> Vec<PullRequestRef> {
+        if let Some(stack) = &self.detected_stack
+            && stack.is_multi_layer()
+            && stack.mode == StackImportMode::WholeStack
+        {
+            let mut prs: Vec<PullRequestRef> =
+                stack.layers.iter().map(|layer| layer.pr.clone()).collect();
+            for candidate in &self.also {
+                if !prs.contains(&candidate.pr) {
+                    prs.push(candidate.pr.clone());
+                }
+            }
+            return prs;
+        }
+        self.pull_requests().into_iter().cloned().collect()
     }
 
     fn holds(&self, pr: &PullRequestRef) -> bool {
@@ -206,6 +273,10 @@ pub enum DialogAction {
     Started(Result<SessionId, PullRequestError>),
     /// A watched operation moved on; the review's start shows its step.
     OperationMoved(OpUpdate),
+    /// A pull request stack was detected for the pasted pull request.
+    StackDetected(DetectedStack),
+    /// Switch between importing the whole detected stack or only the pasted PR.
+    SetStackImportMode(StackImportMode),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -269,6 +340,7 @@ impl Dialog {
         if as_main || state.main.is_none() {
             state.also.retain(|held| held.pr != pr);
             state.main = Some(candidate);
+            state.detected_stack = None;
         } else {
             state.also.push(candidate);
         }
@@ -330,7 +402,7 @@ impl Reducer for Dialog {
                     return Effect::none();
                 };
                 let start = ReviewStart {
-                    prs: state.pull_requests().into_iter().cloned().collect(),
+                    prs: state.effective_pull_requests(),
                     machine,
                     agent: state.agent,
                     model: state.model.clone(),
@@ -361,6 +433,17 @@ impl Reducer for Dialog {
                     matches!(update.kind, OpKind::StartPrReview | OpKind::StartSession);
                 if state.start == Start::Starting && starts_review {
                     follow_start(state, update);
+                }
+            }
+            DialogAction::StackDetected(mut stack) => {
+                if stack.is_multi_layer() {
+                    stack.mode = StackImportMode::WholeStack;
+                }
+                state.detected_stack = Some(stack);
+            }
+            DialogAction::SetStackImportMode(mode) => {
+                if let Some(stack) = &mut state.detected_stack {
+                    stack.mode = mode;
                 }
             }
             DialogAction::Delegate(_) => {}

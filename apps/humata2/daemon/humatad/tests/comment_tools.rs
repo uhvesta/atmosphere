@@ -125,6 +125,7 @@ impl Fixture {
                 idempotency_key: None,
                 session: Some(session()),
                 ids: vec![comment.id.clone().unwrap()],
+                overall_note: String::new(),
             })
             .await
             .unwrap()
@@ -357,15 +358,19 @@ async fn an_agent_finds_replies_to_and_resolves_a_comment_sent_to_its_session() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn resolving_needs_a_reply_and_a_comment_that_was_sent() {
+async fn resolving_allows_blank_reply_and_needs_a_comment_that_was_sent() {
     let fixture = Fixture::start().await;
     let sent = fixture.sent(3, "rename this").await;
     let held = fixture.draft(5, "never sent").await;
     let mut mcp = fixture.mcp().await;
 
-    failed(&mcp.call("comment_resolve", json!({ "comment_id": id_of(&sent), "reply": "  " })).await);
+    let resolved = mcp
+        .call("comment_resolve", json!({ "comment_id": id_of(&sent), "reply": "  " }))
+        .await;
+    assert_eq!(ok(&resolved)["status"], "resolved", "{resolved}");
+    assert_eq!(ok(&resolved)["replies"], 0, "{resolved}");
     let seen = fixture.find(&sent).await;
-    assert_eq!(status_of(&seen), pb::CommentStatus::Sent);
+    assert_eq!(status_of(&seen), pb::CommentStatus::Resolved);
     assert!(seen.replies.is_empty());
 
     failed(&mcp.call("comment_reply", json!({ "comment_id": id_of(&held), "text": "hello" })).await);

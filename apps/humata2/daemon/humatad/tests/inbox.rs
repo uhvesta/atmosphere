@@ -1246,6 +1246,23 @@ impl Fixture {
         std::fs::write(folder.join("a.txt"), b"ledger\n").unwrap();
     }
 
+    /// Sets `FilesReadOtherSession` to `Ask` on `CHANNEL` so reads of `OTHER`
+    /// wait in the Inbox.
+    async fn ask_for_other_session_reads(&self) {
+        self.access()
+            .await
+            .set_channel_rule(pb::SetChannelRuleRequest {
+                channel: Some(pb::ChannelId {
+                    value: CHANNEL.to_owned(),
+                }),
+                capability: pb::Capability::FilesReadOtherSession as i32,
+                decision: pb::Decision::Ask as i32,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
     async fn files(&self) -> pb::file_service_client::FileServiceClient<Channel> {
         pb::file_service_client::FileServiceClient::new(self.daemon.channel().await)
     }
@@ -1278,6 +1295,7 @@ impl Fixture {
 async fn an_agents_asked_read_raises_one_card_and_runs_once_approved() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
 
     let first = pending_of(&fixture.list_ledger().await.unwrap_err());
     let again = pending_of(&fixture.list_ledger().await.unwrap_err());
@@ -1303,6 +1321,7 @@ async fn an_agents_asked_read_raises_one_card_and_runs_once_approved() {
 async fn another_path_or_another_read_of_one_file_gets_its_own_card() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
 
     let listing = pending_of(&fixture.list_ledger().await.unwrap_err());
     let stat = pending_of(&fixture.stat_ledger("a.txt").await.unwrap_err());
@@ -1345,6 +1364,7 @@ async fn another_path_or_another_read_of_one_file_gets_its_own_card() {
 async fn a_denied_read_is_reported_as_denied() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.list_ledger().await.unwrap_err());
 
     fixture.answer(&id, deny()).await.unwrap();
@@ -1361,6 +1381,7 @@ async fn a_denied_read_is_reported_as_denied() {
 async fn waiting_on_an_approved_read_says_what_was_approved_not_a_bare_approval() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.list_ledger().await.unwrap_err());
 
     fixture.answer(&id, approve()).await.unwrap();
@@ -1378,6 +1399,7 @@ async fn waiting_on_an_approved_read_says_what_was_approved_not_a_bare_approval(
 async fn waiting_on_an_approved_listing_returns_the_listing() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.list_ledger().await.unwrap_err());
 
     fixture.answer(&id, approve()).await.unwrap();
@@ -1399,6 +1421,7 @@ async fn waiting_on_an_approved_listing_returns_the_listing() {
 async fn waiting_on_an_approved_file_read_returns_the_files_bytes() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let refused = fixture
         .files()
         .await
@@ -1426,6 +1449,7 @@ async fn waiting_on_an_approved_file_read_returns_the_files_bytes() {
 async fn waiting_on_an_approved_stat_returns_the_entry() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.stat_ledger("a.txt").await.unwrap_err());
 
     fixture.answer(&id, approve()).await.unwrap();
@@ -1441,6 +1465,7 @@ async fn waiting_on_an_approved_stat_returns_the_entry() {
 async fn an_approved_reads_bytes_go_to_the_first_wait_and_later_ones_repeat_the_read() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.list_ledger().await.unwrap_err());
     fixture.answer(&id, approve()).await.unwrap();
 
@@ -1457,6 +1482,7 @@ async fn an_approved_reads_bytes_go_to_the_first_wait_and_later_ones_repeat_the_
 async fn a_repeated_approved_read_drops_its_held_bytes() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
+    fixture.ask_for_other_session_reads().await;
     let id = pending_of(&fixture.list_ledger().await.unwrap_err());
     fixture.answer(&id, approve()).await.unwrap();
 

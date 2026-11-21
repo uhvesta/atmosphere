@@ -250,7 +250,7 @@ async fn a_change_made_on_a_stale_revision_conflicts() {
     let shown = fixture.rules(CHANNEL).await;
     assert_eq!(
         decision_of(&shown.rules, pb::Capability::SessionNote),
-        pb::Decision::Ask
+        pb::Decision::Allow
     );
 }
 

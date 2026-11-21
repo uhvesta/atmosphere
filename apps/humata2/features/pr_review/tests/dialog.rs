@@ -11,7 +11,8 @@ use humata2_clients::pull_requests::{
     Call, FakePullRequests, PullRequestError, PullRequestInfo, PullRequestRef, PullRequestState,
 };
 use humata2_pr_review::dialog::{
-    Blocker, Delegate, Dialog, DialogAction as A, DialogState, Fetch, PasteProblem, Start,
+    Blocker, Delegate, DetectedStack, DetectedStackLayer, Dialog, DialogAction as A, DialogState,
+    Fetch, PasteProblem, StackImportMode, Start,
 };
 use tca::TestStore;
 
@@ -437,4 +438,121 @@ fn a_started_session_drops_the_step_as_the_dialog_closes() {
     assert_eq!(store.state().progress, None);
     assert_eq!(store.state().op, None);
     assert!(!store.state().open);
+}
+
+fn stack_layer(repo: &str, number: u32, head: &str, base: &str) -> DetectedStackLayer {
+    DetectedStackLayer {
+        pr: PullRequestRef::new(repo, number),
+        title: format!("Layer {number}"),
+        head_branch: head.to_owned(),
+        base_branch: base.to_owned(),
+        author: "mara".to_owned(),
+    }
+}
+
+fn three_layer_stack() -> DetectedStack {
+    DetectedStack {
+        layers: vec![
+            stack_layer("acme/api", 480, "feat-base", "main"),
+            stack_layer("acme/api", 481, "feat-mid", "feat-base"),
+            stack_layer("acme/api", 482, "feat-top", "feat-mid"),
+        ],
+        source: "graphite".to_owned(),
+        mode: StackImportMode::SinglePr,
+    }
+}
+
+#[test]
+fn detected_stack_defaults_to_whole_stack_and_starts_bottom_to_top() {
+    let fake = github();
+    fake.add_pull_request(info("acme/api", 480));
+    fake.add_pull_request(info("acme/api", 481));
+    let mut store = ready_to_start(&fake);
+    store.send(A::StackDetected(three_layer_stack()), |_| {});
+
+    let stack = store.state().detected_stack.as_ref().expect("stack stored");
+    assert!(stack.is_multi_layer());
+    assert_eq!(stack.mode, StackImportMode::WholeStack);
+
+    store.send(A::Start, |_| {});
+    receive_started_ok(&mut store);
+
+    let starts = fake.starts();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0].prs,
+        vec![
+            PullRequestRef::new("acme/api", 480),
+            PullRequestRef::new("acme/api", 481),
+            PullRequestRef::new("acme/api", 482),
+        ]
+    );
+}
+
+#[test]
+fn single_pr_mode_starts_only_the_pasted_pr_and_also_prs() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::AddAlso(WEB_77.to_owned()), |_| {});
+    read(&mut store);
+    store.send(A::StackDetected(three_layer_stack()), |_| {});
+    store.send(A::SetStackImportMode(StackImportMode::SinglePr), |_| {});
+
+    assert_eq!(
+        store.state().detected_stack.as_ref().map(|s| s.mode),
+        Some(StackImportMode::SinglePr)
+    );
+
+    store.send(A::Start, |_| {});
+    receive_started_ok(&mut store);
+
+    let starts = fake.starts();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0].prs,
+        vec![
+            PullRequestRef::new("acme/api", 482),
+            PullRequestRef::new("acme/web", 77),
+        ]
+    );
+}
+
+#[test]
+fn pasting_a_new_main_pr_clears_detected_stack() {
+    let fake = github();
+    let mut store = ready_to_start(&fake);
+    store.send(A::StackDetected(three_layer_stack()), |_| {});
+    assert!(store.state().detected_stack.is_some());
+
+    store.send(A::Paste(WEB_77.to_owned()), |_| {});
+    assert_eq!(store.state().detected_stack, None);
+    read(&mut store);
+}
+
+#[test]
+fn whole_stack_deduplicates_also_prs_already_in_the_stack() {
+    let fake = github();
+    fake.add_pull_request(info("acme/api", 480));
+    fake.add_pull_request(info("acme/api", 481));
+    let mut store = ready_to_start(&fake);
+    store.send(A::AddAlso("acme/api#481".to_owned()), |_| {});
+    read(&mut store);
+    store.send(A::AddAlso(WEB_77.to_owned()), |_| {});
+    read(&mut store);
+    store.send(A::StackDetected(three_layer_stack()), |_| {});
+
+    store.send(A::Start, |_| {});
+    receive_started_ok(&mut store);
+
+    let starts = fake.starts();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0].prs,
+        vec![
+            PullRequestRef::new("acme/api", 480),
+            PullRequestRef::new("acme/api", 481),
+            PullRequestRef::new("acme/api", 482),
+            PullRequestRef::new("acme/web", 77),
+        ]
+    );
 }

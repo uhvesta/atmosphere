@@ -8,6 +8,8 @@ mod clean_up;
 mod close;
 mod copy;
 mod new;
+mod tabs;
+mod todo_pane;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -26,6 +28,14 @@ pub use close::CloseDialog;
 pub use copy::CopyDialog;
 pub use humata2_clients::desk::{CleanUp, CleanUpRow};
 pub use new::{NewAction, NewForm};
+pub use tabs::{
+    KindDisabledReason, KindOption, MAX_TABS_PER_KIND, TabStripSummary, compute_tab_strip,
+    flat_tab_cap,
+};
+pub use todo_pane::{
+    ChannelTodoPane, TODO_PANE_DEFAULT_WIDTH, TODO_PANE_MAX_WIDTH, TODO_PANE_MIN_WIDTH,
+    clamp_todo_pane_width,
+};
 
 /// How the Open list is ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +95,12 @@ pub struct DeskState {
     pub pending: BTreeSet<SessionId>,
     /// Per-channel status of ensuring the persistent primary Desk (CHANNELDESK).
     pub channel_status: BTreeMap<ChannelId, ChannelDeskStatus>,
+    /// Currently selected channel-wide Desk tab per channel (DESKTABS).
+    pub active_channel_tab: BTreeMap<ChannelId, SessionId>,
+    /// Channel whose `+` "New Desk agent tab" popover is open, if any (DESKTABS).
+    pub tab_picker_open: Option<ChannelId>,
+    /// Per-channel To-do List-only split pane state beside Channel Desk (DESKTODO).
+    pub todo_panes: BTreeMap<ChannelId, ChannelTodoPane>,
     /// What went wrong last, outside a dialog.
     pub error: Option<String>,
 }
@@ -179,7 +195,14 @@ impl DeskState {
     /// a pop-up.
     #[must_use]
     pub const fn dialog_open(&self) -> bool {
-        self.sheet_open() || self.menu.is_some()
+        self.sheet_open() || self.menu.is_some() || self.tab_picker_open.is_some()
+    }
+
+    /// The To-do split pane state for `channel`, or its default when not yet
+    /// customized (DESKTODO).
+    #[must_use]
+    pub fn todo_pane(&self, channel: &ChannelId) -> ChannelTodoPane {
+        self.todo_panes.get(channel).cloned().unwrap_or_default()
     }
 
     /// The machines of the copy dialog's channel, for its picker.
@@ -370,6 +393,70 @@ pub enum DeskAction {
         session: SessionId,
         /// How it went.
         result: Result<(), DaemonError>,
+    },
+    /// Select an open channel-wide Desk tab (DESKTABS).
+    SelectChannelTab {
+        /// The channel.
+        channel: ChannelId,
+        /// The tab's session id.
+        session: SessionId,
+    },
+    /// Open (`Some`) or close (`None`) the `+` "New Desk agent tab" popover (DESKTABS).
+    ToggleTabPicker(Option<ChannelId>),
+    /// Immediately start a new channel-wide Desk agent tab without a modal (DESKTABS).
+    OpenChannelTab {
+        /// The channel.
+        channel: ChannelId,
+        /// The agent kind (or `Agent::Shell` for Terminal).
+        agent: Agent,
+        /// The channel's default host machine.
+        machine: MachineId,
+        /// Enabled agents from Settings › Agents, used to enforce the flat cap.
+        enabled_agents: Vec<Agent>,
+    },
+    /// The daemon finished starting a channel-wide Desk agent tab (DESKTABS).
+    ChannelTabStarted {
+        /// The channel.
+        channel: ChannelId,
+        /// The created session id, or why it failed.
+        result: Result<SessionId, DaemonError>,
+    },
+    /// Toggle the To-do List-only split pane beside Channel Desk (DESKTODO).
+    ToggleTodoPane(ChannelId),
+    /// Resize the To-do split pane (clamped to `320.0..=460.0`) (DESKTODO).
+    SetTodoPaneWidth {
+        /// The channel.
+        channel: ChannelId,
+        /// Requested width in pixels.
+        width: f32,
+    },
+    /// Toggle the inline search input in the To-do split pane (DESKTODO).
+    ToggleTodoPaneSearch(ChannelId),
+    /// Update the search query in the To-do split pane (DESKTODO).
+    SetTodoPaneSearchQuery {
+        /// The channel.
+        channel: ChannelId,
+        /// Search text.
+        query: String,
+    },
+    /// Toggle the folded `Done` section in the To-do split pane (DESKTODO).
+    ToggleTodoPaneDone(ChannelId),
+    /// Record agent board changes for a channel; increments `unseen_agent_changes`
+    /// only while the To-do split pane is hidden (DESKTODO).
+    RecordAgentBoardChange {
+        /// The channel.
+        channel: ChannelId,
+        /// Number of board changes observed.
+        count: usize,
+    },
+    /// Restore persisted To-do split pane visibility and width for a channel (DESKTODO).
+    RestoreChannelTodoPane {
+        /// The channel.
+        channel: ChannelId,
+        /// Whether the pane was visible.
+        visible: bool,
+        /// Saved width in pixels (clamped on restore).
+        width: f32,
     },
     /// Cancel or Escape: closes the innermost thing that is open: a
     /// pop-up first, then the dialog.
@@ -625,6 +712,9 @@ impl Reducer for Desk {
             DeskAction::ConfirmCopy => self.confirm_copy(state),
             DeskAction::Copied(result) => Self::copied(state, result),
             DeskAction::CancelDialog => {
+                if state.tab_picker_open.take().is_some() {
+                    return Effect::none();
+                }
                 if state.menu.take().is_some() {
                     return Effect::none();
                 }
@@ -702,6 +792,90 @@ impl Reducer for Desk {
                             .channel_status
                             .insert(channel, ChannelDeskStatus::Failed(error.to_string()));
                     }
+                }
+                Effect::none()
+            }
+            DeskAction::SelectChannelTab { channel, session } => {
+                state.active_channel_tab.insert(channel, session);
+                state.tab_picker_open = None;
+                Effect::none()
+            }
+            DeskAction::ToggleTabPicker(channel) => {
+                if channel.is_none() || !state.sheet_open() {
+                    if state.tab_picker_open == channel {
+                        state.tab_picker_open = None;
+                    } else {
+                        state.tab_picker_open = channel;
+                    }
+                }
+                Effect::none()
+            }
+            DeskAction::OpenChannelTab {
+                channel,
+                agent,
+                machine,
+                enabled_agents,
+            } => self.open_channel_tab(state, channel, agent, machine, enabled_agents),
+            DeskAction::ChannelTabStarted { channel, result } => {
+                match result {
+                    Ok(id) => {
+                        state.active_channel_tab.insert(channel, id);
+                        state.tab_picker_open = None;
+                    }
+                    Err(error) => {
+                        state.error = Some(error.to_string());
+                    }
+                }
+                Effect::none()
+            }
+            DeskAction::ToggleTodoPane(channel) => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.visible = !pane.visible;
+                if pane.visible {
+                    pane.unseen_agent_changes = 0;
+                }
+                Effect::none()
+            }
+            DeskAction::SetTodoPaneWidth { channel, width } => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.width = clamp_todo_pane_width(width);
+                Effect::none()
+            }
+            DeskAction::ToggleTodoPaneSearch(channel) => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.search_open = !pane.search_open;
+                if !pane.search_open {
+                    pane.search_query.clear();
+                }
+                Effect::none()
+            }
+            DeskAction::SetTodoPaneSearchQuery { channel, query } => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.search_query = query;
+                Effect::none()
+            }
+            DeskAction::ToggleTodoPaneDone(channel) => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.done_expanded = !pane.done_expanded;
+                Effect::none()
+            }
+            DeskAction::RecordAgentBoardChange { channel, count } => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                if !pane.visible {
+                    pane.unseen_agent_changes = pane.unseen_agent_changes.saturating_add(count);
+                }
+                Effect::none()
+            }
+            DeskAction::RestoreChannelTodoPane {
+                channel,
+                visible,
+                width,
+            } => {
+                let pane = state.todo_panes.entry(channel).or_default();
+                pane.visible = visible;
+                pane.width = clamp_todo_pane_width(width);
+                if pane.visible {
+                    pane.unseen_agent_changes = 0;
                 }
                 Effect::none()
             }

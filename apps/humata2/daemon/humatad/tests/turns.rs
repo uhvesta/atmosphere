@@ -93,15 +93,20 @@ impl Fixture {
         get_session(&self.daemon, &self.session).await.status()
     }
 
-    /// The command Claude Code runs for `event`, as the daemon wrote it.
-    fn hook_command(&self, event: &str) -> String {
+    /// The command Claude Code runs for `event`, as the daemon wrote it, if any.
+    fn hook_command_opt(&self, event: &str) -> Option<String> {
         let file = self.daemon.state.join("claude-hooks.json");
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
         json["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
+            .map(str::to_owned)
+    }
+
+    /// The command Claude Code runs for `event`, as the daemon wrote it.
+    fn hook_command(&self, event: &str) -> String {
+        self.hook_command_opt(event)
             .unwrap_or_else(|| panic!("no hook for {event}"))
-            .to_owned()
     }
 
     /// The agent runs `event`'s hook command.
@@ -223,9 +228,12 @@ async fn the_hooks_move_a_session_between_idle_working_and_needing_input() {
     attach.wait_for("got: hello").await;
     assert_eq!(fix.status().await, Status::Idle);
 
+    // ATM-62: packaged hooks never gate generic agent permissions.
+    assert!(fix.hook_command_opt("PermissionRequest").is_none());
+
     fix.fire(&mut attach, "UserPromptSubmit").await;
     wait_status(&fix.daemon, &fix.session, Status::Working).await;
-    fix.fire(&mut attach, "PermissionRequest").await;
+    fix.fire(&mut attach, "Elicitation").await;
     wait_status(&fix.daemon, &fix.session, Status::NeedsInput).await;
     fix.fire(&mut attach, "PermissionDenied").await;
     wait_status(&fix.daemon, &fix.session, Status::Working).await;

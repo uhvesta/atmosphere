@@ -157,7 +157,14 @@ fn copilot_gets_a_plugin_with_turn_and_permission_hooks() {
     assert!(!plugin["name"].as_str().expect("string").is_empty());
     let hooks = file("hooks.json");
     assert_eq!(hooks["version"], 1);
-    for event in ["userPromptSubmitted", "agentStop", "permissionRequest"] {
+    for event in [
+        "sessionStart",
+        "preToolUse",
+        "userPromptSubmitted",
+        "postToolUse",
+        "agentStop",
+        "errorOccurred",
+    ] {
         let list = hooks["hooks"][event].as_array().expect("JSON array");
         assert!(!list.is_empty(), "{event}");
         for hook in list {
@@ -166,9 +173,14 @@ fn copilot_gets_a_plugin_with_turn_and_permission_hooks() {
             assert!(hook["timeoutSec"].is_u64(), "{event}: every hook says its timeout");
         }
     }
-    let permission = &hooks["hooks"]["permissionRequest"][0];
-    assert_eq!(permission["timeoutSec"], HOLD_SECONDS);
-    assert!(permission["bash"].as_str().expect("string").contains("hook copilot permission"));
+    assert!(
+        hooks["hooks"].get("permissionRequest").is_none(),
+        "copilot plugin must not register a generic permissionRequest hook"
+    );
+    let question = &hooks["hooks"]["preToolUse"][0];
+    assert_eq!(question["matcher"], "ask_user");
+    assert_eq!(question["timeoutSec"], HOLD_SECONDS);
+    assert!(question["bash"].as_str().expect("string").contains("hook copilot question"));
 }
 
 #[test]

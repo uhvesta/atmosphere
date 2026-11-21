@@ -242,6 +242,20 @@ impl ScreenAsk {
         });
     }
 
+    /// Inspects a live terminal `screen` during session startup and returns
+    /// the parsed startup prompt and deterministic policy decision, if any.
+    pub fn inspect_startup_screen(
+        screen: &str,
+        scope: &crate::startup_auth::OwnerConsentScope,
+    ) -> Option<(
+        crate::startup_auth::ParsedStartupPrompt,
+        crate::startup_auth::StartupDecision,
+    )> {
+        let prompt = crate::startup_auth::parse_startup_prompt(screen)?;
+        let decision = crate::startup_auth::decide_startup_action(&prompt, scope);
+        Some((prompt, decision))
+    }
+
     /// Performs a single screen inspection synchronously (awaitable). Useful
     /// for deterministic testing.
     #[cfg(test)]

@@ -168,6 +168,65 @@ impl Find {
             targets.push((target, Scope::Clone));
         }
 
+        // Agent artifacts folder for the current conversation, plus any previous
+        // conversations (ATM-5). Agents are denied Root::AgentState by policy;
+        // skip on PermissionDenied or NotFound so agents calling FindFiles on
+        // their own session are not broken.
+        let current_conv_id = self
+            .store
+            .agent(&session)
+            .ok()
+            .flatten()
+            .map(|agent| agent.launch.conversation_id)
+            .unwrap_or_default();
+        let mut agent_conv_ids = vec![String::new()];
+        if let Ok(previous) = self.store.previous_conversations(&session) {
+            for prev in previous {
+                if !prev.conversation_id.is_empty() && prev.conversation_id != current_conv_id {
+                    agent_conv_ids.push(prev.conversation_id);
+                }
+            }
+        }
+        for conversation_id in agent_conv_ids {
+            let location = pb::FileLocation {
+                machine: None,
+                root: Some(pb::file_location::Root::SessionAgentState(
+                    pb::SessionAgentState {
+                        session: Some(pb::SessionId {
+                            value: session.clone(),
+                        }),
+                        conversation_id,
+                    },
+                )),
+                path: String::new(),
+            };
+            let target = match self.roots.target(Some(location), "session", Entry::Folder) {
+                Ok(target) => target,
+                Err(status)
+                    if matches!(
+                        status.code(),
+                        tonic::Code::NotFound | tonic::Code::PermissionDenied
+                    ) =>
+                {
+                    continue;
+                }
+                Err(status) => return Err(status),
+            };
+            match self
+                .reads
+                .require(&caller, target.place.clone(), "find", || None)
+                .await
+            {
+                Ok(()) => targets.push((target, Scope::AgentState)),
+                Err(status)
+                    if matches!(
+                        status.code(),
+                        tonic::Code::NotFound | tonic::Code::PermissionDenied
+                    ) => {}
+                Err(status) => return Err(status),
+            }
+        }
+
         let query = request.query;
         let (entries, next) = blocking(move || search(&targets, &query, offset, size)).await??;
         Ok(Response::new(pb::FindFilesResponse {
@@ -201,6 +260,8 @@ enum Scope {
     /// A session's own folder: its files, not those of the clones in it,
     /// which are searched as clones.
     OwnFolder { skip_dirs: HashSet<String> },
+    /// An agent's on-disk artifact folder (Claude/Codex/Copilot).
+    AgentState,
 }
 
 /// Top-level directory names under `folder` that belong to `repos`, so walking
@@ -245,6 +306,7 @@ fn search(
         let paths = match scope {
             Scope::Clone => candidates(&root)?,
             Scope::OwnFolder { skip_dirs } => own_files(&root, skip_dirs)?,
+            Scope::AgentState => walk_agent_state(&root)?,
         };
         let matched = ranked(paths, query);
         if consumed == size {
@@ -460,6 +522,49 @@ pub(crate) fn ignored_among(root: &Path, paths: &[String]) -> HashSet<String> {
 /// The files under `root` without following symlinks, skipping `.git`.
 fn walk(root: &Path) -> Result<Vec<String>, Status> {
     walk_from(root, "", false, &HashSet::new())
+}
+
+/// The files under an agent's artifact folder without following symlinks,
+/// bounded by [`WALK_MAX`], skipping only hidden `.partial` files.
+fn walk_agent_state(root: &Path) -> Result<Vec<String>, Status> {
+    let mut files = Vec::new();
+    let mut stack = vec![(root.to_owned(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let read = match fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(error) if dir == root => {
+                return Err(io_failure(&error, "read the folder", &dir));
+            }
+            Err(_) => continue,
+        };
+        for entry in read.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if name.starts_with('.')
+                && (name.ends_with(".partial") || name.contains(".humata-partial-"))
+            {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if kind.is_dir() {
+                stack.push((entry.path(), relative));
+            } else {
+                if files.len() >= WALK_MAX {
+                    return Ok(files);
+                }
+                files.push(relative);
+            }
+        }
+    }
+    Ok(files)
 }
 
 /// The files under the folder `start` of `root` (empty for all of it), as

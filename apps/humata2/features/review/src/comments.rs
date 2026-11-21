@@ -1278,3 +1278,89 @@ fn handover_key(session: &SessionId, repo: &str, comment: &LegacyComment, occurr
     feed(&occurrence.to_le_bytes());
     format!("handover-{hash:016x}")
 }
+
+/// Number of queued GitHub reply drafts for `session`.
+#[must_use]
+pub fn queued_github_reply_count(state: &CommentsState, session: &SessionId) -> usize {
+    state.github_drafts(session).len()
+}
+
+/// Footer CTA label for posting queued GitHub replies.
+#[must_use]
+pub fn post_replies_cta_label(count: usize) -> String {
+    if count == 1 {
+        "Post 1 reply to GitHub".to_owned()
+    } else {
+        format!("Post {count} replies to GitHub")
+    }
+}
+
+/// Review status of a pulled GitHub PR feedback item (`ATM-38`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrReviewStatus {
+    /// Reviewer requested changes.
+    RequestedChanges,
+    /// Reviewer left comments.
+    Commented,
+    /// Reviewer approved.
+    Approved,
+}
+
+impl PrReviewStatus {
+    /// Human-readable status label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RequestedChanges => "requested changes",
+            Self::Commented => "commented",
+            Self::Approved => "approved",
+        }
+    }
+}
+
+/// View model for an on-demand Pull PR Feedback card (`ATM-38`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrFeedbackCardModel {
+    /// Reviewer handle or display name (e.g. `"@maya"`).
+    pub reviewer: String,
+    /// Review status badge.
+    pub status: PrReviewStatus,
+    /// Repository name (e.g. `"api"` or `"acme/api"`).
+    pub repo: String,
+    /// Pull request number.
+    pub pr_number: u32,
+    /// Feedback body text.
+    pub body: String,
+    /// Optional file path & line reference.
+    pub location: Option<String>,
+    /// Whether this feedback item is selected for batch send.
+    pub selected: bool,
+    /// Optional queued GitHub reply draft text.
+    pub queued_reply: Option<String>,
+}
+
+impl PrFeedbackCardModel {
+    /// Short PR link chip label, e.g. `"api #142"`.
+    #[must_use]
+    pub fn pr_link_label(&self) -> String {
+        let short = self.repo.rsplit('/').next().unwrap_or(&self.repo);
+        format!("{short} #{}", self.pr_number)
+    }
+
+    /// Formats this feedback item for `Send to <agent>`.
+    #[must_use]
+    pub fn format_for_agent(&self) -> String {
+        let loc = self
+            .location
+            .as_deref()
+            .map(|l| format!(" ({l})"))
+            .unwrap_or_default();
+        format!(
+            "PR feedback from {} ({}) on {}{loc}:\n{}",
+            self.reviewer,
+            self.status.label(),
+            self.pr_link_label(),
+            self.body.trim()
+        )
+    }
+}

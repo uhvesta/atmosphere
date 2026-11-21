@@ -9,6 +9,7 @@ use crate::checkout::Checkout;
 use crate::error::DiffError;
 use crate::git::trimmed;
 use crate::spec::valid_session;
+use crate::stack::{REBASED_DIFF_UNCHANGED_NOTE, RestackStatus};
 
 const LOOKS: &str = "refs/humata/looks";
 
@@ -18,6 +19,54 @@ const LOOKS: &str = "refs/humata/looks";
 pub struct Look {
     pub path: String,
     pub fingerprint: u64,
+}
+
+/// A [`Look`] reconciled against a layer's [`RestackStatus`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerLook {
+    pub look: Look,
+    /// `true` when the layer was rebased without changing its diff, so
+    /// `Looked at` is preserved with a quiet note.
+    pub rebased_diff_unchanged: bool,
+}
+
+impl LayerLook {
+    /// Quiet status note when this look was preserved across a diff-unchanged restack.
+    #[must_use]
+    pub const fn note(&self) -> Option<&'static str> {
+        if self.rebased_diff_unchanged {
+            Some(REBASED_DIFF_UNCHANGED_NOTE)
+        } else {
+            None
+        }
+    }
+}
+
+/// Reconciles `looks` against a layer's [`RestackStatus`]:
+/// - [`RestackStatus::Unchanged`]: keeps all looks with `rebased_diff_unchanged = false`.
+/// - [`RestackStatus::RebasedDiffUnchanged`]: keeps all looks with `rebased_diff_unchanged = true`.
+/// - [`RestackStatus::DiffChanged`] / [`RestackStatus::Missing`]: drops all looks.
+#[must_use]
+pub fn reconcile_looks_after_restack(looks: &[Look], status: RestackStatus) -> Vec<LayerLook> {
+    match status {
+        RestackStatus::Unchanged => looks
+            .iter()
+            .cloned()
+            .map(|look| LayerLook {
+                look,
+                rebased_diff_unchanged: false,
+            })
+            .collect(),
+        RestackStatus::RebasedDiffUnchanged => looks
+            .iter()
+            .cloned()
+            .map(|look| LayerLook {
+                look,
+                rebased_diff_unchanged: true,
+            })
+            .collect(),
+        RestackStatus::DiffChanged | RestackStatus::Missing => Vec::new(),
+    }
 }
 
 impl Checkout {
@@ -106,6 +155,26 @@ impl Checkout {
     pub async fn save_looks(&self, session: String, looks: Vec<Look>) -> Result<(), DiffError> {
         let checkout = self.clone();
         crate::blocking(move || checkout.save_looks_blocking(&session, &looks)).await
+    }
+
+    /// Reconciles the session's saved looks against `status`: preserves them
+    /// when `Unchanged` or `RebasedDiffUnchanged`, and clears them from the
+    /// repo when `DiffChanged` or `Missing`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::looks_blocking`] and [`Self::save_looks_blocking`].
+    pub fn reconcile_looks_blocking(
+        &self,
+        session: &str,
+        status: RestackStatus,
+    ) -> Result<Vec<LayerLook>, DiffError> {
+        let looks = self.looks_blocking(session)?;
+        let reconciled = reconcile_looks_after_restack(&looks, status);
+        if reconciled.is_empty() && !looks.is_empty() {
+            self.save_looks_blocking(session, &[])?;
+        }
+        Ok(reconciled)
     }
 
     /// [`Self::looks_blocking`] on the blocking pool.

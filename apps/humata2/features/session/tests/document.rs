@@ -152,10 +152,10 @@ fn settings_survive_saving_and_loading() {
 
 #[test]
 fn markdown_files_are_found_by_extension_in_any_case() {
-    for path in ["a.md", "docs/B.MD", "c.markdown", "d.Markdown"] {
+    for path in ["a.md", "docs/B.MD", "c.markdown", "d.Markdown", "a.mdx"] {
         assert!(is_markdown(path), "{path}");
     }
-    for path in ["a.rs", "md", "notes.md.txt", "a.mdx", ""] {
+    for path in ["a.rs", "md", "notes.md.txt", ""] {
         assert!(!is_markdown(path), "{path}");
     }
 }

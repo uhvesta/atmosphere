@@ -191,9 +191,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use futures_util::StreamExt;
+    use futures_util::{SinkExt, StreamExt};
     use humata2_todo::{Day, State, Todo};
-    use humata2_web_todo_wire::{BoardSnapshot, ChannelInfo, ServerMessage};
+    use humata2_web_todo_wire::{
+        BoardSnapshot, ChannelInfo, ClientMessage, ServerMessage, WatchedPrEntry,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
@@ -206,6 +208,7 @@ mod tests {
     struct FakeSource {
         snapshot: Mutex<BoardSnapshot>,
         updates: broadcast::Sender<()>,
+        refresh_count: AtomicUsize,
     }
 
     impl FakeSource {
@@ -222,8 +225,13 @@ mod tests {
                     }],
                     sessions: Vec::new(),
                     revision: 1,
+                    reviews: Vec::new(),
+                    watched_prs: Vec::new(),
+                    github_checked_ago_secs: Some(300),
+                    review_details: Vec::new(),
                 }),
                 updates,
+                refresh_count: AtomicUsize::new(0),
             }
         }
 
@@ -244,6 +252,29 @@ mod tests {
 
         fn subscribe(&self) -> broadcast::Receiver<()> {
             self.updates.subscribe()
+        }
+
+        fn watch_pr_url(&self, url: &str) -> Result<(), String> {
+            let trimmed = url.trim();
+            if !trimmed.starts_with("https://github.com/") || !trimmed.contains("/pull/") {
+                return Err("Invalid GitHub PR URL".to_owned());
+            }
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.watched_prs.push(WatchedPrEntry {
+                url: trimmed.to_owned(),
+                repo: "acme/repo".to_owned(),
+                number: 42,
+                title: "Watched PR".to_owned(),
+            });
+            snap.revision += 1;
+            Ok(())
+        }
+
+        fn refresh_reviews(&self) {
+            self.refresh_count.fetch_add(1, Ordering::Relaxed);
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.github_checked_ago_secs = Some(0);
+            snap.revision += 1;
         }
     }
 
@@ -381,5 +412,82 @@ mod tests {
         controller.set_enabled(false);
         assert_eq!(controller.status(), WebTodoStatus::Off);
         assert_eq!(transitions.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn serves_spa_routes_and_handles_watch_pr_and_refresh_over_ws() {
+        let source = Arc::new(FakeSource::new());
+        let server = serve_loopback(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            Assets::fallback_placeholder(),
+            Arc::clone(&source) as Arc<dyn BoardSource>,
+        )
+        .await
+        .expect("start");
+
+        for path in ["/todo", "/reviews", "/reviews/PAY-3"] {
+            let resp = http_get(server.addr(), path).await;
+            assert!(resp.starts_with("HTTP/1.1 200 OK"), "{path}: {resp}");
+            assert!(resp.contains("text/html"), "{path}: {resp}");
+        }
+
+        let ws_url = format!("ws://{}/ws", server.addr());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws connect");
+
+        // Consume initial snapshot.
+        let _ = ws.next().await.expect("initial").expect("ok");
+
+        // Invalid WatchPrUrl returns ServerMessage::Error.
+        let bad = serde_json::to_string(&ClientMessage::WatchPrUrl {
+            url: "not-a-pr-url".to_owned(),
+        })
+        .unwrap();
+        ws.send(WsMessage::Text(bad.into())).await.expect("send");
+        let err_frame = ws.next().await.expect("err frame").expect("ok");
+        let WsMessage::Text(err_text) = err_frame else {
+            panic!("expected text frame");
+        };
+        let ServerMessage::Error { message } = serde_json::from_str(&err_text).expect("decode")
+        else {
+            panic!("expected error message, got {err_text}");
+        };
+        assert!(message.contains("Invalid"));
+
+        // Valid WatchPrUrl returns updated snapshot with watched_prs.
+        let good = serde_json::to_string(&ClientMessage::WatchPrUrl {
+            url: "https://github.com/acme/repo/pull/42".to_owned(),
+        })
+        .unwrap();
+        ws.send(WsMessage::Text(good.into())).await.expect("send");
+        let snap_frame = ws.next().await.expect("snap frame").expect("ok");
+        let WsMessage::Text(snap_text) = snap_frame else {
+            panic!("expected text frame");
+        };
+        let ServerMessage::Snapshot(snap) = serde_json::from_str(&snap_text).expect("decode")
+        else {
+            panic!("expected snapshot, got {snap_text}");
+        };
+        assert_eq!(snap.watched_prs.len(), 1);
+        assert_eq!(snap.watched_prs[0].number, 42);
+
+        // RefreshReviews invokes source.refresh_reviews() and returns snapshot.
+        let refresh = serde_json::to_string(&ClientMessage::RefreshReviews).unwrap();
+        ws.send(WsMessage::Text(refresh.into()))
+            .await
+            .expect("send");
+        let ref_frame = ws.next().await.expect("refresh frame").expect("ok");
+        let WsMessage::Text(ref_text) = ref_frame else {
+            panic!("expected text frame");
+        };
+        let ServerMessage::Snapshot(snap2) = serde_json::from_str(&ref_text).expect("decode")
+        else {
+            panic!("expected snapshot, got {ref_text}");
+        };
+        assert_eq!(snap2.github_checked_ago_secs, Some(0));
+        assert_eq!(source.refresh_count.load(Ordering::Relaxed), 1);
+
+        server.stop().await;
     }
 }

@@ -267,6 +267,71 @@ fn fetch(clone: &Path, refspec: &str) -> Result<(), HeadsError> {
     git(clone, &["fetch", "--quiet", "--no-tags", "origin", refspec]).map(drop)
 }
 
+/// Humata's local ref name for a pull request's head inside a clone.
+pub(super) fn pr_ref_name(number: u32) -> String {
+    format!("refs/humata/pr-{number}")
+}
+
+/// Resolved commit range for one layer of a stacked pull request review.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StackLayerRange {
+    pub(super) pr_number: u32,
+    pub(super) ref_name: String,
+    pub(super) base_sha: String,
+    pub(super) head_sha: String,
+}
+
+/// Fetches `+refs/pull/<n>/head:refs/humata/pr-<n>` for each PR in `prs`
+/// (in bottom-to-top order) into a single `clone`. Blocking.
+#[allow(dead_code)]
+pub(super) fn fetch_stack_layer_refs_blocking(
+    clone: &Path,
+    prs: &[ReviewPr],
+) -> Result<Vec<String>, HeadsError> {
+    let mut refs = Vec::with_capacity(prs.len());
+    for pr in prs {
+        let ref_name = pr_ref_name(pr.number);
+        fetch(clone, &format!("+refs/pull/{}/head:{ref_name}", pr.number))?;
+        refs.push(ref_name);
+    }
+    Ok(refs)
+}
+
+/// Resolves each layer's `(base_sha, head_sha, ref_name)` in bottom-to-top
+/// order inside a single `clone`. Layer 0 uses `origin/<base_branch>`, and
+/// layer `i > 0` uses layer `i - 1`'s `refs/humata/pr-<prev>` head. Blocking.
+#[allow(dead_code)]
+pub(super) fn stack_layer_ranges_blocking(
+    clone: &Path,
+    prs: &[ReviewPr],
+) -> Result<Vec<StackLayerRange>, HeadsError> {
+    let mut ranges = Vec::with_capacity(prs.len());
+    for (idx, pr) in prs.iter().enumerate() {
+        let ref_name = pr_ref_name(pr.number);
+        let head_sha = git(
+            clone,
+            &["rev-parse", "--verify", &format!("{ref_name}^{{commit}}")],
+        )?;
+        let base_ref = if idx == 0 {
+            base_ref_blocking(clone, &pr.base_branch)?
+        } else {
+            pr_ref_name(prs[idx - 1].number)
+        };
+        let base_sha = git(
+            clone,
+            &["rev-parse", "--verify", &format!("{base_ref}^{{commit}}")],
+        )?;
+        ranges.push(StackLayerRange {
+            pr_number: pr.number,
+            ref_name,
+            base_sha,
+            head_sha,
+        });
+    }
+    Ok(ranges)
+}
+
 /// What a pull request's new head holds that the reviewed one doesn't.
 struct Compared {
     /// The head GitHub has now, as fetched.
@@ -1004,5 +1069,116 @@ mod tests {
 
         let bottom = stack_of(&api_bottom, &all).expect("the bottom is in a stack");
         assert_eq!(numbers(&bottom.children), vec![2]);
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn fetch_and_range_stacked_layers_in_single_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        let work = tmp.path().join("work");
+        let clone = tmp.path().join("clone");
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+
+        git_ok(&origin, &["init", "--bare"]);
+        git_ok(&work, &["init", "-b", "main"]);
+        git_ok(&work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+
+        std::fs::write(work.join("base.txt"), "base\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "base commit"]);
+        let main_sha = git_ok(&work, &["rev-parse", "HEAD"]);
+        git_ok(&work, &["push", "origin", "main"]);
+
+        // Layer 1 (PR #101)
+        git_ok(&work, &["checkout", "-b", "feat-1"]);
+        std::fs::write(work.join("layer1.txt"), "l1\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 1"]);
+        let pr1_sha = git_ok(&work, &["rev-parse", "HEAD"]);
+        git_ok(&work, &["push", "origin", "HEAD:refs/pull/101/head"]);
+
+        // Layer 2 (PR #102)
+        git_ok(&work, &["checkout", "-b", "feat-2"]);
+        std::fs::write(work.join("layer2.txt"), "l2\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 2"]);
+        let pr2_sha = git_ok(&work, &["rev-parse", "HEAD"]);
+        git_ok(&work, &["push", "origin", "HEAD:refs/pull/102/head"]);
+
+        // Layer 3 (PR #103)
+        git_ok(&work, &["checkout", "-b", "feat-3"]);
+        std::fs::write(work.join("layer3.txt"), "l3\n").unwrap();
+        git_ok(&work, &["add", "."]);
+        git_ok(&work, &["commit", "-m", "layer 3"]);
+        let pr3_sha = git_ok(&work, &["rev-parse", "HEAD"]);
+        git_ok(&work, &["push", "origin", "HEAD:refs/pull/103/head"]);
+
+        // Single review clone
+        git_ok(
+            tmp.path(),
+            &["clone", origin.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+
+        let prs = vec![
+            pr("api", 101, "feat-1", "main"),
+            pr("api", 102, "feat-2", "feat-1"),
+            pr("api", 103, "feat-3", "feat-2"),
+        ];
+
+        let refs = fetch_stack_layer_refs_blocking(&clone, &prs).unwrap();
+        assert_eq!(
+            refs,
+            vec![
+                "refs/humata/pr-101",
+                "refs/humata/pr-102",
+                "refs/humata/pr-103"
+            ]
+        );
+
+        let ranges = stack_layer_ranges_blocking(&clone, &prs).unwrap();
+        assert_eq!(
+            ranges,
+            vec![
+                StackLayerRange {
+                    pr_number: 101,
+                    ref_name: "refs/humata/pr-101".to_owned(),
+                    base_sha: main_sha,
+                    head_sha: pr1_sha.clone(),
+                },
+                StackLayerRange {
+                    pr_number: 102,
+                    ref_name: "refs/humata/pr-102".to_owned(),
+                    base_sha: pr1_sha,
+                    head_sha: pr2_sha.clone(),
+                },
+                StackLayerRange {
+                    pr_number: 103,
+                    ref_name: "refs/humata/pr-103".to_owned(),
+                    base_sha: pr2_sha,
+                    head_sha: pr3_sha,
+                },
+            ]
+        );
     }
 }

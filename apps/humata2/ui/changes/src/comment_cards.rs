@@ -370,6 +370,99 @@ pub fn spin_off_todo_action(comment: &Comment, ctx: &TodoHookContext) -> Option<
     }))
 }
 
+/// On-demand Pull PR Feedback card (`ATM-38`): inline reviewer badge, status,
+/// PR link chip (`repo #N`), selectable checkbox/toggle, `Send to <agent>`
+/// action, and optional queued reply box (`Queued reply · Draft · Edit · Discard`)
+/// that feeds the single footer CTA.
+pub fn pr_feedback_card(
+    look: Look,
+    id: impl Into<SharedString>,
+    model: &humata2_review::comments::PrFeedbackCardModel,
+    agent: &str,
+    on_toggle_select: Option<Rc<dyn Fn(&mut App)>>,
+    on_send_to_agent: Option<Rc<dyn Fn(&mut App)>>,
+) -> AnyElement {
+    let id = id.into();
+    let pr_chip = model.pr_link_label();
+    let status_label = model.status.label();
+    let mut card = shell(look, model.selected)
+        .id(id.clone())
+        .test_support()
+        .child(
+            row()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-select")))
+                        .role(Role::CheckBox)
+                        .test_support()
+                        .size(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(rgb(if model.selected { look.accent } else { look.line }))
+                        .when(model.selected, |el| el.bg(rgb(look.accent)).text_color(rgb(0xffffff)))
+                        .cursor_pointer()
+                        .when_some(on_toggle_select, |el, cb| {
+                            el.on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                cb(cx);
+                            })
+                        })
+                        .child(if model.selected { "✓" } else { "" }),
+                )
+                .child(text(model.reviewer.clone()).font_weight(FontWeight::SEMIBOLD))
+                .child(chip(look, status_label))
+                .child(chip(look, pr_chip))
+                .child(div().flex_1())
+                .child(
+                    text(format!("Send to {agent}"))
+                        .id(SharedString::from(format!("{id}-send")))
+                        .role(Role::Button)
+                        .aria_label(format!("Send to {agent}"))
+                        .test_support()
+                        .text_color(rgb(look.accent))
+                        .cursor_pointer()
+                        .when_some(on_send_to_agent, |el, cb| {
+                            el.on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                cb(cx);
+                            })
+                        }),
+                ),
+        )
+        .child(text(model.body.clone()).text_color(rgb(look.text)));
+
+    if let Some(reply) = &model.queued_reply {
+        card = card.child(
+            col()
+                .id(SharedString::from(format!("{id}-queued-reply")))
+                .test_support()
+                .mt(px(4.))
+                .p(px(7.))
+                .gap(px(3.))
+                .rounded(px(6.))
+                .bg(rgb(look.fill))
+                .border_1()
+                .border_color(rgb(look.line))
+                .child(
+                    row()
+                        .gap(px(6.))
+                        .child(text("Queued reply").font_weight(FontWeight::MEDIUM))
+                        .child(chip(look, "Draft"))
+                        .child(div().flex_1())
+                        .child(text("Edit").text_size(px(11.)).text_color(rgb(look.accent)))
+                        .child(text("Discard").text_size(px(11.)).text_color(rgb(look.secondary))),
+                )
+                .child(text(reply.clone()).text_color(rgb(look.secondary))),
+        );
+    }
+
+    card.into_any_element()
+}
+
 /// One comment under its line. `agent` is the command it was sent to, such
 /// as `claude`. A detached comment offers Re-attach and Drop; while it is
 /// being re-attached (`reattaching`) it says to click the line.

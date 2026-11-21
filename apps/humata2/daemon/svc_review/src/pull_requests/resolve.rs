@@ -3,6 +3,7 @@
 //! with the host's `gh pr view --json`: title, author, branches, head, size,
 //! state and a summary of its checks.
 
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::pb;
@@ -15,6 +16,29 @@ use crate::ports::blocking;
 
 /// The fields `gh pr view` is asked for.
 const FIELDS: &str = "number,url,title,author,baseRefName,headRefName,headRefOid,changedFiles,additions,deletions,state,mergedAt,statusCheckRollup";
+
+/// The fields `gh pr view` is asked for when detecting stack metadata.
+const STACK_FIELDS: &str = "number,url,title,author,baseRefName,headRefName,headRefOid,changedFiles,additions,deletions,state,mergedAt,statusCheckRollup,body";
+
+/// How a resolved pull request stack was discovered.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StackSource {
+    /// Native `gh stack` / `gh-stack` metadata block in the PR body.
+    NativeGhStack,
+    /// Open PRs in the same repository chained by `upper.base_branch == lower.head_branch`.
+    BaseChain,
+    /// Standalone PR (no connected stack found).
+    Single,
+}
+
+/// A resolved pull request stack, ordered bottom-to-top.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ResolvedStack {
+    pub(super) layers: Vec<pb::PullRequestInfo>,
+    pub(super) source: StackSource,
+}
 
 /// One pull request, named by repository and number.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,6 +229,318 @@ fn fetch(target: &PrTarget) -> Result<pb::PullRequestInfo, PullRequestError> {
     info_of(target, &printed)
 }
 
+/// Extracts positive PR numbers from a native `gh stack` / `gh-stack`
+/// metadata block in a PR body, preserving order and deduplicating.
+fn parse_gh_stack_numbers(body: &str) -> Option<Vec<u32>> {
+    let lower = body.to_ascii_lowercase();
+    let (marker_pos, inline_mode) = if let Some(pos) = lower.find("<!-- stack-history -->") {
+        (pos + "<!-- stack-history -->".len(), false)
+    } else if let Some(pos) = lower.find("<!-- gh-stack -->") {
+        (pos + "<!-- gh-stack -->".len(), false)
+    } else if let Some(pos) = lower.find("<!-- gh-stack:") {
+        (pos + "<!-- gh-stack:".len(), true)
+    } else {
+        return None;
+    };
+
+    let rest = &body[marker_pos..];
+    let section = if inline_mode {
+        let end = rest.find("-->").unwrap_or(rest.len());
+        &rest[..end]
+    } else {
+        let lower_rest = rest.to_ascii_lowercase();
+        let end = [
+            "<!-- /stack-history -->",
+            "<!-- end-stack-history -->",
+            "<!-- /gh-stack -->",
+        ]
+        .iter()
+        .filter_map(|closing| lower_rest.find(closing))
+        .min()
+        .unwrap_or(rest.len());
+        &rest[..end]
+    };
+
+    let mut numbers = Vec::new();
+    let mut push_unique = |num: u32| {
+        if num > 0 && !numbers.contains(&num) {
+            numbers.push(num);
+        }
+    };
+
+    if inline_mode {
+        for token in section.split(|c: char| !c.is_ascii_digit()) {
+            if let Ok(num) = token.parse::<u32>() {
+                push_unique(num);
+            }
+        }
+    } else {
+        let bytes = section.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'#' {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end > start
+                    && let Ok(num) = section[start..end].parse::<u32>()
+                {
+                    push_unique(num);
+                }
+                i = end;
+            } else if section[i..].starts_with("/pull/") {
+                let start = i + "/pull/".len();
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end > start
+                    && let Ok(num) = section[start..end].parse::<u32>()
+                {
+                    push_unique(num);
+                }
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    (!numbers.is_empty()).then_some(numbers)
+}
+
+fn pr_number(info: &pb::PullRequestInfo) -> Option<u32> {
+    info.pr.as_ref().map(|pr| pr.number).filter(|n| *n > 0)
+}
+
+fn same_repo(a: &pb::PullRequestInfo, b: &pb::PullRequestInfo) -> bool {
+    match (
+        a.pr.as_ref().and_then(|pr| pr.repo.as_ref()),
+        b.pr.as_ref().and_then(|pr| pr.repo.as_ref()),
+    ) {
+        (Some(ra), Some(rb)) => ra.owner == rb.owner && ra.name == rb.name,
+        _ => false,
+    }
+}
+
+/// Detects a base-chained stack in the same repository containing `target`,
+/// returning layers ordered bottom-to-top with cycle protection.
+fn detect_base_chain(
+    target: &pb::PullRequestInfo,
+    repo_prs: &[pb::PullRequestInfo],
+) -> Vec<pb::PullRequestInfo> {
+    let mut pool: Vec<&pb::PullRequestInfo> = repo_prs
+        .iter()
+        .filter(|pr| same_repo(target, pr))
+        .collect();
+    if let Some(target_num) = pr_number(target)
+        && !pool.iter().any(|pr| pr_number(pr) == Some(target_num))
+    {
+        pool.push(target);
+    }
+
+    // Walk down from target to the root of the chain, guarding against cycles.
+    let mut visited_down = BTreeSet::new();
+    let mut root = target;
+    if let Some(num) = pr_number(root) {
+        visited_down.insert(num);
+    }
+    while let Some(parent) = pool.iter().copied().find(|candidate| {
+        let Some(num) = pr_number(candidate) else {
+            return false;
+        };
+        !visited_down.contains(&num)
+            && !candidate.head_branch.is_empty()
+            && candidate.head_branch == root.base_branch
+    }) {
+        if let Some(num) = pr_number(parent) {
+            visited_down.insert(num);
+        }
+        root = parent;
+    }
+
+    // Walk up from root in bottom-to-top BFS order, guarding against cycles.
+    let mut visited_up = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    let mut ordered = Vec::new();
+    if let Some(num) = pr_number(root) {
+        visited_up.insert(num);
+    }
+    queue.push_back(root);
+    while let Some(current) = queue.pop_front() {
+        ordered.push(current.clone());
+        let mut children: Vec<&pb::PullRequestInfo> = pool
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                let Some(num) = pr_number(candidate) else {
+                    return false;
+                };
+                !visited_up.contains(&num)
+                    && !current.head_branch.is_empty()
+                    && candidate.base_branch == current.head_branch
+            })
+            .collect();
+        children.sort_by_key(|pr| pr_number(pr).unwrap_or(u32::MAX));
+        for child in children {
+            if let Some(num) = pr_number(child) {
+                visited_up.insert(num);
+            }
+            queue.push_back(child);
+        }
+    }
+
+    ordered
+}
+
+/// Resolves a stack from already-fetched PR data:
+/// 1. Native `gh stack` metadata in `target_body` (if >= 2 layers).
+/// 2. Base-chained PRs in `open_repo_prs` (if >= 2 layers).
+/// 3. Fallback to `StackSource::Single`.
+fn resolve_stack_from_candidates(
+    target: pb::PullRequestInfo,
+    target_body: &str,
+    native_layers: Option<Vec<pb::PullRequestInfo>>,
+    open_repo_prs: &[pb::PullRequestInfo],
+) -> ResolvedStack {
+    if let Some(layers) = native_layers
+        && layers.len() > 1
+    {
+        return ResolvedStack {
+            layers,
+            source: StackSource::NativeGhStack,
+        };
+    }
+    if parse_gh_stack_numbers(target_body).is_some() {
+        // Metadata was present but didn't resolve >1 layers; fall through to base chain.
+    }
+    let chain = detect_base_chain(&target, open_repo_prs);
+    if chain.len() > 1 {
+        return ResolvedStack {
+            layers: chain,
+            source: StackSource::BaseChain,
+        };
+    }
+    ResolvedStack {
+        layers: vec![target],
+        source: StackSource::Single,
+    }
+}
+
+/// Asks gh for `target` including its `body`, returning `(info, body)`. Blocking.
+fn fetch_with_body(target: &PrTarget) -> Result<(pb::PullRequestInfo, String), PullRequestError> {
+    let (number, repo) = (target.number.to_string(), target.slug());
+    let printed = github::gh_json(&[
+        "pr",
+        "view",
+        number.as_str(),
+        "--repo",
+        repo.as_str(),
+        "--json",
+        STACK_FIELDS,
+    ])
+    .map_err(|source| PullRequestError::Github {
+        target: target.clone(),
+        source,
+    })?;
+    let info = info_of(target, &printed)?;
+    let body = printed
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Ok((info, body))
+}
+
+/// Lists open pull requests in `target`'s repository. Blocking.
+fn fetch_open_repo_prs(target: &PrTarget) -> Result<Vec<pb::PullRequestInfo>, PullRequestError> {
+    let repo = target.slug();
+    let printed = github::gh_json(&[
+        "pr",
+        "list",
+        "--repo",
+        repo.as_str(),
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        FIELDS,
+    ])
+    .map_err(|source| PullRequestError::Github {
+        target: target.clone(),
+        source,
+    })?;
+    let mut prs = Vec::new();
+    for item in printed.as_array().into_iter().flatten() {
+        let Some(number) = item
+            .get("number")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+        else {
+            continue;
+        };
+        let item_target = PrTarget {
+            owner: target.owner.clone(),
+            name: target.name.clone(),
+            number,
+        };
+        if let Ok(info) = info_of(&item_target, item) {
+            prs.push(info);
+        }
+    }
+    Ok(prs)
+}
+
+/// Resolves the stack containing `target` via `gh`:
+/// native `gh stack` metadata -> base-chained open PRs -> single PR fallback.
+/// Blocking.
+#[allow(dead_code)]
+pub(super) fn resolve_stack(target: &PrTarget) -> Result<ResolvedStack, PullRequestError> {
+    let (target_info, body) = fetch_with_body(target)?;
+    let native_layers = if let Some(numbers) = parse_gh_stack_numbers(&body)
+        && numbers.len() > 1
+        && numbers.contains(&target.number)
+    {
+        let mut layers = Vec::with_capacity(numbers.len());
+        for num in numbers {
+            if num == target.number {
+                layers.push(target_info.clone());
+            } else {
+                let layer_target = PrTarget {
+                    owner: target.owner.clone(),
+                    name: target.name.clone(),
+                    number: num,
+                };
+                layers.push(fetch(&layer_target)?);
+            }
+        }
+        Some(layers)
+    } else {
+        None
+    };
+
+    if let Some(layers) = native_layers {
+        return Ok(resolve_stack_from_candidates(
+            target_info,
+            &body,
+            Some(layers),
+            &[],
+        ));
+    }
+
+    let open_prs = fetch_open_repo_prs(target)?;
+    Ok(resolve_stack_from_candidates(
+        target_info,
+        &body,
+        None,
+        &open_prs,
+    ))
+}
+
 impl PullRequests {
     /// A1: the pull request `request` names, as GitHub shows it now.
     pub(super) async fn resolve(
@@ -213,5 +549,133 @@ impl PullRequests {
     ) -> Result<pb::PullRequestInfo, Status> {
         let target = target_of(request.r#ref.as_ref()).map_err(|error| error.status())?;
         blocking(move || fetch(&target).map_err(|error| error.status())).await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pr_info(
+        owner: &str,
+        name: &str,
+        number: u32,
+        base_branch: &str,
+        head_branch: &str,
+    ) -> pb::PullRequestInfo {
+        pb::PullRequestInfo {
+            pr: Some(pb::PullRequestRef {
+                repo: Some(pb::RepoRef {
+                    owner: owner.to_owned(),
+                    name: name.to_owned(),
+                }),
+                number,
+                ..pb::PullRequestRef::default()
+            }),
+            title: format!("PR #{number}"),
+            author: "alice".to_owned(),
+            base_branch: base_branch.to_owned(),
+            head_branch: head_branch.to_owned(),
+            head_sha: format!("sha{number}"),
+            files: 1,
+            added: 10,
+            removed: 2,
+            state: pb::PullRequestState::Open as i32,
+            checks: String::new(),
+        }
+    }
+
+    fn layer_numbers(stack: &ResolvedStack) -> Vec<u32> {
+        stack
+            .layers
+            .iter()
+            .filter_map(pr_number)
+            .collect()
+    }
+
+    #[test]
+    fn parses_native_gh_stack_history_block() {
+        let body = "\
+Summary of changes.
+
+<!-- stack-history -->
+- #101 Base layer
+- **#102** Middle layer (this PR)
+- https://github.com/acme/api/pull/103 Top layer
+<!-- /stack-history -->
+";
+        assert_eq!(parse_gh_stack_numbers(body), Some(vec![101, 102, 103]));
+    }
+
+    #[test]
+    fn parses_native_gh_stack_inline_comment() {
+        let body = "Intro\n<!-- gh-stack: 10, 11, 12 -->\nDetails";
+        assert_eq!(parse_gh_stack_numbers(body), Some(vec![10, 11, 12]));
+    }
+
+    #[test]
+    fn native_gh_stack_metadata_produces_native_source() {
+        let pr1 = pr_info("acme", "api", 101, "main", "feat-1");
+        let pr2 = pr_info("acme", "api", 102, "feat-1", "feat-2");
+        let pr3 = pr_info("acme", "api", 103, "feat-2", "feat-3");
+        let body = "<!-- stack-history -->\n- #101\n- #102\n- #103\n<!-- /stack-history -->";
+
+        let resolved = resolve_stack_from_candidates(
+            pr2.clone(),
+            body,
+            Some(vec![pr1, pr2, pr3]),
+            &[],
+        );
+        assert_eq!(resolved.source, StackSource::NativeGhStack);
+        assert_eq!(layer_numbers(&resolved), vec![101, 102, 103]);
+    }
+
+    #[test]
+    fn base_chain_detects_stack_from_bottom_middle_or_top() {
+        let pr1 = pr_info("acme", "api", 101, "main", "feat-1");
+        let pr2 = pr_info("acme", "api", 102, "feat-1", "feat-2");
+        let pr3 = pr_info("acme", "api", 103, "feat-2", "feat-3");
+        let open = vec![pr1.clone(), pr2.clone(), pr3.clone()];
+
+        for target in [&pr1, &pr2, &pr3] {
+            let resolved = resolve_stack_from_candidates(target.clone(), "", None, &open);
+            assert_eq!(resolved.source, StackSource::BaseChain);
+            assert_eq!(layer_numbers(&resolved), vec![101, 102, 103]);
+        }
+    }
+
+    #[test]
+    fn disconnected_prs_in_same_repo_are_excluded() {
+        let pr1 = pr_info("acme", "api", 101, "main", "feat-1");
+        let pr2 = pr_info("acme", "api", 102, "feat-1", "feat-2");
+        let unrelated = pr_info("acme", "api", 200, "main", "other-work");
+        let other_repo = pr_info("acme", "web", 300, "feat-2", "web-child");
+        let open = vec![pr1.clone(), pr2.clone(), unrelated, other_repo];
+
+        let resolved = resolve_stack_from_candidates(pr1, "", None, &open);
+        assert_eq!(resolved.source, StackSource::BaseChain);
+        assert_eq!(layer_numbers(&resolved), vec![101, 102]);
+    }
+
+    #[test]
+    fn standalone_pr_falls_back_to_single() {
+        let standalone = pr_info("acme", "api", 50, "main", "solo");
+        let other = pr_info("acme", "api", 51, "main", "other");
+        let open = vec![standalone.clone(), other];
+
+        let resolved = resolve_stack_from_candidates(standalone, "", None, &open);
+        assert_eq!(resolved.source, StackSource::Single);
+        assert_eq!(layer_numbers(&resolved), vec![50]);
+    }
+
+    #[test]
+    fn base_chain_is_cycle_safe() {
+        let a = pr_info("acme", "api", 1, "branch-b", "branch-a");
+        let b = pr_info("acme", "api", 2, "branch-a", "branch-b");
+        let open = vec![a.clone(), b];
+
+        let resolved = resolve_stack_from_candidates(a, "", None, &open);
+        assert_eq!(resolved.source, StackSource::BaseChain);
+        assert_eq!(resolved.layers.len(), 2);
     }
 }

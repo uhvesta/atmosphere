@@ -14,6 +14,7 @@ mod hidden;
 mod history;
 mod journaled;
 mod keys;
+mod local_review;
 mod ownership;
 mod pr_reviews;
 mod pr_reviews_gh;
@@ -62,8 +63,14 @@ pub use self::ports::{
     HostMachines, HostProviders, HostRepos, HostTransfers, Method, OwnedItem, Placement, Replayed,
     Row, Scope, SessionTell,
 };
+pub use self::local_review::{
+    AttachOrCreateOutcome, IncomingLocalReview, LocalReviewError, LocalReviewNotice,
+    LocalReviewRequest,
+};
 pub use self::ports::{FoundPr, ReviewFetchError, ReviewRequestsPort};
-pub use self::pr_reviews_gh::GhReviewRequests;
+pub use self::pr_reviews::ManualWatchedPr;
+pub use self::pr_reviews_gh::{GhReviewRequests, ReviewFilterOptions, parse_with_options};
+pub use self::todo_fields::{LocalReviewLayerRow, LocalReviewRow, LocalReviewState};
 pub use self::pr_watch_gh::GhPrStatus;
 pub use self::ports::{
     ArchiveOutcome, PrStatus, PrStatusError, PrStatusPort, SeenStatus, SessionControl,

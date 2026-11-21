@@ -295,6 +295,10 @@ impl BoardSource for DaemonBoardSource {
             channels,
             sessions,
             revision,
+            reviews: Vec::new(),
+            watched_prs: Vec::new(),
+            github_checked_ago_secs: None,
+            review_details: Vec::new(),
         }
     }
 

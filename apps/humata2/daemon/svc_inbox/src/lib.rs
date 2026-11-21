@@ -12,6 +12,7 @@ pub(crate) mod pb {
 pub mod inbox;
 pub mod ports;
 pub mod screen_ask;
+pub mod startup_auth;
 
 pub use inbox::{
     BoardAsk, Deferred, Inbox, MoveSwitchError, Registered, Relays, Run,

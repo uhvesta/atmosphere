@@ -52,3 +52,58 @@ fn deleted_links_are_not_retained_at_the_same_cells() {
     t.sync();
     assert_eq!(t.hyperlink(at(0, 0)), None);
 }
+
+#[test]
+fn osc8_file_uri_is_returned() {
+    let mut t = Terminal::new(60, 4, 100).unwrap();
+    t.feed(b"\x1b]8;;file:///session/SPEC.md:10\x1b\\SPEC.md:10\x1b]8;;\x1b\\ ok\r\n");
+    t.sync();
+    assert_eq!(
+        t.hyperlink(at(2, 0)).as_deref(),
+        Some("file:///session/SPEC.md:10")
+    );
+    assert_eq!(t.hyperlink(at(12, 0)), None);
+}
+
+#[test]
+fn plain_file_paths_support_line_suffixes_and_wrapping() {
+    let mut t = Terminal::new(24, 8, 100).unwrap();
+    t.feed(
+        b"/tmp/foo.rs:10\r\nfeatures/app/src/lib.rs:1856-1866\r\nsrc/main.rs:42:5\r\nfile:///tmp/demo.rs:42\r\n",
+    );
+    t.sync();
+    assert_eq!(t.hyperlink(at(2, 0)).as_deref(), Some("/tmp/foo.rs:10"));
+    assert_eq!(
+        t.hyperlink(at(5, 1)).as_deref(),
+        Some("features/app/src/lib.rs:1856-1866")
+    );
+    // Wrapped continuation of features/app/src/lib.rs:1856-1866 on row 2.
+    assert_eq!(
+        t.hyperlink(at(3, 2)).as_deref(),
+        Some("features/app/src/lib.rs:1856-1866")
+    );
+    assert_eq!(t.hyperlink(at(4, 3)).as_deref(), Some("src/main.rs:42:5"));
+    assert_eq!(
+        t.hyperlink(at(4, 4)).as_deref(),
+        Some("file:///tmp/demo.rs:42")
+    );
+}
+
+#[test]
+fn bare_filenames_are_recognized_and_non_links_are_ignored() {
+    let mut t = Terminal::new(60, 6, 100).unwrap();
+    t.feed(b"See SPEC.md, FILES_TAB_REFRESH_SPEC.md, and Cargo.toml:12-20.\r\n");
+    t.feed(b"prose v1.2 127.0.0.1 12:30 ftp://example.com/a\r\n");
+    t.sync();
+    assert_eq!(t.hyperlink(at(5, 0)).as_deref(), Some("SPEC.md"));
+    assert_eq!(
+        t.hyperlink(at(16, 0)).as_deref(),
+        Some("FILES_TAB_REFRESH_SPEC.md")
+    );
+    assert_eq!(t.hyperlink(at(46, 0)).as_deref(), Some("Cargo.toml:12-20"));
+    assert_eq!(t.hyperlink(at(0, 1)), None); // prose
+    assert_eq!(t.hyperlink(at(7, 1)), None); // v1.2
+    assert_eq!(t.hyperlink(at(13, 1)), None); // 127.0.0.1
+    assert_eq!(t.hyperlink(at(22, 1)), None); // 12:30
+    assert_eq!(t.hyperlink(at(30, 1)), None); // ftp://example.com/a
+}

@@ -7,6 +7,7 @@ SVC_FILES_SHARED_DEPS = [
     "//apps/humata2/api/grpc:files",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/conversation",
     "//apps/humata2/daemon/ports",
     "//apps/humata2/daemon/rpc_kit",
     "@crates//:prost",

@@ -15,7 +15,17 @@ use humata2_settings::{
 };
 use std::rc::Rc;
 
-const FOOTER: &str = "Shell commands, edits and pushes are asked by each agent in its own terminal, as that agent is set up. Humata doesn\u{2019}t repeat those asks here. Rules you made with \u{201c}Always allow\u{201d} are listed under their row.";
+const FOOTER: &str =
+    "Shell commands and file edits are controlled inside each agent\u{2019}s own settings.";
+
+const ADVANCED_CAPABILITIES: &[&str] = &[
+    "files_read_other_machine",
+    "trash_restore",
+    "channel_create",
+    "channel_change",
+    "machine_provision",
+    "machine_script_run",
+];
 
 /// The Agent access tab of `channel`.
 pub fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> impl IntoElement {
@@ -54,16 +64,6 @@ fn page(ui: &Rc<Ui>, state: &AppState, scope: ChannelId, look: Look) -> impl Int
             n += 1;
         }
     }
-    body.push(
-        div()
-            .mt(px(14.))
-            .p(px(12.))
-            .rounded(px(9.))
-            .bg(rgb(look.fill))
-            .text_color(rgb(look.secondary))
-            .child(FOOTER)
-            .into_any_element(),
-    );
     let covered = |rule: &AccessRule| {
         ACCESS_GROUPS
             .iter()
@@ -72,25 +72,52 @@ fn page(ui: &Rc<Ui>, state: &AppState, scope: ChannelId, look: Look) -> impl Int
     };
     let show_all = state.settings.access.show_all;
     let others: Vec<_> = rules.iter().enumerate().filter(|(_, r)| !covered(r)).collect();
+    let advanced_count = others
+        .iter()
+        .filter(|(_, r)| ADVANCED_CAPABILITIES.contains(&r.capability.as_str()))
+        .count();
+    let toggle_count = if advanced_count > 0 {
+        advanced_count
+    } else {
+        others.len()
+    };
     let toggle = {
         let ui = ui.clone();
         let action = AppAction::Settings(SettingsAction::Access(AccessAction::ToggleAll));
         div()
             .id("access-other-toggle")
             .role(Role::Button)
-            .aria_label("Other rules")
-            .mt(px(10.))
+            .aria_label("Advanced rules")
+            .flex_shrink_0()
             .cursor_pointer()
+            .text_size(px(11.5))
             .text_color(rgb(look.accent))
             .on_click(move |_, _, cx| ui.send(action.clone(), cx))
-            .child(format!(
-                "{} Other rules ({})",
-                if show_all { "Hide" } else { "Show" },
-                others.len()
-            ))
+            .child(if show_all {
+                "Hide advanced rules \u{2303}".to_owned()
+            } else {
+                format!("Show {toggle_count} advanced rules \u{2304}")
+            })
             .test_support()
     };
-    body.push(toggle.into_any_element());
+    body.push(
+        row()
+            .justify_between()
+            .items_center()
+            .gap(px(12.))
+            .mt(px(14.))
+            .pt(px(10.))
+            .border_t_1()
+            .border_color(rgb(look.line))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.secondary))
+                    .child(FOOTER),
+            )
+            .child(toggle)
+            .into_any_element(),
+    );
     if show_all {
         let mut list = Vec::new();
         for (index, rule) in others {
@@ -142,6 +169,7 @@ fn page(ui: &Rc<Ui>, state: &AppState, scope: ChannelId, look: Look) -> impl Int
 
 fn group_heading(title: &'static str, caption: &'static str, look: Look) -> impl IntoElement {
     row()
+        .justify_between()
         .gap(px(10.))
         .mt(px(16.))
         .mb(px(6.))
@@ -233,7 +261,24 @@ fn grouped_row(
             col()
                 .flex_1()
                 .min_w_0()
-                .child(div().child(def.label))
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .items_center()
+                        .child(div().child(def.label))
+                        .when(!def.scope_chip.is_empty(), |x| {
+                            x.child(
+                                div()
+                                    .bg(rgb(look.fill))
+                                    .rounded(px(5.))
+                                    .px(px(6.))
+                                    .py(px(1.))
+                                    .text_size(px(11.))
+                                    .text_color(rgb(look.secondary))
+                                    .child(def.scope_chip),
+                            )
+                        }),
+                )
                 .when(!def.detail.is_empty(), |x| {
                     x.child(
                         div()
@@ -246,7 +291,6 @@ fn grouped_row(
         )
         .child(
             row()
-                .w(px(240.))
                 .flex_shrink_0()
                 .gap(px(8.))
                 .items_center()
@@ -260,14 +304,6 @@ fn grouped_row(
                     )
                 })
                 .child(control),
-        )
-        .child(
-            div()
-                .w(px(400.))
-                .flex_shrink_0()
-                .text_size(px(12.))
-                .text_color(rgb(look.secondary))
-                .child(def.note(current)),
         )
 }
 

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::ports::{FoundPr, ReviewFetchError, ReviewRequestsPort};
 
 const QUERY: &str = r#"query {
+  viewer { login }
   search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
@@ -21,6 +22,15 @@ const QUERY: &str = r#"query {
         baseRefName
         author { login }
         repository { name owner { login } }
+        reviewRequests(first: 50) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Team { slug }
+            }
+          }
+        }
         timelineItems(last: 1, itemTypes: [REVIEW_REQUESTED_EVENT]) {
           nodes { ... on ReviewRequestedEvent { createdAt } }
         }
@@ -29,9 +39,23 @@ const QUERY: &str = r#"query {
   }
 }"#;
 
+/// Filtering options for GitHub review requests.
+///
+/// By default (`opted_in_teams` empty), only direct user review requests are
+/// kept and team-only review requests are ignored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewFilterOptions {
+    /// Expected GitHub login for direct user requests; when `None`, uses
+    /// `viewer.login` from the GraphQL reply if present, else any `User` node.
+    pub viewer_login: Option<String>,
+    /// Team slugs the user explicitly opted into reviewing.
+    pub opted_in_teams: Vec<String>,
+}
+
 /// Reads review requests with `gh api graphql`.
 pub struct GhReviewRequests {
     program: OsString,
+    options: ReviewFilterOptions,
 }
 
 impl GhReviewRequests {
@@ -39,7 +63,14 @@ impl GhReviewRequests {
     pub fn with_program(program: impl Into<OsString>) -> Self {
         Self {
             program: program.into(),
+            options: ReviewFilterOptions::default(),
         }
+    }
+
+    /// Configures team opt-in and viewer filtering for review requests.
+    pub fn with_filter_options(mut self, options: ReviewFilterOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -63,7 +94,10 @@ impl Default for GhReviewRequests {
         } else {
             OsString::from("gh")
         };
-        Self { program }
+        Self {
+            program,
+            options: ReviewFilterOptions::default(),
+        }
     }
 }
 
@@ -80,7 +114,7 @@ impl ReviewRequestsPort for GhReviewRequests {
                 });
             }
         };
-        parse(&printed)
+        parse_with_options(&printed, &self.options)
     }
 }
 
@@ -144,6 +178,7 @@ struct Reply {
 
 #[derive(Deserialize)]
 struct Data {
+    viewer: Option<Login>,
     search: Search,
 }
 
@@ -168,8 +203,32 @@ struct Node {
     base_ref: String,
     author: Option<Login>,
     repository: Option<Repository>,
+    #[serde(default, rename = "reviewRequests")]
+    review_requests: Option<ReviewRequests>,
     #[serde(default, rename = "timelineItems")]
     timeline: Timeline,
+}
+
+#[derive(Deserialize, Default)]
+struct ReviewRequests {
+    #[serde(default)]
+    nodes: Vec<Option<ReviewRequestNode>>,
+}
+
+#[derive(Deserialize)]
+struct ReviewRequestNode {
+    #[serde(rename = "requestedReviewer")]
+    requested_reviewer: Option<RequestedReviewer>,
+}
+
+#[derive(Deserialize)]
+struct RequestedReviewer {
+    #[serde(default, rename = "__typename")]
+    typename: String,
+    #[serde(default)]
+    login: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -197,14 +256,84 @@ struct Requested {
     created_at: String,
 }
 
-/// The pull requests in `gh`'s printed reply.
+/// The pull requests in `gh`'s printed reply, using default direct-only
+/// filtering.
+#[cfg(test)]
 fn parse(printed: &str) -> Result<Vec<FoundPr>, ReviewFetchError> {
+    parse_with_options(printed, &ReviewFilterOptions::default())
+}
+
+fn matches_review_filter(
+    requests: Option<&ReviewRequests>,
+    viewer_login: Option<&str>,
+    opted_in_teams: &[String],
+) -> bool {
+    let Some(requests) = requests else {
+        // Older payloads without `reviewRequests` remain accepted.
+        return true;
+    };
+    let reviewers: Vec<&RequestedReviewer> = requests
+        .nodes
+        .iter()
+        .flatten()
+        .filter_map(|node| node.requested_reviewer.as_ref())
+        .collect();
+    if reviewers.is_empty() {
+        return true;
+    }
+    reviewers.iter().any(|reviewer| {
+        let is_user = reviewer.typename == "User"
+            || (reviewer.typename.is_empty() && reviewer.login.is_some());
+        if is_user {
+            return match (viewer_login, reviewer.login.as_deref()) {
+                (Some(viewer), Some(login)) if !viewer.is_empty() => {
+                    login.eq_ignore_ascii_case(viewer)
+                }
+                _ => true,
+            };
+        }
+        let is_team = reviewer.typename == "Team"
+            || (reviewer.typename.is_empty() && reviewer.slug.is_some());
+        if is_team {
+            return reviewer.slug.as_deref().is_some_and(|slug| {
+                opted_in_teams
+                    .iter()
+                    .any(|opted| opted.eq_ignore_ascii_case(slug))
+            });
+        }
+        false
+    })
+}
+
+/// The pull requests in `gh`'s printed reply, filtered by direct user requests
+/// and any explicitly opted-in teams.
+pub fn parse_with_options(
+    printed: &str,
+    options: &ReviewFilterOptions,
+) -> Result<Vec<FoundPr>, ReviewFetchError> {
     let reply: Reply = serde_json::from_str(printed)
         .map_err(|source| ReviewFetchError::Unreadable { source })?;
-    let nodes = reply.data.map(|data| data.search.nodes).unwrap_or_default();
+    let (viewer_login, nodes) = match reply.data {
+        Some(data) => (
+            options
+                .viewer_login
+                .as_deref()
+                .map(str::to_owned)
+                .or_else(|| data.viewer.map(|v| v.login)),
+            data.search.nodes,
+        ),
+        None => (options.viewer_login.clone(), Vec::new()),
+    };
     Ok(nodes
         .into_iter()
         .flatten()
+        .filter(|node| {
+            matches_review_filter(
+                node.review_requests.as_ref(),
+                viewer_login.as_deref(),
+                &options.opted_in_teams,
+            )
+        })
         .filter_map(|node| {
             let number = node.number?;
             let repository = node.repository?;
@@ -324,5 +453,42 @@ mod tests {
         let gh = GhReviewRequests::with_program("/nonexistent/gh-for-test");
         let ran = run(&gh.program);
         assert!(matches!(ran, Err(ReviewFetchError::GhMissing { .. })));
+    }
+
+    const TEAM_AND_DIRECT_REPLY: &str = r#"{"data":{"viewer":{"login":"alice"},"search":{"nodes":[
+      {"number":101,"title":"Direct request","url":"https://github.com/acme/api/pull/101",
+       "createdAt":"2026-11-10T00:00:00Z","headRefName":"direct","baseRefName":"main",
+       "author":{"login":"bob"},"repository":{"name":"api","owner":{"login":"acme"}},
+       "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"alice"}}]},
+       "timelineItems":{"nodes":[]}},
+      {"number":102,"title":"Team-only request","url":"https://github.com/acme/api/pull/102",
+       "createdAt":"2026-11-10T00:00:00Z","headRefName":"team-only","baseRefName":"main",
+       "author":{"login":"carol"},"repository":{"name":"api","owner":{"login":"acme"}},
+       "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"Team","slug":"payments"}}]},
+       "timelineItems":{"nodes":[]}},
+      {"number":103,"title":"Other user request","url":"https://github.com/acme/api/pull/103",
+       "createdAt":"2026-11-10T00:00:00Z","headRefName":"other","baseRefName":"main",
+       "author":{"login":"dave"},"repository":{"name":"api","owner":{"login":"acme"}},
+       "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"eve"}}]},
+       "timelineItems":{"nodes":[]}}
+    ]}}}"#;
+
+    #[test]
+    fn direct_review_requests_are_kept_and_team_only_requests_are_ignored_by_default() {
+        let found = parse_with_options(TEAM_AND_DIRECT_REPLY, &ReviewFilterOptions::default())
+            .unwrap();
+        let numbers: Vec<u32> = found.iter().map(|pr| pr.number).collect();
+        assert_eq!(numbers, vec![101]);
+    }
+
+    #[test]
+    fn opted_in_team_review_requests_are_included() {
+        let opts = ReviewFilterOptions {
+            viewer_login: None,
+            opted_in_teams: vec!["payments".to_owned()],
+        };
+        let found = parse_with_options(TEAM_AND_DIRECT_REPLY, &opts).unwrap();
+        let numbers: Vec<u32> = found.iter().map(|pr| pr.number).collect();
+        assert_eq!(numbers, vec![101, 102]);
     }
 }

@@ -149,6 +149,38 @@ impl DeskState {
         rows
     }
 
+    /// A channel's open channel-wide Desk sessions (`target: None`), sorted
+    /// stably by `session.id` so tabs do not jump when clicked (DESKTABS).
+    #[must_use]
+    pub fn channel_tabs(&self, channel: &ChannelId) -> Vec<ChannelRow<'_>> {
+        let mut rows: Vec<ChannelRow<'_>> = self
+            .workspace
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                let desk = self.workspace.desk.channel_sessions.get(&session.id)?;
+                (desk.channel == *channel && desk.desk.closed.is_none() && desk.target.is_none())
+                    .then_some(ChannelRow { session, desk })
+            })
+            .collect();
+        rows.sort_by(|a, b| a.session.id.cmp(&b.session.id));
+        rows
+    }
+
+    /// The currently active channel-wide Desk tab for `channel`: the selected
+    /// tab from `active_channel_tab` if still open, else the first tab from
+    /// [`DeskState::channel_tabs`] (DESKTABS).
+    #[must_use]
+    pub fn active_channel_tab_row(&self, channel: &ChannelId) -> Option<ChannelRow<'_>> {
+        let tabs = self.channel_tabs(channel);
+        if let Some(selected) = self.active_channel_tab.get(channel)
+            && let Some(found) = tabs.iter().copied().find(|row| &row.session.id == selected)
+        {
+            return Some(found);
+        }
+        tabs.into_iter().next()
+    }
+
     /// A channel's persistent primary Desk session (`target: None`), if one is
     /// currently open (CHANNELDESK).
     #[must_use]
@@ -448,6 +480,78 @@ impl Desk {
         let client = self.client.clone();
         Effect::future(async move {
             DeskAction::PrimaryChannelStarted {
+                channel,
+                result: client.start_channel(request).await,
+            }
+        })
+    }
+
+    /// Immediately starts a new channel-wide Desk agent tab (`target: None`)
+    /// without opening a modal, enforcing the per-kind (max 2) and flat total
+    /// (`enabled_kinds + 2`) caps (DESKTABS, MULTIAGENT).
+    pub(super) fn open_channel_tab(
+        &self,
+        state: &mut DeskState,
+        channel: ChannelId,
+        agent: Agent,
+        machine: MachineId,
+        enabled_agents: Vec<Agent>,
+    ) -> Effect<DeskAction> {
+        let open_agents: Vec<Agent> = state
+            .channel_tabs(&channel)
+            .into_iter()
+            .map(|row| row.session.agent)
+            .collect();
+        let summary = crate::compute_tab_strip(&open_agents, &enabled_agents);
+        if let Some(option) = summary.options.iter().find(|opt| opt.agent == agent)
+            && let Some(reason) = option.disabled_reason
+        {
+            let label = if agent == Agent::Shell {
+                "Terminal"
+            } else {
+                agent.name()
+            };
+            state.error = Some(match reason {
+                crate::KindDisabledReason::OffInSettings => {
+                    format!("{label} is turned off in Settings › Agents.")
+                }
+                crate::KindDisabledReason::AtKindLimit => {
+                    format!(
+                        "Already at the limit of {} open {label} tabs on this channel's Desk.",
+                        crate::MAX_TABS_PER_KIND
+                    )
+                }
+                crate::KindDisabledReason::AtTotalLimit { limit } => {
+                    format!(
+                        "Already at the limit of {limit} open Desk tabs on this channel."
+                    )
+                }
+            });
+            return Effect::none();
+        }
+
+        state.tab_picker_open = None;
+        state.error = None;
+        let title = if agent == Agent::Shell {
+            "Terminal".to_owned()
+        } else {
+            agent.name().to_owned()
+        };
+        let request = NewChannelDesk {
+            channel: channel.clone(),
+            target: None,
+            title,
+            agent,
+            machine,
+            switches: Switches {
+                start_and_fork: true,
+                send_notes: false,
+                ..Switches::default()
+            },
+        };
+        let client = self.client.clone();
+        Effect::future(async move {
+            DeskAction::ChannelTabStarted {
                 channel,
                 result: client.start_channel(request).await,
             }

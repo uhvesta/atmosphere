@@ -8,3 +8,4 @@ pub mod desk_bar;
 pub mod desk_files;
 pub mod desk_info;
 pub mod sidebar_desk;
+pub mod todo_pane;

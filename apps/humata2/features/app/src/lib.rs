@@ -1487,6 +1487,9 @@ impl App {
             AppAction::Todo(TodoAction::StartSession(key)) => {
                 self.start_new_for_item(state, ItemId::new(key))
             }
+            AppAction::Todo(TodoAction::StartPlainSession(key)) => {
+                self.start_new_for_item_plain(state, ItemId::new(key))
+            }
             // Do next opens New session filled from the top item; Skip moves
             // on to the next one and fills it again.
             AppAction::Todo(action @ (TodoAction::DoNext | TodoAction::SkipDoNext)) => {

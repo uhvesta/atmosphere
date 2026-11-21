@@ -101,6 +101,12 @@ pub trait BoardSource: Send + Sync + 'static {
     fn snapshot(&self) -> BoardSnapshot;
     /// Subscribes to push notifications fired whenever the board changes.
     fn subscribe(&self) -> broadcast::Receiver<()>;
+    /// Watches a remote GitHub PR URL in the Reviews inbox.
+    fn watch_pr_url(&self, _url: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Triggers an immediate refresh of GitHub reviews.
+    fn refresh_reviews(&self) {}
 }
 
 /// Errors from starting the loopback web server.
@@ -192,6 +198,9 @@ pub async fn serve_loopback(
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/index.html", get(index_handler))
+        .route("/todo", get(index_handler))
+        .route("/reviews", get(index_handler))
+        .route("/reviews/{id}", get(index_handler))
         .route("/web_todo.js", get(js_handler))
         .route("/web_todo_bg.wasm", get(wasm_handler))
         .route("/health", get(health_handler))
@@ -331,10 +340,41 @@ async fn handle_socket(socket: WebSocket, source: Arc<dyn BoardSource>) {
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(ClientMessage::Ping) = serde_json::from_str::<ClientMessage>(&text) {
-                            if send_snapshot(&mut sender, &source).await.is_err() {
-                                break;
+                        match serde_json::from_str::<ClientMessage>(&text) {
+                            Ok(ClientMessage::Ping) => {
+                                if send_snapshot(&mut sender, &source).await.is_err() {
+                                    break;
+                                }
                             }
+                            Ok(ClientMessage::WatchPrUrl { url }) => {
+                                match source.watch_pr_url(&url) {
+                                    Ok(()) => {
+                                        if send_snapshot(&mut sender, &source).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(message) => {
+                                        let payload = serde_json::to_string(&ServerMessage::Error {
+                                            message,
+                                        })
+                                        .unwrap_or_else(|_| {
+                                            r#"{"kind":"error","message":"watch_pr_url failed"}"#
+                                                .to_owned()
+                                        });
+                                        if sender.send(Message::Text(payload.into())).await.is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(ClientMessage::RefreshReviews) => {
+                                source.refresh_reviews();
+                                if send_snapshot(&mut sender, &source).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(ClientMessage::Hello { .. }) | Err(_) => {}
                         }
                     }
                     Some(Ok(Message::Ping(payload))) => {

@@ -316,13 +316,29 @@ impl Terminals {
                     if openable(uri) {
                         cx.open_url(uri);
                     } else {
-                        ui.send(
-                            toast(
-                                "Humata opens only web and mail links from a terminal, so this link stays closed. Select and copy it to open it yourself, if you trust where it goes."
-                                    .into(),
-                            ),
-                            cx,
-                        );
+                        let session = key.0.clone();
+                        let resolved = ui.read(|state| {
+                            resolve_roots_for_session(state, &session)
+                                .and_then(|roots| resolve_terminal_file_link(uri, &roots))
+                        });
+                        if let Some(resolved) = resolved {
+                            ui.send(
+                                AppAction::Session(SessionAction::OpenFileAt {
+                                    repo: resolved.repo,
+                                    path: resolved.path,
+                                    line: resolved.line,
+                                }),
+                                cx,
+                            );
+                        } else {
+                            ui.send(
+                                toast(
+                                    "Humata opens only web and mail links from a terminal, so this link stays closed. Select and copy it to open it yourself, if you trust where it goes."
+                                        .into(),
+                                ),
+                                cx,
+                            );
+                        }
                     }
                 }
                 ReplicaEvent::Pane(PaneEvent::PasteFiles(paths)) => {
@@ -1282,17 +1298,579 @@ fn refused_because(reach: &Reach, tab: usize, phase: ReplicaPhase) -> String {
     why.to_owned()
 }
 
-/// Whether a link in a terminal opens when clicked: web and mail links only,
-/// so output cannot open an app or a file on this Mac.
+/// Whether a link in a terminal opens externally when clicked: web and mail
+/// links only, delegated to the shared `terminal_pane::is_web_or_mail_uri`.
 fn openable(uri: &str) -> bool {
-    let Some((scheme, rest)) = uri.split_once(':') else {
-        return false;
-    };
-    ["http", "https", "mailto"]
+    terminal_pane::is_web_or_mail_uri(uri)
+}
+
+/// A terminal link safely resolved to a file inside the current session's
+/// workspace (TERMLINKS, ATM-15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedFileLink {
+    /// Repository key for `SessionAction::OpenFileAt` (`""` for the session
+    /// folder, `"owner/name"` for a clone, `"main/<repo>"` for a channel main
+    /// clone, `"shared"` for the channel shared folder).
+    pub repo: String,
+    /// Relative forward-slash path inside `repo`.
+    pub path: String,
+    /// Optional 1-based `(start, end)` line target.
+    pub line: Option<(u32, Option<u32>)>,
+    /// True for channel-level `main/` and `shared/` roots.
+    pub read_only: bool,
+}
+
+/// The containment roots for resolving a terminal file link in one session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolveRoots {
+    /// The session's own folder on its machine.
+    pub session_folder: std::path::PathBuf,
+    /// `(repo, absolute_path)` for each clone in the session.
+    pub clones: Vec<(String, std::path::PathBuf)>,
+    /// `(repo_name, absolute_path)` for each channel `main/<repo_name>` clone.
+    pub main_clones: Vec<(String, std::path::PathBuf)>,
+    /// Channel `shared/` folder, if known.
+    pub shared_folder: Option<std::path::PathBuf>,
+    /// Whether the session runs on this Mac (enables canonical filesystem checks).
+    pub local: bool,
+}
+
+/// Derives [`ResolveRoots`] for `session_id` from `state`.
+fn resolve_roots_for_session(state: &AppState, session_id: &SessionId) -> Option<ResolveRoots> {
+    let session = state.workspace.session(session_id)?;
+    let local = on_this_mac(state, session_id);
+    let session_folder = std::path::PathBuf::from(&session.folder);
+    let clones: Vec<(String, std::path::PathBuf)> = session
+        .clones
         .iter()
-        .any(|known| scheme.eq_ignore_ascii_case(known))
-        && !rest.is_empty()
-        && !uri.chars().any(char::is_control)
+        .map(|clone| (clone.repo.clone(), std::path::PathBuf::from(&clone.path)))
+        .collect();
+
+    let channel_dir = session_folder
+        .parent()
+        .and_then(|parent| {
+            let name = parent.file_name()?.to_str()?;
+            (name == "sessions" || name == "desk").then(|| parent.parent().map(std::path::Path::to_path_buf))?
+        })
+        .or_else(|| {
+            let machine = state.workspace.machine(&session.machine)?;
+            let channel = state.workspace.channel(&session.channel)?;
+            (!machine.root.is_empty()).then(|| std::path::PathBuf::from(&machine.root).join(&channel.name))
+        });
+
+    let shared_folder = channel_dir.as_ref().map(|dir| dir.join("shared"));
+    let main_clones = channel_dir
+        .as_ref()
+        .map(|dir| {
+            let main_dir = dir.join("main");
+            clones
+                .iter()
+                .map(|(repo, _)| {
+                    let repo_name = repo.rsplit('/').next().unwrap_or(repo.as_str()).to_owned();
+                    let path = main_dir.join(&repo_name);
+                    (repo_name, path)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ResolveRoots {
+        session_folder,
+        clones,
+        main_clones,
+        shared_folder,
+        local,
+    })
+}
+
+/// Resolves a terminal link (`file://` URI or plain path with optional `:line`,
+/// `:start-end`, or `:line:col`) to a file strictly inside `roots`.
+///
+/// Returns `None` for web/mail/other schemes, foreign `file://` hosts, `..`
+/// traversal, symlinks escaping a root, directories, or ambiguous relative
+/// paths matching more than one file.
+#[must_use]
+pub fn resolve_terminal_file_link(uri: &str, roots: &ResolveRoots) -> Option<ResolvedFileLink> {
+    if uri.is_empty() || uri.chars().any(char::is_control) {
+        return None;
+    }
+
+    let raw_path = if uri.len() >= 7 && uri[..7].eq_ignore_ascii_case("file://") {
+        let rest = &uri[7..];
+        let encoded_path = if rest.starts_with('/') {
+            rest
+        } else {
+            let (host, _) = rest.split_once('/')?;
+            if !host.eq_ignore_ascii_case("localhost") {
+                return None;
+            }
+            // Include the leading '/'.
+            &rest[host.len()..]
+        };
+        percent_decode_path(encoded_path)?
+    } else {
+        if uri.contains("://") {
+            return None;
+        }
+        // Reject known non-file schemes before stripping `:line`.
+        if let Some((scheme, _)) = uri.split_once(':') {
+            if [
+                "http",
+                "https",
+                "mailto",
+                "javascript",
+                "ssh",
+                "data",
+                "tel",
+                "file",
+            ]
+            .iter()
+            .any(|known| scheme.eq_ignore_ascii_case(known))
+            {
+                return None;
+            }
+        }
+        uri.to_owned()
+    };
+
+    let (path_str, line) = split_line_suffix(&raw_path);
+    if path_str.is_empty() || path_str.contains(':') {
+        return None;
+    }
+
+    let candidate = std::path::Path::new(path_str);
+    if candidate
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+
+    if roots.local {
+        resolve_local(candidate, line, roots)
+    } else {
+        resolve_remote(candidate, line, roots)
+    }
+}
+
+fn percent_decode_path(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = hex_val(bytes[i + 1])?;
+            let lo = hex_val(bytes[i + 2])?;
+            let byte = (hi << 4) | lo;
+            if byte == 0 {
+                return None;
+            }
+            out.push(byte);
+            i += 3;
+        } else {
+            if bytes[i] == 0 {
+                return None;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let decoded = String::from_utf8(out).ok()?;
+    if decoded.chars().any(char::is_control) {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Splits a trailing `:line`, `:start-end`, or `:line:col` suffix (all 1-based).
+fn split_line_suffix(input: &str) -> (&str, Option<(u32, Option<u32>)>) {
+    let Some((before_last, last)) = input.rsplit_once(':') else {
+        return (input, None);
+    };
+    if before_last.is_empty() || last.is_empty() {
+        return (input, None);
+    }
+
+    // `:start-end`
+    if let Some((start_s, end_s)) = last.split_once('-') {
+        if let (Some(start), Some(end)) = (parse_positive_u32(start_s), parse_positive_u32(end_s))
+            && end >= start
+        {
+            return (before_last, Some((start, Some(end))));
+        }
+        return (input, None);
+    }
+
+    // `:line:col` or `:line`
+    if let Some(last_num) = parse_positive_u32(last) {
+        if let Some((before_line, line_s)) = before_last.rsplit_once(':')
+            && !before_line.is_empty()
+            && let Some(line_num) = parse_positive_u32(line_s)
+        {
+            return (before_line, Some((line_num, None)));
+        }
+        return (before_last, Some((last_num, None)));
+    }
+
+    (input, None)
+}
+
+fn parse_positive_u32(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<u32>().ok().filter(|&n| n >= 1)
+}
+
+fn rel_to_slash_string(path: &std::path::Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_str()?.to_owned()),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+fn check_local_under_root(
+    candidate: &std::path::Path,
+    root: &std::path::Path,
+) -> Option<(std::path::PathBuf, String)> {
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    let canon_root = std::fs::canonicalize(root).ok()?;
+    let canon_target = std::fs::canonicalize(candidate).ok()?;
+    if !canon_target.starts_with(&canon_root)
+        || canon_target == canon_root
+        || !canon_target.is_file()
+    {
+        return None;
+    }
+    let rel = canon_target.strip_prefix(&canon_root).ok()?;
+    let rel_str = rel_to_slash_string(rel)?;
+    Some((canon_target, rel_str))
+}
+
+fn resolve_local(
+    candidate: &std::path::Path,
+    line: Option<(u32, Option<u32>)>,
+    roots: &ResolveRoots,
+) -> Option<ResolvedFileLink> {
+    if candidate.is_absolute() {
+        // Check clone roots first (most specific root wins).
+        let mut best_clone: Option<(usize, ResolvedFileLink)> = None;
+        for (repo, root) in &roots.clones {
+            if let Some((_, rel)) = check_local_under_root(candidate, root) {
+                let depth = root.components().count();
+                if best_clone.as_ref().is_none_or(|(best, _)| depth > *best) {
+                    best_clone = Some((
+                        depth,
+                        ResolvedFileLink {
+                            repo: repo.clone(),
+                            path: rel,
+                            line,
+                            read_only: false,
+                        },
+                    ));
+                }
+            }
+        }
+        if let Some((_, resolved)) = best_clone {
+            return Some(resolved);
+        }
+
+        if let Some((_, rel)) = check_local_under_root(candidate, &roots.session_folder) {
+            return Some(ResolvedFileLink {
+                repo: String::new(),
+                path: rel,
+                line,
+                read_only: false,
+            });
+        }
+
+        for (repo_name, root) in &roots.main_clones {
+            if let Some((_, rel)) = check_local_under_root(candidate, root) {
+                return Some(ResolvedFileLink {
+                    repo: format!("main/{repo_name}"),
+                    path: rel,
+                    line,
+                    read_only: true,
+                });
+            }
+        }
+
+        if let Some(shared) = &roots.shared_folder
+            && let Some((_, rel)) = check_local_under_root(candidate, shared)
+        {
+            return Some(ResolvedFileLink {
+                repo: "shared".to_owned(),
+                path: rel,
+                line,
+                read_only: true,
+            });
+        }
+
+        return None;
+    }
+
+    // Relative path: strip leading `./` segments.
+    let rel_clean = rel_to_slash_string(candidate)?;
+    let mut matches: BTreeMap<std::path::PathBuf, (u8, ResolvedFileLink)> = BTreeMap::new();
+    let mut record = |canon: std::path::PathBuf, priority: u8, resolved: ResolvedFileLink| {
+        match matches.get(&canon) {
+            Some((existing_prio, _)) if *existing_prio <= priority => {}
+            _ => {
+                matches.insert(canon, (priority, resolved));
+            }
+        }
+    };
+
+    for (repo, root) in &roots.clones {
+        let mut candidates = vec![root.join(&rel_clean)];
+        if let Some(stripped) = rel_clean.strip_prefix(&format!("{repo}/")) {
+            candidates.push(root.join(stripped));
+        }
+        if let Some(repo_name) = repo.rsplit('/').next()
+            && repo_name != repo
+            && let Some(stripped) = rel_clean.strip_prefix(&format!("{repo_name}/"))
+        {
+            candidates.push(root.join(stripped));
+        }
+        for path in candidates {
+            if let Some((canon, rel)) = check_local_under_root(&path, root) {
+                record(
+                    canon,
+                    0,
+                    ResolvedFileLink {
+                        repo: repo.clone(),
+                        path: rel,
+                        line,
+                        read_only: false,
+                    },
+                );
+            }
+        }
+    }
+
+    if let Some((canon, rel)) =
+        check_local_under_root(&roots.session_folder.join(&rel_clean), &roots.session_folder)
+    {
+        record(
+            canon,
+            1,
+            ResolvedFileLink {
+                repo: String::new(),
+                path: rel,
+                line,
+                read_only: false,
+            },
+        );
+    }
+
+    for (repo_name, root) in &roots.main_clones {
+        let mut candidates = vec![root.join(&rel_clean)];
+        if let Some(stripped) = rel_clean.strip_prefix(&format!("main/{repo_name}/")) {
+            candidates.push(root.join(stripped));
+        }
+        if let Some(stripped) = rel_clean.strip_prefix(&format!("{repo_name}/")) {
+            candidates.push(root.join(stripped));
+        }
+        for path in candidates {
+            if let Some((canon, rel)) = check_local_under_root(&path, root) {
+                record(
+                    canon,
+                    2,
+                    ResolvedFileLink {
+                        repo: format!("main/{repo_name}"),
+                        path: rel,
+                        line,
+                        read_only: true,
+                    },
+                );
+            }
+        }
+    }
+
+    if let Some(shared) = &roots.shared_folder {
+        let mut candidates = vec![shared.join(&rel_clean)];
+        if let Some(stripped) = rel_clean.strip_prefix("shared/") {
+            candidates.push(shared.join(stripped));
+        }
+        for path in candidates {
+            if let Some((canon, rel)) = check_local_under_root(&path, shared) {
+                record(
+                    canon,
+                    3,
+                    ResolvedFileLink {
+                        repo: "shared".to_owned(),
+                        path: rel,
+                        line,
+                        read_only: true,
+                    },
+                );
+            }
+        }
+    }
+
+    if matches.len() == 1 {
+        matches.into_values().next().map(|(_, resolved)| resolved)
+    } else {
+        None
+    }
+}
+
+fn normalize_lexical(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => return None,
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    Some(out)
+}
+
+fn strip_lexical_root(
+    candidate: &std::path::Path,
+    root: &std::path::Path,
+) -> Option<String> {
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    let norm_root = normalize_lexical(root)?;
+    let rel = candidate.strip_prefix(&norm_root).ok()?;
+    rel_to_slash_string(rel)
+}
+
+fn resolve_remote(
+    candidate: &std::path::Path,
+    line: Option<(u32, Option<u32>)>,
+    roots: &ResolveRoots,
+) -> Option<ResolvedFileLink> {
+    let norm = normalize_lexical(candidate)?;
+    if norm.is_absolute() {
+        let mut best_clone: Option<(usize, ResolvedFileLink)> = None;
+        for (repo, root) in &roots.clones {
+            if let Some(rel) = strip_lexical_root(&norm, root) {
+                let depth = root.components().count();
+                if best_clone.as_ref().is_none_or(|(best, _)| depth > *best) {
+                    best_clone = Some((
+                        depth,
+                        ResolvedFileLink {
+                            repo: repo.clone(),
+                            path: rel,
+                            line,
+                            read_only: false,
+                        },
+                    ));
+                }
+            }
+        }
+        if let Some((_, resolved)) = best_clone {
+            return Some(resolved);
+        }
+        if let Some(rel) = strip_lexical_root(&norm, &roots.session_folder) {
+            return Some(ResolvedFileLink {
+                repo: String::new(),
+                path: rel,
+                line,
+                read_only: false,
+            });
+        }
+        for (repo_name, root) in &roots.main_clones {
+            if let Some(rel) = strip_lexical_root(&norm, root) {
+                return Some(ResolvedFileLink {
+                    repo: format!("main/{repo_name}"),
+                    path: rel,
+                    line,
+                    read_only: true,
+                });
+            }
+        }
+        if let Some(shared) = &roots.shared_folder
+            && let Some(rel) = strip_lexical_root(&norm, shared)
+        {
+            return Some(ResolvedFileLink {
+                repo: "shared".to_owned(),
+                path: rel,
+                line,
+                read_only: true,
+            });
+        }
+        return None;
+    }
+
+    let rel_clean = rel_to_slash_string(&norm)?;
+    let mut clone_matches = Vec::new();
+    for (repo, _) in &roots.clones {
+        if let Some(stripped) = rel_clean.strip_prefix(&format!("{repo}/")) {
+            clone_matches.push((repo.clone(), stripped.to_owned()));
+        } else if let Some(repo_name) = repo.rsplit('/').next()
+            && repo_name != repo
+            && let Some(stripped) = rel_clean.strip_prefix(&format!("{repo_name}/"))
+        {
+            clone_matches.push((repo.clone(), stripped.to_owned()));
+        }
+    }
+    if clone_matches.len() == 1 {
+        let (repo, path) = clone_matches.remove(0);
+        return Some(ResolvedFileLink {
+            repo,
+            path,
+            line,
+            read_only: false,
+        });
+    }
+    if clone_matches.len() > 1 {
+        return None;
+    }
+
+    for (repo_name, _) in &roots.main_clones {
+        if let Some(stripped) = rel_clean.strip_prefix(&format!("main/{repo_name}/")) {
+            return Some(ResolvedFileLink {
+                repo: format!("main/{repo_name}"),
+                path: stripped.to_owned(),
+                line,
+                read_only: true,
+            });
+        }
+    }
+    if roots.shared_folder.is_some()
+        && let Some(stripped) = rel_clean.strip_prefix("shared/")
+    {
+        return Some(ResolvedFileLink {
+            repo: "shared".to_owned(),
+            path: stripped.to_owned(),
+            line,
+            read_only: true,
+        });
+    }
+
+    Some(ResolvedFileLink {
+        repo: String::new(),
+        path: rel_clean,
+        line,
+        read_only: false,
+    })
 }
 
 /// `path` as one shell word: as it is when every character is plain, else
@@ -1413,6 +1991,268 @@ mod tests {
             let word = shell_word(risky);
             assert!(word.starts_with('\'') && word.ends_with('\''), "{risky} is quoted");
         }
+    }
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "humata-termlinks-{label}-{}-{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_test_file(path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, "hello\nworld\n").expect("write file");
+    }
+
+    fn make_local_fixture(tmp: &std::path::Path) -> ResolveRoots {
+        let session_folder = tmp.join("channel/sessions/s1");
+        let clone_a = session_folder.join("app");
+        let clone_b = session_folder.join("lib");
+        let main_app = tmp.join("channel/main/app");
+        let shared = tmp.join("channel/shared");
+
+        write_test_file(&session_folder.join("SPEC.md"));
+        write_test_file(&session_folder.join("my file.md"));
+        write_test_file(&clone_a.join("src/lib.rs"));
+        write_test_file(&clone_a.join("README.md"));
+        write_test_file(&clone_b.join("README.md"));
+        write_test_file(&main_app.join("Cargo.toml"));
+        write_test_file(&shared.join("notes.md"));
+        write_test_file(&tmp.join("channel/sessions/other/secret.md"));
+        write_test_file(&tmp.join("outside.txt"));
+
+        ResolveRoots {
+            session_folder,
+            clones: vec![
+                ("humata/app".into(), clone_a),
+                ("humata/lib".into(), clone_b),
+            ],
+            main_clones: vec![("app".into(), main_app)],
+            shared_folder: Some(shared),
+            local: true,
+        }
+    }
+
+    #[test]
+    fn resolves_local_session_repo_clone_file_uri_and_read_only_roots() {
+        let tmp = TempDir::new("resolve");
+        let roots = make_local_fixture(&tmp.0);
+
+        // Session-relative
+        assert_eq!(
+            resolve_terminal_file_link("SPEC.md", &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "SPEC.md".into(),
+                line: None,
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link("./SPEC.md:12", &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "SPEC.md".into(),
+                line: Some((12, None)),
+                read_only: false,
+            })
+        );
+
+        // Repo-relative (<repo_name>/... and <owner>/<repo_name>/...)
+        assert_eq!(
+            resolve_terminal_file_link("app/src/lib.rs:1856-1866", &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((1856, Some(1866))),
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link("humata/app/src/lib.rs:10", &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((10, None)),
+                read_only: false,
+            })
+        );
+
+        // Clone-relative with :line:col
+        assert_eq!(
+            resolve_terminal_file_link("src/lib.rs:42:5", &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((42, None)),
+                read_only: false,
+            })
+        );
+
+        // file:/// and file://localhost/ and percent-encoding
+        let abs_lib = roots.clones[0].1.join("src/lib.rs");
+        assert_eq!(
+            resolve_terminal_file_link(&format!("file://{}:99", abs_lib.display()), &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((99, None)),
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link(
+                &format!("file://LOCALHOST{}:5-9", abs_lib.display()),
+                &roots
+            ),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((5, Some(9))),
+                read_only: false,
+            })
+        );
+        let abs_space = roots.session_folder.join("my file.md");
+        let encoded = abs_space.display().to_string().replace(' ', "%20");
+        assert_eq!(
+            resolve_terminal_file_link(&format!("file://{encoded}:10"), &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "my file.md".into(),
+                line: Some((10, None)),
+                read_only: false,
+            })
+        );
+
+        // main/ and shared/ read-only roots
+        assert_eq!(
+            resolve_terminal_file_link("main/app/Cargo.toml", &roots),
+            Some(ResolvedFileLink {
+                repo: "main/app".into(),
+                path: "Cargo.toml".into(),
+                line: None,
+                read_only: true,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link("shared/notes.md:3", &roots),
+            Some(ResolvedFileLink {
+                repo: "shared".into(),
+                path: "notes.md".into(),
+                line: Some((3, None)),
+                read_only: true,
+            })
+        );
+
+        // Ambiguous relative path across 2 clones returns None
+        assert_eq!(resolve_terminal_file_link("README.md", &roots), None);
+    }
+
+    #[test]
+    fn rejects_escapes_foreign_hosts_symlinks_dirs_and_non_file_schemes() {
+        let tmp = TempDir::new("reject");
+        let roots = make_local_fixture(&tmp.0);
+
+        // Create a symlink inside session pointing outside
+        #[cfg(unix)]
+        {
+            let link_path = roots.session_folder.join("escape.txt");
+            std::os::unix::fs::symlink(tmp.0.join("outside.txt"), &link_path)
+                .expect("create symlink");
+            assert_eq!(resolve_terminal_file_link("escape.txt", &roots), None);
+            assert_eq!(
+                resolve_terminal_file_link(&format!("file://{}", link_path.display()), &roots),
+                None
+            );
+        }
+
+        let other_session = tmp.0.join("channel/sessions/other/secret.md");
+        let dir_path = roots.clones[0].1.join("src");
+
+        for bad in [
+            "",
+            "../outside.txt",
+            "app/../../outside.txt",
+            "/etc/passwd",
+            &format!("file://{}", other_session.display()),
+            &format!("file://otherhost{}", roots.session_folder.join("SPEC.md").display()),
+            &format!("file://{}", dir_path.display()),
+            "src",
+            "javascript:alert(1)",
+            "ssh://dev@box/path",
+            "mailto:a@b",
+            "https://example.com/SPEC.md",
+            "SPEC.md\u{7}",
+            "file:///tmp/a%00b.txt",
+        ] {
+            assert_eq!(
+                resolve_terminal_file_link(bad, &roots),
+                None,
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_remote_session_paths_lexically() {
+        let roots = ResolveRoots {
+            session_folder: std::path::PathBuf::from("/remote/channel/sessions/s1"),
+            clones: vec![(
+                "humata/app".into(),
+                std::path::PathBuf::from("/remote/channel/sessions/s1/app"),
+            )],
+            main_clones: vec![(
+                "app".into(),
+                std::path::PathBuf::from("/remote/channel/main/app"),
+            )],
+            shared_folder: Some(std::path::PathBuf::from("/remote/channel/shared")),
+            local: false,
+        };
+
+        assert_eq!(
+            resolve_terminal_file_link("/remote/channel/sessions/s1/app/src/main.rs:20", &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/main.rs".into(),
+                line: Some((20, None)),
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link("app/src/main.rs:10-15", &roots),
+            Some(ResolvedFileLink {
+                repo: "humata/app".into(),
+                path: "src/main.rs".into(),
+                line: Some((10, Some(15))),
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            resolve_terminal_file_link("SPEC.md", &roots),
+            Some(ResolvedFileLink {
+                repo: String::new(),
+                path: "SPEC.md".into(),
+                line: None,
+                read_only: false,
+            })
+        );
+        assert_eq!(resolve_terminal_file_link("/etc/passwd", &roots), None);
+        assert_eq!(resolve_terminal_file_link("../secret.txt", &roots), None);
     }
 }
 

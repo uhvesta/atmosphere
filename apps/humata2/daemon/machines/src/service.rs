@@ -111,7 +111,8 @@ drop_cron() {
 }
 daemon_running() {
   if command -v pgrep >/dev/null 2>&1; then
-    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1 && return 0
+    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1
+    return $?
   fi
   lock="$HOME/.humata2/state/daemon.lock"
   if [ -f "$lock" ]; then
@@ -126,14 +127,15 @@ daemon_running() {
 stray() {
   if command -v pkill >/dev/null 2>&1; then
     pkill -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' 2>/dev/null
-  fi
-  lock="$HOME/.humata2/state/daemon.lock"
-  if [ -f "$lock" ]; then
-    pid=$(cat "$lock" 2>/dev/null)
-    case "$pid" in
-      ''|*[!0-9]*) ;;
-      *) kill "$pid" 2>/dev/null ;;
-    esac
+  else
+    lock="$HOME/.humata2/state/daemon.lock"
+    if [ -f "$lock" ]; then
+      pid=$(cat "$lock" 2>/dev/null)
+      case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) kill "$pid" 2>/dev/null ;;
+      esac
+    fi
   fi
   n=0
   while daemon_running && [ "$n" -lt 10 ]; do
@@ -162,7 +164,8 @@ boot_entry=no
 if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qxF '{BOOT_LINE}'; then boot_entry=yes; fi
 daemon_running() {{
   if command -v pgrep >/dev/null 2>&1; then
-    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1 && return 0
+    pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine( --daemonize)?' >/dev/null 2>&1
+    return $?
   fi
   lock="$HOME/.humata2/state/daemon.lock"
   if [ -f "$lock" ]; then
@@ -367,7 +370,7 @@ esac"#,
             "pkill",
             r#"a=; [ "$(/usr/bin/uname)" = Darwin ] && a=-a
 if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/matched_self"; fi
-rm -f "$STATE/running""#,
+rm -f "$STATE/running" "$STATE/setsid_ran" "$STATE/daemonize_ran""#,
         ),
         (
             "pgrep",
@@ -429,8 +432,8 @@ if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/mat
                     r#"#!/bin/sh
 if [ "$1" = 2 ]; then
   n=0
-  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/daemonize_ran" ] || [ -e "$STATE/active" ] || [ -e "$STATE/broken" ] || [ "$n" -ge 100 ]; do
-    {real} 0.005; n=$((n + 1))
+  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/daemonize_ran" ] || [ -e "$STATE/active" ] || [ -e "$STATE/broken" ] || [ "$n" -ge 1000 ]; do
+    {real} 0.01; n=$((n + 1))
   done
   exit 0
 fi

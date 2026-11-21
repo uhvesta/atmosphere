@@ -54,7 +54,7 @@ use ports::{
     Checked, FileGuardPort, FileInboxPort, FileRelayPort, FileTrashPort, blocking, caller, chain,
     error, failure, internal, invalid_field, missing, now_ms, timestamp,
 };
-pub use roots::{Placed, Roots, Target};
+pub use roots::{Placed, Roots, Target, session_agent_watch_dirs};
 use roots::io_failure;
 
 static PARTIAL_SEQ: AtomicU64 = AtomicU64::new(0);

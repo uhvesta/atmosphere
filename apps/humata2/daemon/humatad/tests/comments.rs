@@ -189,6 +189,7 @@ async fn send(daemon: &Daemon, ids: &[&pb::Comment]) -> Result<pb::SendCommentsR
             idempotency_key: None,
             session: Some(session()),
             ids: ids.iter().map(|comment| id_of(comment)).collect(),
+            overall_note: String::new(),
         })
         .await
         .map(tonic::Response::into_inner)
@@ -330,6 +331,7 @@ async fn the_sessions_agent_cannot_change_the_users_comments() {
                 idempotency_key: None,
                 session: Some(session()),
                 ids: vec![id_of(&held)],
+                overall_note: String::new(),
             },
             &token,
         ))
@@ -398,10 +400,10 @@ async fn send_types_one_message_into_the_agents_terminal_once() {
         assert!(comment.sent_at.is_some());
     }
 
-    attach.wait_for("[comment on refund.rs:3]").await;
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
     attach.wait_for("why two lines").await;
     let screen = String::from_utf8_lossy(&attach.screen).into_owned();
-    let (a, b) = (screen.find("[comment on refund.rs:3]").unwrap(), screen.find("[comment on refund.rs:5-6]").unwrap());
+    let (a, b) = (screen.find("[comment c-1 on refund.rs:3]").unwrap(), screen.find("[comment c-2 on refund.rs:5-6]").unwrap());
     assert!(a < b, "the comments arrive in the order they were sent");
     assert!(!screen.contains("api/refund.rs"), "a session with one clone leaves the repo out");
     quiet(&mut attach).await;
@@ -411,7 +413,7 @@ async fn send_types_one_message_into_the_agents_terminal_once() {
     // Sending them again types nothing more.
     let again = send(&daemon, &[&first]).await.unwrap_err();
     assert_eq!(again.code(), Code::FailedPrecondition);
-    assert_eq!(shown(&daemon, &tab, "[comment on refund.rs:3]").await, 1);
+    assert_eq!(shown(&daemon, &tab, "[comment c-1 on refund.rs:3]").await, 1);
 
     // With no ids, Send takes every draft there is.
     let rest = send(&daemon, &[]).await.unwrap();
@@ -425,7 +427,7 @@ async fn a_session_with_two_clones_names_the_repo() {
     let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
     let comment = create(&daemon, draft_in("web", "refund.rs", 2, 2, "in the other repo")).await;
     send(&daemon, &[&comment]).await.unwrap();
-    attach.wait_for("[comment on web/refund.rs:2]").await;
+    attach.wait_for("[comment c-1 on web/refund.rs:2]").await;
 }
 
 /// A request to comment on a file with no repository named.
@@ -475,7 +477,7 @@ async fn a_comment_on_a_session_folder_file_needs_no_repo_even_with_two_clones()
     }
 
     send(&daemon, &[&document]).await.unwrap();
-    attach.wait_for("[comment on rfc-brin.md:7]").await;
+    attach.wait_for("[comment c-1 on rfc-brin.md:7]").await;
     let screen = String::from_utf8_lossy(&attach.screen).into_owned();
     assert!(!screen.contains("/rfc-brin.md") && !screen.contains(":rfc-brin.md"));
 
@@ -537,8 +539,8 @@ async fn drafts_sent_and_archived_comments_survive_a_restart_and_nothing_is_type
         })
         .await
         .unwrap();
-    attach.wait_for("[comment on refund.rs:2]").await;
-    let typed_before = shown(&daemon, &tab, "[comment on refund.rs:2]").await;
+    attach.wait_for("[comment c-2 on refund.rs:2]").await;
+    let typed_before = shown(&daemon, &tab, "[comment c-2 on refund.rs:2]").await;
 
     daemon.restart().await;
 
@@ -558,7 +560,7 @@ async fn drafts_sent_and_archived_comments_survive_a_restart_and_nothing_is_type
 
     // Settle anything the start might have typed, then count.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(shown(&daemon, &tab, "[comment on refund.rs:2]").await, typed_before);
+    assert_eq!(shown(&daemon, &tab, "[comment c-2 on refund.rs:2]").await, typed_before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -592,9 +594,9 @@ async fn comments_wait_when_there_is_no_terminal_and_are_typed_once_when_there_i
     let (_token, tab, mut attach) = shell_with_token(&daemon).await;
     let sent = send(&daemon, &[]).await.unwrap();
     assert!(!sent.queued);
-    attach.wait_for("[comment on refund.rs:3]").await;
-    attach.wait_for("[comment on refund.rs:4]").await;
-    assert_eq!(shown(&daemon, &tab, "[comment on refund.rs:3]").await, 1);
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
+    attach.wait_for("[comment c-2 on refund.rs:4]").await;
+    assert_eq!(shown(&daemon, &tab, "[comment c-1 on refund.rs:3]").await, 1);
     for comment in [&first, &second] {
         assert_eq!(status_of(&find(&daemon, comment).await), pb::CommentStatus::Sent);
     }
@@ -609,7 +611,7 @@ async fn a_sent_comment_is_addressed_when_its_lines_change_and_a_draft_detaches(
     let moved = create(&daemon, draft(9, 9, "unchanged but moved")).await;
     let waiting = create(&daemon, draft(7, 7, "a draft")).await;
     send(&daemon, &[&changed, &spaced, &moved]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:9]").await;
+    attach.wait_for("[comment c-3 on refund.rs:9]").await;
 
     // Whitespace alone changes nothing; a new line above line nine moves it.
     let text: String = NAMES
@@ -704,7 +706,7 @@ async fn a_sent_comment_stays_sent_when_the_user_writes_its_lines_through_files(
     let edited = create(&daemon, draft(3, 3, "rename")).await;
     let below = create(&daemon, draft(9, 9, "below")).await;
     send(&daemon, &[&edited, &below]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:9]").await;
+    attach.wait_for("[comment c-2 on refund.rs:9]").await;
 
     let text: String = NAMES
         .iter()
@@ -740,7 +742,7 @@ async fn a_sent_comment_is_addressed_when_the_file_is_changed_on_disk() {
     let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
     let comment = create(&daemon, draft(3, 3, "rename")).await;
     send(&daemon, &[&comment]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:3]").await;
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
 
     let text: String = NAMES
         .iter()
@@ -763,7 +765,7 @@ async fn resolve_reopen_archive_and_unarchive_move_a_comment_between_lists() {
     let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
     let comment = create(&daemon, draft(3, 3, "to resolve")).await;
     send(&daemon, &[&comment]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:3]").await;
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
 
     let resolved = comments(&daemon)
         .await
@@ -1004,7 +1006,7 @@ async fn wait_for_status(daemon: &Daemon, comment: &pb::Comment, status: pb::Com
     }
 }
 
-const MARK: &str = "[comment on refund.rs:3]";
+const MARK: &str = "[comment c-1 on refund.rs:3]";
 
 /// The daemon dies at `stop` while sending one comment; returns the tab,
 /// the comment and the file the tab's program copies each line it is typed
@@ -1139,7 +1141,7 @@ async fn the_agents_reply_and_resolve_happen_once_per_idempotency_key() {
     let (token, _tab, mut attach) = shell_with_token(&daemon).await;
     let comment = create(&daemon, draft(3, 3, "rename this")).await;
     send(&daemon, &[&comment]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:3]").await;
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
     let mut agent = comments(&daemon).await;
     let key = |value: &str| {
         Some(pb::IdempotencyKey {
@@ -1154,6 +1156,7 @@ async fn the_agents_reply_and_resolve_happen_once_per_idempotency_key() {
                     idempotency_key: key("reply-1"),
                     id: comment.id.clone(),
                     text: "looking".to_owned(),
+                    resolve: false,
                 },
                 &token,
             ))
@@ -1188,7 +1191,7 @@ async fn an_archived_comment_takes_no_answer_from_the_agent() {
     let (token, _tab, mut attach) = shell_with_token(&daemon).await;
     let comment = create(&daemon, draft(3, 3, "rename this")).await;
     send(&daemon, &[&comment]).await.unwrap();
-    attach.wait_for("[comment on refund.rs:3]").await;
+    attach.wait_for("[comment c-1 on refund.rs:3]").await;
     comments(&daemon)
         .await
         .archive_comment(pb::ArchiveCommentRequest {
@@ -1205,6 +1208,7 @@ async fn an_archived_comment_takes_no_answer_from_the_agent() {
                 idempotency_key: None,
                 id: comment.id.clone(),
                 text: "hello".to_owned(),
+                resolve: false,
             },
             &token,
         ))

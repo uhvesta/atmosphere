@@ -24,7 +24,7 @@ pub(super) const IN_PROGRESS_COLUMN: i32 = 3;
 
 /// Why the saved to-do fields couldn't be read or kept.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum FieldsError {
+pub enum FieldsError {
     #[error("couldn't read the saved to-do {what}")]
     Read {
         what: &'static str,
@@ -244,6 +244,44 @@ pub(super) struct ReviewRow {
     pub requested_unix_ms: i64,
 }
 
+/// Lifecycle state of a local review requested on a To-do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LocalReviewState {
+    #[default]
+    Draft,
+    LocalReviewRequested,
+    ChangesRequested,
+    Submitted,
+    Approved,
+    Done,
+}
+
+/// One branch/diff layer in a local review stack.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalReviewLayerRow {
+    pub repo: String,
+    pub base_branch: String,
+    pub head_branch: String,
+    pub title: String,
+    pub pr_number: Option<u32>,
+}
+
+/// Local review requested state and PR/diff associations on a To-do.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalReviewRow {
+    pub state: LocalReviewState,
+    pub layers: Vec<LocalReviewLayerRow>,
+    pub summary_what: String,
+    pub summary_why: String,
+    pub summary_details: String,
+    pub owner_approved_push: bool,
+    pub fixes_pushed_since_review: bool,
+    pub attachment_reason: Option<String>,
+    pub auto_attached: bool,
+}
+
 /// What the list keeps for one item.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -289,6 +327,7 @@ pub(super) struct Fields {
     pub prompt_sessions: BTreeMap<String, Vec<String>>,
     pub wont_do_reason: Option<String>,
     pub extra_history: Vec<TodoHistoryRow>,
+    pub local_review: Option<LocalReviewRow>,
 }
 
 /// What a board column says about state, for an item with no say of its own.

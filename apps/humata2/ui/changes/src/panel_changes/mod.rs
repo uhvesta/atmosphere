@@ -367,10 +367,15 @@ pub fn changes(
             let all = looked_all;
             let dark = look.term != 0xffffff;
             let (tint, edge) = if dark { (0x17301f, 0x24542f) } else { (0xe9f7ed, 0xb7e0c2) };
+            let unlooked_label = if stacked && !crate::panel_stack::whole_picked(&state.review) {
+                "Layer looks good"
+            } else {
+                "Looks good"
+            };
             let button = action(
                 ui,
                 "diff-looks-good",
-                if all { "✓ Looks good" } else { "Looks good" },
+                if all { "✓ Looks good" } else { unlooked_label },
                 AppAction::Review(if all { ReviewAction::ClearLooks } else { ReviewAction::LooksGood }),
                 look,
                 false,
@@ -681,6 +686,32 @@ pub fn changes(
                     .when(coded && !stacked && md_mode != DiffMarkdownMode::Rendered, |header| {
                         header.child(wrap_switch(ui, look, wrap))
                     })
+                    .when(coded && md_mode != DiffMarkdownMode::Rendered, |header| {
+                        let split = state.review.split_diff;
+                        let toggle_ui = ui.clone();
+                        header.child(
+                            div()
+                                .id("diff-layout-toggle")
+                                .role(Role::Button)
+                                .aria_label("Toggle Unified or Split diff (⌥⌘S)")
+                                .test_support()
+                                .flex_shrink_0()
+                                .px(px(6.))
+                                .h(px(20.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(rgb(look.line))
+                                .text_size(px(11.))
+                                .text_color(rgb(look.secondary))
+                                .cursor_pointer()
+                                .on_click(move |_, _, cx| {
+                                    toggle_ui.send(AppAction::Review(ReviewAction::ToggleSplitDiff), cx)
+                                })
+                                .child(if split { "Split \u{2325}\u{2318}S" } else { "Unified \u{2325}\u{2318}S" }),
+                        )
+                    })
                     .when(stepper && md_mode != DiffMarkdownMode::Rendered, |header| {
                         header.child(change_stepper(ui, look, change, changes))
                     })
@@ -693,6 +724,17 @@ pub fn changes(
                                 .flex_shrink_0()
                                 .whitespace_nowrap()
                                 .text_color(rgb(LOOK_GREEN)),
+                        )
+                    })
+                    .when(!bar, |header| {
+                        header.child(
+                            text("Open file \u{2197}")
+                                .id("diff-open-file")
+                                .test_support()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .text_size(px(11.5))
+                                .text_color(rgb(look.secondary)),
                         )
                     })
                     .when(!bar && !stacked, |header| header.child(open_in_editor(look)))
@@ -904,6 +946,44 @@ pub fn changes(
                 )
             },
         )
+        // GitHub feedback check age in the left rail (never in the title bar).
+        .when_some(review.zip(session_id.as_ref()), |panel, (_, id)| {
+            let age = state
+                .review
+                .github_checked_ago
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| "2m ago".to_owned());
+            let refresh_ui = ui.clone();
+            panel.child(
+                row()
+                    .id("github-feedback-checked-rail")
+                    .test_support()
+                    .h(px(24.))
+                    .px(px(12.))
+                    .gap(px(6.))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(rgb(look.line))
+                    .child(secondary(look, format!("Checked {age}")))
+                    .child(secondary(look, "\u{b7}"))
+                    .child(
+                        text("Refresh")
+                            .id("github-feedback-refresh")
+                            .role(Role::Button)
+                            .test_support()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.accent))
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                refresh_ui.send(
+                                    AppAction::Review(ReviewAction::RefreshGithubFeedback),
+                                    cx,
+                                )
+                            }),
+                    ),
+            )
+        })
         // D800, DS-60 to DS-65: the layer list sits above the files.
         .children(crate::panel_stack::stack_top(&state.review, &state.comments, look, &stack_send, width).map(|top| {
             // D804: the layer keys work in the Diff panel, so a click in
@@ -1286,28 +1366,63 @@ pub fn changes(
                         )
                 })
                 // DS-16: Submit review… sits in the footer, beside the
-                // terminal and in full screen.
+                // terminal and in full screen. When queued GitHub replies exist,
+                // render the single footer CTA "Post N replies to GitHub".
                 .when_some(session_id.clone().filter(|_| review.is_some()), |footer, id| {
-                    footer.child(
-                        widgets::primary_in(
-                            look,
-                            ui,
-                            "diff-submit-review",
-                            "Submit review…",
-                            AppAction::PrSubmit(humata2_pr_review::submit::SubmitAction::Open(id)),
-                        )
-                        .small()
-                        .h(px(24.))
-                        .flex_shrink_0()
-                        .bg(rgb(look.accent))
-                        .text_color(rgb(0xffffff)),
-                    )
+                    let queued_replies =
+                        humata2_review::comments::queued_github_reply_count(&state.comments, &id);
+                    footer
+                        .when(queued_replies > 0, |f| {
+                            f.child(
+                                widgets::primary_in(
+                                    look,
+                                    ui,
+                                    "diff-post-github-replies",
+                                    humata2_review::comments::post_replies_cta_label(queued_replies),
+                                    AppAction::PrSubmit(humata2_pr_review::submit::SubmitAction::Open(id.clone())),
+                                )
+                                .small()
+                                .h(px(24.))
+                                .flex_shrink_0()
+                                .bg(rgb(look.accent))
+                                .text_color(rgb(0xffffff)),
+                            )
+                        })
+                        .when(queued_replies == 0, |f| {
+                            f.child(
+                                widgets::primary_in(
+                                    look,
+                                    ui,
+                                    "diff-submit-review",
+                                    "Submit review…",
+                                    AppAction::PrSubmit(humata2_pr_review::submit::SubmitAction::Open(id)),
+                                )
+                                .small()
+                                .h(px(24.))
+                                .flex_shrink_0()
+                                .bg(rgb(look.accent))
+                                .text_color(rgb(0xffffff)),
+                            )
+                        })
                 }),
         )
 }
 
-/// The Diff panel's header: full screen adds New agent tab (UXSIMPLE 3-3).
+/// The Diff panel's header: full screen adds Details ⤢ and Agent toggle (UXSIMPLE 3-3).
 fn diff_header(ui: &Rc<Ui>, state: &AppState, full: bool, extra: Option<Div>, look: Look) -> Div {
-    let actions = full.then(|| agent_tab::button(ui, state, look));
+    let details_btn = action(
+        ui,
+        "diff-details-toggle",
+        "Details \u{2922}",
+        AppAction::Review(ReviewAction::ToggleDetails),
+        look,
+        state.review.details_open,
+    );
+    let actions = Some(
+        row()
+            .gap(px(6.))
+            .child(details_btn)
+            .when(full, |r| r.child(agent_tab::button(ui, state, look))),
+    );
     panel_header_actions(ui, state, Panel::Changes, full, extra, actions, look)
 }

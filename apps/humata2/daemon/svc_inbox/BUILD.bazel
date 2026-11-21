@@ -115,6 +115,17 @@ rust_test(
     ],
 )
 
+# Fast-tier deterministic tests for ATM-54 SESSIONBOOT startup authorization.
+rust_test(
+    name = "startup_auth_test",
+    srcs = ["tests/startup_auth.rs"],
+    deps = [
+        ":svc_inbox",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
 # Slow-tier live CLI screen recorder check: runs only on demand and skips
 # cleanly when agent logins are unavailable.
 sh_test(

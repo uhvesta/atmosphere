@@ -125,7 +125,13 @@ pub(crate) fn restore(store: &Store, guard: &Guard) -> Result<(), RulesKeptError
             state.channels.insert(ChannelId::new(id), rules);
         }
         Policy::from_state(state)
-            .map(|restored| *policy = restored)
+            .map(|mut restored| {
+                let _ = restored.apply_permaudit_migration(
+                    &std::collections::BTreeMap::new(),
+                    &std::collections::BTreeSet::new(),
+                );
+                *policy = restored;
+            })
             .map_err(|source| RulesKeptError::Install { source })
     })
 }

@@ -123,6 +123,7 @@ fn path_scope(scope: &PathScope) -> pb::PathScope {
         | Root::MainClone { .. }
         | Root::Home
         | Root::Pastes(_)
+        | Root::AgentState(_)
         | Root::Received
         | Root::Outside => None,
     };

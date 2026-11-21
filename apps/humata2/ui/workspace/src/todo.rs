@@ -232,6 +232,39 @@ pub(crate) enum TriageCommand {
     FocusQuickAdd,
 }
 
+/// Maps `S` / `⌥S` on a milestone to starting a milestone session (with brief)
+/// or a plain session (without brief). Returns `None` when a text input is
+/// focused, the target is not a milestone, or no item is targeted.
+pub(crate) fn milestone_start_shortcut(
+    key: &str,
+    alt: bool,
+    input_focused: bool,
+    target_key: Option<&str>,
+    is_milestone: bool,
+) -> Option<A> {
+    if input_focused || !is_milestone {
+        return None;
+    }
+    let target = target_key?;
+    if !key.eq_ignore_ascii_case("s") {
+        return None;
+    }
+    if alt {
+        Some(A::StartPlainSession(target.to_owned()))
+    } else {
+        Some(A::StartSession(target.to_owned()))
+    }
+}
+
+/// Quiet helper text shown beside the milestone primary split button.
+pub(crate) fn milestone_helper_text(open_steps: usize) -> String {
+    match open_steps {
+        0 => "All steps done · S".to_owned(),
+        1 => "Pre-fills 1 open step · S".to_owned(),
+        n => format!("Pre-fills {n} open steps · S"),
+    }
+}
+
 /// Maps a keystroke on the To-do page to a [`TriageCommand`], returning `None`
 /// whenever a text input is focused so typing is never hijacked.
 pub(crate) fn triage_command(
@@ -634,6 +667,7 @@ pub struct Inputs {
     split_keep_age: Rc<Cell<bool>>,
     fold_open: Rc<Cell<bool>>,
     ext_block_open: Rc<Cell<bool>>,
+    milestone_start_menu_open: Rc<Cell<bool>>,
     editing: Cell<bool>,
     step_context_at: Cell<Option<usize>>,
     /// The store's text last put in quick add, search, edit and the step
@@ -713,6 +747,7 @@ impl Inputs {
             split_keep_age: Rc::new(Cell::new(true)),
             fold_open: Rc::new(Cell::new(false)),
             ext_block_open: Rc::new(Cell::new(false)),
+            milestone_start_menu_open: Rc::new(Cell::new(false)),
             editing: Cell::new(false),
             step_context_at: Cell::new(None),
             synced: RefCell::new(Default::default()),
@@ -928,8 +963,13 @@ pub fn page(
     look: Look,
 ) -> Div {
     let open = state.open.as_deref().and_then(|k| entry(state, k));
+    let open_key = state.open.clone();
     let drawer_open = open.is_some();
     let focused_key = state.focused.clone();
+    let target_is_milestone = open_key
+        .as_deref()
+        .or(focused_key.as_deref())
+        .is_some_and(|k| state.is_milestone(k));
     let key_send = send.clone();
     let search_input = inputs.search.clone();
     let quick_add_input = inputs.quick_add.clone();
@@ -958,6 +998,15 @@ pub fn page(
                 || step_context_input.focus_handle(cx).is_focused(window);
             let key = event.keystroke.key.as_str();
             let shift = event.keystroke.modifiers.shift;
+            let alt = event.keystroke.modifiers.alt;
+            let target_key = open_key.as_deref().or(focused_key.as_deref());
+            if let Some(action) =
+                milestone_start_shortcut(key, alt, input_focused, target_key, target_is_milestone)
+            {
+                cx.stop_propagation();
+                key_send(action, cx);
+                return;
+            }
             if let Some(cmd) =
                 triage_command(key, shift, drawer_open, input_focused, focused_key.as_deref())
             {
@@ -2236,7 +2285,9 @@ pub(crate) fn drawer(
         .map(Day::short)
         .or_else(|| t.fuzzy_due.map(|f| f.label().to_owned()))
         .unwrap_or_else(|| "No date".to_owned());
-    let made = small(format!("{} · made by you, {}", t.key, t.created.short()), look).flex_1();
+    let is_milestone = humata2_todo_feature::is_todo_milestone(t);
+    let milestone_info = is_milestone.then(|| state.milestone(&t.key)).flatten();
+    let made = small(format!("{} · made by you, {}", t.key, t.created.short()), look);
     let ranked_row = state
         .ranked()
         .next
@@ -2285,6 +2336,18 @@ pub(crate) fn drawer(
             row()
                 .gap(px(8.))
                 .child(made)
+                .children(is_milestone.then(|| {
+                    pill(
+                        "Milestone",
+                        tone(look, 0xece9fd, 0x322c5c),
+                        tone(look, 0x4a2fa8, 0xcdc4ff),
+                    )
+                    .font_weight(FontWeight::MEDIUM)
+                }))
+                .children(milestone_info.as_ref().map(|info| {
+                    small(format!("{} of {} done", info.done_count(), info.total_count()), look)
+                }))
+                .child(div().flex_1())
                 .children(rank_pos.map(|pos| {
                     let toggle = held_toggle.clone();
                     div()
@@ -2666,6 +2729,71 @@ pub(crate) fn drawer(
                 )),
             )
         }))
+        .children(milestone_info.as_ref().map(|info| {
+            col()
+                .id("todo-milestone-steps")
+                .mt(px(10.))
+                .gap(px(4.))
+                .child(
+                    row()
+                        .child(
+                            small(
+                                format!(
+                                    "MILESTONE STEPS · {} OF {} DONE",
+                                    info.done_count(),
+                                    info.total_count()
+                                ),
+                                look,
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(div().flex_1())
+                        .child(small("in Waits-on order", look)),
+                )
+                .children(info.steps.iter().map(|step| {
+                    let indicator = if step.done {
+                        div()
+                            .size(px(15.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(teal(look))
+                            .text_color(rgb(0xffffff))
+                            .text_size(px(10.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("✓")
+                    } else {
+                        div()
+                            .size(px(15.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(tone(look, 0xb9b9c0, 0x55555a))
+                    };
+                    let label = format!("{} · {}", step.id, step.title);
+                    clickable(
+                        send,
+                        SharedString::from(format!("todo-milestone-step-{}", step.id)),
+                        &label,
+                        A::Open(step.id.clone()),
+                        row()
+                            .gap(px(8.))
+                            .py(px(3.))
+                            .px(px(6.))
+                            .rounded(px(6.))
+                            .hover(move |s| s.bg(rgb(look.fill)))
+                            .child(indicator)
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .when(step.done, |d| d.text_color(rgb(look.secondary)))
+                                    .child(label.clone()),
+                            ),
+                    )
+                }))
+                .test_support()
+        }))
         .child(
             row()
                 .mt(px(10.))
@@ -2858,7 +2986,9 @@ pub(crate) fn drawer(
         .children((!narrow).then(|| split_fold_section(send, state, inputs, t, look)))
         .children((!narrow).then(|| runs_ledger_section(send, state, inputs, t, look)).flatten())
         .children((!narrow).then(|| history_section(send, state, inputs, t, look)))
-        .children((!narrow).then(|| footer(send, state, t, look, true).mt(px(12.)).pt(px(10.))))
+        .children((!narrow).then(|| {
+            footer_inner(send, state, t, Some(inputs), look, true).mt(px(12.)).pt(px(10.))
+        }))
 }
 
 /// The box that edits a step's Markdown context, under the step's row
@@ -2923,15 +3053,100 @@ pub(crate) fn footer(
     look: Look,
     start_session: bool,
 ) -> Div {
+    footer_inner(send, state, t, None, look, start_session)
+}
+
+fn footer_inner(
+    send: &Send,
+    state: &TodoState,
+    t: &Todo,
+    inputs: Option<&Inputs>,
+    look: Look,
+    start_session: bool,
+) -> Div {
     let key = &t.key;
-    let start = (start_session && !t.suggested && t.review.is_none()).then(|| {
-        quiet(
-            send,
-            "todo-start-session",
-            start_session_label(t),
-            A::StartSession(key.clone()),
-            look,
-        )
+    let is_milestone = humata2_todo_feature::is_todo_milestone(t);
+    let open_steps = if is_milestone {
+        state.milestone(key).map_or(0, |m| m.open_steps().len())
+    } else {
+        0
+    };
+    let menu_cell = inputs.map(|i| i.milestone_start_menu_open.clone());
+    let menu_open = menu_cell.as_ref().is_some_and(|c| c.get());
+    let start: Option<AnyElement> = (start_session && !t.suggested && t.review.is_none()).then(|| {
+        if is_milestone {
+            let toggle_cell = menu_cell.clone();
+            let plain_cell = menu_cell.clone();
+            let send_plain = send.clone();
+            let plain_key = key.clone();
+            col()
+                .gap(px(4.))
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .child(
+                            row()
+                                .gap(px(1.))
+                                .child(
+                                    primary(
+                                        send,
+                                        "todo-start-milestone",
+                                        "Start milestone session",
+                                        A::StartSession(key.clone()),
+                                        look,
+                                    )
+                                    .rounded_r(px(0.)),
+                                )
+                                .child(
+                                    push_primary_shape("todo-start-milestone-menu", "⌄", look)
+                                        .rounded_l(px(0.))
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            if let Some(cell) = &toggle_cell {
+                                                cell.set(!cell.get());
+                                                window.refresh();
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(small(milestone_helper_text(open_steps), look)),
+                )
+                .children(menu_open.then(|| {
+                    div()
+                        .id("todo-start-milestone-plain")
+                        .role(Role::Button)
+                        .aria_label("Plain start · ⌥S")
+                        .cursor_pointer()
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .bg(rgb(look.card))
+                        .text_size(px(12.))
+                        .hover(move |s| s.bg(rgb(look.fill)))
+                        .child("Plain start · ⌥S")
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(cell) = &plain_cell {
+                                cell.set(false);
+                            }
+                            send_plain(A::StartPlainSession(plain_key.clone()), cx);
+                            window.refresh();
+                        })
+                        .test_support()
+                }))
+                .into_any_element()
+        } else {
+            quiet(
+                send,
+                "todo-start-session",
+                start_session_label(t),
+                A::StartSession(key.clone()),
+                look,
+            )
+            .into_any_element()
+        }
     });
     let history = link(send, "todo-history", "History", A::ShowHistory(key.clone()), look);
     let pin = if t.pin.is_some() {
@@ -4501,5 +4716,34 @@ mod tests {
             Some(A::OpenChannel("ch_payments".to_owned()))
         );
         assert_eq!(channel_link_action(None), None);
+    }
+
+    #[test]
+    fn milestone_start_shortcut_dispatches_brief_or_plain_and_ignores_inputs_and_tasks() {
+        assert_eq!(
+            milestone_start_shortcut("s", false, false, Some("M-1"), true),
+            Some(A::StartSession("M-1".to_owned()))
+        );
+        assert_eq!(
+            milestone_start_shortcut("S", false, false, Some("M-1"), true),
+            Some(A::StartSession("M-1".to_owned()))
+        );
+        assert_eq!(
+            milestone_start_shortcut("s", true, false, Some("M-1"), true),
+            Some(A::StartPlainSession("M-1".to_owned()))
+        );
+        assert_eq!(milestone_start_shortcut("s", false, false, Some("T-1"), false), None);
+        assert_eq!(milestone_start_shortcut("s", true, false, Some("T-1"), false), None);
+        assert_eq!(milestone_start_shortcut("s", false, true, Some("M-1"), true), None);
+        assert_eq!(milestone_start_shortcut("s", true, true, Some("M-1"), true), None);
+        assert_eq!(milestone_start_shortcut("s", false, false, None, true), None);
+        assert_eq!(milestone_start_shortcut("x", false, false, Some("M-1"), true), None);
+    }
+
+    #[test]
+    fn milestone_helper_text_formats_zero_one_and_many_open_steps() {
+        assert_eq!(milestone_helper_text(0), "All steps done · S");
+        assert_eq!(milestone_helper_text(1), "Pre-fills 1 open step · S");
+        assert_eq!(milestone_helper_text(3), "Pre-fills 3 open steps · S");
     }
 }

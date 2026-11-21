@@ -43,7 +43,7 @@ pub(super) fn file_read_details(
     let mut session_title: Option<String> = None;
     let mut session_agent: Option<String> = None;
     let from = match &place.root {
-        Root::Clone(session) | Root::Pastes(session) => {
+        Root::Clone(session) | Root::Pastes(session) | Root::AgentState(session) => {
             let record = store.session(session.id.as_str()).ok().flatten();
             let title = record
                 .as_ref()

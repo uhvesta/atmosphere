@@ -37,3 +37,16 @@ pub use theme::Theme;
 pub use view::{FrameStats, HistoryPoint, InputStats, Mark, TerminalView};
 
 mod pending_input;
+
+/// Whether `uri` is an external `http`, `https`, or `mailto` URL with a
+/// non-empty body and no control characters.
+pub fn is_web_or_mail_uri(uri: &str) -> bool {
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return false;
+    };
+    ["http", "https", "mailto"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+        && !rest.is_empty()
+        && !uri.chars().any(char::is_control)
+}

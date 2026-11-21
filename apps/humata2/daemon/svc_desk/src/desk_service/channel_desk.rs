@@ -123,6 +123,39 @@ impl DeskSvc {
             title
         };
         let agent = self.channel_agent(request.agent.as_ref())?;
+        if target.is_none() && assigned.is_none() {
+            let enabled_kinds = self
+                .starter
+                .agents
+                .kinds()
+                .iter()
+                .filter(|kind| self.sessions.agent_enabled(&self.starter.agents, &kind.name).is_ok())
+                .count()
+                .max(1);
+            let store = self.starter.store.clone();
+            let channel_key = channel_id.clone();
+            let next_agent = agent.clone();
+            let check = blocking(move || {
+                check_channel_desk_tab_cap(&store, &channel_key, &next_agent, enabled_kinds)
+            })
+            .await?;
+            match check {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    return Err(failed_precondition(
+                        err.to_string(),
+                        "close an open Desk tab in this channel before opening another",
+                    ));
+                }
+                Err(error) => {
+                    return Err(crate::ports::store_error(
+                        error,
+                        &self.machine,
+                        "check open Desk tabs for the channel",
+                    ));
+                }
+            }
+        }
         let switches = switches_from(request.switches);
         if let Some(assigned) = &assigned
             && let Some(known) = self.known_start(&assigned.id).await?
@@ -759,5 +792,119 @@ pub fn channel_desk_pb(
         has_versions,
         version_count,
         holds_files,
+    }
+}
+
+/// Checks the flat multi-agent tab cap for open channel-level Desk sessions in
+/// `channel_id` before starting a new one running `next_agent`.
+fn check_channel_desk_tab_cap(
+    store: &Store,
+    channel_id: &str,
+    next_agent: &str,
+    enabled_kinds: usize,
+) -> Result<Result<(), humata2_sessions_desk::TabCapError>, StoreError> {
+    let rows = store.channel_desks()?;
+    let sessions = store.sessions()?;
+    let by_id: HashMap<String, String> = sessions
+        .into_iter()
+        .map(|session| (session.id, session.agent))
+        .collect();
+    let open_kinds: Vec<&str> = rows
+        .iter()
+        .filter(|row| {
+            row.closed_unix_ms.is_none()
+                && row.target_session.is_none()
+                && row.channel == channel_id
+        })
+        .filter_map(|row| by_id.get(&row.session_id).map(String::as_str))
+        .collect();
+    Ok(humata2_sessions_desk::check_tab_cap(
+        &open_kinds,
+        next_agent,
+        enabled_kinds,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humata2_sessions_desk::TabCapError;
+    use humata2_store::{ChannelDeskRow, SessionRecord};
+    use std::path::PathBuf;
+
+    fn add_open_channel_desk(
+        store: &Store,
+        id: &str,
+        channel: &str,
+        agent: &str,
+        target_session: Option<&str>,
+        closed_unix_ms: Option<i64>,
+    ) {
+        store
+            .put_session(&SessionRecord {
+                id: id.to_owned(),
+                channel: DESK_CHANNEL.to_owned(),
+                title: id.to_owned(),
+                agent: agent.to_owned(),
+                folder: PathBuf::from(format!("/tmp/{id}")),
+                created_unix_ms: 1,
+                machine: "m_1".to_owned(),
+            })
+            .unwrap();
+        store
+            .put_channel_desk(&ChannelDeskRow {
+                session_id: id.to_owned(),
+                channel: channel.to_owned(),
+                target_session: target_session.map(str::to_owned),
+                read_files: true,
+                send_notes: false,
+                type_into_terminal: false,
+                start_and_fork: true,
+                stop_and_archive: false,
+                change_board_items: false,
+                last_used_unix_ms: 1,
+                closed_unix_ms,
+                target_gone: false,
+                trash_item: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn channel_desk_tab_cap_enforces_per_kind_and_total_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("store.db")).unwrap();
+
+        // Two open claude tabs in ch_1, plus one closed and one target-scoped (ignored).
+        add_open_channel_desk(&store, "se_1", "ch_1", "claude", None, None);
+        add_open_channel_desk(&store, "se_2", "ch_1", "claude", None, None);
+        add_open_channel_desk(&store, "se_closed", "ch_1", "claude", None, Some(10));
+        add_open_channel_desk(&store, "se_targeted", "ch_1", "claude", Some("se_target"), None);
+        add_open_channel_desk(&store, "se_other_ch", "ch_2", "claude", None, None);
+
+        // 3rd claude tab in ch_1 is rejected by per-kind cap.
+        let err = check_channel_desk_tab_cap(&store, "ch_1", "claude", 1)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TabCapError::KindLimitReached {
+                kind: "claude".to_owned(),
+                limit: 2,
+            }
+        );
+
+        // A shell tab is allowed (2 open < cap 3 for 1 enabled kind).
+        assert_eq!(
+            check_channel_desk_tab_cap(&store, "ch_1", "zsh", 1).unwrap(),
+            Ok(())
+        );
+        add_open_channel_desk(&store, "se_3", "ch_1", "zsh", None, None);
+
+        // 4th tab is rejected by total cap (3 of 3).
+        let err = check_channel_desk_tab_cap(&store, "ch_1", "codex", 1)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err, TabCapError::TotalLimitReached { open: 3, limit: 3 });
     }
 }

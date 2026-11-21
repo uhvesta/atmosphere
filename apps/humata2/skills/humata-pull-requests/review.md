@@ -73,7 +73,7 @@ When the drafts are ready, say so and name the session. Don't try to post.
 | --- | --- |
 | Draft review comments, notes and a summary in a review session | Allowed |
 | Reply to, or resolve with a reply, comments sent to your own session | Allowed |
-| Start a pull request review | Asks the owner |
+| Start a local pull request review in your channel | Allowed |
 | Push from a review session | Refused unless the owner allowed pushing |
 | Submit a review | The owner's alone |
 

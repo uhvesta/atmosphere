@@ -123,9 +123,16 @@ fn asking_for_what_needs_the_mac_waits_whatever_the_away_rule() {
     assert_eq!(c_away(&policy, &note_to(a())), Verdict::WaitForHost);
 }
 
+fn set_ask(policy: &mut Policy, channel: humata2_access::ChannelId, capability: Capability) {
+    policy
+        .set_rule(&user(), &Rules::Channel(channel), capability, Decision::Ask)
+        .expect("Ask is offered");
+}
+
 #[test]
 fn wait_holds_the_request_for_the_passphrase_on_the_machine() {
-    let policy = policy();
+    let mut policy = policy();
+    set_ask(&mut policy, payments(), Capability::SessionNote);
     assert!(asks_on_the_box(&c_away(&policy, &note_to(d()))));
     // With the Mac reachable it goes to the Mac's Inbox.
     assert_eq!(
@@ -137,6 +144,7 @@ fn wait_holds_the_request_for_the_passphrase_on_the_machine() {
 #[test]
 fn skip_refuses_what_would_ask_and_leaves_the_rest() {
     let mut policy = policy();
+    set_ask(&mut policy, payments(), Capability::SessionNote);
     set_away(&mut policy, AwayRule::Skip);
     match c_away(&policy, &note_to(d())) {
         Verdict::Refused(refusal) => assert_eq!(refusal.kind(), ErrorKind::UserAway),
@@ -159,6 +167,9 @@ fn skip_refuses_what_would_ask_and_leaves_the_rest() {
 #[test]
 fn allow_low_risk_runs_only_the_kinds_it_lists() {
     let mut policy = policy();
+    set_ask(&mut policy, payments(), Capability::SessionNote);
+    set_ask(&mut policy, payments(), Capability::FilesReadOtherSession);
+    set_ask(&mut policy, search(), Capability::SessionNote);
     set_away(
         &mut policy,
         low_risk(&[Capability::SessionNote, Capability::ChannelBoardEditOthers]),
@@ -319,6 +330,7 @@ fn new_channels_start_with_the_away_rule_set_for_them() {
 #[test]
 fn on_a_machine_the_user_answers_but_does_not_change_rules() {
     let mut policy = policy();
+    set_ask(&mut policy, payments(), Capability::SessionNote);
     let grant = grant_for(&mut policy, &as_agent(b()), &note_to(a()));
     let rules = Rules::Channel(payments());
     assert_eq!(
@@ -339,6 +351,7 @@ fn on_a_machine_the_user_answers_but_does_not_change_rules() {
 #[test]
 fn a_request_for_the_mac_can_not_be_answered_on_a_machine() {
     let mut policy = policy();
+    set_ask(&mut policy, payments(), Capability::SessionNote);
     let asked = request(check(&policy, &as_agent(b()), &note_to(a()), &on_mac()));
     assert_eq!(
         policy.approve(&user_on_box(), &RequestId::new("r1"), &asked, &Answer::Once, answered_at()),

@@ -23,6 +23,7 @@ rust_library(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
         srcs = [src],
         compile_data = glob(["testdata/**"]),
+        data = ["verify_packaged_hooks.sh"],
         deps = [
             ":agent_hooks",
             "@crates//:serde_json",

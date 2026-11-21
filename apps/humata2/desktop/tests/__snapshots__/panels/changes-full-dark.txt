@@ -1,6 +1,7 @@
 Complementary "Diff"
   Label "# api › Token refresh retry"
-  Button "New agent tab"
+  Button "Details ⤢"
+  Button "Agent ⌘J"
   Button "Exit full screen" description="Exit full screen  ⌃⌘↩"
   Button "Close panel" description="Close panel"
   Button "Close window"
@@ -36,10 +37,13 @@ Complementary "Diff"
       CheckBox "Not looked at"
   Splitter "Resize the file list"
   text "client.rs"
+  Button "Toggle Unified or Split diff (⌥⌘S)"
   Button "Open in editor" description="Open in editor"
   text "api"
   text "·"
   text "src/"
+  #diff-open-file
+    text "Open file ↗"
   Button "Scroll long lines" description="Wrap long lines  ⌥Z"
   Code "acme/api/src/client.rs"
     #change-hunk-0
@@ -112,6 +116,9 @@ Complementary "Diff"
       text " "
       #change-code-9-0
         text "        Ok(response)"
+  #overall-comment-input
+    #input
+      MultilineTextInput "Comment or request on the whole change" value="" placeholder="Comment or request on the whole change…"
   Button "Looks good"
   Button "Send to claude" disabled
   Label "0 of 2 files looked at"

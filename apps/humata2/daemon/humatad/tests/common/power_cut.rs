@@ -233,6 +233,7 @@ impl Operation {
                         idempotency_key: None,
                         session: Some(base.h.clone()),
                         ids: vec![base.comment.clone()],
+                        overall_note: String::new(),
                     })
                     .await;
             }

@@ -62,8 +62,10 @@ For several dependent pull requests from one branch, use `stack`
 | --- | --- |
 | Read your session's diff | Allowed |
 | Prepare a view for the owner | Allowed |
-| Push a branch or open a pull request | Asks the owner |
-| Read another session's diff | Asks the owner (as reading its files) |
+| Push your own non-default branch (no open PR, non-force) | Allowed |
+| Open a pull request, or push to a branch with an open PR (or a default branch) | Asks the owner |
+| Read another session's diff (same machine & channel) | Allowed |
+| Read another session's diff on another machine | Asks the owner |
 
 Only the owner: marking files reviewed (`humata diff mark-reviewed`),
 opening or dismissing a view (`humata view ...`), and writing or sending

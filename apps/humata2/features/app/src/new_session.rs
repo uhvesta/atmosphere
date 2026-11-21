@@ -153,6 +153,20 @@ impl App {
     }
 
     pub(super) fn start_new_for_item(&self, state: &mut AppState, id: ItemId) -> Effect<AppAction> {
+        self.start_new_for_item_inner(state, id, true)
+    }
+
+    /// Starts a plain session for `id` without pre-filling a milestone brief.
+    pub fn start_new_for_item_plain(&self, state: &mut AppState, id: ItemId) -> Effect<AppAction> {
+        self.start_new_for_item_inner(state, id, false)
+    }
+
+    fn start_new_for_item_inner(
+        &self,
+        state: &mut AppState,
+        id: ItemId,
+        prefill_milestone: bool,
+    ) -> Effect<AppAction> {
         let Some(item) = state
             .workspace
             .items
@@ -167,10 +181,16 @@ impl App {
                 .find(|entry| entry.todo.key == id.as_str())
                 .cloned()
             {
+                let brief = prefill_milestone
+                    .then(|| state.todo.milestone(id.as_str()).map(|info| info.brief()))
+                    .flatten();
                 let effect = self.reduce(state, AppAction::StartNewSession);
                 if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
                     sheet.title = entry.todo.title;
                     sheet.item = Some(id);
+                    if let Some(brief) = brief {
+                        sheet.first_message = brief;
+                    }
                     if let Some(channel) = entry.todo.channel.as_deref().and_then(|name| {
                         state
                             .workspace
@@ -191,10 +211,16 @@ impl App {
             }
             return Effect::none();
         };
+        let brief = prefill_milestone
+            .then(|| humata2_todo_feature::workspace_milestone(&state.workspace, &id).map(|info| info.brief()))
+            .flatten();
         let effect = self.reduce(state, AppAction::StartNewSession);
         if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
             sheet.title = item.title;
             sheet.item = Some(id);
+            if let Some(brief) = brief {
+                sheet.first_message = brief;
+            }
             if let Some(channel) = item.scope.channel().cloned() {
                 sheet.machine = state
                     .workspace

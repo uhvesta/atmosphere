@@ -230,6 +230,7 @@ impl Ui {
                     state.hosts.selected.clone(),
                     state.settings.preferences.show_pinned,
                     state.mass_delete.clone(),
+                    state.pending_cli_logins.len(),
                 )
             },
             move |_| changed(),
@@ -263,6 +264,11 @@ impl Ui {
                         state.desk.clone(),
                         state.machine_page.clone(),
                         state.mass_delete.clone(),
+                    ),
+                    // Pending `humata login` banner (Shell) and Inbox cards.
+                    (
+                        state.pending_cli_logins.clone(),
+                        state.answering_cli_logins.clone(),
                     ),
                     // The open session's status and its machine draw the
                     // terminal's notices (Lost the connection to …, exited)

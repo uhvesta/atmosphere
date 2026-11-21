@@ -44,6 +44,21 @@ use tca::{Effect, Reducer};
 /// scrollback.
 pub const LIVE_LINES: usize = 2_000;
 
+/// How long a line highlight from a terminal file link stays visible before
+/// fading out (TERMLINKS, ATM-16).
+pub const FILE_JUMP_FADE: std::time::Duration = std::time::Duration::from_millis(2_500);
+
+/// A line or inclusive 1-based line range jumped to from a terminal link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileJump {
+    /// First highlighted 1-based line.
+    pub first: u32,
+    /// Last highlighted 1-based line (inclusive; equals `first` for a single line).
+    pub last: u32,
+    /// Monotonic token so an earlier fade timer never clears a newer jump.
+    pub generation: u64,
+}
+
 /// The side panel beside the terminal (SE-10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Panel {
@@ -290,6 +305,9 @@ pub struct SessionState {
     /// The change the editor's cursor is on, per session, repository and
     /// path: an index into the changes the editor lists. Not saved.
     pub changes_at: BTreeMap<(SessionId, String, String), usize>,
+    /// Active line-jump highlight from a terminal file link, per session,
+    /// repository and path. Not saved.
+    pub file_jump: BTreeMap<(SessionId, String, String), FileJump>,
     /// Loaded text files, keyed by session/repository/path.
     pub file_contents: BTreeMap<(SessionId, String, String), Result<String, DaemonError>>,
     /// Each session's Conversation tab entries, read from the host's mirror.
@@ -347,6 +365,7 @@ impl SessionState {
         self.conversations.remove(session);
         self.live.retain(|(id, _), _| id != session);
         self.changes_at.retain(|(id, _, _), _| id != session);
+        self.file_jump.retain(|(id, _, _), _| id != session);
         self.agent_tabs.retain(|(id, _), _| id != session);
         self.failed_queues.remove(session);
         if self.compare.as_ref().is_some_and(|c| &c.session == session) {
@@ -398,6 +417,14 @@ impl SessionState {
     #[must_use]
     pub fn change(&self, session: &SessionId, repo: &str, path: &str) -> Option<usize> {
         self.changes_at
+            .get(&(session.clone(), repo.to_owned(), path.to_owned()))
+            .copied()
+    }
+
+    /// The active line-jump highlight for a file in a session, if any.
+    #[must_use]
+    pub fn file_jump(&self, session: &SessionId, repo: &str, path: &str) -> Option<FileJump> {
+        self.file_jump
             .get(&(session.clone(), repo.to_owned(), path.to_owned()))
             .copied()
     }
@@ -526,6 +553,21 @@ pub enum SessionAction {
     OpenTerminalIn { session: SessionId, folder: String },
     /// Open the selected Files path as a tab.
     OpenFile,
+    /// Open a session file beside the terminal, optionally jumping to a
+    /// 1-based line or inclusive line range (TERMLINKS, ATM-16).
+    OpenFileAt {
+        repo: String,
+        path: String,
+        line: Option<(u32, Option<u32>)>,
+    },
+    /// Clear a file-jump highlight when its fade timer fires (matching
+    /// `generation`) or when the user clicks/scrolls (`generation: None`).
+    ClearFileJump {
+        session: SessionId,
+        repo: String,
+        path: String,
+        generation: Option<u64>,
+    },
     /// Text came back from the session's host.
     FileLoaded {
         session: SessionId,
@@ -1422,6 +1464,70 @@ impl Reducer for Sessions {
                 );
                 return self.read_file(session, repo, path);
             }
+            SessionAction::OpenFileAt { repo, path, line } => {
+                let Some(session) = state.open.clone() else {
+                    return Effect::none();
+                };
+                let shells = open_session(state).map_or(0, |s| s.shells.len());
+                let Some(view) = state.view_mut() else {
+                    return Effect::none();
+                };
+                view.file = Some((repo.clone(), path.clone()));
+                view.ensure_groups(shells);
+                view.show_tab(
+                    Tab::File {
+                        repo: repo.clone(),
+                        path: path.clone(),
+                    },
+                    view.focused_group,
+                    true,
+                );
+                let read = self.read_file(session.clone(), repo.clone(), path.clone());
+                if let Some((start, end)) = line.filter(|(start, _)| *start >= 1) {
+                    let generation =
+                        self.queued.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let last = end.unwrap_or(start).max(start);
+                    state.file_jump.insert(
+                        (session.clone(), repo.clone(), path.clone()),
+                        FileJump {
+                            first: start,
+                            last,
+                            generation,
+                        },
+                    );
+                    let clock = self.clients.clock.clone();
+                    let fade = Effect::future(async move {
+                        clock.sleep(FILE_JUMP_FADE).await;
+                        SessionAction::ClearFileJump {
+                            session,
+                            repo,
+                            path,
+                            generation: Some(generation),
+                        }
+                    });
+                    return Effect::merge([read, fade]);
+                }
+                state.file_jump.remove(&(session, repo, path));
+                return read;
+            }
+            SessionAction::ClearFileJump {
+                session,
+                repo,
+                path,
+                generation,
+            } => {
+                let key = (session, repo, path);
+                let should_clear = match generation {
+                    None => true,
+                    Some(expected) => state
+                        .file_jump
+                        .get(&key)
+                        .is_some_and(|jump| jump.generation == expected),
+                };
+                if should_clear {
+                    state.file_jump.remove(&key);
+                }
+            }
             SessionAction::FileLoaded {
                 session,
                 repo,
@@ -1548,6 +1654,7 @@ impl Reducer for Sessions {
                         let key = (id.clone(), repo.clone(), path.clone());
                         state.file_contents.remove(&key);
                         state.changes_at.remove(&key);
+                        state.file_jump.remove(&key);
                         if repo.is_empty() {
                             state.histories.remove(&(id.clone(), path.clone()));
                         }
@@ -2225,6 +2332,22 @@ mod eviction_tests {
             .insert(s2.clone(), Conversation::default());
         state.live.insert((s1.clone(), 0), Arc::new(Vec::new()));
         state.live.insert((s2.clone(), 0), Arc::new(Vec::new()));
+        state.file_jump.insert(
+            (s1.clone(), String::new(), "a.md".into()),
+            FileJump {
+                first: 10,
+                last: 12,
+                generation: 1,
+            },
+        );
+        state.file_jump.insert(
+            (s2.clone(), String::new(), "b.md".into()),
+            FileJump {
+                first: 5,
+                last: 5,
+                generation: 2,
+            },
+        );
 
         state.evict_session(&s1);
 
@@ -2234,8 +2357,139 @@ mod eviction_tests {
         assert!(state.histories.contains_key(&(s2.clone(), "b.md".into())));
         assert!(!state.conversations.contains_key(&s1));
         assert!(state.conversations.contains_key(&s2));
-        assert!(!state.live.contains_key(&(s1, 0)));
-        assert!(state.live.contains_key(&(s2, 0)));
+        assert!(!state.live.contains_key(&(s1.clone(), 0)));
+        assert!(state.live.contains_key(&(s2.clone(), 0)));
+        assert_eq!(state.file_jump(&s1, "", "a.md"), None);
+        assert_eq!(
+            state.file_jump(&s2, "", "b.md"),
+            Some(FileJump {
+                first: 5,
+                last: 5,
+                generation: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn open_file_at_opens_beside_terminal_and_manages_file_jump() {
+        let workspace = humata2_clients_fakes::fixture::design();
+        let session = workspace.sessions[0].id.clone();
+        let clock = Arc::new(tca::TestClock::new());
+        let (clients, _) = humata2_clients_fakes::fake_clients(workspace.clone(), clock);
+        let reducer = Sessions::new(clients);
+        let mut state = SessionState {
+            workspace: Arc::new(workspace),
+            open: Some(session.clone()),
+            ..SessionState::default()
+        };
+
+        // Open a file at a single line: opens in group 1 beside terminal group 0.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenFileAt {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((42, None)),
+            },
+        );
+        let view = state.view().expect("session view");
+        assert_eq!(view.groups.len(), 2);
+        assert_eq!(view.focused_group, 1);
+        assert_eq!(
+            view.selected(1),
+            Some(&Tab::File {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+            })
+        );
+        let first_jump = state
+            .file_jump(&session, "humata/app", "src/lib.rs")
+            .expect("jump set");
+        assert_eq!(first_jump.first, 42);
+        assert_eq!(first_jump.last, 42);
+
+        // Jumping again to a range bumps generation.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenFileAt {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((100, Some(115))),
+            },
+        );
+        let second_jump = state
+            .file_jump(&session, "humata/app", "src/lib.rs")
+            .expect("second jump set");
+        assert_eq!(second_jump.first, 100);
+        assert_eq!(second_jump.last, 115);
+        assert!(second_jump.generation > first_jump.generation);
+
+        // Stale timer generation is ignored.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::ClearFileJump {
+                session: session.clone(),
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                generation: Some(first_jump.generation),
+            },
+        );
+        assert_eq!(
+            state.file_jump(&session, "humata/app", "src/lib.rs"),
+            Some(second_jump)
+        );
+
+        // Matching timer generation clears the highlight.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::ClearFileJump {
+                session: session.clone(),
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                generation: Some(second_jump.generation),
+            },
+        );
+        assert_eq!(state.file_jump(&session, "humata/app", "src/lib.rs"), None);
+
+        // User click/scroll (generation: None) clears regardless of generation.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenFileAt {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((7, None)),
+            },
+        );
+        assert!(state.file_jump(&session, "humata/app", "src/lib.rs").is_some());
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::ClearFileJump {
+                session: session.clone(),
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                generation: None,
+            },
+        );
+        assert_eq!(state.file_jump(&session, "humata/app", "src/lib.rs"), None);
+
+        // Opening without a line clears any existing jump.
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenFileAt {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: Some((12, None)),
+            },
+        );
+        let _ = reducer.reduce(
+            &mut state,
+            SessionAction::OpenFileAt {
+                repo: "humata/app".into(),
+                path: "src/lib.rs".into(),
+                line: None,
+            },
+        );
+        assert_eq!(state.file_jump(&session, "humata/app", "src/lib.rs"), None);
     }
 }
 

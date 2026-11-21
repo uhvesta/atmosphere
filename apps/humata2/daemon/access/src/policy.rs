@@ -6,7 +6,7 @@
 //! the only way a grant appears is the user approving a request with
 //! "Always allow …" for exactly the target the request offered.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 use crate::call::{
@@ -233,7 +233,16 @@ impl Policy {
         if let Some(grant) = self.covering_grant(agent, &need) {
             return Ok(carry_out(Source::Grant(grant), reach, context, away));
         }
-        if decision == Decision::Allow {
+        if matches!(
+            &agent.kind,
+            SessionKind::ChannelDesk(access)
+                if crate::channel_desk::requires_explicit_consent(access, need.capability)
+        ) {
+            return Ok(ask(agent, call, need, reach, context, channel, rules, false));
+        }
+        if decision == Decision::Allow
+            && (!need.narrowed_ask || rules.is_owner_set(need.capability))
+        {
             return Ok(carry_out(Source::Rule, reach, context, away));
         }
         Ok(ask(agent, call, need, reach, context, channel, rules, false))
@@ -382,7 +391,7 @@ impl Policy {
         let old = rules
             .decision(capability)
             .ok_or(PolicyError::NotARule { capability })?;
-        rules.set_decision(capability, decision);
+        rules.set_decision_by_owner(capability, decision);
         Ok(old)
     }
 
@@ -526,6 +535,59 @@ impl Policy {
         })
     }
 
+    /// Plans the one-time PERMAUDIT migration (ATM-33) without mutating the
+    /// policy. Returns `(scope, capability, Decision::Ask, Decision::Allow)`
+    /// for each promoted capability currently at `Ask` that was not explicitly
+    /// set by the owner. Never loosens `Decision::Never`.
+    pub fn plan_permaudit_migration(
+        &self,
+        owner_set_channels: &BTreeMap<ChannelId, BTreeSet<Capability>>,
+        owner_set_defaults: &BTreeSet<Capability>,
+    ) -> Vec<(Option<ChannelId>, Capability, Decision, Decision)> {
+        let mut plan = Vec::new();
+        for &cap in Capability::permaudit_promoted() {
+            if self.new_channels.decision(cap) == Some(Decision::Ask)
+                && !self.new_channels.is_owner_set(cap)
+                && !owner_set_defaults.contains(&cap)
+            {
+                plan.push((None, cap, Decision::Ask, Decision::Allow));
+            }
+        }
+        for (channel_id, rules) in &self.channels {
+            let external_owner_set = owner_set_channels.get(channel_id);
+            for &cap in Capability::permaudit_promoted() {
+                if rules.decision(cap) == Some(Decision::Ask)
+                    && !rules.is_owner_set(cap)
+                    && !external_owner_set.is_some_and(|set| set.contains(&cap))
+                {
+                    plan.push((Some(channel_id.clone()), cap, Decision::Ask, Decision::Allow));
+                }
+            }
+        }
+        plan
+    }
+
+    /// Applies the one-time PERMAUDIT migration (ATM-33) and returns the
+    /// exact list of changes applied.
+    pub fn apply_permaudit_migration(
+        &mut self,
+        owner_set_channels: &BTreeMap<ChannelId, BTreeSet<Capability>>,
+        owner_set_defaults: &BTreeSet<Capability>,
+    ) -> Vec<(Option<ChannelId>, Capability, Decision, Decision)> {
+        let plan = self.plan_permaudit_migration(owner_set_channels, owner_set_defaults);
+        for (scope, cap, _from, to) in &plan {
+            match scope {
+                None => self.new_channels.set_decision(*cap, *to),
+                Some(channel_id) => {
+                    if let Some(rules) = self.channels.get_mut(channel_id) {
+                        rules.set_decision(*cap, *to);
+                    }
+                }
+            }
+        }
+        plan
+    }
+
     fn rules_mut(&mut self, rules: &Rules) -> Result<&mut ChannelRules, PolicyError> {
         match rules {
             Rules::NewChannels => Ok(&mut self.new_channels),
@@ -610,6 +672,11 @@ struct Need {
     asked: Option<GrantTarget>,
     /// What "Always allow …" would grant.
     offer: Option<GrantTarget>,
+    /// True when the call falls outside the default-allow narrowed scope
+    /// (e.g., editing an owner-created board item, or a Desk session starting
+    /// a session in a channel) so default `Allow` falls through to `Ask`
+    /// unless the owner explicitly set `Allow`.
+    narrowed_ask: bool,
 }
 
 fn need(capability: Capability) -> Resolved {
@@ -617,6 +684,7 @@ fn need(capability: Capability) -> Resolved {
         capability,
         asked: None,
         offer: None,
+        narrowed_ask: false,
     })
 }
 
@@ -625,6 +693,16 @@ fn need_exactly(capability: Capability, target: GrantTarget) -> Resolved {
         capability,
         asked: Some(target.clone()),
         offer: Some(target),
+        narrowed_ask: false,
+    })
+}
+
+fn need_exactly_narrowed(capability: Capability, target: GrantTarget) -> Resolved {
+    Resolved::Need(Need {
+        capability,
+        asked: Some(target.clone()),
+        offer: Some(target),
+        narrowed_ask: true,
     })
 }
 
@@ -641,6 +719,7 @@ fn need_files(capability: Capability, place: &Place) -> Resolved {
         capability,
         asked: Some(scope(place.path.clone())),
         offer: Some(scope(place.folder())),
+        narrowed_ask: false,
     })
 }
 
@@ -699,7 +778,7 @@ fn resolve_agent(agent: &Agent, call: &Call) -> Result<Resolved, CheckError> {
 fn read_place(agent: &Agent, place: &Place) -> Resolved {
     let me = &agent.session;
     match &place.root {
-        Root::Outside | Root::Home | Root::Pastes(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
+        Root::Outside | Root::Home | Root::Pastes(_) | Root::AgentState(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::Clone(owner) => {
@@ -741,7 +820,7 @@ fn write_place(agent: &Agent, place: &Place) -> Resolved {
             machine: place.machine.clone(),
             here: me.machine.clone(),
         }),
-        Root::Outside | Root::Home | Root::Pastes(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
+        Root::Outside | Root::Home | Root::Pastes(_) | Root::AgentState(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::MainClone { repo, .. } => refuse(Refusal::MainCloneReadOnly {
@@ -785,7 +864,8 @@ fn copy_files(agent: &Agent, from: &Place, into: &Place) -> Resolved {
         Resolved::Refuse(refusal) => refuse(refusal),
         Resolved::Owned | Resolved::ReviewPush | Resolved::BranchPush => landing,
         Resolved::Need(need) => match need.capability {
-            C::FilesReadOtherSession | C::FilesReadOtherMachine => need_files(C::FilesCopyIn, from),
+            C::FilesReadOtherSession => need_files(C::FilesCopyIn, from),
+            C::FilesReadOtherMachine => need_files(C::FilesReadOtherMachine, from),
             _ => Resolved::Need(need),
         },
     }
@@ -795,6 +875,9 @@ fn board_need(agent: &Agent, board: &BoardRef, act: &BoardAct) -> Resolved {
     let me = &agent.session;
     let created_it = |created_by: &Option<SessionId>| created_by.as_ref() == Some(&me.id);
     let others = || need_exactly(C::ChannelBoardEditOthers, GrantTarget::Board(board.clone()));
+    let others_narrowed = || {
+        need_exactly_narrowed(C::ChannelBoardEditOthers, GrantTarget::Board(board.clone()))
+    };
     // Outside its channel: reading is GlobalRead, any write asks (D155).
     let elsewhere = || match act {
         BoardAct::Read => need(C::GlobalRead),
@@ -810,7 +893,8 @@ fn board_need(agent: &Agent, board: &BoardRef, act: &BoardAct) -> Resolved {
             BoardAct::Read => need(C::ChannelRead),
             BoardAct::Add => need(C::ChannelBoardAdd),
             BoardAct::Edit { created_by } if created_it(created_by) => need(C::ChannelBoardEditOwn),
-            BoardAct::Edit { .. } => others(),
+            BoardAct::Edit { created_by: None } => others_narrowed(),
+            BoardAct::Edit { created_by: Some(_) } => others(),
         },
         BoardRef::Session(session) if session.id == me.id => match act {
             BoardAct::Read => Resolved::Owned,
@@ -819,7 +903,8 @@ fn board_need(agent: &Agent, board: &BoardRef, act: &BoardAct) -> Resolved {
         BoardRef::Session(_) => match act {
             BoardAct::Read => need(C::ChannelRead),
             BoardAct::Edit { created_by } if created_it(created_by) => need(C::ChannelBoardEditOwn),
-            BoardAct::Add | BoardAct::Edit { .. } => others(),
+            BoardAct::Add | BoardAct::Edit { created_by: None } => others_narrowed(),
+            BoardAct::Edit { created_by: Some(_) } => others(),
         },
     }
 }
@@ -945,7 +1030,11 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
             // any; its new-channel rule decides, Ask me by default, and no
             // Desk switch allows it (DK-10, D910).
             if matches!(agent.kind, SessionKind::Desk(_)) {
-                need_exactly(capability, target)
+                if capability == C::SessionStartSameMachine {
+                    need_exactly_narrowed(capability, target)
+                } else {
+                    need_exactly(capability, target)
+                }
             } else {
                 in_channel(agent, channel, need_exactly(capability, target))
             }
@@ -1222,6 +1311,7 @@ fn file_hard_limit(call: &Call) -> Option<Refusal> {
         | Root::ChannelFolder(_)
         | Root::Home
         | Root::Pastes(_)
+        | Root::AgentState(_)
         | Root::Received
         | Root::Outside => None,
     };

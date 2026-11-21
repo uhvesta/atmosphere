@@ -337,6 +337,10 @@ impl AddMachineDialog {
         self.sync_terminal(state, look, window, cx);
         self.host.set(&state.typed, window, cx);
         self.name.set(&state.name, window, cx);
+        let placeholder = state.name_placeholder();
+        self.name.input.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx);
+        });
         let title = format!(
             "Add machine · {}",
             state.display_name().unwrap_or("new machine")

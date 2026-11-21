@@ -138,18 +138,25 @@ impl Cache {
         self.wake.notify_one();
     }
 
-    /// Watches the session's folder and clones; refreshes when the set of
-    /// watched paths changes (e.g. a repo is added to the session).
+    /// Watches the session's folder, clones, and agent artifact directories;
+    /// refreshes when the set of watched paths changes (e.g. a repo is added
+    /// or the conversation id rotates).
     fn watch(
         self: &Arc<Self>,
         session: &str,
         folder: Option<&Path>,
         repos: &[SessionRepo],
         skip_dirs: &HashSet<String>,
+        agent_dirs: &[PathBuf],
     ) {
         let mut wanted_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
         if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
             wanted_paths.insert(folder.to_owned());
+        }
+        for dir in agent_dirs {
+            if !dir.as_os_str().is_empty() && dir.exists() {
+                wanted_paths.insert(dir.clone());
+            }
         }
         let mut watching = lock(&self.watching);
         if watching
@@ -186,6 +193,24 @@ impl Cache {
                     cache.touch(&id, &root, canon.as_deref(), &skip, event);
                 })
                 && watcher.watch(&repo.path, RecursiveMode::Recursive).is_ok()
+            {
+                watchers.push(watcher);
+            }
+        }
+        for dir in agent_dirs {
+            if dir.as_os_str().is_empty() || !dir.exists() {
+                continue;
+            }
+            let cache = Arc::clone(self);
+            let id = session.to_owned();
+            let root = dir.clone();
+            let canon = dir.canonicalize().ok();
+            let skip = empty_skip.clone();
+            if let Ok(mut watcher) =
+                notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    cache.touch(&id, &root, canon.as_deref(), &skip, event);
+                })
+                && watcher.watch(dir, RecursiveMode::Recursive).is_ok()
             {
                 watchers.push(watcher);
             }
@@ -341,6 +366,7 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
             .map(|record| (record.id.clone(), record.folder.clone()))
             .collect();
         let wanted = |session: &str| only.as_ref().is_none_or(|only| only.contains_key(session));
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         let mut found = Vec::new();
         let mut watched = HashSet::new();
         let empty_skip = HashSet::new();
@@ -353,7 +379,14 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
             }
             let skip_dirs = clone_dir_names(folder, &detail.repos);
             let session_folder = (!folder.as_os_str().is_empty()).then_some(folder.as_path());
-            cache.watch(&detail.session, session_folder, &detail.repos, &skip_dirs);
+            let agent_dirs = crate::files::session_agent_watch_dirs(&store, &home, &detail.session);
+            cache.watch(
+                &detail.session,
+                session_folder,
+                &detail.repos,
+                &skip_dirs,
+                &agent_dirs,
+            );
             watched.insert(detail.session.clone());
             // Bug 23: the watcher wakes this look on every file change in the
             // session folder or clone, an agent's edits included. Only the paths
@@ -402,6 +435,32 @@ async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
                     &detail.session,
                     Some(&named),
                     &repo.path,
+                    &touched,
+                    rescan,
+                    &empty_skip,
+                );
+            }
+            if let Some(agent_root) = agent_dirs.first().filter(|p| p.exists()) {
+                let agent_repo = pb::RepoRef {
+                    owner: "@agent-state".to_owned(),
+                    name: String::new(),
+                };
+                let canon = dirty
+                    .filter(|dirty| !dirty.paths.is_empty())
+                    .and_then(|_| agent_root.canonicalize().ok());
+                let touched: Vec<String> = dirty
+                    .map(|dirty| {
+                        dirty
+                            .paths
+                            .iter()
+                            .filter_map(|path| inside(agent_root, canon.as_deref(), path))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                file_changes.look(
+                    &detail.session,
+                    Some(&agent_repo),
+                    agent_root,
                     &touched,
                     rescan,
                     &empty_skip,
@@ -813,5 +872,32 @@ mod tests {
             parsed.dirty_paths,
             vec!["new name.rs", "src/lib.rs", "untracked.txt"]
         );
+    }
+
+    #[test]
+    fn cache_watch_rotates_agent_dirs_on_conversation_change() {
+        let root = tempfile::tempdir().unwrap();
+        let old_dir = root.path().join("conv-old");
+        let new_dir = root.path().join("conv-new");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        let cache = Arc::new(Cache::default());
+        let empty_skip = HashSet::new();
+        cache.watch("s1", None, &[], &empty_skip, std::slice::from_ref(&old_dir));
+        {
+            let watching = lock(&cache.watching);
+            let (paths, _) = watching.get("s1").unwrap();
+            assert!(paths.contains(&old_dir));
+            assert!(!paths.contains(&new_dir));
+        }
+
+        cache.watch("s1", None, &[], &empty_skip, std::slice::from_ref(&new_dir));
+        {
+            let watching = lock(&cache.watching);
+            let (paths, _) = watching.get("s1").unwrap();
+            assert!(!paths.contains(&old_dir));
+            assert!(paths.contains(&new_dir));
+        }
     }
 }

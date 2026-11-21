@@ -847,12 +847,6 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
         group.insert("hooks".to_owned(), hooks);
         serde_json::Value::Array(vec![serde_json::Value::Object(group)])
     };
-    let mut permission = group(None, "needs-input");
-    // HOOKS (D191): after the async needs-input report, the blocking hook
-    // that asks in the Inbox and holds for the answer.
-    if let Some(hooks) = permission[0]["hooks"].as_array_mut() {
-        hooks.push(humata2_agent_hooks::claude_permission_hook(humata, socket));
-    }
     // D799: every session start (startup, resume, clear, compact, fork)
     // names its conversation, as the prompt and the turn's end do.
     let mut session_start = group(None, "idle");
@@ -869,6 +863,9 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
         "matcher": "permission_prompt|elicitation_dialog",
         "hooks": [humata2_agent_hooks::claude_notification_hook(humata, socket)],
     }]);
+    // ATM-62: packaged hooks never gate generic agent permissions (no
+    // PermissionRequest hook). Claude's own permission engine handles generic
+    // Bash/git/CLI operations; Humata owns only Humata-controlled actions.
     serde_json::json!({
         "hooks": {
             "Notification": notification,
@@ -881,7 +878,6 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
                 "matcher": "AskUserQuestion",
                 "hooks": [humata2_agent_hooks::claude_question_hook(humata, socket)],
             }],
-            "PermissionRequest": permission,
             "PermissionDenied": group(None, "working"),
             "Elicitation": group(None, "needs-input"),
             "ElicitationResult": group(None, "working"),
@@ -1135,7 +1131,6 @@ mod tests {
             ("PostToolBatch", "working"),
             ("Stop", "idle"),
             ("StopFailure", "idle"),
-            ("PermissionRequest", "needs-input"),
             ("PermissionDenied", "working"),
             ("Elicitation", "needs-input"),
             ("ElicitationResult", "working"),
@@ -1143,12 +1138,14 @@ mod tests {
             assert_eq!(state_of(event), state, "{event}");
             assert_eq!(hooks[event][0]["hooks"][0]["async"], true, "{event}");
         }
+        // ATM-62: packaged hooks never gate generic agent permissions.
+        assert!(!hooks.contains_key("PermissionRequest"));
         // Every SessionStart source fires, `clear` included (D799), and
         // Claude's own questions are held for the Inbox (D796).
         assert!(hooks["SessionStart"][0].get("matcher").is_none());
         assert!(hooks["Stop"][0].get("matcher").is_none());
         assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
-        assert_eq!(hooks.len(), 11);
+        assert_eq!(hooks.len(), 10);
         // D798: Claude's own "waiting" prompts are reported, without
         // blocking it.
         assert_eq!(

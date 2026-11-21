@@ -24,6 +24,12 @@ use humata2_todo::{
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
+pub mod milestone;
+pub use milestone::{
+    MilestoneInfo, MilestoneStep, is_todo_milestone, is_workspace_milestone, todo_milestone,
+    workspace_milestone,
+};
+
 const WATCH: &str = "todo-watch";
 
 /// A known workspace channel's ID and human-readable display name.
@@ -542,6 +548,21 @@ impl TodoState {
         humata2_todo::left_out(&self.all(), &self.view.filter.to_filter(), self.today)
     }
 
+    /// Returns `true` when `key` refers to a milestone item (non-empty `depends_on`).
+    #[must_use]
+    pub fn is_milestone(&self, key: &str) -> bool {
+        self.items
+            .iter()
+            .find(|e| e.todo.key == key)
+            .is_some_and(|e| is_todo_milestone(&e.todo))
+    }
+
+    /// Resolves milestone metadata and dependency-ordered steps for `key`.
+    #[must_use]
+    pub fn milestone(&self, key: &str) -> Option<MilestoneInfo> {
+        todo_milestone(&self.items, key)
+    }
+
     fn position(&self, key: &str) -> Option<usize> {
         self.items.iter().position(|e| e.todo.key == key)
     }
@@ -688,6 +709,8 @@ pub enum TodoAction {
     /// Starts a new session for this item (by key). The app routes it to
     /// `AppAction::StartNewForItem`; the list does not change.
     StartSession(String),
+    /// Starts a plain session for this item without pre-filling a milestone brief.
+    StartPlainSession(String),
     /// Opens the session an item belongs to. The app routes it.
     OpenSession(String),
     /// Opens the channel an item belongs to. The app routes it.
@@ -1123,6 +1146,7 @@ impl Reducer for Todo {
             | TodoAction::OpenChannel(_)
             | TodoAction::StartReview(_)
             | TodoAction::StartSession(_)
+            | TodoAction::StartPlainSession(_)
             | TodoAction::ShowHistory(_)
             | TodoAction::OpenEvidence(_) => Effect::none(),
             TodoAction::ShowWhatChanged => {

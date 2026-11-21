@@ -172,7 +172,7 @@ pub struct AddMachineState {
     pub typed: String,
     /// The Host pop-up is open (frame 56).
     pub host_menu: bool,
-    /// The name to give the machine; empty means the host's own.
+    /// The name to give the machine; empty uses the host name for SSH, auto-names Lima VMs (`lima-1`, `lima-2`, …), or requires a name for other providers.
     pub name: String,
     /// The operation, once the add has begun.
     pub operation: Option<OperationId>,
@@ -212,6 +212,18 @@ impl AddMachineState {
         match &self.choice {
             Some(Choice::Host(host)) if !host.trim().is_empty() => Some(host.trim()),
             _ => None,
+        }
+    }
+
+    /// Placeholder text for the machine name field, tailored to the selected target.
+    #[must_use]
+    pub fn name_placeholder(&self) -> &'static str {
+        match self.effective_choice() {
+            Some(Choice::Provider { id, .. }) if id == "lima" => {
+                "Auto-named (lima-1, lima-2, …) if blank"
+            }
+            Some(Choice::Provider { .. }) => "Name for the machine",
+            _ => "Leave empty to use the host name",
         }
     }
 

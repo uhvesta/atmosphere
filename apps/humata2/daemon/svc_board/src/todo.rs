@@ -4003,7 +4003,13 @@ mod tests {
     #[test]
     fn an_agent_suggests_by_default_but_its_close_waits_for_approval() {
         let dir = tempfile::tempdir().unwrap();
-        let (svc, _guard, agent) = ruled_svc(&dir);
+        let (svc, guard, agent) = ruled_svc(&dir);
+        // Under PERMAUDIT, TodoClose defaults to Allow; explicitly gate it to Ask
+        // here to verify the approval-waiting path.
+        guard.set(
+            humata2_access::Capability::TodoClose,
+            humata2_access::Decision::Ask,
+        );
         let key = key_of(&done(agent_create(&svc, &agent).unwrap()));
         let asked = svc
             .update_todo_in(&agent, &close_request(&key), false, now())

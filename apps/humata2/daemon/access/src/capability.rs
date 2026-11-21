@@ -208,15 +208,36 @@ impl Capability {
         Self::HostControl,
     ];
 
+    /// The 10 safe local same-channel capabilities promoted from `AskMe` to
+    /// `DefaultAllow` by the PERMAUDIT policy audit (ATM-30).
+    pub fn permaudit_promoted() -> &'static [Capability] {
+        &[
+            Self::TodoClose,
+            Self::ChannelBoardEditOthers,
+            Self::FilesReadOtherSession,
+            Self::FilesCopyIn,
+            Self::SessionNote,
+            Self::SessionStartSameMachine,
+            Self::PrReviewStart,
+            Self::OwnSessionManage,
+            Self::OwnSessionEnd,
+            Self::TrashRestore,
+        ]
+    }
+
     pub fn tier(self) -> Tier {
         match self {
             Self::OwnBoardWrite
             | Self::TodoSuggest
+            | Self::TodoClose
             | Self::ChannelRead
             | Self::ChannelBoardAdd
             | Self::ChannelBoardEditOwn
+            | Self::ChannelBoardEditOthers
             | Self::SharedWrite
             | Self::FilesFetchLocal
+            | Self::FilesReadOtherSession
+            | Self::FilesCopyIn
             | Self::ViewsPrepare
             | Self::ReviewDraft
             | Self::InboxAsk
@@ -225,24 +246,20 @@ impl Capability {
             | Self::ReviewOrder
             | Self::CommentReply
             | Self::CommentResolve
-            | Self::GlobalRead => Tier::DefaultAllow,
-            Self::TodoClose
-            | Self::ChannelBoardEditOthers
-            | Self::GlobalBoardWrite
-            | Self::FilesReadOtherSession
-            | Self::FilesReadOtherMachine
-            | Self::FilesCopyIn
+            | Self::GlobalRead
             | Self::SessionNote
-            | Self::SessionType
             | Self::SessionStartSameMachine
-            | Self::SessionStartOtherMachine
             | Self::PrReviewStart
             | Self::OwnSessionManage
             | Self::OwnSessionEnd
+            | Self::TrashRestore => Tier::DefaultAllow,
+            Self::GlobalBoardWrite
+            | Self::FilesReadOtherMachine
+            | Self::SessionType
+            | Self::SessionStartOtherMachine
             | Self::SessionMove
             | Self::GitPush
             | Self::MachineProvision
-            | Self::TrashRestore
             | Self::ChannelCreate
             | Self::ChannelRepoAdd
             | Self::SessionStopOther => Tier::AskMe,
@@ -468,10 +485,17 @@ impl fmt::Display for Capability {
 }
 
 /// One channel's rules and its While I'm away rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub struct ChannelRules {
     decisions: std::collections::BTreeMap<Capability, Decision>,
     away: AwayRule,
+    owner_set: BTreeSet<Capability>,
+}
+
+impl PartialEq for ChannelRules {
+    fn eq(&self, other: &Self) -> bool {
+        self.decisions == other.decisions && self.away == other.away
+    }
 }
 
 impl ChannelRules {
@@ -488,6 +512,7 @@ impl ChannelRules {
         Self {
             decisions,
             away: AwayRule::Wait,
+            owner_set: BTreeSet::new(),
         }
     }
 
@@ -508,6 +533,16 @@ impl ChannelRules {
 
     pub(crate) fn set_decision(&mut self, capability: Capability, decision: Decision) {
         self.decisions.insert(capability, decision);
+    }
+
+    pub(crate) fn set_decision_by_owner(&mut self, capability: Capability, decision: Decision) {
+        self.decisions.insert(capability, decision);
+        self.owner_set.insert(capability);
+    }
+
+    /// True when the owner explicitly set this capability's rule.
+    pub fn is_owner_set(&self, capability: Capability) -> bool {
+        self.owner_set.contains(&capability)
     }
 
     pub(crate) fn set_away(&mut self, away: AwayRule) {
@@ -532,9 +567,9 @@ mod todo_rules_tests {
     use super::*;
 
     #[test]
-    fn suggesting_starts_allowed_and_closing_starts_at_ask_me() {
+    fn suggesting_and_closing_start_allowed() {
         assert_eq!(Capability::TodoSuggest.default_decision(), Some(Decision::Allow));
-        assert_eq!(Capability::TodoClose.default_decision(), Some(Decision::Ask));
+        assert_eq!(Capability::TodoClose.default_decision(), Some(Decision::Allow));
         assert!(Capability::ALL.contains(&Capability::TodoSuggest));
         assert!(Capability::ALL.contains(&Capability::TodoClose));
     }

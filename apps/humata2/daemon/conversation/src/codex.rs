@@ -241,7 +241,7 @@ use crate::files::{
 };
 use crate::{
     Adapter, Conversation, ConversationError, ConversationFile, FileRole, Format, GitHead,
-    Packed, PackedFile, Placement, ThreadGit, Turn,
+    Packed, PackedFile, Placement, SessionArtifacts, ThreadGit, Turn,
 };
 
 /// The biggest file a carry rewrites. A bigger one is refused, never copied
@@ -420,6 +420,28 @@ impl CodexRollout {
 }
 
 impl Adapter for CodexRollout {
+    fn artifacts_folder(&self, at: &Placement, id: &str) -> Result<SessionArtifacts, ConversationError> {
+        check_id(id)?;
+        let sessions = codex_dir(at).join(SESSIONS);
+        let mut root = sessions.clone();
+        'search: for year in folders_in(&sessions)? {
+            for month in folders_in(&year)? {
+                for day in folders_in(&month)? {
+                    if children(&day)?.into_iter().any(|path| is_rollout_of(&path, id)) {
+                        root = day;
+                        break 'search;
+                    }
+                }
+            }
+        }
+        Ok(SessionArtifacts {
+            provider: "Codex",
+            watch_dirs: vec![root.clone()],
+            root,
+            side_paths: Vec::new(),
+        })
+    }
+
     /// The one rollout `sessions/*/*/*/rollout-*-<id>.jsonl` under the
     /// Codex dir of `at`. The id must be a lowercase hyphenated UUID.
     fn locate(&self, at: &Placement, id: &str) -> Result<Conversation, ConversationError> {

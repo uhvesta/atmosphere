@@ -32,6 +32,8 @@ pub struct EditorView {
     pub handle: ScrollHandle,
     /// Set by a step; the next frame that can scroll shows the cursor's change.
     pending: Rc<Cell<bool>>,
+    /// The last terminal file-link jump generation that was scrolled into view.
+    scrolled_jump: Rc<Cell<Option<u64>>>,
 }
 
 impl EditorView {
@@ -39,6 +41,7 @@ impl EditorView {
         Self {
             handle: ScrollHandle::new(),
             pending: Rc::new(Cell::new(false)),
+            scrolled_jump: Rc::new(Cell::new(None)),
         }
     }
 }
@@ -186,6 +189,7 @@ pub fn body(
         })
         .collect();
     let sendable = state.comments.sendable(&session.id).len();
+    let jump = state.session.file_jump(&session.id, repo, path);
     let count = starts.len();
     let current = cursor.filter(|at| *at < count);
     if view.pending.get() {
@@ -197,6 +201,12 @@ pub fn body(
             }
             None => view.pending.set(false),
         }
+    } else if let Some(jump) = jump
+        && view.scrolled_jump.get() != Some(jump.generation)
+        && let Some(index) = slot_of(&slots, Side::New, jump.first)
+        && reveal(&view.handle, index)
+    {
+        view.scrolled_jump.set(Some(jump.generation));
     }
 
     let mut header = row()
@@ -222,6 +232,41 @@ pub fn body(
         header = header.child(counter(ui, &view, repo, path, current, count, look));
     }
 
+    let clear_jump_click = jump.map(|_| {
+        let ui = ui.clone();
+        let session = session.id.clone();
+        let repo = repo.to_owned();
+        let path = path.to_owned();
+        move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            ui.send(
+                AppAction::Session(SessionAction::ClearFileJump {
+                    session: session.clone(),
+                    repo: repo.clone(),
+                    path: path.clone(),
+                    generation: None,
+                }),
+                cx,
+            );
+        }
+    });
+    let clear_jump_scroll = jump.map(|_| {
+        let ui = ui.clone();
+        let session = session.id.clone();
+        let repo = repo.to_owned();
+        let path = path.to_owned();
+        move |_: &ScrollEvent, _: &mut Window, cx: &mut App| {
+            ui.send(
+                AppAction::Session(SessionAction::ClearFileJump {
+                    session: session.clone(),
+                    repo: repo.clone(),
+                    path: path.clone(),
+                    generation: None,
+                }),
+                cx,
+            );
+        }
+    });
+
     col()
         .id("session-file")
         .role(Role::Document)
@@ -245,6 +290,12 @@ pub fn body(
                 .line_height(px(18.))
                 .track_scroll(&view.handle)
                 .overflow_y_scroll()
+                .when_some(clear_jump_click, |rows, handler| {
+                    rows.on_mouse_down(MouseButton::Left, handler)
+                })
+                .when_some(clear_jump_scroll, |rows, handler| {
+                    rows.on_scroll(handler)
+                })
                 .children(lines),
         )
         .when(sendable > 0, |column| {
@@ -268,6 +319,8 @@ pub fn plain_body(
     documents: &Documents,
     look: Look,
 ) -> AnyElement {
+    let view = documents.editor_view(&session.id, repo, path);
+    let jump = state.session.file_jump(&session.id, repo, path);
     let display_path = if repo.is_empty() {
         path.to_owned()
     } else {
@@ -314,6 +367,47 @@ pub fn plain_body(
         })
         .collect();
     let sendable = state.comments.sendable(&session.id).len();
+    if let Some(jump) = jump
+        && view.scrolled_jump.get() != Some(jump.generation)
+        && let Some(index) = slot_of(&slots, Side::New, jump.first)
+        && reveal(&view.handle, index)
+    {
+        view.scrolled_jump.set(Some(jump.generation));
+    }
+    let clear_jump_click = jump.map(|_| {
+        let ui = ui.clone();
+        let session = session.id.clone();
+        let repo = repo.to_owned();
+        let path = path.to_owned();
+        move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            ui.send(
+                AppAction::Session(SessionAction::ClearFileJump {
+                    session: session.clone(),
+                    repo: repo.clone(),
+                    path: path.clone(),
+                    generation: None,
+                }),
+                cx,
+            );
+        }
+    });
+    let clear_jump_scroll = jump.map(|_| {
+        let ui = ui.clone();
+        let session = session.id.clone();
+        let repo = repo.to_owned();
+        let path = path.to_owned();
+        move |_: &ScrollEvent, _: &mut Window, cx: &mut App| {
+            ui.send(
+                AppAction::Session(SessionAction::ClearFileJump {
+                    session: session.clone(),
+                    repo: repo.clone(),
+                    path: path.clone(),
+                    generation: None,
+                }),
+                cx,
+            );
+        }
+    });
 
     col()
         .id("session-file")
@@ -344,7 +438,14 @@ pub fn plain_body(
                 .font_family("Menlo")
                 .text_size(px(12.))
                 .line_height(px(18.))
+                .track_scroll(&view.handle)
                 .overflow_y_scroll()
+                .when_some(clear_jump_click, |rows, handler| {
+                    rows.on_mouse_down(MouseButton::Left, handler)
+                })
+                .when_some(clear_jump_scroll, |rows, handler| {
+                    rows.on_scroll(handler)
+                })
                 .children(lines),
         )
         .when(sendable > 0, |column| {
@@ -396,6 +497,7 @@ enum LineHighlight {
 
 struct LineHighlights {
     editing: Option<(Side, u32, u32)>,
+    jump: Option<(u32, u32)>,
     comments: Vec<(Side, u32, u32)>,
     lit_color: u32,
     comment_lit_color: u32,
@@ -420,6 +522,10 @@ impl LineHighlights {
             let (first, last) = open.anchor.line_range();
             (open.anchor.side, first, last)
         });
+        let jump = state
+            .session
+            .file_jump(session, repo, path)
+            .map(|jump| (jump.first, jump.last));
         let comments = state
             .comments
             .on_file(session, repo, path)
@@ -440,6 +546,7 @@ impl LineHighlights {
         let comment_lit_color = blend_color(look.term, look.accent, if dark { 0.12 } else { 0.06 });
         Self {
             editing: editing_span,
+            jump,
             comments,
             lit_color,
             comment_lit_color,
@@ -460,6 +567,11 @@ impl LineHighlights {
         };
         if let Some((side, first, last)) = self.editing
             && matches_span(side, first, last)
+        {
+            return Some(LineHighlight::Active);
+        }
+        if let Some((first, last)) = self.jump
+            && matches_span(Side::New, first, last)
         {
             return Some(LineHighlight::Active);
         }
@@ -1192,6 +1304,7 @@ mod tests {
     fn line_highlights_mark_active_selection_and_saved_multi_line_comments() {
         let highlights = LineHighlights {
             editing: Some((Side::New, 10, 14)),
+            jump: Some((30, 32)),
             comments: vec![(Side::New, 20, 24)],
             lit_color: 0xeaf2ff,
             comment_lit_color: 0xf4f8ff,
@@ -1219,8 +1332,18 @@ mod tests {
                 "line {n}"
             );
         }
+        assert_eq!(highlights.for_line(&line(29), Some(Side::New)), None);
+        for n in 30..=32 {
+            assert_eq!(
+                highlights.for_line(&line(n), Some(Side::New)),
+                Some(LineHighlight::Active),
+                "jump line {n}"
+            );
+        }
+        assert_eq!(highlights.for_line(&line(33), Some(Side::New)), None);
         // Old side filter does not match New-side highlights.
         assert_eq!(highlights.for_line(&line(12), Some(Side::Old)), None);
         assert_eq!(highlights.for_line(&line(22), Some(Side::Old)), None);
+        assert_eq!(highlights.for_line(&line(31), Some(Side::Old)), None);
     }
 }

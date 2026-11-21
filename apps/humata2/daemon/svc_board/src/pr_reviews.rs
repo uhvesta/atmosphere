@@ -7,11 +7,13 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use humata2_daemon_ports::{Caller, UserVia};
-use humata2_rpc_kit::{blocking, internal, lock, now_ms, say};
+use humata2_rpc_kit::{blocking, internal, invalid_field, lock, now_ms, say};
 use humata2_todo::State;
+use serde::{Deserialize, Serialize};
 use tonic::Status;
 
 use crate::pb;
+use crate::pb::invalid_field::Problem;
 use crate::ports::{FoundPr, ReviewRequestsPort};
 use crate::todo::{Entry, TodoApplied};
 use crate::todo_fields::{self as saved, PrRow, ReviewRow};
@@ -19,6 +21,59 @@ use crate::BoardSvc;
 
 /// How long a read of GitHub is reused before the next one.
 const STALE_MS: i64 = 10 * 60 * 1000;
+
+/// Store setting key for manually watched remote PR URLs.
+const MANUAL_WATCHED_PRS_KEY: &str = "todo.manual_watched_prs";
+
+/// A remote PR manually added to the Reviews inbox by URL or `owner/repo#N`
+/// without auto-creating a To-do.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ManualWatchedPr {
+    pub owner: String,
+    pub name: String,
+    pub number: u32,
+    pub url: String,
+    pub added_at_ms: i64,
+}
+
+/// Parses either `https://github.com/owner/repo/pull/123` (or `http://...`)
+/// or `owner/repo#123` into `(owner, name, number, canonical_url)`.
+fn parse_manual_pr_ref(input: &str) -> Option<(String, String, u32, String)> {
+    let trimmed = input.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+    {
+        let mut parts = rest.split('/');
+        let owner = parts.next()?.trim();
+        let name = parts.next()?.trim();
+        let pull = parts.next()?.trim();
+        let num_part = parts.next()?.split(['?', '#']).next()?.trim();
+        if owner.is_empty() || name.is_empty() || pull != "pull" {
+            return None;
+        }
+        let number: u32 = num_part.parse().ok()?;
+        if number == 0 {
+            return None;
+        }
+        let url = format!("https://github.com/{owner}/{name}/pull/{number}");
+        return Some((owner.to_owned(), name.to_owned(), number, url));
+    }
+    let (repo, num_str) = trimmed.split_once('#')?;
+    let (owner, name) = repo.split_once('/')?;
+    let owner = owner.trim();
+    let name = name.trim();
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    let number: u32 = num_str.trim().parse().ok()?;
+    if number == 0 {
+        return None;
+    }
+    let url = format!("https://github.com/{owner}/{name}/pull/{number}");
+    Some((owner.to_owned(), name.to_owned(), number, url))
+}
 
 /// The pull requests of one repository that are reviewed together: one
 /// pull request, or a stack of them.
@@ -391,6 +446,94 @@ impl BoardSvc {
         state.last_ms = Some(started);
         state.running = false;
     }
+
+    /// Manually watches a remote PR URL (`https://github.com/owner/repo/pull/N`
+    /// or `owner/repo#N`) for the Reviews inbox without auto-creating a To-do.
+    pub fn watch_remote_pr_url(
+        &self,
+        pr_url_or_ref: &str,
+        now: i64,
+    ) -> Result<ManualWatchedPr, Status> {
+        let Some((owner, name, number, url)) = parse_manual_pr_ref(pr_url_or_ref) else {
+            return Err(invalid_field(
+                "pr_url",
+                Problem::BadFormat,
+                format!("'{pr_url_or_ref}' is not a valid GitHub PR URL or owner/repo#N reference"),
+                "use https://github.com/owner/repo/pull/123 or owner/repo#123",
+            ));
+        };
+        let _write = lock(&self.writes);
+        let (mut list, rev) = self.load_manual_watched_prs_locked()?;
+        if let Some(existing) = list
+            .iter()
+            .find(|pr| pr.owner == owner && pr.name == name && pr.number == number)
+        {
+            return Ok(existing.clone());
+        }
+        let entry = ManualWatchedPr {
+            owner,
+            name,
+            number,
+            url,
+            added_at_ms: now,
+        };
+        list.push(entry.clone());
+        self.save_manual_watched_prs_locked(&list, rev + 1)?;
+        Ok(entry)
+    }
+
+    /// Stops manually watching a remote PR. Returns `true` if it was present.
+    pub fn unwatch_remote_pr(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u32,
+    ) -> Result<bool, Status> {
+        let _write = lock(&self.writes);
+        let (mut list, rev) = self.load_manual_watched_prs_locked()?;
+        let before = list.len();
+        list.retain(|pr| !(pr.owner == owner && pr.name == name && pr.number == number));
+        let removed = list.len() != before;
+        if removed {
+            self.save_manual_watched_prs_locked(&list, rev + 1)?;
+        }
+        Ok(removed)
+    }
+
+    /// Returns all manually watched remote PRs for the Reviews inbox.
+    pub fn manual_watched_prs(&self) -> Result<Vec<ManualWatchedPr>, Status> {
+        let _write = lock(&self.writes);
+        let (list, _) = self.load_manual_watched_prs_locked()?;
+        Ok(list)
+    }
+
+    fn load_manual_watched_prs_locked(&self) -> Result<(Vec<ManualWatchedPr>, u64), Status> {
+        let saved = self
+            .store
+            .setting(MANUAL_WATCHED_PRS_KEY)
+            .map_err(|e| internal(format!("couldn't read manual watched PRs: {e}"), ""))?;
+        match saved {
+            Some(row) => {
+                let list: Vec<ManualWatchedPr> = serde_json::from_str(&row.value).map_err(|e| {
+                    internal(format!("saved manual watched PRs are unreadable: {e}"), "")
+                })?;
+                Ok((list, row.revision))
+            }
+            None => Ok((Vec::new(), 0)),
+        }
+    }
+
+    fn save_manual_watched_prs_locked(
+        &self,
+        list: &[ManualWatchedPr],
+        revision: u64,
+    ) -> Result<(), Status> {
+        let encoded = serde_json::to_string(list)
+            .map_err(|e| internal(format!("couldn't encode manual watched PRs: {e}"), ""))?;
+        self.store
+            .put_setting(MANUAL_WATCHED_PRS_KEY, &encoded, revision)
+            .map_err(|e| internal(format!("couldn't save manual watched PRs: {e}"), ""))
+    }
 }
 
 /// Where review requests are read from, and when they last were.
@@ -656,5 +799,35 @@ mod tests {
         settle(&svc).await;
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
         assert_eq!(open_count(&svc), 1);
+    }
+
+    #[test]
+    fn manual_watched_pr_url_tracks_without_creating_a_todo() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_svc(&dir);
+
+        let added = svc
+            .watch_remote_pr_url("https://github.com/acme/api/pull/412", 1_000)
+            .unwrap();
+        assert_eq!(added.owner, "acme");
+        assert_eq!(added.name, "api");
+        assert_eq!(added.number, 412);
+        assert_eq!(added.url, "https://github.com/acme/api/pull/412");
+
+        // Adding by short ref is idempotent.
+        let dup = svc.watch_remote_pr_url("acme/api#412", 2_000).unwrap();
+        assert_eq!(dup, added);
+        assert_eq!(svc.manual_watched_prs().unwrap().len(), 1);
+
+        // No To-do was auto-created.
+        assert!(svc.entries(&user()).unwrap().is_empty());
+
+        // Invalid input is rejected.
+        assert!(svc.watch_remote_pr_url("not-a-pr", 3_000).is_err());
+
+        // Unwatch removes it.
+        assert!(svc.unwatch_remote_pr("acme", "api", 412).unwrap());
+        assert!(!svc.unwatch_remote_pr("acme", "api", 412).unwrap());
+        assert!(svc.manual_watched_prs().unwrap().is_empty());
     }
 }

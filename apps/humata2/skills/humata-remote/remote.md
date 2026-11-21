@@ -211,7 +211,8 @@ The file has one `[providers.<id>]` table per provider:
 | --- | --- |
 | See your channel's machines and their sessions | Allowed |
 | Read files on another machine | Asks the owner |
-| Copy files in from another session or machine | Asks the owner |
+| Copy files in from another machine | Asks the owner |
+| Read or copy files from another session on your machine in your channel | Allowed |
 | Fetch from `shared/`, the channel folder or a main clone on your machine into your clone | Allowed |
 | Write into `shared/` on your machine | Allowed |
 | Start or fork a session on another machine | Asks the owner |

@@ -398,6 +398,26 @@ impl Work {
             .is_some_and(|provider| provider.has(Action::Delete))
     }
 
+    /// Resolves the machine name for a provider add against all known machine
+    /// entries (`Ready`, `Adding`, and `Removing`).
+    pub fn resolve_provider_name(
+        &self,
+        provider_id: &str,
+        requested_name: &str,
+    ) -> Result<String, ManageError> {
+        let existing_names: Vec<String> = self
+            .machines
+            .list()?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        Ok(resolve_provider_machine_name(
+            provider_id,
+            requested_name,
+            &existing_names,
+        ))
+    }
+
     /// The provider commands `entry`'s provider defines, as the machine
     /// page lists them (MP-2); none for an SSH machine or a provider no
     /// longer configured.
@@ -1370,6 +1390,37 @@ fn root_plan_key(machine: &str, root: &str) -> String {
     format!("root:{machine}:{root}")
 }
 
+/// Resolves the machine name for a provider add.
+///
+/// A non-blank `requested_name` is trimmed and returned as-is. A blank name for
+/// the built-in `lima` provider picks the lowest unused `lima-<n>` starting at
+/// `lima-1` (compared case-insensitively against `existing_names`). Any other
+/// provider with a blank name returns an empty string.
+pub fn resolve_provider_machine_name(
+    provider_id: &str,
+    requested_name: &str,
+    existing_names: &[String],
+) -> String {
+    let trimmed = requested_name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_owned();
+    }
+    if provider_id != "lima" {
+        return String::new();
+    }
+    let mut n: usize = 1;
+    loop {
+        let candidate = format!("lima-{n}");
+        if !existing_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 pub fn machine_of(id: Option<pb::MachineId>) -> Result<String, Status> {
     id.map(|id| id.value)
         .filter(|value| !value.is_empty())
@@ -1402,7 +1453,7 @@ pub fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
             })),
         ),
         ManageError::BadName { .. } => (
-            "use letters, digits and dashes, or leave the name empty to take it from the host",
+            "use letters, digits and dashes, or leave the name empty to take an SSH host's name or auto-name a Lima VM",
             Some(Kind::InvalidField(pb::InvalidField {
                 field: "name".to_owned(),
                 problem: pb::invalid_field::Problem::BadFormat as i32,
@@ -2650,5 +2701,72 @@ connect = "echo {cmd}"
         assert!(!work.is_user_stopped_vm("vm1"));
         work.link_up("vm1", &handle);
         assert_eq!(spawns.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn resolve_provider_machine_name_auto_names_lima_and_fills_gaps() {
+        assert_eq!(resolve_provider_machine_name("lima", "", &[]), "lima-1");
+        assert_eq!(
+            resolve_provider_machine_name("lima", "   ", &["lima-1".to_owned()]),
+            "lima-2"
+        );
+        assert_eq!(
+            resolve_provider_machine_name(
+                "lima",
+                "",
+                &["lima-1".to_owned(), "lima-3".to_owned()]
+            ),
+            "lima-2"
+        );
+        assert_eq!(
+            resolve_provider_machine_name("lima", "", &["LIMA-1".to_owned()]),
+            "lima-2"
+        );
+        assert_eq!(
+            resolve_provider_machine_name("lima", "  my-box  ", &["lima-1".to_owned()]),
+            "my-box"
+        );
+        assert_eq!(resolve_provider_machine_name("hcloud", "", &[]), "");
+    }
+
+    #[test]
+    fn work_resolve_provider_name_skips_adding_and_removing_entries() {
+        for state in ["adding", "removing"] {
+            let dir = tempfile::tempdir().unwrap();
+            let work = make_work(dir.path());
+            std::fs::write(
+                work.machines.hosts_file(),
+                format!(
+                    r#"{{"version":1,"machines":[{{"name":"lima-1","ssh_host":"via lima","root":"~/Humata","state":"{state}","provider":{{"id":"lima","params":{{}}}}}}]}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                work.resolve_provider_name("lima", "").unwrap(),
+                "lima-2",
+                "state={state}"
+            );
+        }
+    }
+
+    #[test]
+    fn bad_name_error_fix_mentions_ssh_and_lima_auto_naming() {
+        let source = humata2_machines::MachineName::new("bad name").unwrap_err();
+        let err = error_of(
+            &ManageError::BadName {
+                value: "bad name".to_owned(),
+                source,
+            },
+            None,
+        );
+        assert!(
+            !err.fix.contains("leave the name empty to take it from the host"),
+            "fix was: {}",
+            err.fix
+        );
+        assert_eq!(
+            err.fix,
+            "use letters, digits and dashes, or leave the name empty to take an SSH host's name or auto-name a Lima VM"
+        );
     }
 }

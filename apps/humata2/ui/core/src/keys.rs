@@ -99,6 +99,10 @@ gpui_kit::actions!(
         ZoomIn,
         /// ⌘-: smaller terminal and diff font size.
         ZoomOut,
+        /// S on a milestone: start a session with the milestone brief.
+        StartMilestoneSession,
+        /// ⌥S on a milestone: start a plain session without the brief.
+        StartMilestonePlainSession,
     ]
 );
 
@@ -123,9 +127,13 @@ pub const DIFF: &str = "HumataDiff";
 /// only here, so they never reach the sidebar's or a text box's (DS-84).
 pub const DIFF_LIST: &str = "HumataDiffList";
 
+/// A milestone on the To-do board: S starts a session with the milestone brief,
+/// ⌥S starts a plain session without the brief.
+pub const TODO_MILESTONE: &str = "HumataTodoMilestone";
+
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 28] = [
+pub const SHORTCUTS: [(&str, &str); 30] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⌘T", "New terminal tab"),
@@ -154,6 +162,8 @@ pub const SHORTCUTS: [(&str, &str); 28] = [
     ("⌃⌘↓ ⌃⌘↑", "Next, previous change"),
     ("⌥Z", "Wrap long lines in the diff"),
     ("↑ ↓ ↩ ← →", "Move, open or fold in the focused file list"),
+    ("S", "Start milestone session (with brief)"),
+    ("⌥S", "Start milestone session (plain)"),
 ];
 
 /// Binds every shortcut. Call once at launch. Off a Mac each ⌘ chord
@@ -311,6 +321,10 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", FileListOpen, Some(DIFF_LIST)),
         KeyBinding::new("left", FileListCollapse, Some(DIFF_LIST)),
         KeyBinding::new("right", FileListExpand, Some(DIFF_LIST)),
+        // Milestone start shortcuts (ATM-10): S with brief, ⌥S plain; keep ⌥S as typing in inputs.
+        KeyBinding::new("s", StartMilestoneSession, Some(TODO_MILESTONE)),
+        KeyBinding::new("alt-s", StartMilestonePlainSession, Some(TODO_MILESTONE)),
+        KeyBinding::new("alt-s", gpui_kit::NoAction, Some("Input")),
     ]
 }
 
@@ -545,5 +559,21 @@ mod tests {
         assert!(has("⌘+", super::ZoomIn::name_for_type()));
         assert!(has("⌘-", super::ZoomOut::name_for_type()));
         assert!(has("⌘0", super::ToggleSidebar::name_for_type()));
+    }
+
+    #[test]
+    fn milestone_start_shortcuts_are_bound_in_milestone_context_and_listed() {
+        let all = bindings();
+        let in_milestone_ctx = |glyphs: &str, action: &str| {
+            all.iter().any(|b| {
+                b.action().name() == action
+                    && b.keystrokes().iter().any(|k| mac_glyphs(k.inner()) == glyphs)
+                    && format!("{:?}", b.predicate()).contains(super::TODO_MILESTONE)
+            })
+        };
+        assert!(in_milestone_ctx("S", super::StartMilestoneSession::name_for_type()));
+        assert!(in_milestone_ctx("⌥S", super::StartMilestonePlainSession::name_for_type()));
+        assert!(SHORTCUTS.iter().any(|(k, _)| *k == "S"));
+        assert!(SHORTCUTS.iter().any(|(k, _)| *k == "⌥S"));
     }
 }

@@ -582,6 +582,43 @@ pub enum DriftKind {
     HeadMoved,
 }
 
+/// Quiet status note shown when a layer was rebased without changing its diff.
+pub const REBASED_DIFF_UNCHANGED_NOTE: &str = "Rebased · diff unchanged";
+
+/// How a layer's commits and diff changed across a restack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestackStatus {
+    /// Both base and head commits are identical to before.
+    Unchanged,
+    /// Commits moved (e.g. rebased onto a newer base), but the layer's diff
+    /// patch-id is identical to before.
+    RebasedDiffUnchanged,
+    /// Commits moved and the layer's diff changed.
+    DiffChanged,
+    /// The layer is no longer present in the updated stack or its repo is missing.
+    Missing,
+}
+
+impl RestackStatus {
+    /// Quiet status note shown when a layer was rebased without changing its diff.
+    #[must_use]
+    pub const fn note(self) -> Option<&'static str> {
+        match self {
+            Self::RebasedDiffUnchanged => Some(REBASED_DIFF_UNCHANGED_NOTE),
+            Self::Unchanged | Self::DiffChanged | Self::Missing => None,
+        }
+    }
+}
+
+/// Per-layer, per-repo restack comparison between an old and updated [`CheckedStack`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerRestack {
+    /// The layer's title as sent in the original stack.
+    pub layer: String,
+    pub repo: String,
+    pub status: RestackStatus,
+}
+
 impl CheckedStack {
     /// Reconstructs a `CheckedStack` from a stored stack and its per-layer,
     /// per-repo resolved commits. Returns `None` if the shapes don't match.
@@ -807,4 +844,76 @@ impl CheckedStack {
         }
         drift
     }
+
+    /// Compares each layer/repo in `self` against `updated`, distinguishing a
+    /// diff-preserving rebase (`RebasedDiffUnchanged`) from a real diff change
+    /// (`DiffChanged`) via `git patch-id --stable`.
+    ///
+    /// # Errors
+    ///
+    /// [`DiffError`] when git fails to compute a layer's diff or patch-id.
+    pub fn restack_status_blocking(
+        &self,
+        clones: &Clones,
+        updated: &CheckedStack,
+    ) -> Result<Vec<LayerRestack>, DiffError> {
+        let mut results = Vec::new();
+        for (layer, resolved_row) in self.stack.layers.iter().zip(&self.resolved) {
+            for (part, old_resolved) in layer.repos.iter().zip(resolved_row) {
+                let status = match updated.resolved(&layer.title, &part.repo) {
+                    None => RestackStatus::Missing,
+                    Some(new_resolved)
+                        if old_resolved.base_commit == new_resolved.base_commit
+                            && old_resolved.head_commit == new_resolved.head_commit =>
+                    {
+                        RestackStatus::Unchanged
+                    }
+                    Some(new_resolved) => match clones.get(&part.repo) {
+                        Err(DiffError::UnknownRepo { .. }) => RestackStatus::Missing,
+                        Err(err) => return Err(err),
+                        Ok(checkout) => {
+                            let old_id = range_patch_id(
+                                checkout,
+                                &old_resolved.base_commit,
+                                &old_resolved.head_commit,
+                            )?;
+                            let new_id = range_patch_id(
+                                checkout,
+                                &new_resolved.base_commit,
+                                &new_resolved.head_commit,
+                            )?;
+                            if old_id == new_id {
+                                RestackStatus::RebasedDiffUnchanged
+                            } else {
+                                RestackStatus::DiffChanged
+                            }
+                        }
+                    },
+                };
+                results.push(LayerRestack {
+                    layer: layer.title.clone(),
+                    repo: part.repo.clone(),
+                    status,
+                });
+            }
+        }
+        Ok(results)
+    }
+}
+
+/// Stable patch-id of the diff between `base` and `head`, ignoring commit SHAs
+/// and line-number offsets introduced by a rebase.
+fn range_patch_id(checkout: &Checkout, base: &str, head: &str) -> Result<String, DiffError> {
+    let range = format!("{base}..{head}");
+    let diff = checkout
+        .git
+        .run(["diff", "--no-color", "--no-ext-diff", &range])?;
+    let out = checkout
+        .git
+        .run_with_input(["patch-id", "--stable"], &diff)?;
+    Ok(crate::git::trimmed(&out)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned())
 }

@@ -63,6 +63,11 @@ Complementary "Files"
       text "M"
     ListItem "acme/api/README.md"
       text "README.md"
+    Button "Agent files · Claude · empty"
+      text "Agent files"
+      text "· Claude · empty"
+      text "▸"
+      text "🔒 read-only"
   Button "Open big"
   Button "Open in editor" disabled
   Button "Upload…" disabled

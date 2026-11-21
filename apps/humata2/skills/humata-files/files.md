@@ -79,10 +79,9 @@ session a note, or put the file in `shared/`.
 | Read `shared/`, the channel folder and main clones on your machine | Allowed |
 | Write into `shared/` on your machine | Allowed |
 | Fetch from `shared/`, the channel folder or a main clone on your machine into your clone | Allowed |
-| Read another session's files on your machine | Asks the owner |
-| Read files on another machine | Asks the owner |
-| Copy files in from another session or another machine | Asks the owner |
-| Restore from the trash | Asks the owner |
+| Read or copy files from another session on your machine in your channel | Allowed |
+| Restore from the trash in your channel | Allowed |
+| Read or copy files from another machine | Asks the owner |
 | Write to a main clone, another session's clone, or `shared/` on another machine | Refused |
 
 Only the owner: emptying the trash, and copying or moving between places

@@ -1,10 +1,9 @@
-//! The grouped Agent access rows: setting a row writes every rule behind
-//! it, a row whose rules differ reads Mixed, and to-do rows ask in To-do.
+//! The grouped Agent access rows: 2-group layout, setting a row writes every
+//! rule behind it, and a row whose rules differ reads Mixed.
 use humata2_clients::model::{AccessRule, ChannelId, RuleSetting};
 use humata2_clients::{fixture, FakeDaemon};
 use humata2_settings::{
-    AccessAction as A, ACCESS_GROUPS, AskLands, RowSetting, Settings, SettingsAction,
-    SettingsState,
+    AccessAction as A, ACCESS_GROUPS, RowSetting, Settings, SettingsAction, SettingsState,
 };
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
@@ -37,9 +36,54 @@ fn rules(daemon: &FakeDaemon, channel: &ChannelId) -> Vec<AccessRule> {
 }
 
 #[test]
+fn two_primary_groups_with_expected_headings_and_rows() {
+    assert_eq!(ACCESS_GROUPS.len(), 2);
+
+    let local = &ACCESS_GROUPS[0];
+    assert_eq!(local.title, "LOCAL & SAME-CHANNEL");
+    assert_eq!(
+        local.caption,
+        "Runs automatically within scope \u{00b7} asks in Agent inbox outside scope"
+    );
+    assert_eq!(local.rows.len(), 7);
+    assert!(local.rows.iter().all(|r| !r.scope_chip.is_empty()));
+
+    let remote = &ACCESS_GROUPS[1];
+    assert_eq!(remote.title, "LEAVES THIS MACHINE OR AFFECTS OTHERS");
+    assert_eq!(
+        remote.caption,
+        "Always stops and asks in Agent inbox unless you allow it"
+    );
+    assert_eq!(remote.rows.len(), 5);
+}
+
+#[test]
+fn push_rows_split_branch_push_from_pr_push() {
+    let (_store, daemon, channel) = setup();
+    let channel_rules = rules(&daemon, &channel);
+
+    let branch_push = ACCESS_GROUPS[0]
+        .rows
+        .iter()
+        .find(|r| r.key == "git-push-branch")
+        .expect("git-push-branch is in group 1");
+    assert_eq!(
+        branch_push.setting(&channel_rules),
+        RowSetting::Is(RuleSetting::Allow)
+    );
+
+    let pr_push = ACCESS_GROUPS[1]
+        .rows
+        .iter()
+        .find(|r| r.key == "git-push-pr")
+        .expect("git-push-pr is in group 2");
+    assert_eq!(pr_push.capabilities, &["git_push"]);
+}
+
+#[test]
 fn setting_a_row_writes_each_of_its_capabilities() {
     let (mut store, daemon, channel) = setup();
-    let end = row("session-end");
+    let end = row("session-other-end");
     store.send(
         SettingsAction::Access(A::SetRow {
             channel: channel.clone(),
@@ -68,7 +112,7 @@ fn setting_a_row_writes_each_of_its_capabilities() {
 fn a_row_whose_rules_differ_reads_mixed() {
     let (_store, daemon, channel) = setup();
     let mut rules = rules(&daemon, &channel);
-    let end = row("session-end");
+    let end = row("session-other-end");
     for rule in &mut rules {
         if rule.capability.as_str() == end.capabilities[0] {
             rule.setting = Some(RuleSetting::Allow);
@@ -77,37 +121,6 @@ fn a_row_whose_rules_differ_reads_mixed() {
         }
     }
     assert_eq!(end.setting(&rules), RowSetting::Mixed);
-}
-
-#[test]
-fn delete_many_sessions_is_a_files_and_sessions_row_that_reads_never_by_default() {
-    let (_store, daemon, channel) = setup();
-    let files = &ACCESS_GROUPS[1];
-    let position = files
-        .rows
-        .iter()
-        .position(|r| r.key == "session-end")
-        .expect("session-end is in FILES AND SESSIONS");
-    assert_eq!(files.rows[position + 1].key, "sessions-delete-many");
-    let delete_many = row("sessions-delete-many");
-    assert_eq!(delete_many.capabilities, &["sessions_delete_many"]);
-    assert_eq!(
-        delete_many.setting(&rules(&daemon, &channel)),
-        RowSetting::Is(RuleSetting::Never)
-    );
-}
-
-#[test]
-fn to_do_rows_ask_in_to_do_and_the_rest_in_the_agent_inbox() {
-    let todo = &ACCESS_GROUPS[0];
-    for r in todo.rows {
-        assert_eq!(r.ask_lands, AskLands::Todo);
-        assert!(r.note(RowSetting::Is(RuleSetting::Ask)).contains("To-do"));
-    }
-    let files = &ACCESS_GROUPS[1];
-    for r in files.rows {
-        assert!(r.note(RowSetting::Is(RuleSetting::Ask)).contains("Agent inbox"));
-    }
 }
 
 #[test]
@@ -139,7 +152,7 @@ fn the_other_rules_list_toggles() {
 fn the_global_pages_row_writes_the_global_rules_not_a_channels() {
     let (mut store, daemon, channel) = setup();
     let global = ChannelId::global_rules();
-    let end = row("session-end");
+    let end = row("session-other-end");
     let channel_before = rules(&daemon, &channel);
     store.send(
         SettingsAction::Access(A::SetRow {

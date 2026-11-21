@@ -28,6 +28,11 @@ impl GrpcDaemon {
                 Board::Channel(channel.unwrap_or_default())
             }
             Some(Value::String(scope)) if scope == "global" => Board::Global(pb::GlobalBoard {}),
+            Some(Value::Object(other)) if other.get("channel").and_then(Value::as_str).is_some() => {
+                Board::Channel(pb::ChannelId {
+                    value: text(other, "channel"),
+                })
+            }
             Some(Value::Object(other)) => Board::Session(pb::SessionId {
                 value: text(other, "session"),
             }),

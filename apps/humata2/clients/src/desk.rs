@@ -465,13 +465,14 @@ pub struct Switches {
 }
 
 impl Default for Switches {
-    /// The first two on, the rest off (CD-3).
+    /// Read files and start/fork sessions in the channel are on by default;
+    /// notes and terminal typing require explicit consent (ATM-41, ATM-42).
     fn default() -> Self {
         Self {
             read_files: true,
-            send_notes: true,
+            send_notes: false,
             type_into_terminal: false,
-            start_and_fork: false,
+            start_and_fork: true,
             stop_and_archive: false,
             change_board_items: false,
         }
