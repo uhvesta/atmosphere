@@ -238,10 +238,6 @@ fn link_when(
     }
 }
 
-fn gigabytes(bytes: u64) -> String {
-    format!("{:.1} GB", bytes as f64 / 1e9)
-}
-
 fn whole_gigabytes(bytes: u64) -> u64 {
     bytes / 1_000_000_000
 }
@@ -717,7 +713,7 @@ fn storage(
                     .child(div().w(px(220.)).whitespace_nowrap().child(channel))
                     .child(div().flex_1().whitespace_nowrap().child(dim(
                         look,
-                        format!("{sessions_text} · {}", gigabytes(folder.bytes)),
+                        format!("{sessions_text} · {}", humata2_files::human_bytes(folder.bytes)),
                     )))
                     .child(link(
                         ui,
@@ -1001,7 +997,7 @@ fn left(
                 )
                 .child(div().flex_1().whitespace_nowrap().child(dim(
                     look,
-                    format!("{sessions_text} · {}", gigabytes(folder.bytes)),
+                    format!("{sessions_text} · {}", humata2_files::human_bytes(folder.bytes)),
                 )))
                 .child(link(
                     ui,
@@ -1508,6 +1504,7 @@ fn right(
                 )
                 .child(
                     Input::new(&inputs.value)
+                        .mask_toggle()
                         .disabled(edit.sending)
                         .aria_label("Variable value"),
                 )

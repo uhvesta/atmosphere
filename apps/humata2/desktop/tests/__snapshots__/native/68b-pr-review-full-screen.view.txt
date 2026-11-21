@@ -10,7 +10,7 @@ Complementary "Diff"
   #review-pr-line
     text "PR #482 against main · 2 repos"
   #github-feedback-checked-rail
-    text "Checked 2m ago"
+    text "Checked just now"
     text "·"
     Button
       text "Refresh"

@@ -60,16 +60,34 @@ impl ProvidersInputs {
         let (typing_ui, echo) = (ui.clone(), paste_echo.clone());
         let typing = cx.subscribe(
             &paste,
-            move |input: Entity<TextareaState>, event: &InputEvent, cx: &mut App| {
-                if !matches!(event, InputEvent::Change) {
-                    return;
+            move |input: Entity<TextareaState>, event: &InputEvent, cx: &mut App| match event {
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    if echo.borrow().as_deref() == Some(text.as_str()) {
+                        *echo.borrow_mut() = None;
+                        return;
+                    }
+                    typing_ui.send(send(P::ImportText(text)), cx);
                 }
-                let text = input.read(cx).value().to_string();
-                if echo.borrow().as_deref() == Some(text.as_str()) {
-                    *echo.borrow_mut() = None;
-                    return;
+                InputEvent::PressEnter { secondary: true, .. } => {
+                    let action = typing_ui.read(|state| {
+                        let draft = state.settings.providers.import.as_ref()?;
+                        if draft.busy {
+                            return None;
+                        }
+                        if draft.review.is_some() {
+                            Some(P::Import)
+                        } else if !draft.text.trim().is_empty() {
+                            Some(P::Review)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(action) = action {
+                        typing_ui.send(send(action), cx);
+                    }
                 }
-                typing_ui.send(send(P::ImportText(text)), cx);
+                _ => {}
             },
         );
         Self {
@@ -362,7 +380,7 @@ fn variables(
                 .gap(px(8.))
                 .child(mono(look, name).w(px(150.)).flex_shrink_0())
                 .child(dim(look, if variable.set { "Set" } else { "Not set" }).w(px(52.)).flex_shrink_0())
-                .child(div().flex_1().min_w_0().child(Input::new(&field).aria_label(format!("Value for {name}"))))
+                .child(div().flex_1().min_w_0().child(Input::new(&field).mask_toggle().aria_label(format!("Value for {name}"))))
                 .child(
                     button(
                         ui,

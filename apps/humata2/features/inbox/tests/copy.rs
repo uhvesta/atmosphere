@@ -121,6 +121,7 @@ fn what_is_copied_is_the_one_name_or_the_count() {
 fn copy_path_puts_the_path_on_the_clipboard() {
     let (mut store, fakes, _, _) = setup();
     store.send(A::CopyPath("/home/ml/Humata/shared".to_owned()), |_| {});
+    store.receive(A::Delegate(Delegate::Toast("Copied the path".to_owned())), |_| {});
     assert_eq!(fakes.clipboard.copied().as_deref(), Some("/home/ml/Humata/shared"));
     store.finish();
 }

@@ -46,6 +46,7 @@ Dialog "New channel" focused
   Button "Remove Your repos from this search"
   #input
     TextInput "Search repos" value="acme" placeholder="Search repos"
+    Button "Clear"
   CheckBox "acme/ledger" selected
   CheckBox "acme/api" selected
   text "GitHub · your repos"

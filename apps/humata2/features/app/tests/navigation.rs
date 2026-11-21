@@ -28,9 +28,52 @@ fn switching_screens_clears_the_drill_in_trail() {
     store.send(AppAction::Back, |s| {
         s.route = Route::Home;
         s.trail.clear();
+        s.forward_trail.push(Route::Inbox);
     });
-    store.send(AppAction::Switch(Route::Settings), |s| s.route = Route::Settings);
+    store.send(AppAction::Switch(Route::Settings), |s| {
+        s.route = Route::Settings;
+        s.forward_trail.clear();
+    });
     store.send(AppAction::Back, |_| {});
+    store.finish();
+}
+
+#[test]
+fn back_and_forward_walk_the_trail_and_new_navigation_clears_forward() {
+    let (clients, _) = humata2_clients::fake_clients(fixture::design(), Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(AppAction::Navigate(Route::Inbox), |s| {
+        s.route = Route::Inbox;
+        s.trail = vec![Route::Home];
+        s.forward_trail.clear();
+    });
+    store.send(AppAction::Navigate(Route::Hosts), |s| {
+        s.route = Route::Hosts;
+        s.trail = vec![Route::Home, Route::Inbox];
+        s.forward_trail.clear();
+    });
+    store.send(AppAction::Back, |s| {
+        s.route = Route::Inbox;
+        s.trail = vec![Route::Home];
+        s.forward_trail = vec![Route::Hosts];
+    });
+    store.send(AppAction::Forward, |s| {
+        s.route = Route::Hosts;
+        s.trail = vec![Route::Home, Route::Inbox];
+        s.forward_trail.clear();
+    });
+    store.send(AppAction::Back, |s| {
+        s.route = Route::Inbox;
+        s.trail = vec![Route::Home];
+        s.forward_trail = vec![Route::Hosts];
+    });
+    store.send(AppAction::Navigate(Route::Files), |s| {
+        s.route = Route::Files;
+        s.trail = vec![Route::Home, Route::Inbox];
+        s.forward_trail.clear();
+    });
+    store.send(AppAction::Forward, |_| {});
     store.finish();
 }
 

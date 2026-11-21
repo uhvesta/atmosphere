@@ -55,6 +55,10 @@ pub struct TerminalPane {
     find_shortcuts: u64,
     /// Whether the last frame showed the paste or clipboard-read prompt.
     prompt_shown: bool,
+    /// Whether this pane renders paste/clipboard prompts inside its own bounds.
+    /// A panned `TerminalReplica` turns this off and anchors prompts to its
+    /// visible viewport frame instead.
+    inline_prompts: bool,
     /// Output held while the pane is hidden (NV-34), parsed when it is
     /// shown or when it grows past [`HIDDEN_LIMIT`]; `None` while shown.
     hidden: Option<Vec<u8>>,
@@ -113,6 +117,7 @@ impl TerminalPane {
             shortcut_events: 0,
             find_shortcuts: 0,
             prompt_shown: false,
+            inline_prompts: true,
             hidden: None,
             unfitted: Some(Vec::new()),
             fit_flush_scheduled: false,
@@ -338,6 +343,30 @@ impl TerminalPane {
         let pending = self.shared.borrow_mut().pending_paste.take();
         if let Some(pending) = pending {
             self.paste(pending.text, true, cx);
+        }
+    }
+
+    /// Controls whether paste and clipboard-read prompts render inside this
+    /// pane (`true`, default) or are rendered externally by a host frame
+    /// via [`TerminalPane::render_active_prompt`].
+    pub fn set_inline_prompts(&mut self, inline: bool) {
+        self.inline_prompts = inline;
+    }
+
+    /// Renders the currently pending paste or clipboard-read prompt (at most
+    /// one at a time, with pending paste taking priority), for anchoring to
+    /// an outer visible viewport frame.
+    pub fn render_active_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shared = self.shared.borrow();
+        let pending = shared.pending_paste.clone();
+        let reading = shared.clipboard_read.is_some();
+        drop(shared);
+        if let Some(pending) = pending.as_ref() {
+            Some(self.render_paste_prompt(pending, cx))
+        } else if reading {
+            Some(self.render_clipboard_prompt(cx))
+        } else {
+            None
         }
     }
 
@@ -672,6 +701,21 @@ impl TerminalPane {
         self.shortcut_events = self.shortcut_events.saturating_add(1);
         let m = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        if self.has_pending_paste() && !m.control && !m.alt && !m.platform && !m.shift {
+            match key {
+                "enter" => {
+                    self.confirm_paste(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "escape" => {
+                    self.cancel_paste(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
         let mac = cx.platform_info().is_mac();
         let (find, again) = if mac {
             (
@@ -1024,12 +1068,13 @@ impl Render for TerminalPane {
             .find
             .as_ref()
             .map(|find| self.render_find_bar(find, cx));
-        let paste_prompt = pending
-            .as_ref()
-            .map(|pending| self.render_paste_prompt(pending, cx));
+        let paste_prompt = self
+            .inline_prompts
+            .then(|| pending.as_ref().map(|p| self.render_paste_prompt(p, cx)))
+            .flatten();
         // One prompt at a time: the paste the user started comes first.
-        let clipboard_prompt =
-            (pending.is_none() && reading).then(|| self.render_clipboard_prompt(cx));
+        let clipboard_prompt = (self.inline_prompts && pending.is_none() && reading)
+            .then(|| self.render_clipboard_prompt(cx));
         let theme = cx.theme();
         let banner = (!connected && !self.exited && self.offline_banner).then(|| {
             div()

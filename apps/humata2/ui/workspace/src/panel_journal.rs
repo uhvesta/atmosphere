@@ -41,7 +41,17 @@ pub fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                     if !view.prepared.is_empty() {
                         meta.push(view.prepared.clone());
                     }
+                    let card_ui = ui.clone();
+                    let card_id = record.id.clone();
                     card(look)
+                        .id(SharedString::from(format!("journal-card-{n}")))
+                        .role(Role::Button)
+                        .aria_label(view.title.clone())
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(rgb(look.fill)))
+                        .on_click(move |_, _, cx| {
+                            card_ui.send(AppAction::Views(ViewsAction::Open(card_id.clone())), cx);
+                        })
                         .p(px(10.))
                         .gap(px(2.))
                         .child(
@@ -69,6 +79,7 @@ pub fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                                 look,
                             )),
                         )
+                        .test_support()
                 }))
                 .when(views.is_empty(), |list| {
                     list.child(secondary(

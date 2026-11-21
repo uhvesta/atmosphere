@@ -95,7 +95,27 @@ pub fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: 
             .flex_wrap()
             .gap(px(6.))
             .child(text(repo.rsplit('/').next().unwrap_or(repo).to_owned()))
-            .child(chip(session.branch.clone(), look.secondary))
+            .child({
+                let branch = session.branch.clone();
+                let copy_ui = ui.clone();
+                chip(branch.clone(), look.secondary)
+                    .id(SharedString::from(format!("session-info-branch {repo}")))
+                    .role(Role::Button)
+                    .aria_label(format!("Copy branch {branch}"))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(rgb(look.fill)))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()));
+                        copy_ui.send(
+                            AppAction::Session(SessionAction::Delegate(
+                                humata2_session::Delegate::Toast("Copied branch name".to_owned()),
+                            )),
+                            cx,
+                        );
+                    })
+                    .test_support()
+            })
             .when(main, |row| {
                 row.child(chip("main clone".to_owned(), look.accent))
             })

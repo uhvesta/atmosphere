@@ -958,7 +958,10 @@ impl PaletteState {
         entries.push(Entry {
             command: Command::DeleteAllSessions,
             title: "Delete all sessions…".to_owned(),
-            hint: format!("{deletable} sessions · shows the plan first"),
+            hint: format!(
+                "{deletable} {} · shows the plan first",
+                if deletable == 1 { "session" } else { "sessions" }
+            ),
         });
         if self.in_session {
             entries.push(Entry {

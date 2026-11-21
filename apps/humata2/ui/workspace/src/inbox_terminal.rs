@@ -42,6 +42,8 @@ pub struct InboxTerminal {
     shown: Option<(Entity<TerminalReplica>, Rc<RefCell<Link>>)>,
     /// Why it could not be made.
     why: Option<String>,
+    /// The font family setting.
+    font_family: String,
     /// The font size setting, the most the screen is drawn at.
     font: u8,
     look: Option<Look>,
@@ -52,6 +54,9 @@ pub struct InboxTerminal {
     at_bottom: bool,
     /// How many rows it showed at the last render.
     rows_shown: u16,
+    /// Cached `grid_text` keyed by `(replica_offset, cols, rows, scroll_offset)`
+    /// so idle 600ms cursor-blink frames do not re-allocate every row.
+    cached_text: RefCell<Option<(u64, u16, u16, u64, SharedString)>>,
 }
 
 impl InboxTerminal {
@@ -67,17 +72,27 @@ impl InboxTerminal {
             request,
             shown,
             why,
+            font_family: String::new(),
             font: 0,
             look: None,
             width: Rc::new(Cell::new(px(0.))),
             at_bottom: false,
             rows_shown: 0,
+            cached_text: RefCell::new(None),
         })
     }
 
     /// What the shell's last sync saw.
-    pub fn update(&mut self, request: RequestId, font: u8, look: Look, cx: &mut Context<Self>) {
+    pub fn update(
+        &mut self,
+        request: RequestId,
+        font_family: String,
+        font: u8,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) {
         self.request = request;
+        self.font_family = font_family;
         self.font = font;
         self.look = Some(look);
         cx.notify();
@@ -146,14 +161,24 @@ impl Render for InboxTerminal {
                 .into_any_element();
         };
         let view = pane.read(cx).view().clone();
-        let (cols, rows, cell, current) = {
+        let (cols, rows, cell, current, current_family, scroll_offset) = {
             let view = view.read(cx);
-            let size = view.grid().size();
-            (size.cols, size.rows, view.cell_size(), view.theme().font_size)
+            let grid = view.grid();
+            let size = grid.size();
+            let theme = view.theme();
+            (
+                size.cols,
+                size.rows,
+                view.cell_size(),
+                theme.font_size,
+                theme.font_family.clone(),
+                grid.scrollbar().map_or(0, |bar| bar.offset),
+            )
         };
         // The font that fits the columns in the box, between 9 pt and the
         // setting: a cell's width grows with the font.
-        let base = font_theme(self.font.max(1)).font_size;
+        let base_theme = font_theme(&self.font_family, self.font.max(1));
+        let base = base_theme.font_size;
         let inner = f32::from(self.width.get()) - 2. * INSET - 4.;
         if let Some(cell) = cell
             && inner > 0.
@@ -162,12 +187,14 @@ impl Render for InboxTerminal {
             let per_point = cell.width / current.max(1.);
             let fits = (inner / (f32::from(cols) * per_point)).floor();
             let wanted = fits.clamp(MIN_FONT, base.max(MIN_FONT));
-            if (wanted - current).abs() >= 0.5 {
+            if (wanted - current).abs() >= 0.5 || current_family != base_theme.font_family {
+                let family = base_theme.font_family.clone();
                 view.update(cx, |view, cx| {
                     view.set_theme(
                         Theme {
+                            font_family: family,
                             font_size: wanted,
-                            line_height: wanted + 6.5,
+                            line_height: (wanted * 1.45).round(),
                             ..Default::default()
                         },
                         cx,
@@ -175,6 +202,20 @@ impl Render for InboxTerminal {
                 });
                 cx.notify();
             }
+        } else if current_family != base_theme.font_family {
+            let family = base_theme.font_family.clone();
+            view.update(cx, |view, cx| {
+                view.set_theme(
+                    Theme {
+                        font_family: family,
+                        font_size: current,
+                        line_height: (current * 1.45).round(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            });
+            cx.notify();
         }
         // Whole rows only: as many as fit in 420 pt and in what the detail
         // has left, at least 8 (the detail scrolls then), at most the tab's.
@@ -203,7 +244,24 @@ impl Render for InboxTerminal {
             }
         }
         let focused = pane.read(cx).focus_handle(cx).contains_focused(window, cx);
-        let text = grid_text(&pane, cx);
+        let offset = replica.read(cx).state().offset;
+        let text: SharedString = {
+            let cached = self.cached_text.borrow();
+            if let Some((o, c, r, s, ref text)) = *cached
+                && o == offset
+                && c == cols
+                && r == rows
+                && s == scroll_offset
+            {
+                text.clone()
+            } else {
+                drop(cached);
+                let computed: SharedString = grid_text(&pane, cx).into();
+                *self.cached_text.borrow_mut() =
+                    Some((offset, cols, rows, scroll_offset, computed.clone()));
+                computed
+            }
+        };
         let width = self.width.clone();
         let click = replica.clone();
         div()

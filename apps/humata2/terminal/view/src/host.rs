@@ -178,4 +178,11 @@ pub trait TerminalHost<G: Grid> {
     fn focus(&mut self, grid: &mut G, focused: bool) {
         let _ = (grid, focused);
     }
+
+    /// Whether Option/Alt keys should bypass macOS dead-key IME composition
+    /// when no CJK preedit is active.
+    fn option_as_alt(&self, grid: &G) -> bool {
+        let _ = grid;
+        false
+    }
 }

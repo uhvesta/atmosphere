@@ -368,9 +368,15 @@ impl Overlays {
                 (members.clone(), Vec::new())
             };
             let count = if all {
-                format!("{} sessions", members.len())
+                let n = members.len();
+                format!("{n} {}", if n == 1 { "session" } else { "sessions" })
             } else {
-                format!("{} of {} sessions", members.len(), view.in_channel(&channel))
+                let total = view.in_channel(&channel);
+                format!(
+                    "{} of {total} {}",
+                    members.len(),
+                    if total == 1 { "session" } else { "sessions" }
+                )
             };
             let mut group = col()
                 .gap(px(4.))
@@ -857,7 +863,11 @@ fn fold_line(
     let head = if all_archived {
         format!("{k} archived, nothing unpushed")
     } else {
-        let lead = if more { format!("{k} more") } else { format!("{k} sessions") };
+        let lead = if more {
+            format!("{k} more")
+        } else {
+            format!("{k} {}", if k == 1 { "session" } else { "sessions" })
+        };
         format!("{lead}, nothing running and nothing unpushed")
     };
     let text = names.map_or_else(|| head.clone(), |names| format!("{head}: {names}"));

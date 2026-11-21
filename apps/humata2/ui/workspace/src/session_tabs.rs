@@ -1,12 +1,15 @@
 //! The real session's terminal/file row and its only split: two tab groups.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, ObservedElement, TestTextExt as _};
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_clients::model::{Agent, MoveProgress, MoveStepState, Session, Status, Turn};
+use humata2_clients::model::{Agent, MoveProgress, MoveStepState, Session, SessionId, Status, Turn};
 use humata2_inbox::InboxAction;
 use humata2_session::{
     GroupWidth, SessionAction, SessionRefused, Tab, TabCapReason, TabGroup, group_widths,
@@ -74,6 +77,58 @@ impl Render for TabDrag {
             .text_size(px(12.))
             .text_color(rgb(look.text))
             .child(self.label.clone())
+    }
+}
+
+/// Open right-click context menu on a session tab.
+#[derive(Clone, PartialEq, Eq)]
+struct TabContextMenu {
+    session: SessionId,
+    group: usize,
+    index: usize,
+}
+
+thread_local! {
+    static TAB_MENU: RefCell<Option<TabContextMenu>> = const { RefCell::new(None) };
+}
+
+fn close_tab_menu(cx: &mut App) {
+    TAB_MENU.with(|slot| *slot.borrow_mut() = None);
+    cx.refresh_windows();
+}
+
+#[derive(IntoElement)]
+struct TabMenuItem {
+    id: ElementId,
+    label: SharedString,
+    look: Look,
+    on_click: Rc<dyn Fn(&mut App)>,
+}
+
+impl RenderOnce for TabMenuItem {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let fill = Hsla::from(rgb(self.look.fill));
+        let on_click = self.on_click;
+        Button::new(self.id)
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(rgb(self.look.text).into())
+                    .hover(fill)
+                    .active(fill),
+            )
+            .accessibility_label(self.label.clone())
+            .small()
+            .w_full()
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .child(div().w_full().text_size(px(12.5)).child(self.label))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                close_tab_menu(cx);
+                on_click(cx);
+            })
     }
 }
 
@@ -172,6 +227,18 @@ fn tab_row(
             let active_bg = active_fill(look);
             let is_selected = index == tabs.selected;
             let label_id = format!("{id}-label");
+            let tab_menu_target = TabContextMenu {
+                session: session.id.clone(),
+                group,
+                index,
+            };
+            let menu_open = TAB_MENU.with(|slot| slot.borrow().as_ref() == Some(&tab_menu_target));
+            let close_action = if matches!(tab, Tab::Terminal(_)) {
+                SessionAction::Close(humata2_session::CloseAction::Ask { group, index })
+            } else {
+                SessionAction::CloseTab { group, index }
+            };
+            let tab_count = tabs.tabs.len();
             row()
                 .id(SharedString::from(id))
                 .relative()
@@ -212,12 +279,13 @@ fn tab_row(
                 .child({
                     // D784: a terminal's close asks Keep running, Stop or
                     // End for good; any other tab just closes.
-                    let close = if matches!(tab, Tab::Terminal(_)) {
-                        SessionAction::Close(humata2_session::CloseAction::Ask { group, index })
-                    } else {
-                        SessionAction::CloseTab { group, index }
-                    };
-                    send(ui, format!("close-tab-{group}-{index}"), &close_label, close, look)
+                    send(
+                        ui,
+                        format!("close-tab-{group}-{index}"),
+                        &close_label,
+                        close_action.clone(),
+                        look,
+                    )
                         .size(px(22.))
                         .flex()
                         .items_center()
@@ -245,6 +313,92 @@ fn tab_row(
                         AppAction::Session(SessionAction::SelectGroupTab { group, index }),
                         cx,
                     )
+                })
+                .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                    cx.stop_propagation();
+                    TAB_MENU.with(|slot| *slot.borrow_mut() = Some(tab_menu_target.clone()));
+                    cx.refresh_windows();
+                })
+                .when(menu_open, |t| {
+                    let scrim = div()
+                        .id("session-tab-menu-scrim")
+                        .absolute()
+                        .top(px(-10_000.))
+                        .left(px(-10_000.))
+                        .w(px(20_000.))
+                        .h(px(20_000.))
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                            close_tab_menu(cx);
+                        })
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                            cx.stop_propagation();
+                            close_tab_menu(cx);
+                        });
+                    let ui_close = ui.clone();
+                    let close_act = close_action.clone();
+                    let ui_others = ui.clone();
+                    let ui_move = ui.clone();
+                    let can_move = split || tab_count > 1;
+                    let move_label = if split {
+                        "Move to Other Group"
+                    } else {
+                        "Split to Other Group"
+                    };
+                    let mut card = humata2_ui_core::action_menu::card(
+                        "session-tab-menu",
+                        184.,
+                        look,
+                    )
+                    .role(Role::Menu)
+                    .aria_label("Tab actions")
+                    .top(px(TAB_BAR_HEIGHT))
+                    .left(px(0.))
+                    .occlude()
+                    .child(TabMenuItem {
+                        id: "tab-menu-close".into(),
+                        label: "Close Tab".into(),
+                        look,
+                        on_click: Rc::new(move |cx| {
+                            ui_close.send(AppAction::Session(close_act.clone()), cx);
+                        }),
+                    });
+                    if tab_count > 1 {
+                        card = card.child(TabMenuItem {
+                            id: "tab-menu-close-others".into(),
+                            label: "Close Other Tabs".into(),
+                            look,
+                            on_click: Rc::new(move |cx| {
+                                for other in (0..tab_count).rev() {
+                                    if other != index {
+                                        ui_others.send(
+                                            AppAction::Session(SessionAction::CloseTab {
+                                                group,
+                                                index: other,
+                                            }),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }),
+                        });
+                    }
+                    if can_move {
+                        card = card.child(TabMenuItem {
+                            id: "tab-menu-move-group".into(),
+                            label: move_label.into(),
+                            look,
+                            on_click: Rc::new(move |cx| {
+                                ui_move.send(
+                                    AppAction::Session(SessionAction::MoveTab { group, index }),
+                                    cx,
+                                );
+                            }),
+                        });
+                    }
+                    t.child(deferred(scrim))
+                        .child(deferred(card.test_support()))
                 })
                 .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                 .test_support()

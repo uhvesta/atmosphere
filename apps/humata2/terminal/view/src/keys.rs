@@ -65,6 +65,9 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
                 "c" if !m.shift => KeyIntent::Copy,
                 "v" if !m.shift => KeyIntent::Paste,
                 "a" if !m.shift => KeyIntent::SelectAll,
+                "left" if !m.shift => KeyIntent::Text("\x01"),
+                "right" if !m.shift => KeyIntent::Text("\x05"),
+                "backspace" if !m.shift => KeyIntent::Text("\x15"),
                 _ if !m.shift => scroll_key(key).map_or(KeyIntent::Ignore, KeyIntent::Scroll),
                 _ => KeyIntent::Ignore,
             };
@@ -368,6 +371,26 @@ mod tests {
         ));
         assert!(matches!(
             intent(&stroke("alt-left"), Platform::Other),
+            KeyIntent::Send { .. }
+        ));
+    }
+
+    #[::std::prelude::v1::test]
+    fn cmd_arrows_and_backspace_move_and_delete_line_on_a_mac() {
+        assert_eq!(intent(&stroke("cmd-left"), Platform::Mac), KeyIntent::Text("\x01"));
+        assert_eq!(intent(&stroke("cmd-right"), Platform::Mac), KeyIntent::Text("\x05"));
+        assert_eq!(
+            intent(&stroke("cmd-backspace"), Platform::Mac),
+            KeyIntent::Text("\x15")
+        );
+        assert_eq!(intent(&stroke("cmd-shift-left"), Platform::Mac), KeyIntent::Ignore);
+        assert_eq!(intent(&stroke("cmd-shift-right"), Platform::Mac), KeyIntent::Ignore);
+        assert_eq!(
+            intent(&stroke("cmd-shift-backspace"), Platform::Mac),
+            KeyIntent::Ignore
+        );
+        assert!(matches!(
+            intent(&stroke("cmd-left"), Platform::Other),
             KeyIntent::Send { .. }
         ));
     }

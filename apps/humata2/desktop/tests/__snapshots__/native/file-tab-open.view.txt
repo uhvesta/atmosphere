@@ -110,6 +110,8 @@ Document "api/src/client.rs"
     RadioButton "Inline" selected
     RadioButton "Side by side"
     RadioButton "Full file"
+  Button "Copy path"
+  Button "Copy"
   Button "Previous change"
   Button "Next change"
   #editor-count

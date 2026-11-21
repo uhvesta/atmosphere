@@ -15,8 +15,8 @@ box 0,0 900x1400 bg #ffffff
         text "Say which styles the parser keeps." 727,147 167x20
       Comment "Comment: Add a row for diagrams." 727,711 167x20 bg #06b6d440 radius 4
         text "Add a row for diagrams." 727,711 167x20
-      Comment "Comment: Label the arrow." 727,1196 167x20 bg #06b6d440 radius 4
-        text "Label the arrow." 727,1196 167x20
+      Comment "Comment: Label the arrow." 727,1168 167x20 bg #06b6d440 radius 4
+        text "Label the arrow." 727,1168 167x20
     Button "Comment on paragraph 2" 2,147 16x16
     Paragraph "Paragraph 2" 28,147 692x64
       text "Every kind of block the view draws, with strong, emphasis, struck,\ninline code and a link to the spec." 28,147 692x64
@@ -87,20 +87,27 @@ box 0,0 900x1400 bg #ffffff
       text "Code" 28,841 692x59
       text "Code" 28,863 692x29
     Button "Comment on code block 13" 2,900 16x16
-    Code "Code block 13" 28,900 692x119
-      box 28,900 692x107 bg #f5f5f5 border 1 #e5e5e5
-        text "fn main() {\n    println!(\"hello\");\n}" 28,900 692x119
-        text "fn main() {\n    println!(\"hello\");\n}" 45,929 658x63
-    Button "Comment on code block 14" 2,1019 16x16
-    Code "Code block 14" 28,1019 692x119
-      box 28,1019 692x107 bg #f5f5f5 border 1 #e5e5e5
-        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 28,1019 692x119
-        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 45,1048 658x63
-    Button "Comment on heading 15" 2,1138 16x16
-    Heading "Heading 15, level 2" 28,1138 692x58
-      text "Diagram" 28,1138 692x58
-      text "Diagram" 28,1160 692x29
-    Button "Comment on diagram 16" 2,1196 16x16
-    Image "Diagram: flowchart LR" 28,1204 692x170 border 2 #06b6d440 radius 6
-  Status "Last event" 0,1378 900x22
-    text "No events yet" 0,1378 900x22
+    Code "Code block 13" 28,900 692x105
+      box 28,900 692x93 bg #f5f5f5 border 1 #e5e5e5
+        text "fn main() {\n    println!(\"hello\");\n}" 28,900 692x105
+        box 670,909 41x23 bg #f5f5f5 radius 6
+        box 670,909 41x23 bg #f4f4f5 border 1 #d4d4d8 radius 4
+        text "fn main() {\n    println!(\"hello\");\n}" 45,915 658x63
+    Button "Comment on code block 14" 2,1005 16x16
+    Code "Code block 14" 28,1005 692x105
+      box 28,1005 692x93 bg #f5f5f5 border 1 #e5e5e5
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 28,1005 692x105
+        box 670,1014 41x23 bg #f5f5f5 radius 6
+        box 670,1014 41x23 bg #f4f4f5 border 1 #d4d4d8 radius 4
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 45,1020 658x63
+    Button "Comment on heading 15" 2,1110 16x16
+    Heading "Heading 15, level 2" 28,1110 692x58
+      text "Diagram" 28,1110 692x58
+      text "Diagram" 28,1132 692x29
+    Button "Comment on diagram 16" 2,1168 16x16
+    Image "Diagram: flowchart LR" 28,1176 692x170 border 2 #06b6d440 radius 6
+    Button "Comment on heading 17" 2,1366 16x16
+  Heading "Heading 17, level 2" 28,1366 692x59
+    Status "Last event" 0,1378 900x22
+      text "Images" 28,1366 692x59
+      text "No events yet" 0,1378 900x22

@@ -979,6 +979,9 @@ impl Reducer for Inbox {
             }
             InboxAction::CopyPath(path) => {
                 self.clients.clipboard.copy(&path);
+                return Effect::send(InboxAction::Delegate(Delegate::Toast(
+                    "Copied the path".to_owned(),
+                )));
             }
             InboxAction::Reveal(machine, path) => return self.reveal_path(state, &machine, path),
             InboxAction::RevealFailed(message) => state.error = Some(message),

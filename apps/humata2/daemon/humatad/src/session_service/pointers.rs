@@ -298,7 +298,7 @@ fn is_noisy_path(
         ) || second.starts_with("rebase-");
         return !keep;
     }
-    if matches!(first, "target" | "node_modules") {
+    if matches!(first, "target" | "node_modules") || first.starts_with("token-tb_") {
         return true;
     }
     let mut last = first;

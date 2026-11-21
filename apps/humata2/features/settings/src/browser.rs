@@ -13,6 +13,8 @@ pub struct BrowserState {
     pub browsers: Option<Vec<DetectedBrowser>>,
     /// Whether an install or uninstall call is in flight.
     pub busy: bool,
+    /// The extension path most recently copied to the clipboard, if any.
+    pub copied_path: Option<String>,
 }
 
 /// What happens on Settings › Browser.
@@ -93,6 +95,7 @@ pub(crate) fn reduce(
         }
         BrowserAction::CopyExtensionPath(path) => {
             clients.clipboard.copy(&path);
+            state.copied_path = Some(path);
             Effect::none()
         }
         BrowserAction::RevealExtensionPath(path) => {

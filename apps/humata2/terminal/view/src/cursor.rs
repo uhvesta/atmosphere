@@ -9,6 +9,15 @@ use terminal_grid::{CellWidth, CursorShape, Grid, Rgb};
 
 use crate::frame::{Style, cell_colors};
 
+/// The text under a filled block cursor and how to draw it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CursorText {
+    pub text: String,
+    pub color: Rgb,
+    pub bold: bool,
+    pub italic: bool,
+}
+
 /// The cursor as drawn this frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CursorPlan {
@@ -18,8 +27,8 @@ pub(crate) struct CursorPlan {
     pub cols: u16,
     pub shape: CursorShape,
     pub color: Rgb,
-    /// The text under a filled block and the color to draw it in.
-    pub text: Option<(String, Rgb)>,
+    /// The text under a filled block, its color, and its weight/style.
+    pub text: Option<CursorText>,
 }
 
 /// Plans the cursor of `grid`, or `None` when nothing is drawn. `blink_on`
@@ -62,8 +71,14 @@ pub(crate) fn plan_cursor<G: Grid + ?Sized>(
     let colors = grid.colors();
     let drawn = cell_colors(cell, selected, colors, style);
     let color = colors.cursor.unwrap_or(drawn.fg);
-    let text = (shape == CursorShape::Block && !cell.text.is_empty() && !cell.invisible)
-        .then(|| (cell.text.clone(), cursor_text.unwrap_or(drawn.bg)));
+    let text = (shape == CursorShape::Block && !cell.text.is_empty() && !cell.invisible).then(
+        || CursorText {
+            text: cell.text.clone(),
+            color: cursor_text.unwrap_or(drawn.bg),
+            bold: cell.bold,
+            italic: cell.italic,
+        },
+    );
 
     Some(CursorPlan {
         col,
@@ -83,6 +98,7 @@ mod tests {
     const STYLE: Style = Style {
         selection_background: None,
         selection_foreground: None,
+        selection_tint: None,
         bold_is_bright: false,
         faint_opacity: 0.5,
     };
@@ -112,9 +128,31 @@ mod tests {
                 cols: 1,
                 shape: CursorShape::Block,
                 color: colors.foreground,
-                text: Some(("b".to_owned(), colors.background)),
+                text: Some(CursorText {
+                    text: "b".to_owned(),
+                    color: colors.background,
+                    bold: false,
+                    italic: false,
+                }),
             })
         );
+    }
+
+    #[::std::prelude::v1::test]
+    fn a_block_cursor_preserves_bold_and_italic() {
+        let mut grid = FakeGrid::new(4, 1);
+        let styled = Cell {
+            bold: true,
+            italic: true,
+            ..Cell::default()
+        };
+        grid.write(0, 0, "x", &styled);
+        at(&mut grid, 0, 0);
+
+        let plan = plan_cursor(&grid, true, true, None, &STYLE).expect("cursor plan");
+        let text = plan.text.expect("cursor text");
+        assert!(text.bold);
+        assert!(text.italic);
     }
 
     #[::std::prelude::v1::test]

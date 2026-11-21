@@ -16,7 +16,7 @@ use humata2_clients::model::Agent;
 use humata2_settings::TodoAutomationAction as TodoAction;
 use humata2_settings::{
     AgentsAction, DeskRows, FONT_SIZES, GeneralAction as G, Row, Section, SettingsAction as A,
-    Theme, WebTodoAction,
+    TerminalTheme, Theme, WebTodoAction,
 };
 use std::rc::Rc;
 
@@ -226,9 +226,14 @@ fn machine_scripts_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
             )),
     )
 }
+fn active_terminal_font(font: &str) -> &str {
+    let trimmed = font.trim();
+    if trimmed.is_empty() { "Menlo" } else { trimmed }
+}
+
 /// The terminal font pop-up: the closed control, and the size list under it while open.
-fn font_popup(ui: &Rc<Ui>, size: u8, open: bool, look: Look) -> Div {
-    let label = SharedString::from(format!("Menlo {size}"));
+fn font_popup(ui: &Rc<Ui>, family: &str, size: u8, open: bool, look: Look) -> Div {
+    let label = SharedString::from(format!("{family} {size}"));
     let toggle = {
         let ui = ui.clone();
         row()
@@ -255,9 +260,12 @@ fn font_popup(ui: &Rc<Ui>, size: u8, open: bool, look: Look) -> Div {
         .relative()
         .flex_shrink_0()
         .child(toggle)
-        .when(open, |wrap| wrap.child(deferred(font_menu(ui, size, look))))
+        .when(open, |wrap| {
+            wrap.child(deferred(font_menu(ui, family, size, look)))
+        })
 }
-fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
+fn font_menu(ui: &Rc<Ui>, family: &str, current: u8, look: Look) -> impl IntoElement {
+    let family = family.to_owned();
     col()
         .id("settings-font-menu")
         .role(Role::ListBox)
@@ -265,7 +273,7 @@ fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
         .absolute()
         .top(px(28.))
         .right(px(0.))
-        .w(px(120.))
+        .min_w(px(120.))
         .p(px(4.))
         .gap(px(1.))
         .rounded(px(8.))
@@ -275,23 +283,25 @@ fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
         .shadow_lg()
         .occlude()
         .text_size(px(12.))
-        .children(FONT_SIZES.map(|size| {
+        .children(FONT_SIZES.map(move |size| {
             let ui = ui.clone();
+            let option_label = format!("{family} {size}");
             row()
                 .id(SharedString::from(format!("settings-font-{size}")))
                 .role(Role::ListBoxOption)
-                .aria_label(format!("Menlo {size}"))
+                .aria_label(option_label.clone())
                 .aria_selected(size == current)
                 .gap(px(8.))
                 .h(px(26.))
                 .px(px(8.))
                 .rounded(px(5.))
+                .whitespace_nowrap()
                 .cursor_pointer()
                 .hover(move |x| x.bg(rgb(look.fill)))
                 .child(div().w(px(12.)).flex_shrink_0().children(
                     (size == current).then(|| chrome::icon(IconName::Check, look.accent, 12.)),
                 ))
-                .child(format!("Menlo {size}"))
+                .child(option_label)
                 .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::SetFontSize(size)), cx))
                 .test_support()
         }))
@@ -822,6 +832,26 @@ pub fn page(
                                 })
                         },
                     ));
+            let terminal_themes = segmented(
+                ui,
+                look,
+                [
+                    (TerminalTheme::MatchApp, "match-app", "Match app"),
+                    (TerminalTheme::Dark, "dark", "Dark"),
+                    (TerminalTheme::Light, "light", "Light"),
+                ]
+                .into_iter()
+                .map(|(theme, slug, name)| {
+                    (
+                        format!("settings-terminal-theme-{slug}"),
+                        name,
+                        prefs.terminal_theme == theme,
+                        AppAction::Settings(A::SetTerminalTheme(theme)),
+                    )
+                }),
+            );
+            let current_terminal_font = state.settings.general.current().terminal.font;
+            let active_font = active_terminal_font(&current_terminal_font);
             body = body.child(
                 open_card(look)
                     .child(setting(
@@ -832,9 +862,15 @@ pub fn page(
                     ))
                     .child(setting(
                         look,
+                        Row::TerminalTheme.title(),
+                        "Dark or light colors for terminals, independent of the app.",
+                        terminal_themes,
+                    ))
+                    .child(setting(
+                        look,
                         "Terminal font",
                         "Used by every terminal and the diff.",
-                        font_popup(ui, prefs.font_size, state.settings.font_menu, look)
+                        font_popup(ui, active_font, prefs.font_size, state.settings.font_menu, look)
                             .into_any_element(),
                     ))
                     .child(setting(
@@ -1514,9 +1550,30 @@ fn reset_branch_prefix_label(default_prefix: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::reset_branch_prefix_label;
+    use super::{active_terminal_font, reset_branch_prefix_label};
     use humata2_clients::daemon::sample_branch;
-    use humata2_settings::{Row, Section};
+    use humata2_settings::{Row, Section, TerminalTheme};
+
+    #[core::prelude::v1::test]
+    fn active_terminal_font_uses_saved_family_or_menlo_fallback() {
+        assert_eq!(active_terminal_font("JetBrains Mono"), "JetBrains Mono");
+        assert_eq!(active_terminal_font("  SF Mono  "), "SF Mono");
+        assert_eq!(active_terminal_font(""), "Menlo");
+        assert_eq!(active_terminal_font("   "), "Menlo");
+    }
+
+    #[core::prelude::v1::test]
+    fn terminal_theme_resolves_dark_independently_of_app_appearance() {
+        assert!(TerminalTheme::MatchApp.is_dark(true));
+        assert!(!TerminalTheme::MatchApp.is_dark(false));
+        assert!(TerminalTheme::Dark.is_dark(true));
+        assert!(TerminalTheme::Dark.is_dark(false));
+        assert!(!TerminalTheme::Light.is_dark(true));
+        assert!(!TerminalTheme::Light.is_dark(false));
+        assert_eq!(Row::TerminalTheme.section(), Section::Layout);
+        assert_eq!(Row::TerminalTheme.title(), "Terminal theme");
+        assert!(Row::ALL.contains(&Row::TerminalTheme));
+    }
 
     #[core::prelude::v1::test]
     fn sample_branch_preview_joins_prefix_with_fix_login() {

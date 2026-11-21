@@ -20,7 +20,30 @@ use humata2_clients::model::{Comment, LineKind, RepoDiff, Session, SessionId};
 use humata2_review::{DiffMarkdownMode, ReviewAction};
 use humata2_review::comments::CommentsAction;
 use humata2_session::Panel;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+
+thread_local! {
+    static GITHUB_LAST_CHECKED_MS: RefCell<HashMap<SessionId, i64>> = RefCell::new(HashMap::new());
+}
+
+/// Formats the elapsed time since `last_checked_ms` relative to `now_ms`.
+fn format_checked_ago(now_ms: i64, last_checked_ms: i64) -> String {
+    let elapsed_ms = now_ms.saturating_sub(last_checked_ms).max(0);
+    const MINUTE_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 60 * MINUTE_MS;
+    const DAY_MS: i64 = 24 * HOUR_MS;
+    if elapsed_ms < MINUTE_MS {
+        "just now".to_owned()
+    } else if elapsed_ms < HOUR_MS {
+        format!("{}m ago", elapsed_ms / MINUTE_MS)
+    } else if elapsed_ms < DAY_MS {
+        format!("{}h ago", elapsed_ms / HOUR_MS)
+    } else {
+        format!("{}d ago", elapsed_ms / DAY_MS)
+    }
+}
 
 mod agent_tab;
 mod diff_body;
@@ -1115,13 +1138,18 @@ pub fn changes(
         )
         // GitHub feedback check age in the left rail (never in the title bar).
         .when_some(review.zip(session_id.as_ref()), |panel, (_, id)| {
+            let now_ms = ui.now()();
+            let last_checked_ms = GITHUB_LAST_CHECKED_MS.with(|map| {
+                *map.borrow_mut().entry(id.clone()).or_insert(now_ms)
+            });
             let age = state
                 .review
                 .github_checked_ago
                 .get(id)
                 .cloned()
-                .unwrap_or_else(|| "2m ago".to_owned());
+                .unwrap_or_else(|| format_checked_ago(now_ms, last_checked_ms));
             let refresh_ui = ui.clone();
+            let refresh_id = id.clone();
             panel.child(
                 row()
                     .id("github-feedback-checked-rail")
@@ -1143,6 +1171,10 @@ pub fn changes(
                             .text_color(rgb(look.accent))
                             .cursor_pointer()
                             .on_click(move |_, _, cx| {
+                                let now = refresh_ui.now()();
+                                GITHUB_LAST_CHECKED_MS.with(|map| {
+                                    map.borrow_mut().insert(refresh_id.clone(), now);
+                                });
                                 refresh_ui.send(
                                     AppAction::Review(ReviewAction::RefreshGithubFeedback),
                                     cx,
@@ -1631,4 +1663,22 @@ fn diff_header(ui: &Rc<Ui>, state: &AppState, full: bool, extra: Option<Div>, lo
             .when(full, |r| r.child(agent_tab::button(ui, state, look))),
     );
     panel_header_actions(ui, state, Panel::Changes, full, extra, actions, look)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_checked_ago;
+
+    #[::core::prelude::v1::test]
+    fn format_checked_ago_formats_elapsed_units() {
+        let base = 1_700_000_000_000;
+        assert_eq!(format_checked_ago(base, base), "just now");
+        assert_eq!(format_checked_ago(base + 59_999, base), "just now");
+        assert_eq!(format_checked_ago(base + 60_000, base), "1m ago");
+        assert_eq!(format_checked_ago(base + 5 * 60_000, base), "5m ago");
+        assert_eq!(format_checked_ago(base + 3_600_000, base), "1h ago");
+        assert_eq!(format_checked_ago(base + 2 * 86_400_000, base), "2d ago");
+        // Clock skew in the future clamps safely to "just now".
+        assert_eq!(format_checked_ago(base - 10_000, base), "just now");
+    }
 }

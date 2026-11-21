@@ -107,6 +107,12 @@ pub struct Authority {
     next_seq: u64,
     record: ReplyRecord,
     changed: bool,
+    /// Whether the program enabled DEC private mode 2031 (color-scheme
+    /// change notifications: `CSI ? 2031 h`).
+    color_scheme_reporting: bool,
+    /// Active terminal theme polarity (`true` = dark, `false` = light) for
+    /// DEC mode 2031 (`CSI ? 996 n` / `CSI ? 997 ; 1|2 n`).
+    dark_theme: bool,
 }
 
 impl Authority {
@@ -127,7 +133,39 @@ impl Authority {
             next_seq: 1,
             record: ReplyRecord::default(),
             changed: true,
+            color_scheme_reporting: false,
+            dark_theme: true,
         })
+    }
+
+    /// Updates the default foreground, background, cursor and palette colors
+    /// that this authority uses when answering OSC 10/11/12 queries, and
+    /// returns a DEC mode 2031 theme-change notification (`CSI ? 997 ; 1|2 n`)
+    /// when the dark/light polarity changed and the program opted in.
+    pub fn set_default_colors(
+        &mut self,
+        colors: &ghostty_vt::Colors,
+    ) -> Result<Option<Step>, AuthorityError> {
+        self.terminal
+            .set_default_colors(colors)
+            .map_err(engine("set the colors of"))?;
+        self.changed = true;
+        let dark = !colors.is_light();
+        let polarity_changed = dark != self.dark_theme;
+        self.dark_theme = dark;
+        if polarity_changed && self.color_scheme_reporting {
+            Ok(Some(self.push_reply(theme_report_bytes(dark))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn push_reply(&mut self, bytes: Vec<u8>) -> Step {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.record.pending.push(seq);
+        self.record.answered_through = self.end;
+        Step::Reply { seq, bytes }
     }
 
     /// Rebuilds the screen after a restart from the output the holder
@@ -185,18 +223,19 @@ impl Authority {
         if bytes.is_empty() {
             return Vec::new();
         }
+        let queried_theme = scan_color_scheme_modes(bytes, &mut self.color_scheme_reporting);
         self.terminal.feed(bytes);
         self.end += bytes.len() as u64;
         self.changed = true;
         let mut steps = Vec::new();
+        let mut engine_answered_theme = false;
         for event in self.terminal.drain_events() {
             match event {
                 Event::Reply(bytes) => {
-                    let seq = self.next_seq;
-                    self.next_seq += 1;
-                    self.record.pending.push(seq);
-                    self.record.answered_through = self.end;
-                    steps.push(Step::Reply { seq, bytes });
+                    if bytes.windows(7).any(|w| w == b"\x1b[?997;") {
+                        engine_answered_theme = true;
+                    }
+                    steps.push(self.push_reply(bytes));
                 }
                 Event::TitleChanged(title) => steps.push(Step::Title(title)),
                 Event::PwdChanged(pwd) => steps.push(Step::Pwd(pwd)),
@@ -204,6 +243,9 @@ impl Authority {
                 // grants a program on its own: a viewer decides.
                 _ => {}
             }
+        }
+        if queried_theme && !engine_answered_theme {
+            steps.push(self.push_reply(theme_report_bytes(self.dark_theme)));
         }
         steps
     }
@@ -303,5 +345,97 @@ impl Authority {
             rows: size.rows,
             trimmed_rows,
         })
+    }
+}
+
+fn theme_report_bytes(dark: bool) -> Vec<u8> {
+    if dark {
+        b"\x1b[?997;1n".to_vec()
+    } else {
+        b"\x1b[?997;2n".to_vec()
+    }
+}
+
+/// Tracks DEC private mode 2031 (`CSI ? 2031 h` / `l`) and detects explicit
+/// color-scheme queries (`CSI ? 996 n`).
+fn scan_color_scheme_modes(bytes: &[u8], enabled: &mut bool) -> bool {
+    let mut queried = false;
+    let mut i = 0;
+    while i + 6 <= bytes.len() {
+        if bytes[i..].starts_with(b"\x1b[?2031")
+            && let Some(&final_byte) = bytes.get(i + 7)
+        {
+            match final_byte {
+                b'h' => *enabled = true,
+                b'l' => *enabled = false,
+                _ => {}
+            }
+            i += 8;
+            continue;
+        }
+        if bytes[i..].starts_with(b"\x1b[?996n") {
+            queried = true;
+            i += 7;
+            continue;
+        }
+        i += 1;
+    }
+    queried
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        Config {
+            cols: 80,
+            rows: 24,
+            scrollback_lines: 100,
+            scrollback_bytes: 64 * 1024,
+            checkpoint_limit: 512 * 1024,
+        }
+    }
+
+    #[test]
+    fn set_default_colors_updates_osc_10_11_replies_and_dec_2031() {
+        let mut authority = Authority::new(&test_config()).expect("authority");
+        let light = ghostty_vt::Colors::for_theme(false);
+        assert_eq!(authority.set_default_colors(&light).expect("set light"), None);
+
+        // OSC 11 background query should reply with white (#ffffff -> rgb:ffff/ffff/ffff).
+        let steps = authority.feed(0, b"\x1b]11;?\x07").expect("feed osc11");
+        let osc_reply = steps
+            .iter()
+            .find_map(|s| match s {
+                Step::Reply { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
+                _ => None,
+            })
+            .expect("osc 11 reply");
+        assert!(
+            osc_reply.contains("rgb:ffff/ffff/ffff"),
+            "expected light bg reply, got {osc_reply:?}"
+        );
+
+        // Enable DEC mode 2031 and query current scheme via CSI ? 996 n -> light (2).
+        let end = authority.end();
+        let steps = authority
+            .feed(end, b"\x1b[?2031h\x1b[?996n")
+            .expect("feed dec2031");
+        assert!(
+            steps.iter().any(|s| matches!(
+                s,
+                Step::Reply { bytes, .. } if bytes == b"\x1b[?997;2n"
+            )),
+            "expected light mode 997;2n reply, got {steps:?}"
+        );
+
+        // Switching to dark emits an unsolicited DEC 2031 dark notification (1).
+        let dark = ghostty_vt::Colors::for_theme(true);
+        let notify = authority.set_default_colors(&dark).expect("set dark");
+        assert!(matches!(
+            notify,
+            Some(Step::Reply { ref bytes, .. }) if bytes == b"\x1b[?997;1n"
+        ));
     }
 }

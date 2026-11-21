@@ -558,6 +558,27 @@ fn primary_panel(
     let todo_ui = ui.clone();
     let open_ui = ui.clone();
     let close_ui = ui.clone();
+    let copy_ui = ui.clone();
+    let on_this_mac = state
+        .workspace
+        .machine(&session.machine)
+        .is_some_and(humata2_clients::is_this_mac);
+    let can_reveal = on_this_mac && std::path::Path::new(&path).is_absolute();
+    let reveal_path = can_reveal.then(|| {
+        let reveal = path.clone();
+        div()
+            .id("channel-desk-primary-reveal-path")
+            .role(Role::Button)
+            .aria_label("Reveal in Finder")
+            .flex_shrink_0()
+            .text_color(rgb(look.accent))
+            .cursor_pointer()
+            .child("Reveal in Finder")
+            .on_click(move |_, _, cx| {
+                cx.reveal_path(std::path::Path::new(&reveal));
+            })
+            .test_support()
+    });
 
     let bar = row()
         .id("channel-desk-primary-bar")
@@ -591,9 +612,16 @@ fn primary_panel(
                 .child("Copy path")
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+                    copy_ui.send(
+                        AppAction::Session(humata2_session::SessionAction::Delegate(
+                            humata2_session::Delegate::Toast("Copied the path".to_owned()),
+                        )),
+                        cx,
+                    );
                 })
                 .test_support(),
         )
+        .children(reveal_path)
         .child(
             div()
                 .px(px(6.))

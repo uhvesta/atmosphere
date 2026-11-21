@@ -40,10 +40,12 @@ Splitter "Resize the sidebar"
   Group "HCLOUD_TOKEN"
     #input
       PasswordInput "Value for HCLOUD_TOKEN" placeholder="Value"
+      Button "Show password"
     Button "Set" disabled
   Group "SSH_KEY_NAME"
     #input
       PasswordInput "Value for SSH_KEY_NAME" placeholder="Value"
+      Button "Show password"
     Button "Replace" disabled
     Button "Clear"
   Button "Import provider…"

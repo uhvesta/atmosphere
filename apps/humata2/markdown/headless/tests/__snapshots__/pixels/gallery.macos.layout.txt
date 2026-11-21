@@ -74,27 +74,31 @@ box 0,0 900x1400 bg #ffffff
       text "Code" 20,714 880x59
       text "Code" 20,736 880x29
     Button "Comment on code block 13" 2,773 16x16
-    Code "Code block 13" 20,773 880x119
-      box 20,773 880x107 bg #f5f5f5 border 1 #e5e5e5
-        text "fn main() {\n    println!(\"hello\");\n}" 20,773 880x119
-        text "fn main() {\n    println!(\"hello\");\n}" 37,802 846x63
-    Button "Comment on code block 14" 2,892 16x16
-    Code "Code block 14" 20,892 880x119
-      box 20,892 880x107 bg #f5f5f5 border 1 #e5e5e5
-        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 20,892 880x119
-        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 37,921 846x63
-    Button "Comment on heading 15" 2,1011 16x16
-    Heading "Heading 15, level 2" 20,1011 880x58
-      text "Diagram" 20,1011 880x58
-      text "Diagram" 20,1033 880x29
-    Button "Comment on diagram 16" 2,1069 16x16
-    Image "Diagram: flowchart LR" 20,1077 880x168 border 1 #e5e5e5 radius 6
-    Button "Comment on heading 17" 2,1265 16x16
-    Heading "Heading 17, level 2" 20,1265 880x59
-      text "Images" 20,1265 880x59
-      text "Images" 20,1287 880x29
-    Button "Comment on image 18" 2,1324 16x16
-    Image "Image 18" 20,1324 880x108
+    Code "Code block 13" 20,773 880x105
+      box 20,773 880x93 bg #f5f5f5 border 1 #e5e5e5
+        text "fn main() {\n    println!(\"hello\");\n}" 20,773 880x105
+        box 850,782 41x23 bg #f5f5f5 radius 6
+        box 850,782 41x23 bg #f4f4f5 border 1 #d4d4d8 radius 4
+        text "fn main() {\n    println!(\"hello\");\n}" 37,788 846x63
+    Button "Comment on code block 14" 2,878 16x16
+    Code "Code block 14" 20,878 880x105
+      box 20,878 880x93 bg #f5f5f5 border 1 #e5e5e5
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 20,878 880x105
+        box 850,887 41x23 bg #f5f5f5 radius 6
+        box 850,887 41x23 bg #f4f4f5 border 1 #d4d4d8 radius 4
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 37,893 846x63
+    Button "Comment on heading 15" 2,983 16x16
+    Heading "Heading 15, level 2" 20,983 880x58
+      text "Diagram" 20,983 880x58
+      text "Diagram" 20,1005 880x29
+    Button "Comment on diagram 16" 2,1041 16x16
+    Image "Diagram: flowchart LR" 20,1049 880x168 border 1 #e5e5e5 radius 6
+    Button "Comment on heading 17" 2,1237 16x16
+    Heading "Heading 17, level 2" 20,1237 880x59
+      text "Images" 20,1237 880x59
+      text "Images" 20,1259 880x29
+    Button "Comment on image 18" 2,1296 16x16
+    Image "Image 18" 20,1296 880x108
+      text "Logo" 20,1296 880x108
       Status "Last event" 0,1378 900x22
-        text "Logo" 20,1324 880x108
         text "No events yet" 0,1378 900x22

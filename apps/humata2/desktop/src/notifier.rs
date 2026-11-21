@@ -284,6 +284,95 @@ mod platform {
         }
     }
 
+    /// Formats the macOS Dock tile badge label for `count`.
+    /// `None` or `Some(0)` clears the badge (`None` -> `nil`).
+    #[must_use]
+    pub(crate) fn dock_badge_label(count: Option<usize>) -> Option<String> {
+        count.filter(|&n| n > 0).map(|n| n.to_string())
+    }
+
+    /// Decides how a `NotifierCommand::Post` plays its sound:
+    /// - Bundled `.app` runs pass the sound file name to macOS
+    ///   `UNUserNotificationCenter` (`show_system_notification_with_sound`) so
+    ///   macOS Focus / Do Not Disturb is respected.
+    /// - Unbundled dev builds fall back to `play_sound_in_app` because
+    ///   `UNUserNotificationCenter` is a no-op without a bundle identifier.
+    #[must_use]
+    pub(crate) fn post_sound_plan(
+        is_bundled: bool,
+        sound: Option<NoticeSound>,
+    ) -> (Option<&'static str>, Option<NoticeSound>) {
+        match (is_bundled, sound) {
+            (true, Some(s)) => (Some(s.file_name()), None),
+            (false, Some(s)) => (None, Some(s)),
+            (_, None) => (None, None),
+        }
+    }
+
+    /// Sets or clears the macOS Dock tile badge via
+    /// `NSApplication.sharedApplication.dockTile.setBadgeLabel:`.
+    /// Must be called on the main (GPUI foreground) thread.
+    fn set_macos_dock_badge(label: Option<&str>) {
+        use std::ffi::{CString, c_char, c_void};
+
+        #[link(name = "objc", kind = "dylib")]
+        unsafe extern "C" {
+            fn objc_getClass(name: *const c_char) -> *mut c_void;
+            fn sel_registerName(name: *const c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+
+        // SAFETY: Called from the GPUI main thread on macOS where AppKit's
+        // NSApplication/NSDockTile run loop and autorelease pool are active.
+        // `objc_msgSend` is cast to the exact C ABI signature for each selector.
+        unsafe {
+            let msg_send_0: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+                std::mem::transmute(objc_msgSend as *const c_void);
+            let msg_send_1_ptr: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                *const c_char,
+            ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const c_void);
+            let msg_send_1_void: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) =
+                std::mem::transmute(objc_msgSend as *const c_void);
+
+            let ns_app_cls = objc_getClass(c"NSApplication".as_ptr());
+            if ns_app_cls.is_null() {
+                return;
+            }
+            let app = msg_send_0(ns_app_cls, sel_registerName(c"sharedApplication".as_ptr()));
+            if app.is_null() {
+                return;
+            }
+            let dock_tile = msg_send_0(app, sel_registerName(c"dockTile".as_ptr()));
+            if dock_tile.is_null() {
+                return;
+            }
+            let badge_ns_string = match label {
+                Some(text) if !text.is_empty() => {
+                    let Ok(cstr) = CString::new(text) else {
+                        return;
+                    };
+                    let ns_string_cls = objc_getClass(c"NSString".as_ptr());
+                    if ns_string_cls.is_null() {
+                        return;
+                    }
+                    msg_send_1_ptr(
+                        ns_string_cls,
+                        sel_registerName(c"stringWithUTF8String:".as_ptr()),
+                        cstr.as_ptr(),
+                    )
+                }
+                _ => std::ptr::null_mut(),
+            };
+            msg_send_1_void(
+                dock_tile,
+                sel_registerName(c"setBadgeLabel:".as_ptr()),
+                badge_ns_string,
+            );
+        }
+    }
+
     /// Commands queued from [`Notifier`] calls on any thread and drained on the
     /// GPUI foreground thread.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,11 +509,11 @@ mod platform {
             let (clicks_tx, clicks_rx) = mpsc::unbounded_channel();
             let targets = Arc::clone(&self.targets);
 
-            if std::env::current_exe()
+            let is_bundled = std::env::current_exe()
                 .ok()
                 .and_then(|exe| bundle_identifier_for_exe(&exe))
-                .is_none()
-            {
+                .is_some();
+            if !is_bundled {
                 trace_notifier(
                     "bridge_attach",
                     "warning=unbundled os_notifications_may_noop=true",
@@ -451,12 +540,15 @@ mod platform {
                                 "bridge_dispatch",
                                 &format!("cmd=post id={} sound={:?}", notice.id, notice.sound),
                             );
-                            if let Some(sound) = notice.sound {
+                            let (os_sound, fallback_sound) =
+                                post_sound_plan(is_bundled, notice.sound);
+                            if let Some(sound) = fallback_sound {
                                 play_sound_in_app(sound);
                             }
                             let notification = to_system_notification(&notice);
+                            let os_sound = os_sound.map(SharedString::from);
                             cx.update(|cx| {
-                                cx.show_system_notification_with_sound(notification, None);
+                                cx.show_system_notification_with_sound(notification, os_sound);
                             });
                         }
                         NotifierCommand::Withdraw(ids) => {
@@ -482,10 +574,12 @@ mod platform {
                             play_sound_in_app(sound);
                         }
                         NotifierCommand::SetDockBadge(count) => {
+                            let label = dock_badge_label(count);
                             trace_notifier(
                                 "bridge_dispatch",
-                                &format!("cmd=set_dock_badge count={count:?}"),
+                                &format!("cmd=set_dock_badge count={count:?} label={label:?}"),
                             );
+                            cx.update(|_| set_macos_dock_badge(label.as_deref()));
                         }
                     }
                 }
@@ -773,6 +867,32 @@ mod platform {
             drop(bridge);
             notifier.set_dock_badge(Some(2));
             notifier.set_dock_badge(None);
+        }
+
+        #[test]
+        fn dock_badge_label_formats_positive_counts_and_clears_zero_or_none() {
+            assert_eq!(dock_badge_label(None), None);
+            assert_eq!(dock_badge_label(Some(0)), None);
+            assert_eq!(dock_badge_label(Some(1)), Some("1".to_owned()));
+            assert_eq!(dock_badge_label(Some(42)), Some("42".to_owned()));
+        }
+
+        #[test]
+        fn post_sound_plan_delegates_to_os_when_bundled_and_falls_back_when_unbundled() {
+            assert_eq!(
+                post_sound_plan(true, Some(NoticeSound::Inbox)),
+                (Some(NoticeSound::Inbox.file_name()), None)
+            );
+            assert_eq!(
+                post_sound_plan(true, Some(NoticeSound::Todo)),
+                (Some(NoticeSound::Todo.file_name()), None)
+            );
+            assert_eq!(post_sound_plan(true, None), (None, None));
+            assert_eq!(
+                post_sound_plan(false, Some(NoticeSound::Inbox)),
+                (None, Some(NoticeSound::Inbox))
+            );
+            assert_eq!(post_sound_plan(false, None), (None, None));
         }
     }
 }

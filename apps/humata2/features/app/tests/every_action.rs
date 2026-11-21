@@ -523,6 +523,9 @@ fn key(name: &str) -> Option<Key> {
         }
         // ⌘+ / ⌘- step the terminal & diff font size (also in Settings › Layout › Terminal font).
         "ZoomIn" | "ZoomOut" => Key::Not,
+        // Standard window, tab, navigation, refresh, and find shortcuts.
+        "Forward" | "Refresh" | "CloseTab" | "CloseWindow" | "PrevTab" | "NextTab" | "Find"
+        | "FindNext" | "FindPrev" => Key::Not,
         // S / ⌥S on a focused milestone on the To-do board (ATM-10):
         // milestone-scoped, so no app-wide palette entry.
         "StartMilestoneSession" | "StartMilestonePlainSession" => Key::Not,

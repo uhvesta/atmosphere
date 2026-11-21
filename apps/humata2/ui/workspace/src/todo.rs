@@ -755,11 +755,12 @@ pub(crate) fn filter_count_text(state: &TodoState) -> String {
             None => true,
         })
         .count();
+    let noun = if of == 1 { "item" } else { "items" };
     match channel {
         Some(ChannelPick::Channel(id)) => {
-            format!("{shown} of {of} items in {}", state.channel_name(&id))
+            format!("{shown} of {of} {noun} in {}", state.channel_name(&id))
         }
-        _ => format!("{shown} of {of} items"),
+        _ => format!("{shown} of {of} {noun}"),
     }
 }
 
@@ -802,7 +803,9 @@ pub struct Inputs {
     step_context_at: Cell<Option<usize>>,
     /// The item key last open in the drawer, so switching items clears local
     /// draft inputs and sub-form flags instead of leaking text onto another item.
-    last_open: RefCell<Option<String>>,
+    last_open: Rc<RefCell<Option<String>>>,
+    /// Active ask metadata for the currently open item so Enter submits `ask_input`.
+    active_ask: Rc<RefCell<Option<ActiveAskSubmit>>>,
     /// The store's text last put in quick add, search, edit and the step
     /// context, in that order. A field is written only when the store's text
     /// changes, because a field's change event arrives after the frame that
@@ -811,7 +814,21 @@ pub struct Inputs {
     synced: RefCell<[String; 4]>,
     placeholder: RefCell<String>,
     scroll: ScrollHandle,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 8],
+}
+
+#[derive(Clone)]
+enum ActiveAskSubmit {
+    Question {
+        ask_id: String,
+        selected_choices: Vec<String>,
+    },
+    Action {
+        ask_id: String,
+    },
+    Review {
+        ask_id: String,
+    },
 }
 
 impl Inputs {
@@ -831,7 +848,21 @@ impl Inputs {
         let split_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Titles separated by commas…"));
         let ask_input = cx.new(|cx| InputState::new(window, cx).placeholder("Write an answer or note…"));
+        let last_open: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let active_ask: Rc<RefCell<Option<ActiveAskSubmit>>> = Rc::new(RefCell::new(None));
+        let ext_block_open = Rc::new(Cell::new(false));
+        let split_open = Rc::new(Cell::new(false));
+        let split_keep_age = Rc::new(Cell::new(true));
         let (one, two, three, four) = (send.clone(), send.clone(), send.clone(), send.clone());
+        let (send_comment, send_ext, send_split, send_ask) =
+            (send.clone(), send.clone(), send.clone(), send.clone());
+        let comment_key = last_open.clone();
+        let ext_key = last_open.clone();
+        let ext_close = ext_block_open.clone();
+        let split_key = last_open.clone();
+        let split_close = split_open.clone();
+        let split_age = split_keep_age.clone();
+        let ask_ref = active_ask.clone();
         let subs = [
             cx.subscribe(&quick_add, move |_, input, event: &InputEvent, cx| match event {
                 InputEvent::Change => one(A::QuickAddChanged(input.read(cx).value().to_string()), cx),
@@ -857,6 +888,71 @@ impl Inputs {
                 }
                 _ => {}
             }),
+            cx.subscribe_in(&comment_input, window, move |_, input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let body = input.read(cx).value().trim().to_owned();
+                    if let Some(key) = comment_key.borrow().clone().filter(|_| !body.is_empty()) {
+                        send_comment(A::AddComment { key, body, step_id: None }, cx);
+                        input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                        window.refresh();
+                    }
+                }
+            }),
+            cx.subscribe_in(&ext_block_input, window, move |_, input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let reason = input.read(cx).value().trim().to_owned();
+                    if let Some(key) = ext_key.borrow().clone().filter(|_| !reason.is_empty()) {
+                        send_ext(A::AddExternalBlock(key, reason), cx);
+                        input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                        ext_close.set(false);
+                        window.refresh();
+                    }
+                }
+            }),
+            cx.subscribe_in(&split_input, window, move |_, input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let titles: Vec<String> = input
+                        .read(cx)
+                        .value()
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if let Some(key) = split_key.borrow().clone().filter(|_| !titles.is_empty()) {
+                        send_split(
+                            A::SplitItem { key, titles, keep_age: split_age.get() },
+                            cx,
+                        );
+                        input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                        split_close.set(false);
+                        window.refresh();
+                    }
+                }
+            }),
+            cx.subscribe_in(&ask_input, window, move |_, input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let Some(active) = ask_ref.borrow().clone() else {
+                        return;
+                    };
+                    let text = input.read(cx).value().trim().to_owned();
+                    match active {
+                        ActiveAskSubmit::Question { ask_id, selected_choices } => {
+                            send_ask(
+                                A::AnswerQuestion { ask_id, text, selected_choices },
+                                cx,
+                            );
+                        }
+                        ActiveAskSubmit::Action { ask_id } => {
+                            send_ask(A::AnswerAction { ask_id, done: true, note: text }, cx);
+                        }
+                        ActiveAskSubmit::Review { ask_id } => {
+                            send_ask(A::AnswerReview { ask_id, approved: true, note: text }, cx);
+                        }
+                    }
+                    input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                    window.refresh();
+                }
+            }),
         ];
         Self {
             quick_add,
@@ -876,15 +972,16 @@ impl Inputs {
             runs_open: Rc::new(Cell::new(false)),
             history_open: Rc::new(Cell::new(false)),
             ask_details_open: Rc::new(Cell::new(false)),
-            split_open: Rc::new(Cell::new(false)),
-            split_keep_age: Rc::new(Cell::new(true)),
+            split_open,
+            split_keep_age,
             fold_open: Rc::new(Cell::new(false)),
-            ext_block_open: Rc::new(Cell::new(false)),
+            ext_block_open,
             milestone_start_menu_open: Rc::new(Cell::new(false)),
             dismissed_close_prompts: Rc::new(RefCell::new(std::collections::BTreeSet::new())),
             editing: Cell::new(false),
             step_context_at: Cell::new(None),
-            last_open: RefCell::new(None),
+            last_open,
+            active_ask,
             synced: RefCell::new(Default::default()),
             placeholder: RefCell::new(String::new()),
             scroll: ScrollHandle::new(),
@@ -913,6 +1010,37 @@ impl Inputs {
             self.ext_block_open.set(false);
             self.milestone_start_menu_open.set(false);
         }
+        *self.active_ask.borrow_mut() = state
+            .open
+            .as_deref()
+            .and_then(|k| entry(state, k))
+            .and_then(|e| {
+                let ask_id = e.ask_id.as_ref()?;
+                let ask = e.todo.ask.as_ref()?;
+                if e.todo.suggested {
+                    return None;
+                }
+                Some(match &ask.kind {
+                    AskKind::Question { .. } => {
+                        let selected_choices = state
+                            .question_drafts
+                            .get(ask_id)
+                            .map(|d| d.selected_choices.clone())
+                            .unwrap_or_default();
+                        ActiveAskSubmit::Question {
+                            ask_id: ask_id.clone(),
+                            selected_choices,
+                        }
+                    }
+                    AskKind::ActionRequest { .. } => ActiveAskSubmit::Action {
+                        ask_id: ask_id.clone(),
+                    },
+                    AskKind::ReviewRequest { .. } => ActiveAskSubmit::Review {
+                        ask_id: ask_id.clone(),
+                    },
+                    AskKind::Close | AskKind::Edit { .. } | AskKind::Add => return None,
+                })
+            });
         let editing = state.editing.as_ref();
         let step_at = editing.and_then(|e| match e.field {
             EditField::StepContext(i) => Some(i),
@@ -1280,6 +1408,7 @@ fn header(
                 .flex_shrink(1.)
                 .child(
                     Input::new(&inputs.search)
+                        .cleanable(true)
                         .small()
                         .min_h(px(26.))
                         .rounded(px(6.))
@@ -1839,7 +1968,7 @@ fn empty(state: &TodoState, look: Look) -> Div {
         .child(
             muted(
                 if bare {
-                    "Type a title above and press Enter. A date, an effort and an impact are optional; the more an item has, the better the list can order itself."
+                    "Type a title above and press Return. A date, an effort and an impact are optional; the more an item has, the better the list can order itself."
                 } else {
                     "Clear the filter to see everything again."
                 },
@@ -2177,7 +2306,11 @@ fn item_row(
                 txt.push_str(&format!(" · CI {}", pr.ci_state));
             }
             if pr.unresolved_comments > 0 {
-                txt.push_str(&format!(" · {} comments", pr.unresolved_comments));
+                txt.push_str(&format!(
+                    " · {} {}",
+                    pr.unresolved_comments,
+                    if pr.unresolved_comments == 1 { "comment" } else { "comments" }
+                ));
             }
             tag(txt, look)
         }))
@@ -3353,10 +3486,11 @@ pub(crate) fn drawer(
 /// The box that edits a step's Markdown context, under the step's row
 /// (frames t2-1 and t2-2).
 fn step_context_editor(send: &Send, inputs: &Inputs, had_context: bool, look: Look) -> Div {
+    let save_key = humata2_ui_core::keys::label("⌘↩", cfg!(target_os = "macos"));
     let hint = if had_context {
-        "⌘↩ saves · Esc cancels · empty removes it"
+        format!("{save_key} saves · Esc cancels · empty removes it")
     } else {
-        "⌘↩ saves · Esc cancels"
+        format!("{save_key} saves · Esc cancels")
     };
     let cancel = send.clone();
     col()

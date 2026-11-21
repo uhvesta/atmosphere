@@ -395,6 +395,12 @@ pub struct TerminalReplica {
     idle_timer: Option<gpui_kit::Task<()>>,
     tickets: BTreeSet<u64>,
     scroll: ScrollHandle,
+    /// Whether the program enabled DEC private mode 2031 (color-scheme
+    /// change reporting: `CSI ? 2031 h`).
+    color_scheme_reporting: bool,
+    /// Last applied theme polarity (`true` = dark, `false` = light), for
+    /// DEC mode 2031 notifications on theme switch.
+    last_dark: Option<bool>,
 }
 impl EventEmitter<ReplicaEvent> for TerminalReplica {}
 impl TerminalReplica {
@@ -413,6 +419,7 @@ impl TerminalReplica {
         Ok(Self::build(config, sink, cx.focus_handle()))
     }
     fn build(config: ReplicaConfig, sink: Rc<dyn ReplicaSink>, waiting: FocusHandle) -> Self {
+        let last_dark = config.default_colors.as_ref().map(|c| !c.is_light());
         Self {
             input: Rc::new(InputState {
                 route: config.session.id,
@@ -452,6 +459,8 @@ impl TerminalReplica {
             idle_timer: None,
             tickets: BTreeSet::new(),
             scroll: ScrollHandle::new(),
+            color_scheme_reporting: false,
+            last_dark,
         }
     }
     /// Fallible entity construction for embedders that cannot use a panicking closure.
@@ -524,6 +533,19 @@ impl TerminalReplica {
                 })
             })
             .map_err(|source| ReplicaError::Colors { source })?;
+        }
+        if let Some(colors) = &colors {
+            let dark = !colors.is_light();
+            let changed = self.last_dark.is_some_and(|prev| prev != dark);
+            self.last_dark = Some(dark);
+            if changed && self.color_scheme_reporting && self.input.enabled.get() {
+                let report = if dark {
+                    b"\x1b[?997;1n".to_vec()
+                } else {
+                    b"\x1b[?997;2n".to_vec()
+                };
+                let _ = self.input.write(report);
+            }
         }
         self.config.default_colors = colors;
         Ok(())
@@ -919,6 +941,8 @@ impl TerminalReplica {
                 .push(cx.subscribe(&pane, |_, _, event: &PaneEvent, cx| {
                     cx.emit(ReplicaEvent::Pane(event.clone()))
                 }));
+            self.subscriptions
+                .push(cx.observe(&pane, |_, _, cx| cx.notify()));
             let view = pane.read(cx).view().clone();
             self.subscriptions.push(cx.observe(&view, |this, _, cx| {
                 let errors = std::mem::take(&mut *this.input.errors.borrow_mut());
@@ -1161,6 +1185,7 @@ impl TerminalReplica {
                 } else {
                     let skip = self.offset.saturating_sub(offset).min(bytes.len() as u64) as usize;
                     if skip < bytes.len() {
+                        scan_dec_2031(&bytes[skip..], &mut self.color_scheme_reporting);
                         if let Some(pane) = &self.pane {
                             pane.update(cx, |pane, cx| pane.feed(&bytes[skip..], cx));
                         }
@@ -1284,8 +1309,13 @@ impl Render for TerminalReplica {
             // A view that never sizes the terminal always draws it at the
             // host's grid, like a view that doesn't control it.
             if self.controller && self.fresh && self.input.fit != FitPolicy::Never {
+                pane.update(cx, |pane, _| pane.set_inline_prompts(true));
                 return pane.clone().into_any_element();
             }
+            let prompt = pane.update(cx, |pane, cx| {
+                pane.set_inline_prompts(false);
+                pane.render_active_prompt(cx)
+            });
             let view = pane.read(cx).view().read(cx);
             let cell = view.cell_size().unwrap_or(CellSize {
                 width: 8.,
@@ -1355,6 +1385,7 @@ impl Render for TerminalReplica {
                 .min_w_0()
                 .min_h_0()
                 .child(pan)
+                .children(prompt)
                 .horizontal_scrollbar(&self.scroll)
                 .vertical_scrollbar(&self.scroll)
                 .into_any_element()
@@ -1396,5 +1427,22 @@ impl Render for TerminalReplica {
             })
             .children(content)
             .children(waiting)
+    }
+}
+
+/// Scans PTY output for DEC private mode 2031 set/reset (`CSI ? 2031 h` / `l`).
+fn scan_dec_2031(bytes: &[u8], enabled: &mut bool) {
+    let mut i = 0;
+    while i + 8 <= bytes.len() {
+        if &bytes[i..i + 7] == b"\x1b[?2031" {
+            match bytes[i + 7] {
+                b'h' => *enabled = true,
+                b'l' => *enabled = false,
+                _ => {}
+            }
+            i += 8;
+            continue;
+        }
+        i += 1;
     }
 }

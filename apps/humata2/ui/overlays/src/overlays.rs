@@ -209,8 +209,8 @@ impl Overlays {
         }
         subscriptions.push(cx.subscribe(
             &first_message,
-            |this: &mut Self, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
+            |this: &mut Self, input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
                     this.ui.send(
                         AppAction::NewSession(NewSessionAction::FirstMessage(
                             input.read(cx).value().to_string(),
@@ -218,6 +218,11 @@ impl Overlays {
                         cx,
                     );
                 }
+                InputEvent::PressEnter { secondary: true, .. } => {
+                    this.ui
+                        .send(AppAction::NewSession(NewSessionAction::Create), cx);
+                }
+                _ => {}
             },
         ));
         // REPOS (RL-8): the + Org field belongs to the picker on screen.

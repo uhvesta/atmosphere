@@ -13,7 +13,7 @@ use humata2_ui_core::bridge::Ui;
 use humata2_ui_core::chrome;
 use humata2_ui_core::theme::Look;
 use humata2_ui_core::widgets::{self, col, row};
-use ghostty_vt::{Colors, Rgb, Size, Terminal};
+use ghostty_vt::{Colors, Size, Terminal};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::base::FocusTrapElement as _;
@@ -28,7 +28,7 @@ use humata2_hosts::add::{
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use terminal_pane::{Pty, TerminalPane};
+use terminal_pane::{PaneEvent, Pty, TerminalPane};
 use terminal_view::{CellSize, Theme};
 use tokio::sync::mpsc;
 
@@ -96,6 +96,26 @@ struct LoginTerminal {
     pane: Entity<TerminalPane>,
     read: usize,
     appearance: (u32, u32, u32),
+    font_family: String,
+    _events: Subscription,
+}
+
+fn login_font_theme(family: &str) -> Theme {
+    let size = 11.5_f32;
+    let mut theme = Theme {
+        font_size: size,
+        line_height: (size * 1.45).round(),
+        ..Default::default()
+    };
+    let trimmed = family.trim();
+    if !trimmed.is_empty() {
+        theme.font_family = trimmed.to_owned().into();
+    }
+    theme
+}
+
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// The dialog's inputs and its login terminal. The overlays own one.
@@ -121,15 +141,8 @@ pub(crate) struct AddMachineDialog {
     _subscriptions: Vec<Subscription>,
 }
 
-fn colors(look: Look) -> Colors {
-    let mut colors = Colors {
-        foreground: Rgb::hex(look.term_text),
-        background: Rgb::hex(look.term),
-        ..Default::default()
-    };
-    colors.palette[8] = Rgb::hex(look.term_dim);
-    colors.palette[2] = Rgb::hex(GREEN);
-    colors
+fn colors(dark: bool) -> Colors {
+    Colors::for_theme(dark)
 }
 
 fn bind(
@@ -275,27 +288,71 @@ impl AddMachineDialog {
         {
             self.terminal = None;
         }
+        let (font_family, option_as_alt, blink, terminal_theme) = self.ui.read(|state| {
+            (
+                state.settings.general.current().terminal.font.clone(),
+                state.settings.preferences.option_as_alt,
+                !state.settings.preferences.fast_mode,
+                state.settings.preferences.terminal_theme,
+            )
+        });
+        let term_dark = terminal_theme.is_dark(look.is_dark());
+        let term_look = look.with_terminal_dark(term_dark);
         if self.terminal.is_none() && self.terminal_error.is_none() {
             match Terminal::new(100, 40, 10_000).and_then(|mut terminal| {
-                terminal.set_default_colors(&colors(look))?;
+                terminal.set_default_colors(&colors(term_dark))?;
                 Ok(terminal)
             }) {
                 Ok(terminal) => {
                     let pty = LoginPty {
                         tx: self.io.clone(),
                     };
-                    let theme = Theme {
-                        font_size: 11.5,
-                        line_height: 17.,
-                        ..Default::default()
-                    };
+                    let theme = login_font_theme(&font_family);
                     let pane = cx.new(|cx| TerminalPane::new(terminal, pty, theme, window, cx));
-                    let focus = pane.read(cx).focus_handle(cx);
-                    window.focus(&focus, cx);
+                    pane.update(cx, |pane, cx| {
+                        pane.set_option_as_alt(option_as_alt, cx);
+                        pane.view().update(cx, |view, cx| view.set_cursor_blink(blink, cx));
+                        pane.focus_input(window, cx);
+                    });
+                    let ui = self.ui.clone();
+                    let events = cx.subscribe(&pane, move |pane, event: &PaneEvent, cx| match event {
+                        PaneEvent::ClipboardWrite { text, .. } => {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            ui.clients().clipboard.copy(text);
+                        }
+                        PaneEvent::PasteFiles(paths) => {
+                            if let Some(words) = paths
+                                .iter()
+                                .map(|path| path.to_str().map(shell_quote))
+                                .collect::<Option<Vec<_>>>()
+                            {
+                                pane.update(cx, |pane, cx| pane.paste_text(words.join(" "), cx));
+                            }
+                        }
+                        PaneEvent::OpenLink(uri) => {
+                            if uri.starts_with("http://")
+                                || uri.starts_with("https://")
+                                || uri.starts_with("mailto:")
+                            {
+                                cx.open_url(uri);
+                            }
+                        }
+                        PaneEvent::Failed(error) => {
+                            ui.send(
+                                AppAction::Session(humata2_session::SessionAction::Delegate(
+                                    humata2_session::Delegate::Toast(error.to_string()),
+                                )),
+                                cx,
+                            );
+                        }
+                        _ => {}
+                    });
                     self.terminal = Some(LoginTerminal {
                         pane,
                         read: 0,
-                        appearance: (look.term_text, look.term, look.term_dim),
+                        appearance: (term_look.term_text, term_look.term, term_look.term_dim),
+                        font_family: font_family.clone(),
+                        _events: events,
                     });
                 }
                 Err(source) => {
@@ -306,16 +363,23 @@ impl AddMachineDialog {
             }
         }
         if let Some(terminal) = &mut self.terminal {
-            let appearance = (look.term_text, look.term, look.term_dim);
+            let appearance = (term_look.term_text, term_look.term, term_look.term_dim);
             let changed = terminal.appearance != appearance;
             terminal.appearance = appearance;
+            let font_changed = terminal.font_family != font_family;
+            terminal.font_family = font_family;
             let read = terminal.read;
             terminal.pane.update(cx, |pane, cx| {
                 if login.bytes.len() > read {
                     pane.feed(&login.bytes[read..], cx);
                 }
+                pane.set_option_as_alt(option_as_alt, cx);
                 pane.view().update(cx, |view, cx| {
-                    if changed && view.grid_mut().set_default_colors(&colors(look)).is_ok() {
+                    view.set_cursor_blink(blink, cx);
+                    if font_changed {
+                        view.set_theme(login_font_theme(&terminal.font_family), cx);
+                    }
+                    if changed && view.grid_mut().set_default_colors(&colors(term_dark)).is_ok() {
                         cx.notify();
                     }
                 });
@@ -808,11 +872,11 @@ impl AddMachineDialog {
                 .id("add-machine-terminal")
                 .role(Role::Log)
                 .aria_label("Login terminal")
-                // Five 17 pt rows, as frame 57 draws it (D660).
-                .h(px(107.))
+                // Five 17 pt rows, as frame 57 draws it (D660); min_h lets
+                // multi-line paste/clipboard prompts grow without clipping.
+                .min_h(px(107.))
                 .px(px(12.))
                 .py(px(10.))
-                .overflow_hidden()
                 .child(terminal.pane.clone())
                 .test_support()
                 .into_any_element(),
@@ -826,6 +890,9 @@ impl AddMachineDialog {
                 .into_any_element(),
             (None, None) => div().into_any_element(),
         };
+        let term_look = look.with_terminal_dark(
+            ui.read(|s| s.settings.preferences.terminal_theme.is_dark(look.is_dark())),
+        );
         body.child(
             row()
                 .items_start()
@@ -836,10 +903,9 @@ impl AddMachineDialog {
         .child(
             div()
                 .rounded(px(8.))
-                .bg(rgb(look.term))
+                .bg(rgb(term_look.term))
                 .border_1()
                 .border_color(rgb(look.line))
-                .overflow_hidden()
                 .child(output),
         )
         .child(

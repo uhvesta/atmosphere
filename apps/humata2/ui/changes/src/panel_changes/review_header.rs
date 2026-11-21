@@ -1734,6 +1734,7 @@ fn repo_base_menu(
             .child(
                 gpui_kit::component::input::Input::new(&documents.base_filter())
                     .aria_label("Filter branches")
+                    .cleanable(true)
                     .small()
                     .min_h(px(26.))
                     .bg(rgb(look.card))

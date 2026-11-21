@@ -1,8 +1,53 @@
 use super::*;
 use humata2_clients::comments::Anchor;
 use humata2_clients::model::DiffLine;
+use humata2_session::SessionAction;
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    static FILE_MENU: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+}
+
+fn close_file_menu(cx: &mut App) {
+    FILE_MENU.with(|slot| *slot.borrow_mut() = None);
+    cx.refresh_windows();
+}
+
+#[derive(IntoElement)]
+struct FileMenuItem {
+    id: ElementId,
+    label: SharedString,
+    look: Look,
+    on_click: Rc<dyn Fn(&mut App)>,
+}
+
+impl RenderOnce for FileMenuItem {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let fill = Hsla::from(rgb(self.look.fill));
+        let on_click = self.on_click;
+        Button::new(self.id)
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(rgb(self.look.text).into())
+                    .hover(fill)
+                    .active(fill),
+            )
+            .accessibility_label(self.label.clone())
+            .small()
+            .w_full()
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .child(div().w_full().text_size(px(12.5)).child(self.label))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                close_file_menu(cx);
+                on_click(cx);
+            })
+    }
+}
 
 /// A repository as it reads: a local repository's leading `/` is not drawn.
 pub(super) fn repo_label(repo: &str) -> &str {
@@ -406,15 +451,130 @@ pub(super) fn file_row_also(
             )
         })
         .children(ask)
-        .on_click(move |_, _, cx| {
-            ui.send(
-                AppAction::Review(ReviewAction::SelectFile {
-                    repo: repo.clone(),
-                    path: path.clone(),
-                }),
-                cx,
-            )
-        });
+        .on_click({
+            let ui = ui.clone();
+            let repo = repo.clone();
+            let path = path.clone();
+            move |_, _, cx| {
+                ui.send(
+                    AppAction::Review(ReviewAction::SelectFile {
+                        repo: repo.clone(),
+                        path: path.clone(),
+                    }),
+                    cx,
+                )
+            }
+        })
+        .on_mouse_down(MouseButton::Right, {
+            let repo = repo.clone();
+            let path = path.clone();
+            move |_, _, cx| {
+                cx.stop_propagation();
+                FILE_MENU.with(|slot| *slot.borrow_mut() = Some((repo.clone(), path.clone())));
+                cx.refresh_windows();
+            }
+        })
+        .when(
+            FILE_MENU.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|(r, p)| *r == repo && *p == path)
+            }),
+            |row_el| {
+                let seen = humata2_review::looks::file_look(
+                    &state.review,
+                    &diff.session,
+                    &repo,
+                    &path,
+                    file,
+                );
+                let looked = seen == humata2_review::looks::FileLook::Looked;
+                let scrim = div()
+                    .id("change-file-context-menu-scrim")
+                    .absolute()
+                    .top(px(-10_000.))
+                    .left(px(-10_000.))
+                    .w(px(20_000.))
+                    .h(px(20_000.))
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                        close_file_menu(cx);
+                    })
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                        cx.stop_propagation();
+                        close_file_menu(cx);
+                    });
+                let ui_copy = ui.clone();
+                let path_copy = path.clone();
+                let ui_open = ui.clone();
+                let repo_open = repo.clone();
+                let path_open = path.clone();
+                let ui_look = ui.clone();
+                let repo_look = repo.clone();
+                let path_look = path.clone();
+                let card = humata2_ui_core::action_menu::card(
+                    "change-file-context-menu",
+                    176.,
+                    look,
+                )
+                .role(Role::Menu)
+                .aria_label("File actions")
+                .top(px(25.))
+                .left(px(16.))
+                .occlude()
+                .child(FileMenuItem {
+                    id: "change-file-menu-copy-path".into(),
+                    label: "Copy path".into(),
+                    look,
+                    on_click: Rc::new(move |cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(path_copy.clone()));
+                        ui_copy.send(
+                            AppAction::Session(SessionAction::Delegate(
+                                humata2_session::Delegate::Toast("Copied the path".to_owned()),
+                            )),
+                            cx,
+                        );
+                    }),
+                })
+                .child(FileMenuItem {
+                    id: "change-file-menu-open-tab".into(),
+                    label: "Open file in tab".into(),
+                    look,
+                    on_click: Rc::new(move |cx| {
+                        ui_open.send(
+                            AppAction::Session(SessionAction::OpenFileAt {
+                                repo: repo_open.clone(),
+                                path: path_open.clone(),
+                                line: None,
+                            }),
+                            cx,
+                        );
+                    }),
+                })
+                .child(FileMenuItem {
+                    id: "change-file-menu-looks-good".into(),
+                    label: if looked {
+                        "Clear looks good"
+                    } else {
+                        "Looks good"
+                    }
+                    .into(),
+                    look,
+                    on_click: Rc::new(move |cx| {
+                        ui_look.send(
+                            AppAction::Review(ReviewAction::ToggleLooked {
+                                repo: repo_look.clone(),
+                                path: path_look.clone(),
+                            }),
+                            cx,
+                        );
+                    }),
+                })
+                .test_support();
+                row_el.child(deferred(scrim)).child(deferred(card))
+            },
+        );
     // The row's role is ListBoxOption, which wins over the label's role.
     full_text(row_el, label).role(Role::ListBoxOption)
 }
@@ -577,32 +737,61 @@ pub(super) fn put_at_top(handle: &ScrollHandle, item: &Bounds<Pixels>, cx: &mut 
     cx.refresh_windows();
 }
 
-/// A small ghost icon button of the file bar and the file header.
+/// A small ghost icon button of the file bar and the file header, formatting
+/// its shortcut tooltip for the active platform via [`crate::keys::label`].
+#[derive(IntoElement)]
+struct StepButton {
+    ui: Rc<Ui>,
+    look: Look,
+    id: &'static str,
+    label: &'static str,
+    shortcut: &'static str,
+    glyph: IconName,
+    action: ReviewAction,
+}
+
+impl RenderOnce for StepButton {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mac = cx.platform_info().is_mac();
+        let tooltip = format!("{}  {}", self.label, crate::keys::label(self.shortcut, mac));
+        let ui = self.ui;
+        let action = self.action;
+        Button::new(self.id)
+            .ghost()
+            .small()
+            .w(px(20.))
+            .h(px(20.))
+            .p_0()
+            .flex_shrink_0()
+            .icon(icon(self.glyph, self.look.secondary, 12.))
+            .tooltip(tooltip)
+            .accessibility_label(self.label)
+            .on_click(move |_, _, cx| {
+                // A click on a control of the bar is not a click on the bar.
+                cx.stop_propagation();
+                ui.send(AppAction::Review(action.clone()), cx);
+            })
+    }
+}
+
 fn step_button(
     ui: &Rc<Ui>,
     look: Look,
     id: &'static str,
     label: &'static str,
-    tooltip: &'static str,
+    shortcut: &'static str,
     glyph: IconName,
     action: ReviewAction,
-) -> Button {
-    let ui = ui.clone();
-    Button::new(id)
-        .ghost()
-        .small()
-        .w(px(20.))
-        .h(px(20.))
-        .p_0()
-        .flex_shrink_0()
-        .icon(icon(glyph, look.secondary, 12.))
-        .tooltip(tooltip)
-        .accessibility_label(label)
-        .on_click(move |_, _, cx| {
-            // A click on a control of the bar is not a click on the bar.
-            cx.stop_propagation();
-            ui.send(AppAction::Review(action.clone()), cx);
-        })
+) -> StepButton {
+    StepButton {
+        ui: ui.clone(),
+        look,
+        id,
+        label,
+        shortcut,
+        glyph,
+        action,
+    }
 }
 
 /// Open in editor: the ↗ icon (DS-24), inert, as no editor client
@@ -638,23 +827,51 @@ pub(super) fn open_in_editor_words(look: Look) -> Quiet {
 
 /// Wrap / Scroll for a file's header (DS-40): it flips the preference
 /// Settings › Long lines sets, and the label names what a click switches to.
-pub(super) fn wrap_switch(ui: &Rc<Ui>, look: Look, wrapping: bool) -> Quiet {
-    let ui = ui.clone();
-    Quiet {
-        button: Button::new("diff-wrap")
-            .small()
-            .h(px(18.))
-            .text_size(px(11.5))
-            .label(if wrapping { "Scroll" } else { "Wrap" })
-            .accessibility_label(if wrapping { "Scroll long lines" } else { "Wrap long lines" })
-            .tooltip("Wrap long lines  ⌥Z")
-            .flex_shrink_0()
-            .on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                ui.send(AppAction::Settings(humata2_settings::SettingsAction::ToggleWrap), cx);
-            }),
-        color: look.secondary,
-        fill: look.fill,
+#[derive(IntoElement)]
+pub(super) struct WrapSwitch {
+    ui: Rc<Ui>,
+    look: Look,
+    wrapping: bool,
+}
+
+impl RenderOnce for WrapSwitch {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mac = cx.platform_info().is_mac();
+        let ui = self.ui;
+        Quiet {
+            button: Button::new("diff-wrap")
+                .small()
+                .h(px(18.))
+                .text_size(px(11.5))
+                .label(if self.wrapping { "Scroll" } else { "Wrap" })
+                .accessibility_label(if self.wrapping {
+                    "Scroll long lines"
+                } else {
+                    "Wrap long lines"
+                })
+                .tooltip(format!(
+                    "Wrap long lines  {}",
+                    crate::keys::label("⌥Z", mac)
+                ))
+                .flex_shrink_0()
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    ui.send(
+                        AppAction::Settings(humata2_settings::SettingsAction::ToggleWrap),
+                        cx,
+                    );
+                }),
+            color: self.look.secondary,
+            fill: self.look.fill,
+        }
+    }
+}
+
+pub(super) fn wrap_switch(ui: &Rc<Ui>, look: Look, wrapping: bool) -> WrapSwitch {
+    WrapSwitch {
+        ui: ui.clone(),
+        look,
+        wrapping,
     }
 }
 
@@ -675,7 +892,7 @@ pub(super) fn change_stepper(ui: &Rc<Ui>, look: Look, change: usize, changes: us
             look,
             "diff-prev-change",
             "Previous change",
-            "Previous change  ⌃⌘↑",
+            "⌃⌘↑",
             IconName::ChevronLeft,
             ReviewAction::PrevChange,
         ))
@@ -684,7 +901,7 @@ pub(super) fn change_stepper(ui: &Rc<Ui>, look: Look, change: usize, changes: us
             look,
             "diff-next-change",
             "Next change",
-            "Next change  ⌃⌘↓",
+            "⌃⌘↓",
             IconName::ChevronRight,
             ReviewAction::NextChange,
         ))
@@ -814,7 +1031,7 @@ pub(super) fn file_bar(
             look,
             "diff-prev-file",
             "Previous file",
-            "Previous file  ⌥⌘↑",
+            "⌥⌘↑",
             IconName::ChevronLeft,
             ReviewAction::PrevFile,
         ))
@@ -823,7 +1040,7 @@ pub(super) fn file_bar(
             look,
             "diff-next-file",
             "Next file",
-            "Next file  ⌥⌘↓",
+            "⌥⌘↓",
             IconName::ChevronRight,
             ReviewAction::NextFile,
         ))
@@ -855,6 +1072,7 @@ pub(super) fn file_filter_field(ui: &Rc<Ui>, look: Look, documents: &Documents, 
         .child(
             gpui_kit::component::input::Input::new(&documents.file_filter())
                 .aria_label("Filter files")
+                .cleanable(true)
                 .small()
                 .min_h(px(26.))
                 .bg(rgb(look.card))

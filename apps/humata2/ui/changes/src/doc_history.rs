@@ -20,7 +20,7 @@ use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::{Comment, Status};
 use humata2_clients::docs::{DocVersion, VersionText};
 use humata2_clients::model::{DiffLine, LineKind, SessionId};
-use humata2_markdown::{CommentMarks, MarkdownOptions, MarkdownView, MermaidCache};
+use humata2_markdown::{CommentMarks, MarkdownEvent, MarkdownOptions, MarkdownView, MermaidCache};
 use humata2_session::{DocHistory, HistoryAction, SessionAction, Tab, is_markdown};
 
 use crate::bridge::Ui;
@@ -103,7 +103,7 @@ pub struct HistoryUi {
     /// Whether the Save version box has focus, read at each sync. Unfocused
     /// and empty, the box shows its own placeholder, cut with an ellipsis.
     focused: Cell<bool>,
-    viewed: LruMap<(SessionId, String), (String, Entity<MarkdownView>)>,
+    viewed: LruMap<(SessionId, String), (String, Entity<MarkdownView>, Subscription)>,
     diagrams: MermaidCache,
     _typing: Subscription,
 }
@@ -117,8 +117,31 @@ impl HistoryUi {
         let typing = cx.subscribe(
             &message,
             move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| {
-                if !matches!(event, InputEvent::Change) {
-                    return;
+                match event {
+                    InputEvent::PressEnter { .. } => {
+                        let Some(path) = shown.borrow().clone() else {
+                            return;
+                        };
+                        let can_save = ui.read(|state| {
+                            state
+                                .session
+                                .open
+                                .as_ref()
+                                .and_then(|session| state.session.history(session, &path))
+                                .is_some_and(DocHistory::can_save)
+                        });
+                        if can_save {
+                            ui.send(
+                                AppAction::Session(SessionAction::History(
+                                    HistoryAction::SaveVersion { path },
+                                )),
+                                cx,
+                            );
+                        }
+                        return;
+                    }
+                    InputEvent::Change => {}
+                    _ => return,
                 }
                 let Some(path) = shown.borrow().clone() else {
                     return;
@@ -184,8 +207,8 @@ impl HistoryUi {
         }
         for want in &wanted.viewed {
             match self.viewed.get_mut(&want.key) {
-                Some((id, _)) if *id == want.id => {}
-                Some((id, view)) => {
+                Some((id, _, _)) if *id == want.id => {}
+                Some((id, view, _)) => {
                     let text = want.text.clone();
                     view.update(cx, |view, cx| view.set_source(&text, cx));
                     id.clone_from(&want.id);
@@ -199,7 +222,16 @@ impl HistoryUi {
                     options.document = Some(name.to_owned().into());
                     let text = want.text.clone();
                     let view = cx.new(|cx| MarkdownView::new(&text, options, cx));
-                    self.viewed.insert(want.key.clone(), (want.id.clone(), view));
+                    let subscription = cx.subscribe(
+                        &view,
+                        |_view, event: &MarkdownEvent, cx: &mut App| {
+                            if let MarkdownEvent::LinkActivated { url } = event {
+                                crate::document_tab::open_markdown_link(url, cx);
+                            }
+                        },
+                    );
+                    self.viewed
+                        .insert(want.key.clone(), (want.id.clone(), view, subscription));
                 }
             }
         }
@@ -216,8 +248,8 @@ impl HistoryUi {
     ) -> Option<Entity<MarkdownView>> {
         self.viewed
             .get(&(session.clone(), path.to_owned()))
-            .filter(|(held, _)| held == id)
-            .map(|(_, view)| view.clone())
+            .filter(|(held, _, _)| held == id)
+            .map(|(_, view, _)| view.clone())
     }
 
     /// The strip, and under it the bar naming the shown old version.

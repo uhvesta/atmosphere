@@ -25,7 +25,31 @@ use crate::chrome::{GREEN, RED};
 use crate::comment_cards::{self, StartReattach};
 use crate::document_tab::Documents;
 use crate::theme::Look;
-use crate::widgets::{col, row};
+use crate::widgets::{self, col, row};
+
+fn header_copy_buttons(display_path: String, text: String, look: Look) -> Div {
+    let copy_path = display_path;
+    let copy_text = text;
+    row()
+        .gap(px(6.))
+        .flex_shrink_0()
+        .child(
+            widgets::push_quiet_shape("editor-copy-path", "Copy path", look).on_click(
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()));
+                },
+            ),
+        )
+        .child(
+            widgets::push_quiet_shape("editor-copy-file", "Copy", look).on_click(
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                },
+            ),
+        )
+}
 
 /// Files with more rows than this draw through a virtual `ListState` so
 /// opening a 10k-line file only constructs the rows currently in view.
@@ -162,6 +186,7 @@ pub fn body(
     if count > 0 {
         header = header.child(counter(ui, &view, repo, path, current, count, look));
     }
+    header = header.child(header_copy_buttons(format!("{repo}/{path}"), text.to_owned(), look));
 
     let clear_jump_click = jump.map(|_| {
         let ui = ui.clone();
@@ -358,7 +383,7 @@ pub fn body(
             .test_support()
             .flex_1()
             .min_h_0()
-            .overflow_hidden()
+            .overflow_x_scroll()
             .font_family("Menlo")
             .text_size(px(12.))
             .line_height(px(EDITOR_LINE_HEIGHT))
@@ -497,6 +522,7 @@ pub fn body(
             .line_height(px(EDITOR_LINE_HEIGHT))
             .track_scroll(&view.handle)
             .overflow_y_scroll()
+            .overflow_x_scroll()
             .when_some(clear_jump_click, |rows, handler| {
                 rows.on_mouse_down(MouseButton::Left, handler)
             })
@@ -631,7 +657,7 @@ pub fn plain_body(
             .test_support()
             .flex_1()
             .min_h_0()
-            .overflow_hidden()
+            .overflow_x_scroll()
             .font_family("Menlo")
             .text_size(px(12.))
             .line_height(px(EDITOR_LINE_HEIGHT))
@@ -689,6 +715,7 @@ pub fn plain_body(
             .line_height(px(EDITOR_LINE_HEIGHT))
             .track_scroll(&view.handle)
             .overflow_y_scroll()
+            .overflow_x_scroll()
             .when_some(clear_jump_click, |rows, handler| {
                 rows.on_mouse_down(MouseButton::Left, handler)
             })
@@ -706,13 +733,22 @@ pub fn plain_body(
         .bg(rgb(look.term))
         .text_color(rgb(look.text))
         .child(
-            div()
+            row()
                 .px(px(14.))
                 .py(px(8.))
+                .gap(px(10.))
+                .items_center()
                 .flex_shrink_0()
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
-                .child(display_path),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .child(display_path.clone()),
+                )
+                .child(header_copy_buttons(display_path, text.to_owned(), look)),
         )
         .child(rows_el)
         .when(sendable > 0, |column| {

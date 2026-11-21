@@ -7,9 +7,11 @@ use crate::{
     widgets::{col, row},
 };
 use gpui_kit::base::TestTextExt as _;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, channel as channel_feature};
-use humata2_clients::model::{Channel, Item, ItemStatus, Scope};
+use humata2_clients::model::{Channel, ChannelId, Item, ItemStatus, Scope};
 use humata2_desk::{ChannelTodoPane, DeskAction, clamp_todo_pane_width};
 use std::rc::Rc;
 
@@ -121,6 +123,122 @@ fn item_row(item: &Item, look: Look) -> AnyElement {
         .into_any_element()
 }
 
+struct TodoSearchState {
+    input: Entity<InputState>,
+    last_synced: String,
+    _sub: Subscription,
+}
+
+#[derive(IntoElement)]
+struct TodoSearchBar {
+    ui: Rc<Ui>,
+    channel: ChannelId,
+    query: String,
+    look: Look,
+}
+
+impl RenderOnce for TodoSearchBar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let key = SharedString::from(format!("channel-desk-todo-search-{}", self.channel.as_str()));
+        let ui_sub = self.ui.clone();
+        let ch_sub = self.channel.clone();
+        let initial_query = self.query.clone();
+        let state = window.use_keyed_state(key, cx, move |window, cx| {
+            let input = cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder("Filter To-do items…");
+                if !initial_query.is_empty() {
+                    s.set_value(initial_query.clone(), window, cx);
+                }
+                s.focus(window, cx);
+                s
+            });
+            let sub = cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    ui_sub.send(
+                        AppAction::Desk(DeskAction::SetTodoPaneSearchQuery {
+                            channel: ch_sub.clone(),
+                            query: input.read(cx).value().to_string(),
+                        }),
+                        cx,
+                    );
+                }
+            });
+            TodoSearchState {
+                input,
+                last_synced: initial_query,
+                _sub: sub,
+            }
+        });
+
+        let input = {
+            let s = state.read(cx);
+            let need_sync = s.last_synced != self.query
+                && s.input.read(cx).value().as_ref() != self.query.as_str();
+            let input = s.input.clone();
+            if need_sync {
+                let q = self.query.clone();
+                input.update(cx, |i, cx| i.set_value(q, window, cx));
+                state.update(cx, |s, _| s.last_synced = self.query.clone());
+            } else if s.last_synced != self.query {
+                state.update(cx, |s, _| s.last_synced = self.query.clone());
+            }
+            input
+        };
+
+        let esc_ui = self.ui.clone();
+        let esc_ch = self.channel.clone();
+        let esc_input = input.clone();
+        row()
+            .id("channel-desk-todo-search-bar")
+            .px(px(12.))
+            .py(px(6.))
+            .border_b_1()
+            .border_color(rgb(self.look.line))
+            .bg(rgb(self.look.panel))
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                let mods = event.keystroke.modifiers;
+                if event.keystroke.key.as_str() == "escape"
+                    && !mods.shift
+                    && !mods.alt
+                    && !mods.platform
+                    && !mods.control
+                {
+                    cx.stop_propagation();
+                    if !esc_input.read(cx).value().is_empty() {
+                        esc_input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+                    }
+                    esc_ui.send(
+                        AppAction::Desk(DeskAction::SetTodoPaneSearchQuery {
+                            channel: esc_ch.clone(),
+                            query: String::new(),
+                        }),
+                        cx,
+                    );
+                    esc_ui.send(
+                        AppAction::Desk(DeskAction::ToggleTodoPaneSearch(esc_ch.clone())),
+                        cx,
+                    );
+                }
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        Input::new(&input)
+                            .cleanable(true)
+                            .small()
+                            .min_h(px(26.))
+                            .rounded(px(6.))
+                            .bg(rgb(self.look.card))
+                            .border_color(rgb(self.look.line))
+                            .text_size(px(12.)),
+                    ),
+            )
+            .test_support()
+    }
+}
+
 /// Renders the live To-do List-only split pane beside Channel Desk.
 pub fn pane(
     ui: &Rc<Ui>,
@@ -214,21 +332,11 @@ pub fn pane(
                 .test_support(),
         );
 
-    let search_bar = pane_state.search_open.then(|| {
-        row()
-            .id("channel-desk-todo-search-bar")
-            .px(px(12.))
-            .py(px(6.))
-            .border_b_1()
-            .border_color(rgb(look.line))
-            .bg(rgb(look.panel))
-            .text_size(px(11.5))
-            .text_color(rgb(look.secondary))
-            .child(if pane_state.search_query.is_empty() {
-                "Filter To-do items…".to_owned()
-            } else {
-                pane_state.search_query.clone()
-            })
+    let search_bar = pane_state.search_open.then(|| TodoSearchBar {
+        ui: ui.clone(),
+        channel: channel.id.clone(),
+        query: pane_state.search_query.clone(),
+        look,
     });
 
     let mut body = col()

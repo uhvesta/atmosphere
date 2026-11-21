@@ -514,7 +514,9 @@ fn files(
 /// An upload's or atomic write's hidden partial file (see `Upload::start`).
 fn partial(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|name| {
-        name.starts_with('.') && (name.ends_with(".partial") || name.contains(".humata-partial-"))
+        name.starts_with("token-tb_")
+            || (name.starts_with('.')
+                && (name.ends_with(".partial") || name.contains(".humata-partial-")))
     })
 }
 

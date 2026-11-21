@@ -456,6 +456,10 @@ impl TerminalHost<Terminal> for GhosttyHost {
             Err(source) => shared.fail(PaneError::Focus { source }),
         }
     }
+
+    fn option_as_alt(&self, grid: &Terminal) -> bool {
+        grid.option_as_alt() != OptionAsAlt::Off
+    }
 }
 
 /// Sends `text` as a paste, or holds it for the user to confirm when it

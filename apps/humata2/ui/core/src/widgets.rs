@@ -206,6 +206,7 @@ pub fn error_banner_in(
     dismiss: AppAction,
 ) -> impl IntoElement {
     let text = text.into();
+    let copy_text = text.clone();
     row()
         .id(id)
         .role(Role::Alert)
@@ -227,9 +228,21 @@ pub fn error_banner_in(
                 .child(text),
         )
         .child(
-            div().flex_shrink_0().child(
-                ghost_in(look, ui, (id, 1usize), "Dismiss", dismiss).text_color(color(look.text)),
-            ),
+            row()
+                .flex_shrink_0()
+                .gap_1()
+                .child(
+                    push_quiet_shape((id, 2usize), "Copy", look)
+                        .text_color(color(look.text))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.to_string()));
+                        }),
+                )
+                .child(
+                    ghost_in(look, ui, (id, 1usize), "Dismiss", dismiss)
+                        .text_color(color(look.text)),
+                ),
         )
         .test_support()
 }

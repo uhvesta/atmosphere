@@ -27,6 +27,16 @@ pub(crate) fn searchable(query: &str) -> bool {
     query.chars().filter(|c| !c.is_whitespace()).count() >= SHORTEST_QUERY
 }
 
+fn conversations_header(count: usize, has_more: bool) -> String {
+    if count == 0 {
+        "Conversations".to_owned()
+    } else if has_more {
+        format!("Conversations \u{b7} {count}+")
+    } else {
+        format!("Conversations \u{b7} {count}")
+    }
+}
+
 /// The Conversations section for `find`, or nothing unless the search has
 /// hits, a next page or an error to show. `selected` is the hit the
 /// palette's cursor is on, as a place in `find.hits`; `offline` says whether
@@ -44,6 +54,7 @@ pub(crate) fn conversations(
     if find.hits.is_empty() && find.next_page.is_empty() && find.error.is_none() {
         return None;
     }
+    let header = conversations_header(find.hits.len(), !find.next_page.is_empty());
     let mut section = col()
         .id("palette-conversations")
         .role(Role::Group)
@@ -58,7 +69,7 @@ pub(crate) fn conversations(
                 .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(look.secondary))
-                .child(div().flex_1().child("Conversations"))
+                .child(div().flex_1().child(header))
                 .when(find.loading && !find.hits.is_empty(), |x| {
                     x.child(
                         div()
@@ -114,6 +125,7 @@ pub(crate) fn conversation_rows(
     }
     let mut rows = Vec::new();
     let mut selected_offset = None;
+    let header = conversations_header(hits.len(), !next_page.is_empty());
     rows.push(
         row()
             .id("palette-conversations")
@@ -124,7 +136,7 @@ pub(crate) fn conversation_rows(
             .text_size(px(11.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(rgb(look.secondary))
-            .child(div().flex_1().child("Conversations"))
+            .child(div().flex_1().child(header))
             .when(loading && !hits.is_empty(), |x| {
                 x.child(
                     div()
@@ -403,6 +415,13 @@ mod tests {
     fn a_word_that_is_not_there_emphasises_nothing() {
         assert!(emphasis_ranges("ledger", &words("brin")).is_empty());
         assert!(emphasis_ranges("led", &words("ledger")).is_empty());
+    }
+
+    #[test]
+    fn conversations_header_shows_count_and_plus_when_more() {
+        assert_eq!(conversations_header(0, false), "Conversations");
+        assert_eq!(conversations_header(12, false), "Conversations \u{b7} 12");
+        assert_eq!(conversations_header(12, true), "Conversations \u{b7} 12+");
     }
 
     #[test]

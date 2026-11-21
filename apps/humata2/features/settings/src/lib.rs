@@ -60,12 +60,40 @@ pub enum Theme {
     Light,
 }
 
+/// The embedded terminal's light or dark appearance, independent of the app chrome.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TerminalTheme {
+    /// Follow the app's appearance.
+    #[default]
+    MatchApp,
+    /// Always dark.
+    Dark,
+    /// Always light.
+    Light,
+}
+
+impl TerminalTheme {
+    /// Whether terminals should use the dark palette given whether the app
+    /// chrome is currently dark.
+    #[must_use]
+    pub const fn is_dark(self, app_dark: bool) -> bool {
+        match self {
+            Self::MatchApp => app_dark,
+            Self::Dark => true,
+            Self::Light => false,
+        }
+    }
+}
+
 /// What the person set.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
     /// Colors.
     pub theme: Theme,
+    /// Independent dark/light theme for embedded terminals.
+    #[serde(default)]
+    pub terminal_theme: TerminalTheme,
     /// Terminal and diff text size, in points.
     pub font_size: u8,
     /// Long diff lines wrap (RV-9).
@@ -171,6 +199,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             theme: Theme::System,
+            terminal_theme: TerminalTheme::MatchApp,
             font_size: 12,
             wrap_diffs: true,
             default_agent: Agent::Claude,
@@ -245,6 +274,8 @@ impl Section {
 pub enum Row {
     /// Colors.
     Appearance,
+    /// Independent dark/light theme for embedded terminals.
+    TerminalTheme,
     /// The terminal's text size.
     TerminalFont,
     /// Pinned rows at the top of the sidebar.
@@ -279,8 +310,9 @@ pub enum Row {
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Appearance,
+        Self::TerminalTheme,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
         Self::DeskRowsInSidebar,
@@ -303,6 +335,7 @@ impl Row {
     pub const fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::TerminalTheme => "Terminal theme",
             Self::TerminalFont => "Terminal font",
             Self::SidebarShowsPinned => "Sidebar shows Pinned",
             Self::DeskRowsInSidebar => "Desk sessions in sidebar",
@@ -327,6 +360,7 @@ impl Row {
     pub const fn section(self) -> Section {
         match self {
             Self::Appearance
+            | Self::TerminalTheme
             | Self::TerminalFont
             | Self::SidebarShowsPinned
             | Self::DeskRowsInSidebar
@@ -408,6 +442,8 @@ pub enum SettingsAction {
     Restore(Preferences),
     /// Pick colors.
     SetTheme(Theme),
+    /// Pick the embedded terminal's light or dark theme.
+    SetTerminalTheme(TerminalTheme),
     /// Open or close the terminal font size list.
     FontMenu,
     /// Pick the terminal font size and close the list.
@@ -742,6 +778,9 @@ impl Reducer for Settings {
                         })
                         .await;
                 });
+            }
+            SettingsAction::SetTerminalTheme(terminal_theme) => {
+                preferences.terminal_theme = terminal_theme;
             }
             SettingsAction::ToggleWrap => {
                 preferences.wrap_diffs = !preferences.wrap_diffs;

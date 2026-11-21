@@ -1,7 +1,9 @@
 window 900x1400, test fonts
 box 0,0 900x1400 bg #ffffff
   Document "Gallery" 0,0 900x1378
-    box 0,0 900x1283 bg #f5f5f5 border 1 #e5e5e5
-      text "# Gallery\n\nEvery kind of block the view draws, with **strong**, *emphasis*, ~~struck~~,\n`inline code` and a [link to the spec](https://example.com/spec).\n\n## Lists\n\n- First item\n- Second item with `code`\n  - A nested item\n- Third item\n\n1. One\n2. Two\n\n- [x] Parser\n- [ ] Comments in the margin\n\n## Quote and rule\n\n> A quote, with *emphasis*.\n\n---\n\n## Table\n\n| Block | Comment target |\n| ----- | -------------- |\n| List  | item           |\n| Table | cell           |\n\n## Code\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n```text\n+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+\n```\n\n## Diagram\n\n```mermaid\nflowchart LR\n  A[Plan] --> B[Ship]\n```\n\n## Images\n\n![Logo](images/logo.svg)\n\n![Missing](images/missing.png)\n\nThe end." 17,29 866x1239
+    box 0,0 900x1269 bg #f5f5f5 border 1 #e5e5e5
+      box 850,9 41x24 bg #f5f5f5 radius 6
+      box 850,9 41x24 bg #f4f4f5 border 1 #d4d4d8 radius 4
+      text "# Gallery\n\nEvery kind of block the view draws, with **strong**, *emphasis*, ~~struck~~,\n`inline code` and a [link to the spec](https://example.com/spec).\n\n## Lists\n\n- First item\n- Second item with `code`\n  - A nested item\n- Third item\n\n1. One\n2. Two\n\n- [x] Parser\n- [ ] Comments in the margin\n\n## Quote and rule\n\n> A quote, with *emphasis*.\n\n---\n\n## Table\n\n| Block | Comment target |\n| ----- | -------------- |\n| List  | item           |\n| Table | cell           |\n\n## Code\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n```text\n+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+\n```\n\n## Diagram\n\n```mermaid\nflowchart LR\n  A[Plan] --> B[Ship]\n```\n\n## Images\n\n![Logo](images/logo.svg)\n\n![Missing](images/missing.png)\n\nThe end." 17,15 866x1239
   Status "Last event" 0,1378 900x22
     text "Mode: Source" 0,1378 900x22

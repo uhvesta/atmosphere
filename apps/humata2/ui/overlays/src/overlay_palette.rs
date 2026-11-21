@@ -332,6 +332,7 @@ impl Overlays {
                             Input::new(&self.query)
                                 .aria_label("Search commands")
                                 .appearance(false)
+                                .cleanable(true)
                                 .text_size(px(16.)),
                         ),
                     ),

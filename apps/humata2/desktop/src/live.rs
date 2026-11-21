@@ -5,13 +5,14 @@
 #[path = "notifier.rs"]
 pub(crate) mod notifier;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use humata2_clients::{
-    Clients, DaemonError, FakeClipboard, FakeFileSystem, FakeKeychain, LocalDaemon, Reply,
+    Clipboard, Clients, DaemonError, FakeFileSystem, FakeKeychain, LocalDaemon, Reply,
 };
 use humata2_clients_live::{
     ConnectError, DaemonFacts, LiveComments, LiveDaemon, LiveMachines, LiveOptions, Observer,
@@ -241,11 +242,48 @@ pub(crate) fn first_phase(bundle_present: bool) -> Phase {
     if bundle_present { Phase::Installing } else { Phase::Waiting }
 }
 
+/// Writes copied text to the macOS pasteboard via `/usr/bin/pbcopy`.
+#[derive(Clone, Copy, Debug, Default)]
+struct SystemClipboard;
+
+impl SystemClipboard {
+    const fn new() -> Self {
+        Self
+    }
+}
+
+fn pipe_to_command(program: &str, args: &[&str], text: &str) -> std::io::Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let _ = child.wait()?;
+    Ok(())
+}
+
+impl Clipboard for SystemClipboard {
+    fn copy(&self, text: &str) {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = pipe_to_command("/usr/bin/pbcopy", &[], text);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = text;
+        }
+    }
+}
+
 /// Starts on the real daemon: from a bundle, installs the host tools first
 /// (TS-0, PER-20); then waits up to `wait` for the socket to accept and
 /// connects. `progress` hears each phase as it begins, so a window can show
-/// it. The clock, clipboard, file system and keychain are the fakes the demo
-/// uses, because no real ones exist yet.
+/// it. The file system and keychain are the fakes the demo uses, because no
+/// real ones exist yet.
 ///
 /// An install that finds an older daemon stages the app's release instead of
 /// swapping it in (D301); the report then names that release, so the app
@@ -324,7 +362,7 @@ async fn start_with<R: Send + 'static>(
         review_chat: Arc::new(humata2_clients_live::LiveReviewChat::new(&daemon)),
         terminals: Arc::new(daemon),
         clock: Arc::new(SystemClock::new()),
-        clipboard: Arc::new(FakeClipboard::default()),
+        clipboard: Arc::new(SystemClipboard::new()),
         reveal: Arc::new(humata2_clients::FinderReveal::new()),
         files: Arc::new(FakeFileSystem::default()),
         file_manager: Arc::new(file_manager),
@@ -571,5 +609,20 @@ mod tests {
     #[test]
     fn a_shell_can_be_asked() {
         assert!(shell_finds_humata(Path::new("/bin/sh")).is_some());
+    }
+
+    #[test]
+    fn clipboard_pipe_writes_utf8_text_to_command_stdin() {
+        let out = std::env::temp_dir().join(format!(
+            "humata2-live-test-clipboard-{}.txt",
+            std::process::id()
+        ));
+        let path = out.to_string_lossy().into_owned();
+        let sample = "copied from terminal \u{2713}\nline two";
+        pipe_to_command("/bin/sh", &["-c", "cat > \"$1\"", "_", &path], sample)
+            .expect("pipe to command");
+        let written = std::fs::read_to_string(&out).expect("read piped output");
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(written, sample);
     }
 }

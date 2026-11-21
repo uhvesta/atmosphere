@@ -32,7 +32,28 @@ pub fn channel_bar(
     let lost = record.target_gone;
     let fix = lost.then(|| target_fix(ui, state, session, look));
     let ui = ui.clone();
+    let copy_ui = ui.clone();
     let path = record.desk.folder.path().to_owned();
+    let on_this_mac = state
+        .workspace
+        .machine(&session.machine)
+        .is_some_and(humata2_clients::is_this_mac);
+    let can_reveal = on_this_mac && std::path::Path::new(&path).is_absolute();
+    let reveal_path = can_reveal.then(|| {
+        let reveal = path.clone();
+        div()
+            .id("channel-desk-bar-reveal-path")
+            .role(Role::Button)
+            .aria_label("Reveal in Finder")
+            .flex_shrink_0()
+            .text_color(rgb(look.accent))
+            .cursor_pointer()
+            .child("Reveal in Finder")
+            .on_click(move |_, _, cx| {
+                cx.reveal_path(std::path::Path::new(&reveal));
+            })
+            .test_support()
+    });
     // PL-10: the path is hidden; Copy path copies it.
     let copy_path = div()
         .id("channel-desk-bar-copy-path")
@@ -44,6 +65,12 @@ pub fn channel_bar(
         .child("Copy path")
         .on_click(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+            copy_ui.send(
+                AppAction::Session(humata2_session::SessionAction::Delegate(
+                    humata2_session::Delegate::Toast("Copied the path".to_owned()),
+                )),
+                cx,
+            );
         })
         .test_support();
     Some(
@@ -71,6 +98,7 @@ pub fn channel_bar(
                     .test_text("Desk folder".to_owned()),
             )
             .child(copy_path)
+            .children(reveal_path)
             .child(
                 div()
                     .px(px(6.))
@@ -475,6 +503,27 @@ pub fn bar(
             .test_support()
     });
 
+    let copy_ui = ui.clone();
+    let on_this_mac = state
+        .workspace
+        .machine(&session.machine)
+        .is_some_and(humata2_clients::is_this_mac);
+    let can_reveal = on_this_mac && std::path::Path::new(&path).is_absolute();
+    let reveal_path = can_reveal.then(|| {
+        let reveal = path.clone();
+        div()
+            .id("desk-bar-reveal-path")
+            .role(Role::Button)
+            .aria_label("Reveal in Finder")
+            .flex_shrink_0()
+            .text_color(rgb(look.accent))
+            .cursor_pointer()
+            .child("Reveal in Finder")
+            .on_click(move |_, _, cx| {
+                cx.reveal_path(std::path::Path::new(&reveal));
+            })
+            .test_support()
+    });
     let copy_path = div()
         .id("desk-bar-copy-path")
         .role(Role::Button)
@@ -485,6 +534,12 @@ pub fn bar(
         .child("Copy path")
         .on_click(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+            copy_ui.send(
+                AppAction::Session(humata2_session::SessionAction::Delegate(
+                    humata2_session::Delegate::Toast("Copied the path".to_owned()),
+                )),
+                cx,
+            );
         })
         .test_support();
 
@@ -513,6 +568,7 @@ pub fn bar(
                     .test_text("Desk folder".to_owned()),
             )
             .child(copy_path)
+            .children(reveal_path)
             // Frame 2 (DV-4): whether the folder is kept; a picked folder has
             // no chip. A kept folder adds its count of versions.
             .children(kept_chip(look, &record.folder, record.version_count))

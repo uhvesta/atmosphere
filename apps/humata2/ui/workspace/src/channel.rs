@@ -602,6 +602,7 @@ fn sessions(
                         .w(px(240.))
                         .child(
                             Input::new(&filter)
+                                .cleanable(true)
                                 .small()
                                 .min_h(px(26.))
                                 .rounded(px(6.))

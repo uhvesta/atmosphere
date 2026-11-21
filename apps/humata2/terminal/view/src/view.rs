@@ -58,6 +58,19 @@ const CURRENT_MARK_COLOR: Rgb = Rgb {
     b: 0x3b,
 };
 const CURRENT_MARK_ALPHA: f32 = 0.75;
+/// Higher-contrast find highlights for light terminal backgrounds (`#ffffff`).
+const LIGHT_MARK_COLOR: Rgb = Rgb {
+    r: 0xf5,
+    g: 0xc5,
+    b: 0x18,
+};
+const LIGHT_MARK_ALPHA: f32 = 0.45;
+const LIGHT_CURRENT_MARK_COLOR: Rgb = Rgb {
+    r: 0xff,
+    g: 0x7a,
+    b: 0x00,
+};
+const LIGHT_CURRENT_MARK_ALPHA: f32 = 0.65;
 
 /// A cell of the whole history: column `col` of row `row`, 0 being the
 /// oldest row, in the coordinates of [`Scrollbar::offset`].
@@ -122,8 +135,13 @@ pub struct TerminalView<G: Grid + 'static> {
     frame: Rc<RefCell<Frame>>,
     stats: FrameStats,
     input_stats: InputStats,
-    /// The cell a left-button drag started on, while the button is down.
-    anchor: Option<ViewportPoint>,
+    /// The cell a left-button selection started on, in history coordinates so
+    /// scrolling and Shift+Click extend keep the original anchor.
+    anchor: Option<HistoryPoint>,
+    /// True from a local-selection `mouse_down` through `mouse_up`, so
+    /// releasing `Shift` mid-drag keeps selecting and never leaks `Motion`
+    /// or `Release` events to a mouse-reporting TUI.
+    local_drag: bool,
     /// Whether the drag has left its first cell, so a click alone selects
     /// nothing.
     selecting: bool,
@@ -180,6 +198,7 @@ struct Frame {
     link_underline: Option<(u16, u16, u16)>,
     preedit: Option<ShapedPreedit>,
     background: Rgb,
+    light_background: bool,
     rows: Vec<ShapedRow>,
     cursor: Option<ShapedCursor>,
     origin: Point<Pixels>,
@@ -292,6 +311,8 @@ impl<G: Grid + 'static> TerminalView<G> {
             cx.bind_keys([
                 KeyBinding::new("tab", NoAction, Some(TERMINAL_CONTEXT)),
                 KeyBinding::new("shift-tab", NoAction, Some(TERMINAL_CONTEXT)),
+                #[cfg(not(target_os = "macos"))]
+                KeyBinding::new("ctrl-c", NoAction, Some(TERMINAL_CONTEXT)),
             ]);
             cx.set_global(TerminalKeyBindings);
         }
@@ -321,6 +342,7 @@ impl<G: Grid + 'static> TerminalView<G> {
             stats: FrameStats::default(),
             input_stats: InputStats::default(),
             anchor: None,
+            local_drag: false,
             selecting: false,
             granularity: Granularity::Cell,
             block: false,
@@ -362,6 +384,7 @@ impl<G: Grid + 'static> TerminalView<G> {
         self.cancel_buffered_input();
         self.grid = grid;
         self.anchor = None;
+        self.local_drag = false;
         self.selecting = false;
         self.scrollbar_grab = None;
         self.hovered_link = None;
@@ -498,9 +521,11 @@ impl<G: Grid + 'static> TerminalView<G> {
             full = true;
         }
         let colors = self.grid.colors();
-        if frame.background != colors.background {
+        let light_bg = colors.is_light();
+        if frame.background != colors.background || frame.light_background != light_bg {
             // Rows skip fills in the default background, so they change too.
             frame.background = colors.background;
+            frame.light_background = light_bg;
             full = true;
         }
 
@@ -545,7 +570,7 @@ impl<G: Grid + 'static> TerminalView<G> {
         frame.scrollbar_color = colors.foreground;
         let top = scrollbar.map_or(0, |bar| bar.offset);
 
-        let style = self.theme.style();
+        let style = self.theme.style(light_bg);
         let mut rows_rebuilt = 0;
         let mut pieces_shaped = 0;
         if full || self.grid.dirty() != Dirty::Clean {
@@ -585,16 +610,16 @@ impl<G: Grid + 'static> TerminalView<G> {
             &style,
         )
         .map(|plan| {
-            let text = plan.text.as_ref().map(|(text, color)| {
+            let text = plan.text.as_ref().map(|cursor_text| {
                 shape(
                     Piece {
                         col: plan.col,
-                        text: text.clone(),
+                        text: cursor_text.text.clone(),
                         style: crate::frame::TextStyle {
-                            color: *color,
+                            color: cursor_text.color,
                             alpha: 1.0,
-                            bold: false,
-                            italic: false,
+                            bold: cursor_text.bold,
+                            italic: cursor_text.italic,
                         },
                     },
                     &metrics,
@@ -887,7 +912,7 @@ impl<G: Grid + 'static> TerminalView<G> {
                     self.clipboard_read_completed(id, Ok(Some(item)), window, cx);
                 }
             }
-        } else {
+        } else if cx.platform_info().target == gpui_kit::PlatformTarget::Web {
             let Some(id) = self.begin_clipboard_read(cx) else {
                 return;
             };
@@ -1014,6 +1039,34 @@ impl<G: Grid + 'static> TerminalView<G> {
         }
     }
 
+    fn to_history(&self, point: ViewportPoint) -> HistoryPoint {
+        let offset = self.grid.scrollbar().map_or(0, |bar| bar.offset);
+        HistoryPoint {
+            row: offset.saturating_add(u64::from(point.y)),
+            col: point.x,
+        }
+    }
+
+    fn to_viewport_clamped(&self, point: HistoryPoint) -> ViewportPoint {
+        let size = self.grid.size();
+        let max_x = size.cols.saturating_sub(1);
+        let max_y = size.rows.saturating_sub(1);
+        let offset = self.grid.scrollbar().map_or(0, |bar| bar.offset);
+        if point.row < offset {
+            ViewportPoint { x: 0, y: 0 }
+        } else {
+            let rel = point.row - offset;
+            if rel > u64::from(max_y) {
+                ViewportPoint { x: max_x, y: max_y }
+            } else {
+                ViewportPoint {
+                    x: point.col.min(max_x),
+                    y: rel as u16,
+                }
+            }
+        }
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.input_stats.mouse_downs = self.input_stats.mouse_downs.saturating_add(1);
         self.focus_input(window, cx);
@@ -1026,6 +1079,7 @@ impl<G: Grid + 'static> TerminalView<G> {
             if let Some(uri) = self.grid.hyperlink(self.cell_at(event.position)) {
                 self.host.open_link(uri);
                 self.link_pressed = true;
+                self.local_drag = false;
                 self.anchor = None;
                 cx.stop_propagation();
                 cx.notify();
@@ -1033,6 +1087,7 @@ impl<G: Grid + 'static> TerminalView<G> {
             }
         }
         if event.button == GpuiButton::Left && self.press_scrollbar(event.position) {
+            self.local_drag = false;
             cx.notify();
             return;
         }
@@ -1044,19 +1099,39 @@ impl<G: Grid + 'static> TerminalView<G> {
         );
         let taken = !event.modifiers.shift && self.host.mouse(&mut self.grid, report);
         if !taken && event.button == GpuiButton::Left {
+            self.local_drag = true;
             let here = self.cell_at(event.position);
-            self.anchor = Some(here);
-            self.granularity = Granularity::of_clicks(event.click_count);
-            self.block = event.modifiers.alt && self.granularity == Granularity::Cell;
-            if self.granularity == Granularity::Cell {
-                self.selecting = false;
-                self.host.select(&mut self.grid, None);
-            } else {
-                // A double or triple click selects at once, before any drag.
+            if event.modifiers.shift
+                && event.click_count == 1
+                && let Some(anchor) = self.anchor
+            {
+                // Shift+Click extends the selection from the existing anchor.
+                self.granularity = Granularity::Cell;
+                self.block = event.modifiers.alt;
                 self.selecting = true;
-                let selection = extend(&self.grid, self.granularity, here, here);
-                self.host.select(&mut self.grid, Some(selection));
+                let anchor_vp = self.to_viewport_clamped(anchor);
+                if self.block {
+                    self.host.select_rectangle(&mut self.grid, anchor_vp, here);
+                } else {
+                    let selection = extend(&self.grid, self.granularity, anchor_vp, here);
+                    self.host.select(&mut self.grid, Some(selection));
+                }
+            } else {
+                self.anchor = Some(self.to_history(here));
+                self.granularity = Granularity::of_clicks(event.click_count);
+                self.block = event.modifiers.alt && self.granularity == Granularity::Cell;
+                if self.granularity == Granularity::Cell {
+                    self.selecting = false;
+                    self.host.select(&mut self.grid, None);
+                } else {
+                    // A double or triple click selects at once, before any drag.
+                    self.selecting = true;
+                    let selection = extend(&self.grid, self.granularity, here, here);
+                    self.host.select(&mut self.grid, Some(selection));
+                }
             }
+        } else if event.button == GpuiButton::Left {
+            self.local_drag = false;
         }
         cx.notify();
     }
@@ -1145,7 +1220,29 @@ impl<G: Grid + 'static> TerminalView<G> {
             }
             return;
         }
-        if !inside && self.anchor.is_none() {
+        if self.local_drag {
+            if !event.dragging() {
+                self.local_drag = false;
+                return;
+            }
+            if let Some(anchor) = self.anchor {
+                let anchor_vp = self.to_viewport_clamped(anchor);
+                let here = self.cell_at(event.position);
+                if here == anchor_vp && !self.selecting {
+                    return;
+                }
+                self.selecting = true;
+                if self.block {
+                    self.host.select_rectangle(&mut self.grid, anchor_vp, here);
+                } else {
+                    let selection = extend(&self.grid, self.granularity, anchor_vp, here);
+                    self.host.select(&mut self.grid, Some(selection));
+                }
+                cx.notify();
+            }
+            return;
+        }
+        if !inside {
             return;
         }
         let report = self.mouse_event(
@@ -1154,23 +1251,8 @@ impl<G: Grid + 'static> TerminalView<G> {
             event.position,
             event.modifiers,
         );
-        let taken = inside && !event.modifiers.shift && self.host.mouse(&mut self.grid, report);
-        if let Some(anchor) = self.anchor
-            && event.dragging()
-            && !taken
-        {
-            let here = self.cell_at(event.position);
-            if here == anchor && !self.selecting {
-                return;
-            }
-            self.selecting = true;
-            if self.block {
-                self.host.select_rectangle(&mut self.grid, anchor, here);
-            } else {
-                let selection = extend(&self.grid, self.granularity, anchor, here);
-                self.host.select(&mut self.grid, Some(selection));
-            }
-            cx.notify();
+        if !event.modifiers.shift {
+            self.host.mouse(&mut self.grid, report);
         }
     }
 
@@ -1186,17 +1268,18 @@ impl<G: Grid + 'static> TerminalView<G> {
             cx.notify();
             return;
         }
+        let was_local_drag = event.button == GpuiButton::Left && self.local_drag;
+        if event.button == GpuiButton::Left {
+            self.local_drag = false;
+        }
         let report = self.mouse_event(
             MouseAction::Release,
             Some(event.button),
             event.position,
             event.modifiers,
         );
-        if !event.modifiers.shift {
+        if !was_local_drag && !event.modifiers.shift {
             self.host.mouse(&mut self.grid, report);
-        }
-        if event.button == GpuiButton::Left {
-            self.anchor = None;
         }
         cx.notify();
     }
@@ -1406,10 +1489,11 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         }
         for &(col, cols, current) in &row.marks {
             let extent = size(px(f32::from(cols) * cell.width), px(cell.height));
-            let (color, alpha) = if current {
-                (CURRENT_MARK_COLOR, CURRENT_MARK_ALPHA)
-            } else {
-                (MARK_COLOR, MARK_ALPHA)
+            let (color, alpha) = match (frame.light_background, current) {
+                (true, true) => (LIGHT_CURRENT_MARK_COLOR, LIGHT_CURRENT_MARK_ALPHA),
+                (true, false) => (LIGHT_MARK_COLOR, LIGHT_MARK_ALPHA),
+                (false, true) => (CURRENT_MARK_COLOR, CURRENT_MARK_ALPHA),
+                (false, false) => (MARK_COLOR, MARK_ALPHA),
             };
             window.paint_quad(fill(Bounds::new(at(col, y), extent), hsla(color, alpha)));
         }
@@ -1591,7 +1675,19 @@ fn utf16_len(text: &str) -> usize {
 /// sends to the host once committed.
 impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
     fn accepts_text_input(&self, window: &mut Window, _: &mut Context<Self>) -> bool {
-        self.focus_handle.is_focused(window)
+        if !self.focus_handle.is_focused(window) {
+            return false;
+        }
+        // Bypass macOS dead-key IME routing (⌥e, ⌥u, ⌥i, ⌥n, ⌥`) when
+        // Option acts as Alt and no CJK preedit is active.
+        if self.platform == Platform::Mac
+            && self.preedit.is_none()
+            && self.host.option_as_alt(&self.grid)
+            && window.modifiers().alt
+        {
+            return false;
+        }
+        true
     }
 
     fn text_for_range(
@@ -1675,6 +1771,13 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         cx: &mut Context<Self>,
     ) {
         if !self.focus_handle.is_focused(window) {
+            return;
+        }
+        if self.platform == Platform::Mac
+            && self.preedit.is_none()
+            && self.host.option_as_alt(&self.grid)
+            && window.modifiers().alt
+        {
             return;
         }
         let starting = self.preedit.is_none() && !text.is_empty();

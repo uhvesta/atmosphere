@@ -15,6 +15,24 @@ gpui_kit::actions!(
         NewChannel,
         /// ⌘[: back.
         Back,
+        /// ⌘]: forward.
+        Forward,
+        /// ⌘R: refresh the active screen or panel.
+        Refresh,
+        /// ⌘W: close the active tab, or the window when not in a session.
+        CloseTab,
+        /// ⇧⌘W: close the active window.
+        CloseWindow,
+        /// ⇧⌘[ / ⌃⇧Tab: previous tab in the focused group.
+        PrevTab,
+        /// ⇧⌘] / ⌃Tab: next tab in the focused group.
+        NextTab,
+        /// ⌘F: find in the active terminal, channel, or files panel.
+        Find,
+        /// ⌘G: find next match.
+        FindNext,
+        /// ⇧⌘G: find previous match.
+        FindPrev,
         /// Escape: close the top overlay, or cancel what is half-done.
         Dismiss,
         /// ⌘/: the shortcuts.
@@ -99,6 +117,8 @@ gpui_kit::actions!(
         ZoomIn,
         /// ⌘-: smaller terminal and diff font size.
         ZoomOut,
+        /// Actual size: reset terminal and diff font size to 12.
+        ZoomReset,
         /// S on a milestone: start a session with the milestone brief.
         StartMilestoneSession,
         /// ⌥S on a milestone: start a plain session without the brief.
@@ -133,12 +153,19 @@ pub const TODO_MILESTONE: &str = "HumataTodoMilestone";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 30] = [
+pub const SHORTCUTS: [(&str, &str); 37] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⌘T", "New terminal tab"),
+    ("⌘W", "Close tab (or window)"),
+    ("⇧⌘W", "Close window"),
+    ("⇧⌘[ ⇧⌘]", "Previous, next tab"),
     ("⇧⌘N", "New channel"),
+    ("⇧⌘F", "Fork session"),
     ("⌘[", "Back"),
+    ("⌘]", "Forward"),
+    ("⌘R", "Refresh"),
+    ("⌘F ⌘G ⇧⌘G", "Find, find next, find previous"),
     ("Esc", "Close or cancel"),
     ("⌘/", "Keyboard shortcuts"),
     ("⌥⌘→", "Expand all, in the sidebar"),
@@ -148,13 +175,13 @@ pub const SHORTCUTS: [(&str, &str); 30] = [
     ("⌥⌘M", "Move the session to another machine"),
     ("⇧⌘↩", "Terminal full screen"),
     ("⌃⌘↩", "Side panel full screen"),
-    ("⌘1 ⌘2 ⌘3", "Home, Inbox, Board"),
+    ("⌘1 ⌘2 ⌘3 ⌘4 ⌘5", "Home, Inbox, To-do, Hosts, Files"),
     ("⌘,", "Settings"),
     ("⌘+ ⌘-", "Larger, smaller font"),
     ("⌘L", "Move focus to the sidebar"),
     ("↑ ↓ Home End", "Move in the sidebar"),
     ("← →", "Fold, unfold, parent, child"),
-    ("Enter", "Open the sidebar row; send a message"),
+    ("↩", "Open the sidebar row; send a message"),
     ("⇧⌘R", "Start or stop recording a bug report"),
     ("⇧⌘S", "Take a bug report snapshot"),
     ("⌥⌘] ⌥⌘[", "Next, previous layer of a stack"),
@@ -266,11 +293,26 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-n", NewSession, None),
         KeyBinding::new("shift-cmd-n", NewChannel, None),
         KeyBinding::new("cmd-[", Back, None),
+        KeyBinding::new("cmd-]", Forward, None),
+        KeyBinding::new("cmd-r", Refresh, None),
+        KeyBinding::new("cmd-w", CloseTab, None),
+        KeyBinding::new("shift-cmd-w", CloseWindow, None),
+        KeyBinding::new("shift-cmd-[", PrevTab, None),
+        KeyBinding::new("shift-cmd-]", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("cmd-f", Find, None),
+        KeyBinding::new("cmd-g", FindNext, None),
+        KeyBinding::new("shift-cmd-g", FindPrev, None),
         KeyBinding::new("escape", Dismiss, None),
         // In a terminal, Escape is the program's (vim, less): the Shell's
         // key-down capture still closes a menu or sheet that is open first.
         // "HumataTerminal" is the terminal view's key context.
         KeyBinding::new("escape", gpui_kit::NoAction, Some("HumataTerminal")),
+        // Inside a terminal, ⌘F / ⌘G / ⇧⌘G belong to the terminal's own find bar.
+        KeyBinding::new("cmd-f", gpui_kit::NoAction, Some("HumataTerminal")),
+        KeyBinding::new("cmd-g", gpui_kit::NoAction, Some("HumataTerminal")),
+        KeyBinding::new("shift-cmd-g", gpui_kit::NoAction, Some("HumataTerminal")),
         KeyBinding::new("cmd-/", ShowShortcuts, None),
         KeyBinding::new("alt-cmd-right", ExpandAll, sidebar),
         KeyBinding::new("alt-cmd-left", CollapseAll, sidebar),

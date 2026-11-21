@@ -221,6 +221,45 @@ fn turns(entries: &[Entry]) -> Vec<(u32, Vec<&Entry>)> {
     turns
 }
 
+/// Compact per-entry Copy button with local "Copied" feedback.
+#[derive(IntoElement)]
+struct CopyEntryButton {
+    id: SharedString,
+    text: String,
+}
+
+impl RenderOnce for CopyEntryButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let copied = window.use_keyed_state(
+            SharedString::from(format!("{}-copied", self.id)),
+            cx,
+            |_, _| false,
+        );
+        let is_copied = *copied.read(cx);
+        let text = self.text;
+        Button::new(self.id)
+            .label(if is_copied { "Copied" } else { "Copy" })
+            .xsmall()
+            .on_click(move |_, window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                copied.update(cx, |v, _| *v = true);
+                let copied_reset = copied.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(1500))
+                            .await;
+                        let _ = copied_reset.update(cx, |v, cx| {
+                            *v = false;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                window.refresh();
+            })
+    }
+}
+
 /// One turn: its header and each entry, with the hit's entry marked.
 fn turn_block(turn: u32, entries: &[&Entry], marked: u64, agent: Agent, look: Look) -> AnyElement {
     let header = if turn == 0 {
@@ -250,11 +289,21 @@ fn turn_block(turn: u32, entries: &[&Entry], marked: u64, agent: Agent, look: Lo
         let item = col()
             .gap(px(2.))
             .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(11.5))
-                    .text_color(rgb(look.secondary))
-                    .child(who),
+                row()
+                    .justify_between()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(who),
+                    )
+                    .child(CopyEntryButton {
+                        id: SharedString::from(format!("conversation-copy-{}", entry.seq)),
+                        text: entry.text.clone(),
+                    }),
             )
             .child(text.test_text(entry.text.clone()));
         block = block.child(if entry.seq == marked {

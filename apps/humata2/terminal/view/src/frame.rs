@@ -17,10 +17,13 @@ use crate::boxes::{self, Drawing};
 /// How a row's colors are worked out, from the view's theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Style {
-    /// Background of selected cells; `None` swaps the cell's colors.
+    /// Background of selected cells; `None` uses `selection_tint` or swaps.
     pub selection_background: Option<Rgb>,
-    /// Foreground of selected cells; `None` swaps the cell's colors.
+    /// Foreground of selected cells; `None` uses `selection_tint` or swaps.
     pub selection_foreground: Option<Rgb>,
+    /// Translucent accent tint `(color, alpha)` blended over a selected cell's
+    /// background when explicit selection colors aren't set, keeping cell fg.
+    pub selection_tint: Option<(Rgb, f32)>,
     /// Draw bold text in palette colors 0-7 with their bright twins 8-15.
     pub bold_is_bright: bool,
     /// The opacity of faint (SGR 2) text.
@@ -119,12 +122,35 @@ pub(crate) fn cell_colors(
     let bg = colors.resolve(cell.bg).unwrap_or(colors.background);
     let (fg, bg) = if cell.inverse { (bg, fg) } else { (fg, bg) };
     if selected {
-        CellColors {
-            fg: style.selection_foreground.unwrap_or(bg),
-            bg: style.selection_background.unwrap_or(fg),
+        if style.selection_background.is_some() || style.selection_foreground.is_some() {
+            CellColors {
+                fg: style.selection_foreground.unwrap_or(bg),
+                bg: style.selection_background.unwrap_or(fg),
+            }
+        } else if let Some((tint, alpha)) = style.selection_tint {
+            CellColors {
+                fg,
+                bg: blend_rgb(bg, tint, alpha),
+            }
+        } else {
+            CellColors { fg: bg, bg: fg }
         }
     } else {
         CellColors { fg, bg }
+    }
+}
+
+fn blend_rgb(base: Rgb, overlay: Rgb, alpha: f32) -> Rgb {
+    let a = alpha.clamp(0.0, 1.0);
+    let mix = |b: u8, o: u8| -> u8 {
+        (f32::from(o) * a + f32::from(b) * (1.0 - a))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgb {
+        r: mix(base.r, overlay.r),
+        g: mix(base.g, overlay.g),
+        b: mix(base.b, overlay.b),
     }
 }
 
@@ -350,6 +376,7 @@ mod tests {
     const STYLE: Style = Style {
         selection_background: None,
         selection_foreground: None,
+        selection_tint: None,
         bold_is_bright: true,
         faint_opacity: 0.5,
     };
@@ -585,9 +612,18 @@ mod tests {
             selection_foreground: Some(Rgb::hex(0xffeedd)),
             ..STYLE
         };
-        let plan = plan_row(&row(cells), span, &colors, &themed);
+        let plan = plan_row(&row(cells.clone()), span, &colors, &themed);
         assert_eq!(plan.pieces[1].style.color, Rgb::hex(0xffeedd));
         assert_eq!(plan.fills[0].color, Rgb::hex(0x334455));
+
+        let tinted = Style {
+            selection_tint: Some((Rgb::hex(0x3b8cff), 0.32)),
+            ..STYLE
+        };
+        let plan = plan_row(&row(cells), span, &colors, &tinted);
+        assert_eq!(plan.pieces[0].style.color, colors.foreground);
+        assert_ne!(plan.fills[0].color, colors.foreground);
+        assert_ne!(plan.fills[0].color, colors.background);
     }
 
     #[::std::prelude::v1::test]

@@ -120,6 +120,8 @@ pub struct AppState {
     pub route: Route,
     /// Screens Back returns to.
     pub trail: Vec<Route>,
+    /// Screens Forward returns to after Back.
+    pub forward_trail: Vec<Route>,
     /// Overlays, bottom first.
     pub overlays: Vec<Overlay>,
     /// Pane sizes.
@@ -282,6 +284,7 @@ impl AppState {
             workspace: Arc::default(),
             route: saved.route.clone(),
             trail: saved.trail.clone(),
+            forward_trail: Vec::new(),
             overlays: Vec::new(),
             layout: saved.layout,
             full_screens: saved.full_screens.clone(),
@@ -488,6 +491,10 @@ pub enum AppAction {
     NewDeskSessionFor(SessionId),
     /// ⌘[: back to the previous screen.
     Back,
+    /// ⌘]: forward to the next screen.
+    Forward,
+    /// ⌘R: refresh the active route or panel.
+    Refresh,
     /// Escape: close the top overlay or dialog.
     Escape,
     /// ⌘K.
@@ -811,6 +818,7 @@ impl App {
                         self.leave(state, &gone, Route::Home)
                     } else {
                         state.trail.retain(|route| route != &gone);
+                        state.forward_trail.retain(|route| route != &gone);
                         if let Route::Machine(machine) = state.route.clone() {
                             self.machine_page(
                                 state,
@@ -837,6 +845,7 @@ impl App {
                         self.leave(state, &gone, Route::Home)
                     } else {
                         state.trail.retain(|route| route != &gone);
+                        state.forward_trail.retain(|route| route != &gone);
                         if let Route::Machine(machine) = state.route.clone() {
                             self.machine_page(
                                 state,
@@ -1343,6 +1352,12 @@ impl App {
                 let cleared = self.clear_visible_notices(state);
                 Effect::merge([nav, cleared])
             }
+            AppAction::Forward => {
+                let nav = self.go_forward(state);
+                let cleared = self.clear_visible_notices(state);
+                Effect::merge([nav, cleared])
+            }
+            AppAction::Refresh => self.refresh_active(state),
             AppAction::WindowActive(active) => {
                 state.window_active = active;
                 if active {
@@ -1649,6 +1664,7 @@ impl App {
                             self.leave(state, &gone, Route::Home)
                         } else {
                             state.trail.retain(|route| route != &gone);
+                            state.forward_trail.retain(|route| route != &gone);
                             Effect::none()
                         };
                         Effect::merge([shown, notice, leave])

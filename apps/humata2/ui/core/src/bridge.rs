@@ -242,6 +242,7 @@ impl Ui {
                     state.load.clone(),
                     state.route.clone(),
                     state.trail.len(),
+                    state.forward_trail.len(),
                     state.channel_pages.clone(),
                     (
                         state.layout,
@@ -358,6 +359,12 @@ impl Ui {
             if let Some(ui) = zoom_out.upgrade() {
                 let next = ui.read(|state| step_font_size(state.settings.preferences.font_size, -1));
                 ui.send(AppAction::Settings(humata2_app::SettingsAction::SetFontSize(next)), cx);
+            }
+        });
+        let zoom_reset = Rc::downgrade(self);
+        cx.on_action(move |_: &crate::keys::ZoomReset, cx| {
+            if let Some(ui) = zoom_reset.upgrade() {
+                ui.send(AppAction::Settings(humata2_app::SettingsAction::SetFontSize(12)), cx);
             }
         });
     }

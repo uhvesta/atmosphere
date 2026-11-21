@@ -128,6 +128,16 @@ struct Mark {
     text: String,
 }
 
+/// Opens an external link activated inside a Markdown view.
+pub(crate) fn open_markdown_link(url: &str, cx: &mut App) {
+    if url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("mailto:")
+    {
+        cx.open_url(url);
+    }
+}
+
 struct Page {
     view: Entity<MarkdownView>,
     source: String,
@@ -141,6 +151,7 @@ struct Page {
     last_top: Option<u32>,
     /// The old version the page was last linked to, when one is shown.
     last_old: Option<String>,
+    _subscription: Subscription,
 }
 
 /// Rendered Markdown page for a file shown in the full-screen Diff view, with
@@ -685,8 +696,29 @@ impl Documents {
         let typing = cx.subscribe(
             &comment_input,
             move |input: Entity<TextareaState>, event: &InputEvent, cx: &mut App| {
-                if !matches!(event, InputEvent::Change) {
-                    return;
+                match event {
+                    InputEvent::PressEnter { secondary: true, .. } => {
+                        let Some(session) = typing_ui.read(|state| state.session.open.clone()) else {
+                            return;
+                        };
+                        let can_send = typing_ui.read(|state| {
+                            state
+                                .comments
+                                .sessions
+                                .get(&session)
+                                .and_then(|held| held.editing.as_ref())
+                                .is_some_and(|b| !b.text.trim().is_empty())
+                        });
+                        if can_send {
+                            typing_ui.send(
+                                AppAction::Comments(CommentsAction::Comment(session)),
+                                cx,
+                            );
+                        }
+                        return;
+                    }
+                    InputEvent::Change => {}
+                    _ => return,
                 }
                 let value = input.read(cx).value().to_string();
                 let Some(session) = typing_ui.read(|state| state.session.open.clone()) else {
@@ -932,6 +964,14 @@ impl Documents {
                     let source = want.source.clone();
                     let view = cx.new(|cx| MarkdownView::new(&source, options, cx));
                     set_marks(&view, &want.marks, cx);
+                    let subscription = cx.subscribe(
+                        &view,
+                        |_view, event: &MarkdownEvent, cx: &mut App| {
+                            if let MarkdownEvent::LinkActivated { url } = event {
+                                open_markdown_link(url, cx);
+                            }
+                        },
+                    );
                     self.pages.insert(
                         want.key,
                         Page {
@@ -942,6 +982,7 @@ impl Documents {
                             child_lines: Rc::new(RefCell::new(Vec::new())),
                             last_top: None,
                             last_old: None,
+                            _subscription: subscription,
                         },
                     );
                 }
@@ -1043,6 +1084,9 @@ impl Documents {
                                         cx,
                                     );
                                 }
+                            }
+                            MarkdownEvent::LinkActivated { url } => {
+                                open_markdown_link(url, cx);
                             }
                             _ => {}
                         },

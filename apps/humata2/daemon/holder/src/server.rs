@@ -781,6 +781,11 @@ fn start(
     if std::env::var_os("LANG").is_none() {
         command.env("LANG", "en_US.UTF-8");
     }
+    if std::env::var_os("COLORFGBG").is_none() {
+        let light = std::env::var("HUMATA2_TERMINAL_THEME")
+            .is_ok_and(|value| value.eq_ignore_ascii_case("light"));
+        command.env("COLORFGBG", if light { "0;15" } else { "15;0" });
+    }
     // SAFETY: between fork and exec this only makes system calls that are
     // safe there: it starts a session, leaving the holder's, and takes the
     // pseudo-terminal, already the program's stdin, as its controlling

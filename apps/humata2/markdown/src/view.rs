@@ -1136,14 +1136,42 @@ impl MarkdownView {
                 .collect();
             style = style.with_list_item_ends(ends);
         }
+        let dark = self.theme.dark;
         TextView::new(self.active_text())
             .style(style)
-            .shared_code_block_highlighter(humata2_highlight::shared_code_block_highlighter(self.theme.dark))
+            .shared_code_block_highlighter(humata2_highlight::shared_code_block_highlighter(dark))
             .selectable(true)
             .selection_format(format)
             .scrollable(self.options.layout == Layout::Scroll)
             .markdown_extensions(self.extensions.clone())
             .image_source(move |uri| shared.image_source(uri))
+            .code_block_actions(move |code_block, _, _| {
+                let code = code_block.code();
+                let id_key = code_block.span.map_or(0usize, |span| span.start);
+                let (bg, border, fg) = if dark {
+                    (gpui_kit::rgb(0x2a2a2e), gpui_kit::rgb(0x3f3f46), gpui_kit::rgb(0xd4d4d8))
+                } else {
+                    (gpui_kit::rgb(0xf4f4f5), gpui_kit::rgb(0xd4d4d8), gpui_kit::rgb(0x3f3f46))
+                };
+                div()
+                    .id(("markdown-code-copy", id_key))
+                    .role(Role::Button)
+                    .aria_label("Copy code")
+                    .cursor_pointer()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .bg(bg)
+                    .border_1()
+                    .border_color(border)
+                    .text_size(px(11.))
+                    .text_color(fg)
+                    .child("Copy")
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+                    })
+            })
             .on_link_click(move |url, _, _, cx| {
                 let url = url.clone();
                 let _ = view.update(cx, |_, cx| cx.emit(MarkdownEvent::LinkActivated { url }));

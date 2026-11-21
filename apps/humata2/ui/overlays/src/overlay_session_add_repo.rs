@@ -104,6 +104,7 @@ impl Overlays {
                     .min_h(px(26.))
                     .text_size(px(12.5))
                     .focus_bordered(false)
+                    .cleanable(true)
                     .aria_label("Repo to add")
                     .into_any_element(),
                 owner: Input::new(&self.owner)

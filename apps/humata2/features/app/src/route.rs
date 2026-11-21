@@ -139,6 +139,7 @@ impl App {
             if state.trail.len() > TRAIL {
                 state.trail.remove(0);
             }
+            state.forward_trail.clear();
         }
         let arrived = self.arrive(state);
         self.desk_fresh(state, arrived)
@@ -148,6 +149,7 @@ impl App {
         state.route = route;
         state.navigation_overlay = false;
         state.trail.clear();
+        state.forward_trail.clear();
         let arrived = self.arrive(state);
         self.desk_fresh(state, arrived)
     }
@@ -374,10 +376,66 @@ impl App {
     pub(super) fn go_back(&self, state: &mut AppState) -> Effect<AppAction> {
         match state.trail.pop() {
             Some(route) => {
-                state.route = route;
+                let current = std::mem::replace(&mut state.route, route);
+                state.forward_trail.push(current);
+                if state.forward_trail.len() > TRAIL {
+                    state.forward_trail.remove(0);
+                }
                 self.arrive(state)
             }
             None => Effect::none(),
+        }
+    }
+
+    pub(super) fn go_forward(&self, state: &mut AppState) -> Effect<AppAction> {
+        match state.forward_trail.pop() {
+            Some(route) => {
+                let current = std::mem::replace(&mut state.route, route);
+                state.trail.push(current);
+                if state.trail.len() > TRAIL {
+                    state.trail.remove(0);
+                }
+                self.arrive(state)
+            }
+            None => Effect::none(),
+        }
+    }
+
+    /// Refreshes the active route or open session side panel (⌘R).
+    pub(super) fn refresh_active(&self, state: &mut AppState) -> Effect<AppAction> {
+        match state.route.clone() {
+            Route::Session(id) => match state.panel() {
+                Some(humata2_session::Panel::Changes) => Effect::merge([
+                    self.child(state, AppAction::Review(ReviewAction::Open(id.clone()))),
+                    self.child(state, AppAction::Comments(CommentsAction::Open(id))),
+                ]),
+                Some(humata2_session::Panel::Files) => self.refresh_files(state, id),
+                Some(humata2_session::Panel::Board) => {
+                    self.child(state, AppAction::Todo(TodoAction::Load))
+                }
+                _ => self.load(),
+            },
+            Route::Hosts => Effect::merge([
+                self.load(),
+                self.child(state, AppAction::Hosts(HostsAction::Opened)),
+            ]),
+            Route::Machine(_) => self.machine_page(state, humata2_hosts::MachinePageAction::Reload),
+            Route::Files => self.child(state, AppAction::Files(FilesAction::Opened)),
+            Route::Todo => self.child(state, AppAction::Todo(TodoAction::Load)),
+            Route::Channel(id) => {
+                if state
+                    .channel_pages
+                    .get(&id)
+                    .map(|view| view.tab)
+                    .unwrap_or_default()
+                    == channel::Tab::Board
+                {
+                    Effect::merge(self.channel_todo(state, id))
+                } else {
+                    self.load()
+                }
+            }
+            _ => self.load(),
         }
     }
 
@@ -386,8 +444,12 @@ impl App {
     /// reopens it or lands where the page already is (frame 32).
     pub(super) fn leave(&self, state: &mut AppState, gone: &Route, to: Route) -> Effect<AppAction> {
         state.trail.retain(|route| route != gone);
+        state.forward_trail.retain(|route| route != gone);
         while state.trail.last() == Some(&to) {
             state.trail.pop();
+        }
+        while state.forward_trail.last() == Some(&to) {
+            state.forward_trail.pop();
         }
         state.route = to;
         let arrived = self.arrive(state);

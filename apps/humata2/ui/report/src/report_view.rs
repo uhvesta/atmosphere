@@ -55,6 +55,7 @@ pub struct ReportView {
     drag: Option<Vec<Mark>>,
     /// A palette request is waiting out its frames.
     acting: bool,
+    path_copied: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,11 +81,15 @@ impl ReportView {
         ] {
             subscriptions.push(cx.subscribe(
                 input,
-                move |this: &mut Self, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
+                move |this: &mut Self, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
                         let text = input.read(cx).value().to_string();
                         this.ui.send(AppAction::Report(change(text)), cx);
                     }
+                    InputEvent::PressEnter { secondary: true, .. } => {
+                        this.ui.send(AppAction::Report(ReportAction::Close), cx);
+                    }
+                    _ => {}
                 },
             ));
         }
@@ -134,6 +139,7 @@ impl ReportView {
             shown: None,
             restore: None,
             ticking: false,
+            path_copied: false,
             drag: None,
             acting: false,
             _subscriptions: subscriptions,
@@ -293,10 +299,12 @@ impl ReportView {
                         let folder = form.folder.display().to_string();
                         Button::new("report-copy-path")
                             .small()
-                            .label("Copy path")
-                            .on_click(move |_, _, cx| {
+                            .label(if self.path_copied { "Copied" } else { "Copy path" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(folder.clone()));
-                            })
+                                this.path_copied = true;
+                                cx.notify();
+                            }))
                     }),
             )
             .child(field(
@@ -318,7 +326,7 @@ impl ReportView {
                 "Pin a comment to",
                 col()
                     .gap_1()
-                    .child(Input::new(&self.query).aria_label("Pin a comment to"))
+                    .child(Input::new(&self.query).cleanable(true).aria_label("Pin a comment to"))
                     .child(
                         col()
                             .id("report-pins")

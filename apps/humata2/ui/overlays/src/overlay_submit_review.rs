@@ -119,8 +119,8 @@ impl Overlays {
         let for_pr = pr.clone();
         fields.subscriptions.borrow_mut().push(cx.subscribe(
             &field,
-            move |this: &mut Overlays, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
+            move |this: &mut Overlays, input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
                     let summary = input.read(cx).value().to_string();
                     this.ui.send(
                         submit(SubmitAction::SetSummary {
@@ -130,6 +130,10 @@ impl Overlays {
                         cx,
                     );
                 }
+                InputEvent::PressEnter { secondary: true, .. } => {
+                    this.ui.send(submit(SubmitAction::Submit), cx);
+                }
+                _ => {}
             },
         ));
         fields.summaries.borrow_mut().insert(pr.clone(), field.clone());

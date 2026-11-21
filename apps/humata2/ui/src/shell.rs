@@ -288,12 +288,17 @@ fn top_bar(
     ui: &Rc<Ui>,
     title: String,
     can_go_back: bool,
+    can_go_forward: bool,
     sidebar_hidden: bool,
     reveal_action: AppAction,
     mac: bool,
     look: Look,
 ) -> impl IntoElement {
     let show_sidebar_tip = format!("Show sidebar  {}", keys::label("⌘B", mac));
+    let back_tip = format!("Back  {}", keys::label("⌘[", mac));
+    let forward_tip = format!("Forward  {}", keys::label("⌘]", mac));
+    let palette_tip = format!("Command palette  {}", keys::label("⌘K", mac));
+    let toggle_panel_tip = format!("Toggle side panel  {}", keys::label("⌥⌘0", mac));
     chrome::titlebar_drag(
         row()
             .id("top-bar")
@@ -326,10 +331,29 @@ fn top_bar(
                     .flex_shrink_0()
                     .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
                     .accessibility_label("Back")
-                    .tooltip("Back  ⌘[")
+                    .tooltip(back_tip)
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         back.send(AppAction::Back, cx);
+                    }),
+            )
+        })
+        .when(can_go_forward, |bar| {
+            let forward = ui.clone();
+            bar.child(
+                Button::new("forward")
+                    .ghost()
+                    .small()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .p_0()
+                    .flex_shrink_0()
+                    .icon(chrome::icon(IconName::ChevronRight, look.secondary, 14.))
+                    .accessibility_label("Forward")
+                    .tooltip(forward_tip)
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        forward.send(AppAction::Forward, cx);
                     }),
             )
         })
@@ -356,7 +380,7 @@ fn top_bar(
                 .small()
                 .flex_shrink_0()
                 .accessibility_label("Search")
-                .tooltip("Command palette  ⌘K")
+                .tooltip(palette_tip)
                 .on_click({
                     let ui = ui.clone();
                     move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
@@ -375,7 +399,7 @@ fn top_bar(
                     .icon(IconName::PanelRight)
                     .flex_shrink_0()
                     .accessibility_label("Toggle side panel")
-                    .tooltip("Toggle side panel  ⌥⌘0"),
+                    .tooltip(toggle_panel_tip),
                 )
             },
         )
@@ -453,9 +477,17 @@ impl Render for Shell {
             humata2_ui_core::sync_theme(cx);
         }
         let look = Look::of(cx);
+        let terminal_look = self.ui.read(|state| {
+            let terminal_dark = state
+                .settings
+                .preferences
+                .terminal_theme
+                .is_dark(look.is_dark());
+            look.with_terminal_dark(terminal_dark)
+        });
         let lost_focus = self
             .ui
-            .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
+            .read(|state| self.terminals.sync(&self.ui, state, terminal_look, window, cx));
         if lost_focus {
             // The Inbox's terminal went with its item: the list takes the
             // keys back (D781).
@@ -558,10 +590,11 @@ impl Render for Shell {
                 - if panel.is_some() { 1. } else { 0. }
                 - if in_session { strip_width } else { 0. }
         };
-        let (load, can_go_back, title, restore_error) = self.ui.read(|state| {
+        let (load, can_go_back, can_go_forward, title, restore_error) = self.ui.read(|state| {
             (
                 state.load.clone(),
                 !state.trail.is_empty(),
+                !state.forward_trail.is_empty(),
                 pages::title(state),
                 state.restore_error.clone(),
             )
@@ -657,7 +690,9 @@ impl Render for Shell {
             .bg(rgb(look.content))
             .child(if in_session {
                 self.ui
-                    .read(|state| pages::session_header(&ui, state, collapsed, main_width, look))
+                    .read(|state| {
+                        pages::session_header(&ui, state, collapsed, main_width, mac, look)
+                    })
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
@@ -676,8 +711,17 @@ impl Render for Shell {
                     } else if matches!(state.route, Route::Home | Route::Inbox) {
                         crate::lists::toolbar(&ui, state, title, collapsed, look).into_any_element()
                     } else {
-                        top_bar(&ui, title, can_go_back, collapsed, reveal_action.clone(), mac, look)
-                            .into_any_element()
+                        top_bar(
+                            &ui,
+                            title,
+                            can_go_back,
+                            can_go_forward,
+                            collapsed,
+                            reveal_action.clone(),
+                            mac,
+                            look,
+                        )
+                        .into_any_element()
                     }
                 })
             })
@@ -741,6 +785,104 @@ impl Render for Shell {
                 this.send(AppAction::StartNewChannel, cx)
             }))
             .on_action(cx.listener(|this, _: &keys::Back, _, cx| this.send(AppAction::Back, cx)))
+            .on_action(
+                cx.listener(|this, _: &keys::Forward, _, cx| this.send(AppAction::Forward, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &keys::Refresh, _, cx| this.send(AppAction::Refresh, cx)),
+            )
+            .on_action(cx.listener(|this, _: &keys::CloseTab, window, cx| {
+                let target = this.ui.read(|state| {
+                    if !matches!(state.route, Route::Session(_)) {
+                        return None;
+                    }
+                    let view = state.session.view()?;
+                    let group = view.focused_group;
+                    let tab_group = view.groups.get(group)?;
+                    let tab = tab_group.tabs.get(tab_group.selected)?;
+                    Some((group, tab_group.selected, matches!(tab, humata2_session::Tab::Terminal(_))))
+                });
+                match target {
+                    Some((group, index, true)) => this.send(
+                        AppAction::Session(SessionAction::Close(
+                            humata2_session::CloseAction::Ask { group, index },
+                        )),
+                        cx,
+                    ),
+                    Some((group, index, false)) => this.send(
+                        AppAction::Session(SessionAction::CloseTab { group, index }),
+                        cx,
+                    ),
+                    None => window.remove_window(),
+                }
+            }))
+            .on_action(cx.listener(|_, _: &keys::CloseWindow, window, _| {
+                window.remove_window();
+            }))
+            .on_action(cx.listener(|this, _: &keys::PrevTab, _, cx| {
+                if let Some((group, index)) = this.ui.read(|state| {
+                    if !matches!(state.route, Route::Session(_)) {
+                        return None;
+                    }
+                    let view = state.session.view()?;
+                    let group = view.focused_group;
+                    let tabs = &view.groups.get(group)?.tabs;
+                    if tabs.len() <= 1 {
+                        return None;
+                    }
+                    let selected = view.groups[group].selected;
+                    Some((group, (selected + tabs.len() - 1) % tabs.len()))
+                }) {
+                    this.send(
+                        AppAction::Session(SessionAction::SelectGroupTab { group, index }),
+                        cx,
+                    );
+                }
+            }))
+            .on_action(cx.listener(|this, _: &keys::NextTab, _, cx| {
+                if let Some((group, index)) = this.ui.read(|state| {
+                    if !matches!(state.route, Route::Session(_)) {
+                        return None;
+                    }
+                    let view = state.session.view()?;
+                    let group = view.focused_group;
+                    let tabs = &view.groups.get(group)?.tabs;
+                    if tabs.len() <= 1 {
+                        return None;
+                    }
+                    let selected = view.groups[group].selected;
+                    Some((group, (selected + 1) % tabs.len()))
+                }) {
+                    this.send(
+                        AppAction::Session(SessionAction::SelectGroupTab { group, index }),
+                        cx,
+                    );
+                }
+            }))
+            .on_action(cx.listener(|this, _: &keys::Find, window, cx| {
+                let target = this.ui.read(|state| match &state.route {
+                    Route::Channel(_) => Some(true),
+                    Route::Session(_)
+                        if state.panel() == Some(humata2_session::Panel::Files)
+                            && !state.layout.panel.collapsed
+                            && state.full_screen() != Some(FullScreen::Terminal) =>
+                    {
+                        Some(false)
+                    }
+                    _ => None,
+                });
+                match target {
+                    Some(true) => this
+                        .channel_filter
+                        .update(cx, |input, cx| input.focus(window, cx)),
+                    Some(false) => this
+                        .file_filter
+                        .update(cx, |input, cx| input.focus(window, cx)),
+                    None => {}
+                }
+            }))
+            .on_action(cx.listener(|_, _: &keys::FindNext, _, _| {}))
+            .on_action(cx.listener(|_, _: &keys::FindPrev, _, _| {}))
             .on_action(
                 cx.listener(|this, _: &keys::Dismiss, _, cx| this.send(AppAction::Escape, cx)),
             )

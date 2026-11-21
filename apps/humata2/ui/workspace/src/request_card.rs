@@ -295,8 +295,20 @@ impl RenderOnce for ReplyBox {
                 .right(px(10.))
                 .top(px(5.))
                 .text_size(px(13.))
-                .child("↵"),
+                .child("↩"),
         )
+    }
+}
+
+fn format_ago(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches(" ago").trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("now")
+        || trimmed.eq_ignore_ascii_case("just now")
+    {
+        "just now".to_owned()
+    } else {
+        format!("{trimmed} ago")
     }
 }
 
@@ -862,7 +874,17 @@ fn copy_lines(ui: &Rc<Ui>, state: &AppState, request: &Request, copy: &CopyCard,
                 vec![copy.destination_path.clone()],
                 on_this_mac(&copy.to),
             ))
-            .child(labelled(look, "Holds", format!("{} files, {}", copy.files, size_text(copy.bytes)), false))
+            .child(labelled(
+                look,
+                "Holds",
+                format!(
+                    "{} {}, {}",
+                    copy.files,
+                    if copy.files == 1 { "file" } else { "files" },
+                    size_text(copy.bytes)
+                ),
+                false,
+            ))
     });
     col()
         .gap(px(6.))
@@ -1307,7 +1329,7 @@ fn decision_card(
             parts.push(format!("{agent} in {}", s.title));
         }
         parts.extend(channel_name);
-        parts.push(format!("{} ago", request.asked.trim_end_matches(" ago")));
+        parts.push(format_ago(&request.asked));
         parts.join(" · ")
     };
     let top = row()
@@ -1537,8 +1559,14 @@ fn decision_card(
     // You asked why: the agent's reply, or a waiting line before it comes.
     let asked = request.asked_why.as_ref().map(|why| {
         let body = match &why.reply {
-            Some(reply) => format!("{agent}, {} ago: “{reply}”", why.replied.clone().unwrap_or_else(|| why.asked.clone())),
-            None => format!("Waiting for {agent} to answer. Asked {} ago.", why.asked),
+            Some(reply) => format!(
+                "{agent}, {}: “{reply}”",
+                format_ago(why.replied.as_deref().unwrap_or(&why.asked)),
+            ),
+            None => format!(
+                "Waiting for {agent} to answer. Asked {}.",
+                format_ago(&why.asked),
+            ),
         };
         let dim = why.reply.as_ref().map(|_| {
             let name = body.find(':').map_or(0, |end| end + 1);

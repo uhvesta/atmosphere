@@ -21,13 +21,14 @@ mod starting;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::input;
 use gpui_kit::{
-    App, Bounds, KeyBinding, Menu, MenuItem, OsAction, PromptLevel, SystemMenuType,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
+    App, AppContext as _, Bounds, Global, KeyBinding, Menu, MenuItem, OsAction, PromptLevel,
+    SystemMenuType, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size,
 };
 use humata2_app::AppAction;
 use humata2_clients::Clients;
@@ -46,8 +47,6 @@ gpui_kit::actions!(
     [
         /// About Humata.
         About,
-        /// ⌘W: close the active window.
-        CloseWindow,
         /// ⌘Q: quit.
         Quit,
         /// ⌘H: hide the app.
@@ -60,6 +59,8 @@ gpui_kit::actions!(
         Minimize,
         /// Zoom the window.
         Zoom,
+        /// Bring every Humata window to the front.
+        BringAllToFront,
         /// ⌃⌘F: the window full screen, or back.
         ToggleFullScreen
     ]
@@ -248,16 +249,13 @@ fn menus(cx: &mut App) {
             });
         }
     });
-    cx.on_action(|_: &CloseWindow, cx| {
+    cx.on_action(|_: &keys::CloseWindow, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.remove_window());
         }
     });
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.bind_keys([
-        KeyBinding::new("cmd-w", CloseWindow, None),
-        KeyBinding::new("cmd-q", Quit, None),
-    ]);
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -270,6 +268,12 @@ fn menus(cx: &mut App) {
     cx.on_action(|_: &Zoom, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.zoom_window());
+        }
+    });
+    cx.on_action(|_: &BringAllToFront, cx| {
+        cx.activate(true);
+        for window in cx.windows() {
+            let _ = window.update(cx, |_, window, _| window.activate_window());
         }
     });
     cx.on_action(|_: &ToggleFullScreen, cx| {
@@ -300,8 +304,10 @@ fn menus(cx: &mut App) {
         Menu::new("File").items([
             MenuItem::action("New Session", keys::NewSession),
             MenuItem::action("New Channel", keys::NewChannel),
+            MenuItem::action("New Terminal Tab", keys::NewTerminalTab),
             MenuItem::separator(),
-            MenuItem::action("Close Window", CloseWindow),
+            MenuItem::action("Close Tab", keys::CloseTab),
+            MenuItem::action("Close Window", keys::CloseWindow),
         ]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
@@ -311,20 +317,36 @@ fn menus(cx: &mut App) {
             MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
             MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
             MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Find…", keys::Find),
+            MenuItem::action("Find Next", keys::FindNext),
+            MenuItem::action("Find Previous", keys::FindPrev),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette", keys::OpenPalette),
             MenuItem::action("Show or Hide Sidebar", keys::ToggleSidebar),
+            MenuItem::action("Toggle Side Panel", keys::TogglePanel),
+            MenuItem::separator(),
+            MenuItem::action("Zoom In", keys::ZoomIn),
+            MenuItem::action("Zoom Out", keys::ZoomOut),
+            MenuItem::action("Actual Size", keys::ZoomReset),
             MenuItem::separator(),
             MenuItem::action("Home", keys::GoHome),
             MenuItem::action("Inbox", keys::GoInbox),
             MenuItem::action("To-do", keys::GoBoard),
+            MenuItem::action("Hosts", keys::GoHosts),
+            MenuItem::action("Files", keys::GoFiles),
+            MenuItem::separator(),
+            MenuItem::action("Back", keys::Back),
+            MenuItem::action("Forward", keys::Forward),
             MenuItem::separator(),
             MenuItem::action("Enter Full Screen", ToggleFullScreen),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),
+            MenuItem::separator(),
+            MenuItem::action("Bring All to Front", BringAllToFront),
         ]),
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", keys::ShowShortcuts),
@@ -370,7 +392,12 @@ fn run() -> Result<(), StartError> {
         .map_err(|source| StartError::Runtime { source })?;
     let handle = runtime.handle().clone();
     let resources = Resources::new(humata2_ui::Assets);
-    humata2_engine::application(&resources).run(move |cx| {
+    let app = humata2_engine::application(&resources);
+    #[cfg(target_os = "macos")]
+    app.on_reopen(|cx| {
+        reopen_main_window_if_needed(cx);
+    });
+    app.run(move |cx| {
         if let Err(error) = humata2_engine::init(cx, &resources) {
             eprintln!("{error}");
             cx.quit();
@@ -378,12 +405,13 @@ fn run() -> Result<(), StartError> {
         }
         humata2_ui::init(cx);
         menus(cx);
+        let bounds_path = args.data.join("window-bounds.txt");
         let recorder = Recorder::new().saving_to(args.data.join("reports"));
         let storage = Arc::new(FileStorage::new(args.data));
         match &args.backend {
             live::Backend::Fakes => {
                 let (clients, _daemon) = humata2_clients::demo_clients(Arc::new(SystemClock::new()), storage);
-                open_main(cx, &handle, clients, recorder, None, false);
+                open_main(cx, &handle, clients, recorder, bounds_path, None, false);
             }
             live::Backend::Live { socket } => {
                 // Installing the tools and waiting for the daemon can take
@@ -420,7 +448,7 @@ fn run() -> Result<(), StartError> {
                         if let Some((installed, _)) = installed {
                             tell_about_install(installed);
                         }
-                        open_main(cx, &handle, clients, recorder, old, true);
+                        open_main(cx, &handle, clients, recorder, bounds_path, old, true);
                     },
                 );
             }
@@ -430,14 +458,147 @@ fn run() -> Result<(), StartError> {
     Ok(())
 }
 
-/// Opens the main window on `clients`, wires `humata report` to it and quits
-/// the app when a window closes. On failure it says why and quits. With an
-/// `old` local daemon the Inbox holds the app's own Migrate item for it.
+/// Held in GPUI's global state so clicking the macOS Dock icon (or clicking a
+/// notification) after closing the main window can reopen it on the live `Ui`.
+struct MainWindowReopener {
+    ui: Rc<Ui>,
+    bounds_path: PathBuf,
+}
+
+impl Global for MainWindowReopener {}
+
+const MIN_WINDOW_WIDTH: f32 = 640.;
+const MIN_WINDOW_HEIGHT: f32 = 480.;
+
+fn encode_window_bounds(bounds: WindowBounds) -> String {
+    let (mode, rect) = match bounds {
+        WindowBounds::Windowed(rect) => ("windowed", rect),
+        WindowBounds::Maximized(rect) => ("maximized", rect),
+        WindowBounds::Fullscreen(rect) => ("fullscreen", rect),
+    };
+    format!(
+        "{mode} {} {} {} {}\n",
+        f32::from(rect.origin.x),
+        f32::from(rect.origin.y),
+        f32::from(rect.size.width),
+        f32::from(rect.size.height),
+    )
+}
+
+fn decode_window_bounds(text: &str) -> Option<WindowBounds> {
+    let mut parts = text.split_whitespace();
+    let mode = parts.next()?;
+    let x: f32 = parts.next()?.parse().ok()?;
+    let y: f32 = parts.next()?.parse().ok()?;
+    let width: f32 = parts.next()?.parse().ok()?;
+    let height: f32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !x.is_finite()
+        || !y.is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+        || width < MIN_WINDOW_WIDTH
+        || height < MIN_WINDOW_HEIGHT
+    {
+        return None;
+    }
+    let rect = Bounds {
+        origin: point(px(x), px(y)),
+        size: size(px(width), px(height)),
+    };
+    match mode {
+        "windowed" => Some(WindowBounds::Windowed(rect)),
+        "maximized" => Some(WindowBounds::Maximized(rect)),
+        "fullscreen" => Some(WindowBounds::Fullscreen(rect)),
+        _ => None,
+    }
+}
+
+fn save_window_bounds(path: &Path, bounds: WindowBounds) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, encode_window_bounds(bounds));
+}
+
+fn restore_window_bounds(path: &Path, cx: &App) -> WindowBounds {
+    let default_size = size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1));
+    let Some(saved) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| decode_window_bounds(&text))
+    else {
+        return WindowBounds::Windowed(Bounds::centered(None, default_size, cx));
+    };
+    let rect = saved.get_bounds();
+    let displays = cx.displays();
+    let on_screen = displays.is_empty() || displays.iter().any(|d| rect.intersects(&d.bounds()));
+    if on_screen {
+        saved
+    } else {
+        let centered = Bounds::centered(None, rect.size, cx);
+        match saved {
+            WindowBounds::Windowed(_) => WindowBounds::Windowed(centered),
+            WindowBounds::Maximized(_) => WindowBounds::Maximized(centered),
+            WindowBounds::Fullscreen(_) => WindowBounds::Fullscreen(centered),
+        }
+    }
+}
+
+fn observe_and_persist_bounds(
+    window: gpui_kit::AnyWindowHandle,
+    view: &gpui_kit::Entity<humata2_ui::Shell>,
+    bounds_path: PathBuf,
+    cx: &mut App,
+) {
+    let _ = window.update(cx, |_, window, cx| {
+        view.update(cx, |_, cx| {
+            cx.observe_window_bounds(window, move |_, window, _| {
+                save_window_bounds(&bounds_path, window.window_bounds());
+            })
+            .detach();
+        });
+    });
+}
+
+fn reopen_main_window_if_needed(cx: &mut App) {
+    if let Some(window) = cx.windows().into_iter().next() {
+        cx.activate(true);
+        let _ = window.update(cx, |_, window, _| window.activate_window());
+        return;
+    }
+    let Some((ui, bounds_path)) = cx
+        .try_global::<MainWindowReopener>()
+        .map(|reopener| (reopener.ui.clone(), reopener.bounds_path.clone()))
+    else {
+        cx.activate(true);
+        return;
+    };
+    let bounds = restore_window_bounds(&bounds_path, cx);
+    let options = main_window_options(bounds);
+    let ui_for_view = ui.clone();
+    match gpui_kit::open_window(options, cx, move |window, cx| {
+        cx.new(|cx| humata2_ui::Shell::new(ui_for_view, window, cx))
+    }) {
+        Ok((window, view)) => {
+            observe_and_persist_bounds(window, &view, bounds_path, cx);
+            cx.activate(true);
+        }
+        Err(error) => {
+            eprintln!("Humata couldn't reopen its window: {error}.");
+        }
+    }
+}
+
+/// Opens the main window on `clients`, wires `humata report` to it and keeps
+/// the app alive in the Dock on macOS (quitting on close elsewhere). On failure
+/// it says why and quits. With an `old` local daemon the Inbox holds the app's
+/// own Migrate item for it.
 fn open_main(
     cx: &mut App,
     handle: &tokio::runtime::Handle,
     mut clients: Clients,
     recorder: Recorder,
+    bounds_path: PathBuf,
     old: Option<OldLocalDaemon>,
     auto_migrate_local: bool,
 ) {
@@ -449,28 +610,37 @@ fn open_main(
         let ui = ui.clone();
         cx.spawn(async move |cx| {
             while let Some(target) = notification_clicks.recv().await {
-                cx.update(|cx| ui.send(AppAction::NotificationClicked(target), cx));
+                cx.update(|cx| {
+                    reopen_main_window_if_needed(cx);
+                    ui.send(AppAction::NotificationClicked(target), cx);
+                });
             }
         })
         .detach();
     }
     #[cfg(target_os = "macos")]
     humata2_ui::chrome::set_native_traffic_lights(true);
-    let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
+    let bounds = restore_window_bounds(&bounds_path, cx);
     let options = main_window_options(bounds);
-    let window = match humata2_ui::open(cx, &ui, options) {
-        Ok((window, _)) => window,
+    let (window, view) = match humata2_ui::open(cx, &ui, options) {
+        Ok(opened) => opened,
         Err(error) => {
             eprintln!("Humata couldn't open its window: {error}. Check the system's display settings and try again.");
             cx.quit();
             return;
         }
     };
+    observe_and_persist_bounds(window, &view, bounds_path.clone(), cx);
+    cx.set_global(MainWindowReopener {
+        ui: ui.clone(),
+        bounds_path,
+    });
     // `humata report` reaches the running app here. Another app already
     // answering is not fatal: this one just can't take its commands.
     if let Err(error) = humata2_ui::report_view::serve_default(cx, &ui, window, handle) {
         eprintln!("{error}");
     }
+    #[cfg(not(target_os = "macos"))]
     cx.on_window_closed(|cx, _| cx.quit()).detach();
     if auto_migrate_local {
         ui.send(AppAction::Inbox(InboxAction::EnableAutoMigrateLocal), cx);
@@ -486,19 +656,19 @@ fn open_main(
 /// couldn't be resized, zoomed or made full screen. A transparent titlebar
 /// with no title keeps the look a missing one had: content runs under it and
 /// the traffic lights sit where they always did.
-fn main_window_options(bounds: Bounds<gpui_kit::Pixels>) -> WindowOptions {
+fn main_window_options(bounds: WindowBounds) -> WindowOptions {
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(bounds),
         titlebar: Some(gpui_kit::TitlebarOptions {
             title: None,
             appears_transparent: true,
             // Align native macOS traffic lights with the 52 pt header's left slot.
-            traffic_light_position: Some(gpui_kit::point(px(20.), px(18.))),
+            traffic_light_position: Some(point(px(20.), px(18.))),
         }),
         window_background: WindowBackgroundAppearance::Blurred,
         use_display_p3: true,
         app_owns_titlebar_drag: true,
-        window_min_size: Some(size(px(640.), px(480.))),
+        window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
         ..WindowOptions::default()
     }
 }
@@ -529,16 +699,19 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod window_tests {
-    use gpui_kit::{Bounds, point, px, size};
+    use gpui_kit::{Bounds, WindowBounds, point, px, size};
 
-    use super::main_window_options;
+    use super::{decode_window_bounds, encode_window_bounds, main_window_options};
 
     /// On macOS GPUI gives a window without titlebar options neither the
     /// Resizable nor the Miniaturizable style, so it can't be resized, zoomed
     /// or made full screen.
     #[test]
     fn the_main_window_can_be_resized_zoomed_and_made_full_screen() {
-        let options = main_window_options(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(800.)) });
+        let options = main_window_options(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(1200.), px(800.)),
+        }));
         assert!(options.is_resizable && options.is_minimizable);
         assert_eq!(options.window_background, gpui_kit::WindowBackgroundAppearance::Blurred);
         assert!(options.use_display_p3);
@@ -550,6 +723,28 @@ mod window_tests {
         assert!(titlebar.appears_transparent);
         assert!(titlebar.title.is_none());
         assert_eq!(titlebar.traffic_light_position, Some(point(px(20.), px(18.))));
+    }
+
+    #[test]
+    fn window_bounds_round_trip_all_modes_and_reject_invalid_values() {
+        let rect = Bounds {
+            origin: point(px(120.), px(80.)),
+            size: size(px(1440.), px(900.)),
+        };
+        for bounds in [
+            WindowBounds::Windowed(rect),
+            WindowBounds::Maximized(rect),
+            WindowBounds::Fullscreen(rect),
+        ] {
+            let encoded = encode_window_bounds(bounds);
+            assert_eq!(decode_window_bounds(&encoded), Some(bounds));
+        }
+
+        assert_eq!(decode_window_bounds(""), None);
+        assert_eq!(decode_window_bounds("unknown 0 0 1000 800"), None);
+        assert_eq!(decode_window_bounds("windowed 0 0 300 200"), None);
+        assert_eq!(decode_window_bounds("windowed NaN 0 1000 800"), None);
+        assert_eq!(decode_window_bounds("windowed 0 0 1000 800 extra"), None);
     }
 }
 

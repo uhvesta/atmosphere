@@ -21,7 +21,7 @@ mod links;
 pub use links::plain_link;
 
 pub use cell::{Cell, CellWidth, Color, Row, Underline};
-pub use colors::{Colors, Rgb, default_palette};
+pub use colors::{Colors, Rgb, default_palette, terminal_colors};
 #[cfg(feature = "fake")]
 pub use fake::FakeGrid;
 pub use input::{

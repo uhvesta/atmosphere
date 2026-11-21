@@ -36,6 +36,9 @@ Splitter "Resize the sidebar"
   Tab "System" selected
   Tab "Light"
   Tab "Dark"
+  Tab "Match app" selected
+  Tab "Dark"
+  Tab "Light"
   Button "Terminal font: Menlo 12"
   Button "On" selected
   Button "Desk sessions in sidebar: 5"

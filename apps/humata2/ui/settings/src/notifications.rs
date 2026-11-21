@@ -17,11 +17,16 @@ use crate::{
     theme::{GREEN, GREY, Look, ORANGE},
     widgets::{col, row},
 };
+use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_notify::{NotifyConfig, PermissionStatus};
 use humata2_settings::{Row, SettingsAction as A};
 use std::rc::Rc;
+
+/// macOS System Settings › Notifications deep-link URL.
+pub const SYSTEM_SETTINGS_NOTIFICATIONS_URL: &str =
+    "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 
 /// Snapshot of notification preferences and OS permission state used to render
 /// `Settings › Notifications`.
@@ -173,6 +178,18 @@ pub fn permission_status_row(
                 request_permission_action,
                 look,
             ))
+        })
+        .when(permission == PermissionStatus::Denied, |r| {
+            r.child(
+                Button::new("settings-open-notification-system-settings")
+                    .label("Open System Settings")
+                    .small()
+                    .h(px(24.))
+                    .px(px(10.))
+                    .bg(rgb(look.fill))
+                    .text_color(rgb(look.text))
+                    .on_click(|_, _, cx| cx.open_url(SYSTEM_SETTINGS_NOTIFICATIONS_URL)),
+            )
         })
         .into_any_element();
 
@@ -380,6 +397,10 @@ mod tests {
         assert_eq!(
             toasts_description(),
             "Show an in-app toast for 8 seconds (pauses on hover, never replaces Undo) when Humata is frontmost or macOS notifications are off."
+        );
+        assert_eq!(
+            super::SYSTEM_SETTINGS_NOTIFICATIONS_URL,
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
         );
     }
 }

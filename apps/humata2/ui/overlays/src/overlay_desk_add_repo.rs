@@ -84,6 +84,7 @@ impl Overlays {
                                 query: Input::new(&self.desk.repo)
                                     .small()
                                     .min_h(px(26.))
+                                    .cleanable(true)
                                     .aria_label("Repo to add")
                                     .into_any_element(),
                                 owner: Input::new(&self.owner)

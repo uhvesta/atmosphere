@@ -35,8 +35,6 @@ Splitter "Resize the sidebar"
 Button "Add a machine…"
 Dialog "Add machine" focused
   Log "Login terminal"
-    #terminal-pane
-      #terminal focused
   Status "Reconnecting will need you"
   Button "Cancel"
   Button "Done, I'm logged in"

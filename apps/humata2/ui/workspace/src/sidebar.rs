@@ -13,8 +13,11 @@ use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
-use humata2_app::{AppAction, AppState, PaneAction, Route};
-use humata2_clients::model::{MachineKind, SessionId, Status};
+use humata2_app::{AppAction, AppState, NewSessionAction, PaneAction, Route};
+use humata2_clients::marks::Thing;
+use humata2_clients::model::{ChannelId, ForkKind, MachineId, MachineKind, SessionId, Status};
+use humata2_find::PinnedAction;
+use humata2_session::SessionAction;
 use humata2_sidebar::{Move, Row, RowKey, RowKind, SidebarAction};
 use humata2_ui_machines::machine_page::select_mode::{
     self, MassDeleteAction, Snapshot, Surface, Tick,
@@ -91,10 +94,18 @@ fn clamp_menu_position(
     (left, top)
 }
 
-/// Right-click context menu on a sidebar session row.
+/// Which sidebar row a right-click context menu belongs to.
+#[derive(Clone)]
+enum RowMenuKind {
+    Session(SessionId),
+    Channel { id: ChannelId, open: bool },
+    Host { id: MachineId, name: String },
+}
+
+/// Right-click context menu on a sidebar row (session, channel, or host).
 #[derive(Clone)]
 struct RowMenu {
-    session: SessionId,
+    kind: RowMenuKind,
     y: Pixels,
 }
 
@@ -214,6 +225,7 @@ fn draw_row(
     let mut body = row().gap(px(7.)).flex_1().min_w_0();
     let mut dimmed = false;
     let mut channel_select: Option<(bool, Vec<MassDeleteAction>)> = None;
+    let mut channel_right_click: Option<(ChannelId, bool)> = None;
     let mut barred_session = false;
     let indent;
     match &entry.kind {
@@ -227,6 +239,9 @@ fn draw_row(
                     _ => false,
                 })
             });
+            if let RowKey::Channel(id) = &key {
+                channel_right_click = Some((id.clone(), open));
+            }
             // An unread channel is bold, its folded count too, as in the design.
             let weight = if ui.read(|s| {
                 s.workspace.sessions.iter().any(|x| {
@@ -508,14 +523,17 @@ fn draw_row(
             window.focus(&focus, cx);
             ui.send(AppAction::Sidebar(SidebarAction::Activate(key.clone())), cx)
         });
+    let right_click_kind = right_click_id
+        .map(RowMenuKind::Session)
+        .or_else(|| channel_right_click.map(|(id, open)| RowMenuKind::Channel { id, open }));
     if !selecting
-        && let Some(id) = right_click_id
+        && let Some(kind) = right_click_kind
     {
         item = item.on_mouse_down(MouseButton::Right, move |event, _, cx| {
             cx.stop_propagation();
             menu.update(cx, |m, cx| {
                 *m = Some(RowMenu {
-                    session: id.clone(),
+                    kind: kind.clone(),
                     y: event.position.y,
                 });
                 cx.notify();
@@ -988,6 +1006,7 @@ impl Render for Sidebar {
                     }),
             )
             .child({
+                let mac = cx.platform_info().is_mac();
                 let is_dark = look.content != 0xffffff;
                 let search_bg = if is_dark { rgba(0xffffff12) } else { rgba(0x0000000e) };
                 let search_hover = if is_dark { rgba(0xffffff1c) } else { rgba(0x00000016) };
@@ -1011,7 +1030,7 @@ impl Render for Sidebar {
                     .text_color(rgb(look.tertiary))
                     .child(chrome::icon(IconName::Search, look.tertiary, 12.))
                     .child(div().flex_1().child("Search"))
-                    .child(div().text_size(px(11.)).child("⌘K"))
+                    .child(div().text_size(px(11.)).child(keys::label("⌘K", mac)))
                     .on_click({
                         let ui = ui.clone();
                         move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
@@ -1081,6 +1100,9 @@ impl Render for Sidebar {
             .child(chrome::section(look, "Hosts"))
             .children(machines.into_iter().enumerate().map(|(index, m)| {
                 let ui = ui.clone();
+                let host_menu = row_menu_handle.clone();
+                let host_id = m.id.clone();
+                let host_name = m.name.clone();
                 // Its stop reached it: a stop still on its way keeps the offline dot.
                 let halted = m.stop.as_ref().is_some_and(|stop| stop.delivered);
                 let selected = !selecting
@@ -1171,6 +1193,21 @@ impl Render for Sidebar {
                             ui.send(AppAction::Switch(Route::Machine(m.id.clone())), cx);
                         }
                     })
+                    .when(!selecting, |row_el| {
+                        row_el.on_mouse_down(MouseButton::Right, move |event, _, cx| {
+                            cx.stop_propagation();
+                            host_menu.update(cx, |slot, cx| {
+                                *slot = Some(RowMenu {
+                                    kind: RowMenuKind::Host {
+                                        id: host_id.clone(),
+                                        name: host_name.clone(),
+                                    },
+                                    y: event.position.y,
+                                });
+                                cx.notify();
+                            });
+                        })
+                    })
                     .test_support()
             }))
             // The Hosts page's header offers the same action, so the
@@ -1200,16 +1237,18 @@ impl Render for Sidebar {
             .when_some(open_menu, |bar, menu| {
                 let close_left = row_menu_handle.clone();
                 let close_right = row_menu_handle.clone();
-                let close_pick = row_menu_handle.clone();
-                let ui = ui.clone();
-                let session = menu.session;
                 let fill = Hsla::from(rgb(look.fill));
+                let del_fill = Hsla::from(rgb(look.del));
                 let viewport = window.viewport_size();
+                let menu_h = match &menu.kind {
+                    RowMenuKind::Session(_) | RowMenuKind::Channel { .. } => 148.0,
+                    RowMenuKind::Host { .. } => 68.0,
+                };
                 let (menu_left, menu_top) = clamp_menu_position(
                     10.0,
                     f32::from(menu.y),
-                    176.0,
-                    40.0,
+                    184.0,
+                    menu_h,
                     f32::from(viewport.width),
                     f32::from(viewport.height),
                 );
@@ -1235,48 +1274,246 @@ impl Render for Sidebar {
                             cx.notify();
                         });
                     });
-                let card = crate::action_menu::card("sidebar-row-menu", 176., look)
-                    .role(Role::Menu)
-                    .aria_label("Session actions")
-                    .left(px(menu_left))
-                    .top(px(menu_top))
-                    .occlude()
-                    .child(
-                        Button::new("sidebar-row-select-sessions")
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .foreground(rgb(look.text).into())
-                                    .hover(fill)
-                                    .active(fill),
-                            )
-                            .accessibility_label("Select sessions\u{2026}")
-                            .small()
-                            .w_full()
-                            .h(px(26.))
-                            .px(px(8.))
-                            .rounded(px(5.))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_size(px(12.5))
-                                    .child("Select sessions\u{2026}"),
-                            )
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                close_pick.update(cx, |m, cx| {
-                                    *m = None;
-                                    cx.notify();
-                                });
-                                ui.send(
-                                    select_mode::act(MassDeleteAction::Enter {
-                                        surface: Surface::Sidebar,
-                                        first: session.clone(),
-                                    }),
-                                    cx,
-                                );
-                            }),
-                    )
-                    .test_support();
+                let menu_button = |id: &'static str,
+                                   label: &'static str,
+                                   destructive: bool,
+                                   on_pick: Box<dyn Fn(&mut App)>| {
+                    let close = row_menu_handle.clone();
+                    let fg: Hsla = if destructive {
+                        rgb(theme::RED_STATUS).into()
+                    } else {
+                        rgb(look.text).into()
+                    };
+                    let hover_bg = if destructive { del_fill } else { fill };
+                    Button::new(id)
+                        .custom(
+                            ButtonCustomVariant::new(cx)
+                                .foreground(fg)
+                                .hover(hover_bg)
+                                .active(hover_bg),
+                        )
+                        .accessibility_label(label)
+                        .small()
+                        .w_full()
+                        .h(px(26.))
+                        .px(px(8.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .child(div().w_full().text_size(px(12.5)).child(label))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            close.update(cx, |m, cx| {
+                                *m = None;
+                                cx.notify();
+                            });
+                            on_pick(cx);
+                        })
+                };
+                let (aria, card) = match menu.kind {
+                    RowMenuKind::Session(session) => {
+                        let thing = Thing::Session(session.clone());
+                        let is_pinned = ui.read(|s| {
+                            s.pinned.list.items.iter().any(|p| p.thing == thing)
+                        });
+                        let ui_pin = ui.clone();
+                        let thing_pin = thing.clone();
+                        let ui_fork = ui.clone();
+                        let session_fork = session.clone();
+                        let ui_move = ui.clone();
+                        let session_move = session.clone();
+                        let ui_select = ui.clone();
+                        let card = crate::action_menu::card("sidebar-row-menu", 184., look)
+                            .role(Role::Menu)
+                            .aria_label("Session actions")
+                            .left(px(menu_left))
+                            .top(px(menu_top))
+                            .occlude()
+                            .child(menu_button(
+                                "sidebar-row-pin",
+                                if is_pinned { "Unpin" } else { "Pin" },
+                                false,
+                                Box::new(move |cx| {
+                                    ui_pin.send(
+                                        AppAction::Pinned(PinnedAction::Toggle {
+                                            thing: thing_pin.clone(),
+                                            pin: !is_pinned,
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(menu_button(
+                                "sidebar-row-fork",
+                                "Fork",
+                                false,
+                                Box::new(move |cx| {
+                                    ui_fork.send(
+                                        AppAction::Switch(Route::Session(session_fork.clone())),
+                                        cx,
+                                    );
+                                    ui_fork.send(
+                                        AppAction::Session(SessionAction::StartFork(
+                                            ForkKind::Worktree,
+                                        )),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(menu_button(
+                                "sidebar-row-move",
+                                "Move to machine\u{2026}",
+                                false,
+                                Box::new(move |cx| {
+                                    ui_move.send(
+                                        AppAction::Switch(Route::Session(session_move.clone())),
+                                        cx,
+                                    );
+                                    ui_move.send(
+                                        AppAction::Session(SessionAction::StartMove),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(crate::action_menu::separator(look))
+                            .child(menu_button(
+                                "sidebar-row-select-sessions",
+                                "Select sessions\u{2026}",
+                                false,
+                                Box::new(move |cx| {
+                                    ui_select.send(
+                                        select_mode::act(MassDeleteAction::Enter {
+                                            surface: Surface::Sidebar,
+                                            first: session.clone(),
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .test_support();
+                        ("Session actions", card)
+                    }
+                    RowMenuKind::Channel { id, open } => {
+                        let thing = Thing::Channel(id.clone());
+                        let is_pinned = ui.read(|s| {
+                            s.pinned.list.items.iter().any(|p| p.thing == thing)
+                        });
+                        let ui_new = ui.clone();
+                        let id_new = id.clone();
+                        let ui_pin = ui.clone();
+                        let thing_pin = thing.clone();
+                        let ui_fold = ui.clone();
+                        let id_fold = id.clone();
+                        let ui_del = ui.clone();
+                        let id_del = id.clone();
+                        let card = crate::action_menu::card("sidebar-row-menu", 184., look)
+                            .role(Role::Menu)
+                            .aria_label("Channel actions")
+                            .left(px(menu_left))
+                            .top(px(menu_top))
+                            .occlude()
+                            .child(menu_button(
+                                "sidebar-channel-new-session",
+                                "New session",
+                                false,
+                                Box::new(move |cx| {
+                                    ui_new.send(AppAction::StartNewSession, cx);
+                                    ui_new.send(
+                                        AppAction::NewSession(NewSessionAction::Channel(
+                                            id_new.clone(),
+                                        )),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(menu_button(
+                                "sidebar-channel-pin",
+                                if is_pinned { "Unpin" } else { "Pin" },
+                                false,
+                                Box::new(move |cx| {
+                                    ui_pin.send(
+                                        AppAction::Pinned(PinnedAction::Toggle {
+                                            thing: thing_pin.clone(),
+                                            pin: !is_pinned,
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(menu_button(
+                                "sidebar-channel-fold",
+                                if open { "Fold" } else { "Unfold" },
+                                false,
+                                Box::new(move |cx| {
+                                    ui_fold.send(
+                                        AppAction::Sidebar(SidebarAction::Toggle(
+                                            RowKey::Channel(id_fold.clone()),
+                                        )),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(crate::action_menu::separator(look))
+                            .child(menu_button(
+                                "sidebar-channel-delete",
+                                "Delete channel\u{2026}",
+                                true,
+                                Box::new(move |cx| {
+                                    ui_del.send(
+                                        AppAction::Switch(Route::Channel(id_del.clone())),
+                                        cx,
+                                    );
+                                    ui_del.send(
+                                        AppAction::Channel(
+                                            humata2_app::channel::Action::StartDelete,
+                                        ),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .test_support();
+                        ("Channel actions", card)
+                    }
+                    RowMenuKind::Host { id, name } => {
+                        let ui_open = ui.clone();
+                        let ui_copy = ui.clone();
+                        let card = crate::action_menu::card("sidebar-row-menu", 184., look)
+                            .role(Role::Menu)
+                            .aria_label("Host actions")
+                            .left(px(menu_left))
+                            .top(px(menu_top))
+                            .occlude()
+                            .child(menu_button(
+                                "sidebar-host-open",
+                                "Open host",
+                                false,
+                                Box::new(move |cx| {
+                                    ui_open.send(
+                                        AppAction::Switch(Route::Machine(id.clone())),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(menu_button(
+                                "sidebar-host-copy-name",
+                                "Copy host name",
+                                false,
+                                Box::new(move |cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                                    ui_copy.send(
+                                        AppAction::Session(SessionAction::Delegate(
+                                            humata2_session::Delegate::Toast(
+                                                "Copied host name".to_owned(),
+                                            ),
+                                        )),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .test_support();
+                        ("Host actions", card)
+                    }
+                };
+                let _ = aria;
                 bar.child(deferred(scrim)).child(deferred(card))
             })
             .into_any_element()

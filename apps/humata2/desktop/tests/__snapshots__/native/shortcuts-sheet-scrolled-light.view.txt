@@ -42,7 +42,7 @@ Dialog "Keyboard shortcuts" focused
     ListItem "Move focus to the sidebar: ⌘L"
     ListItem "Move in the sidebar: ↑ ↓ Home End"
     ListItem "Fold, unfold, parent, child: ← →"
-    ListItem "Open the sidebar row; send a message: Enter"
+    ListItem "Open the sidebar row; send a message: ↩"
     ListItem "Start or stop recording a bug report: ⇧⌘R"
     ListItem "Take a bug report snapshot: ⇧⌘S"
     ListItem "Next, previous layer of a stack: ⌥⌘] ⌥⌘["

@@ -94,11 +94,16 @@ impl Inputs {
         ));
         subscriptions.push(cx.subscribe(
             &context,
-            |this: &mut Overlays, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
+            |this: &mut Overlays, input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
-                    this.ui.send(AppAction::PrDialog(DialogAction::SetContext(text)), cx);
+                    this.ui
+                        .send(AppAction::PrDialog(DialogAction::SetContext(text)), cx);
                 }
+                InputEvent::PressEnter { secondary: true, .. } => {
+                    this.ui.send(AppAction::PrDialog(DialogAction::Start), cx);
+                }
+                _ => {}
             },
         ));
         Self {
@@ -896,7 +901,11 @@ fn facts(card: impl ParentElement + IntoElement, info: &PullRequestInfo, look: L
             row()
                 .gap(px(8.))
                 .text_size(px(11.5))
-                .child(div().text_color(rgb(look.secondary)).child(format!("{} files", info.files)))
+                .child(div().text_color(rgb(look.secondary)).child(format!(
+                    "{} {}",
+                    info.files,
+                    if info.files == 1 { "file" } else { "files" }
+                )))
                 .child(div().text_color(rgb(theme::GREEN)).child(format!("+{}", info.added)))
                 .child(div().text_color(rgb(theme::RED_STATUS)).child(format!("\u{2212}{}", info.removed))),
         );

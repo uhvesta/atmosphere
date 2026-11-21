@@ -130,6 +130,23 @@ impl Look {
         self.dark
     }
 
+    /// Returns a copy of this palette with terminal surface tokens (`term`,
+    /// `term_text`, `term_dim`) set for `dark` mode, keeping `is_dark()` and
+    /// all app-chrome, editor, and diff tokens untouched.
+    #[must_use]
+    pub const fn with_terminal_dark(mut self, dark: bool) -> Self {
+        if dark {
+            self.term = 0x1a1a1b;
+            self.term_text = 0xdcdcde;
+            self.term_dim = 0x7c7c82;
+        } else {
+            self.term = 0xffffff;
+            self.term_text = 0x1d1d1f;
+            self.term_dim = 0x8a8a8f;
+        }
+        self
+    }
+
     /// A translucent Retina hairline color for pane dividers, toolbar borders,
     /// and card/row separators.
     #[must_use]
@@ -337,5 +354,24 @@ mod tests {
     #[test]
     fn tabular_nums_enables_tnum_feature() {
         assert_eq!(tabular_nums().tag_value_list(), &[("tnum".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn with_terminal_dark_splits_terminal_tokens_from_app_chrome() {
+        let light_app = sample(false);
+        let dark_term = light_app.with_terminal_dark(true);
+        assert!(!dark_term.is_dark());
+        assert_eq!(dark_term.content, light_app.content);
+        assert_eq!(dark_term.term, 0x1a1a1b);
+        assert_eq!(dark_term.term_text, 0xdcdcde);
+        assert_eq!(dark_term.term_dim, 0x7c7c82);
+
+        let dark_app = sample(true);
+        let light_term = dark_app.with_terminal_dark(false);
+        assert!(light_term.is_dark());
+        assert_eq!(light_term.content, dark_app.content);
+        assert_eq!(light_term.term, 0xffffff);
+        assert_eq!(light_term.term_text, 0x1d1d1f);
+        assert_eq!(light_term.term_dim, 0x8a8a8f);
     }
 }

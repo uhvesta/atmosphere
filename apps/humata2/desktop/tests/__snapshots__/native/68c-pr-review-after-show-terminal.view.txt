@@ -41,7 +41,7 @@ Complementary "Diff"
     #review-pr-line
       text "PR #482 against main · 2 repos"
   #github-feedback-checked-rail
-    text "Checked 2m ago"
+    text "Checked just now"
     text "·"
     Button
       text "Refresh"
@@ -128,8 +128,8 @@ Tab "claude" selected
 Tab "zsh"
   Button "Close zsh"
 Button "New terminal"
-Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭──────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰──────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭──────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰──────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   #terminal-replica
     #terminal-pane
       #terminal focused

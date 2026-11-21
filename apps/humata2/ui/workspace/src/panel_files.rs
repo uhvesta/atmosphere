@@ -932,6 +932,7 @@ pub fn files(
                 .p(px(10.))
                 .child(
                     Input::new(&input)
+                        .cleanable(true)
                         .aria_label("Filter files")
                         .small()
                         // `h` only applies to multi-line inputs in the kit.

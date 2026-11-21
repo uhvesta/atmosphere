@@ -52,10 +52,20 @@ impl Default for Theme {
 }
 
 impl Theme {
-    pub(crate) fn style(&self) -> Style {
+    pub(crate) fn style(&self, light_bg: bool) -> Style {
+        let selection_tint = (self.selection_background.is_none()
+            && self.selection_foreground.is_none())
+        .then(|| {
+            if light_bg {
+                (Rgb::hex(0x0a6cff), 0.22)
+            } else {
+                (Rgb::hex(0x3b8cff), 0.32)
+            }
+        });
         Style {
             selection_background: self.selection_background,
             selection_foreground: self.selection_foreground,
+            selection_tint,
             bold_is_bright: self.bold_is_bright,
             faint_opacity: self.faint_opacity,
         }

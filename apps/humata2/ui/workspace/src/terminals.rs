@@ -7,7 +7,7 @@
 //! gets one more replica of that tab, apart from the session's own: it
 //! never sizes the tab and never moves the session's focus (D781).
 use crate::{bridge::Ui, inbox_terminal::InboxTerminal, theme::Look};
-use ghostty_vt::{Colors, Rgb};
+use ghostty_vt::Colors;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route, layout::FullScreen};
@@ -162,6 +162,7 @@ struct InboxEntry {
 
 /// A terminal belongs to its session/tab, regardless of which group displays it.
 pub struct Terminals {
+    ui: Rc<Ui>,
     entries: HashMap<Key, Entry>,
     /// The Inbox's open item's screen, while it is a question on one.
     inbox: Option<InboxEntry>,
@@ -186,6 +187,66 @@ fn toast(message: String) -> AppAction {
     )))
 }
 
+/// Pastes file paths (from clipboard or Finder drag-and-drop) into a terminal
+/// replica, uploading them to the session's remote machine first when needed.
+fn paste_files(
+    ui: &Rc<Ui>,
+    session: SessionId,
+    replica: Entity<TerminalReplica>,
+    paths: Vec<std::path::PathBuf>,
+    cx: &mut App,
+) {
+    // None: the session is on this Mac. Some(None): it is gone.
+    let elsewhere = ui.read(|state| {
+        (!on_this_mac(state, &session)).then(|| {
+            state
+                .workspace
+                .session(&session)
+                .map(|found| found.machine.clone())
+        })
+    });
+    if let Some(machine) = elsewhere {
+        // The paths don't exist on that machine: the files go
+        // to the session's pastes there first (D335).
+        let Some(machine) = machine else {
+            return;
+        };
+        let ui = ui.clone();
+        cx.spawn(async move |cx| {
+            let pasted = ui
+                .clients()
+                .file_manager
+                .paste_files(paths, &machine, &session)
+                .await;
+            cx.update(|cx| match pasted {
+                Ok(there) => {
+                    let words: Vec<_> = there.iter().map(|path| shell_word(path)).collect();
+                    paste_into(&replica, words.join(" "), cx);
+                }
+                Err(error) => ui.send(
+                    toast(format!("The files could not be pasted: {error}")),
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    } else if let Some(words) = paths
+        .iter()
+        .map(|path| path.to_str().map(shell_word))
+        .collect::<Option<Vec<_>>>()
+    {
+        paste_into(&replica, words.join(" "), cx);
+    } else {
+        ui.send(
+            toast(
+                "A pasted file's name isn't valid UTF-8, so its path can't be typed. Rename the file, then paste it again."
+                    .into(),
+            ),
+            cx,
+        );
+    }
+}
+
 fn info(key: &Key, generation: u64) -> SessionInfo {
     let title = format!("{} {}", key.0, key.1);
     SessionInfo {
@@ -204,8 +265,9 @@ fn info(key: &Key, generation: u64) -> SessionInfo {
 }
 
 impl Terminals {
-    pub fn new(_: &Rc<Ui>, _: &mut App) -> Self {
+    pub fn new(ui: &Rc<Ui>, _: &mut App) -> Self {
         Self {
+            ui: ui.clone(),
             entries: HashMap::new(),
             inbox: None,
             errors: HashMap::new(),
@@ -231,6 +293,8 @@ impl Terminals {
         key: Key,
         ui: &Rc<Ui>,
         look: Look,
+        term_dark: bool,
+        font_family: &str,
         font: u8,
         free_hidden: bool,
         inbox: bool,
@@ -252,11 +316,11 @@ impl Terminals {
         });
         let config = ReplicaConfig {
             session: session.clone(),
-            theme: font_theme(font),
+            theme: font_theme(font_family, font),
             memory_saver: memory_saver(free_hidden),
             shortcuts: ShortcutPolicy::default(),
             fit: if inbox { FitPolicy::Never } else { FIT },
-            default_colors: Some(colors(look)),
+            default_colors: Some(colors(term_dark)),
         };
         let replica = TerminalReplica::create(config, sink, window, cx)?;
         let writers = Rc::new(Cell::new(None));
@@ -304,7 +368,8 @@ impl Terminals {
                     cx,
                 ),
                 ReplicaEvent::Pane(PaneEvent::ClipboardWrite { text, .. }) => {
-                    ui.clients().clipboard.copy(text)
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    ui.clients().clipboard.copy(text);
                 }
                 ReplicaEvent::Pane(PaneEvent::InputRefused) => {
                     let phase = replica.read(cx).state().phase;
@@ -342,55 +407,7 @@ impl Terminals {
                     }
                 }
                 ReplicaEvent::Pane(PaneEvent::PasteFiles(paths)) => {
-                    let session = key.0.clone();
-                    // None: the session is on this Mac. Some(None): it is gone.
-                    let elsewhere = ui.read(|state| {
-                        (!on_this_mac(state, &session)).then(|| {
-                            state.workspace.session(&session).map(|found| found.machine.clone())
-                        })
-                    });
-                    if let Some(machine) = elsewhere {
-                        // The paths don't exist on that machine: the files go
-                        // to the session's pastes there first (D335).
-                        let Some(machine) = machine else {
-                            return;
-                        };
-                        let ui = ui.clone();
-                        let paths = paths.clone();
-                        cx.spawn(async move |cx| {
-                            let pasted = ui
-                                .clients()
-                                .file_manager
-                                .paste_files(paths, &machine, &session)
-                                .await;
-                            cx.update(|cx| match pasted {
-                                Ok(there) => {
-                                    let words: Vec<_> =
-                                        there.iter().map(|path| shell_word(path)).collect();
-                                    paste_into(&replica, words.join(" "), cx);
-                                }
-                                Err(error) => ui.send(
-                                    toast(format!("The files could not be pasted: {error}")),
-                                    cx,
-                                ),
-                            });
-                        })
-                        .detach();
-                    } else if let Some(words) = paths
-                        .iter()
-                        .map(|path| path.to_str().map(shell_word))
-                        .collect::<Option<Vec<_>>>()
-                    {
-                        paste_into(&replica, words.join(" "), cx);
-                    } else {
-                        ui.send(
-                            toast(
-                                "A pasted file's name isn't valid UTF-8, so its path can't be typed. Rename the file, then paste it again."
-                                    .into(),
-                            ),
-                            cx,
-                        );
-                    }
+                    paste_files(&ui, key.0.clone(), replica.clone(), paths.clone(), cx);
                 }
                 ReplicaEvent::Pane(PaneEvent::PasteImage { format, bytes }) => {
                     let Some(kind) = image_kind(*format) else {
@@ -438,9 +455,10 @@ impl Terminals {
                     ),
                     cx,
                 ),
-                // The bell, a program's title and its working folder wait on
-                // their decisions (D338, D424). The pane itself asks before
-                // a program reads the clipboard.
+                ReplicaEvent::Pane(PaneEvent::Bell) => {}
+                ReplicaEvent::Pane(PaneEvent::TitleChanged(_)) => {}
+                // A program's working folder waits on its decision (D424).
+                // The pane itself asks before a program reads the clipboard.
                 _ => {}
             })
         };
@@ -698,6 +716,13 @@ impl Terminals {
                 self.replaced = Some(self.replaced.unwrap_or(false) || had_focus);
             }
         }
+        let term_dark = state
+            .settings
+            .preferences
+            .terminal_theme
+            .is_dark(look.is_dark());
+        let term_look = look.with_terminal_dark(term_dark);
+        let font_family = state.settings.general.current().terminal.font;
         let font = state.settings.preferences.font_size;
         let free_hidden = state.settings.preferences.free_hidden_terminals;
         let option_as_alt = state.settings.preferences.option_as_alt;
@@ -715,7 +740,18 @@ impl Terminals {
                     }
                     let key = (id.clone(), tab);
                     if !self.entries.contains_key(&key) && !self.errors.contains_key(&key) {
-                        match self.open(key.clone(), ui, look, font, free_hidden, false, window, cx) {
+                        match self.open(
+                            key.clone(),
+                            ui,
+                            term_look,
+                            term_dark,
+                            &font_family,
+                            font,
+                            free_hidden,
+                            false,
+                            window,
+                            cx,
+                        ) {
                             Ok(entry) => {
                                 self.entries.insert(key, entry);
                             }
@@ -739,7 +775,7 @@ impl Terminals {
             entry
                 .writable
                 .set(connected && (*tab != 0 || !session.status.agent_ended()));
-            let appearance = (look.term_text, look.term, look.term_dim);
+            let appearance = (term_look.term_text, term_look.term, term_look.term_dim);
             let changed_appearance = entry.appearance != appearance;
             entry.appearance = appearance;
             entry.font = font;
@@ -763,12 +799,12 @@ impl Terminals {
                         pane.set_option_as_alt(option_as_alt, cx);
                         pane.view().update(cx, |view, cx| {
                             view.set_cursor_blink(blink, cx);
-                            view.set_theme(font_theme(font), cx);
+                            view.set_theme(font_theme(&font_family, font), cx);
                         });
                     });
                 }
                 if changed_appearance {
-                    replica.set_default_colors(Some(colors(look)), cx).err()
+                    replica.set_default_colors(Some(colors(term_dark)), cx).err()
                 } else {
                     None
                 }
@@ -822,6 +858,13 @@ impl Terminals {
         let Some(key) = wanted else {
             return lost_focus;
         };
+        let term_dark = state
+            .settings
+            .preferences
+            .terminal_theme
+            .is_dark(look.is_dark());
+        let term_look = look.with_terminal_dark(term_dark);
+        let font_family = state.settings.general.current().terminal.font;
         let font = state.settings.preferences.font_size;
         let request = state
             .inbox
@@ -835,7 +878,18 @@ impl Terminals {
             .map(|request| request.id.clone())
             .unwrap_or_else(|| RequestId::new(""));
         if self.inbox.is_none() {
-            let opened = self.open(key.clone(), ui, look, font, false, true, window, cx);
+            let opened = self.open(
+                key.clone(),
+                ui,
+                term_look,
+                term_dark,
+                &font_family,
+                font,
+                false,
+                true,
+                window,
+                cx,
+            );
             let (entry, why) = match opened {
                 Ok(entry) => (Some(entry), None),
                 // Nothing to link: the reason stays until another item opens.
@@ -858,7 +912,7 @@ impl Terminals {
                     .session(&key.0)
                     .is_some_and(|session| session.status.agent_ended());
             entry.writable.set(connected && !exited);
-            let appearance = (look.term_text, look.term, look.term_dim);
+            let appearance = (term_look.term_text, term_look.term, term_look.term_dim);
             let changed_appearance = entry.appearance != appearance;
             entry.appearance = appearance;
             let option_as_alt = state.settings.preferences.option_as_alt;
@@ -876,11 +930,13 @@ impl Terminals {
                 }
                 if changed_appearance {
                     // A refused color change keeps the screen as it was.
-                    let _ = replica.set_default_colors(Some(colors(look)), cx);
+                    let _ = replica.set_default_colors(Some(colors(term_dark)), cx);
                 }
             });
         }
-        inbox.view.update(cx, |view, cx| view.update(request, font, look, cx));
+        inbox
+            .view
+            .update(cx, |view, cx| view.update(request, font_family, font, term_look, cx));
         lost_focus
     }
 
@@ -1051,6 +1107,10 @@ impl Terminals {
             };
             wrap.child(notice)
         });
+        let drop_accent = self.look.map_or(0x0a84ff, |look| look.accent);
+        let drop_ui = self.ui.clone();
+        let drop_session = session.clone();
+        let drop_replica = entry.replica.clone();
         div()
             .id(if group == 0 {
                 "terminal-area"
@@ -1066,6 +1126,15 @@ impl Terminals {
             .min_h_0()
             .px(px(14.))
             .py(px(10.))
+            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                style.bg(rgba((drop_accent << 8) | 0x1a))
+            })
+            .on_drop(move |dropped: &ExternalPaths, _, cx| {
+                let paths = dropped.paths().to_vec();
+                if !paths.is_empty() {
+                    paste_files(&drop_ui, drop_session.clone(), drop_replica.clone(), paths, cx);
+                }
+            })
             // Escape is the app's Dismiss everywhere, a text box included,
             // so the find bar's own Escape never runs: close find here, on
             // the way up, and leave every other Escape to the Shell.
@@ -1229,16 +1298,20 @@ fn is_connected(state: &AppState, id: &SessionId) -> bool {
     })
 }
 
-/// The cell is the font's advance rounded up to a whole pixel, so 12 pt Menlo
-/// (7.2 px) would become 8 px, a tenth wider than the design. Half a point
-/// smaller lands on 7 px; the line pitch stays 18 at the default setting.
-pub fn font_theme(font: u8) -> Theme {
-    let size = f32::from(font) - 0.5;
-    Theme {
+/// Builds a terminal [`Theme`] from the saved font family and size, using a
+/// proportional line-height so non-Menlo fonts keep clean vertical rhythm.
+pub fn font_theme(family: &str, font: u8) -> Theme {
+    let size = f32::from(font.max(1));
+    let mut theme = Theme {
         font_size: size,
-        line_height: size + 6.5,
+        line_height: (size * 1.45).round(),
         ..Default::default()
+    };
+    let trimmed = family.trim();
+    if !trimmed.is_empty() {
+        theme.font_family = trimmed.to_owned().into();
     }
+    theme
 }
 /// Why a tab took none of what was typed, and what to do, for the toast that
 /// says so.
@@ -2314,13 +2387,6 @@ mod tests {
     }
 }
 
-fn colors(look: Look) -> Colors {
-    let mut colors = Colors {
-        foreground: Rgb::hex(look.term_text),
-        background: Rgb::hex(look.term),
-        ..Default::default()
-    };
-    colors.palette[8] = Rgb::hex(look.term_dim);
-    colors.palette[2] = Rgb::hex(0x30d158);
-    colors
+fn colors(dark: bool) -> Colors {
+    terminal_grid::terminal_colors(dark)
 }

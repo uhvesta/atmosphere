@@ -8,7 +8,8 @@
 //! pixels, so every stroke in a column lands on the same pixels whatever
 //! the character, and arms reach the cell's edges to meet their
 //! neighbours. The diagonals (`╱╲╳`) are left to the font. Rounded corners
-//! (`╭╮╯╰`) are drawn square.
+//! (`╭╮╯╰`) are drawn as quarter-circle arcs that join the straight strokes
+//! on the same device pixels.
 //!
 //! Plain data, no `GPUI`: the view hands in the cell's box in device
 //! pixels and paints the rectangles that come back.
@@ -32,10 +33,21 @@ pub(crate) struct Arms {
     pub left: Weight,
 }
 
+/// Which corner a rounded box-drawing character (`╭╮╯╰`) turns through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Corner {
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
 /// What a character is drawn as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Drawing {
     Lines(Arms),
+    /// A rounded light corner (`╭╮╯╰`).
+    RoundedCorner(Corner),
     /// A line broken into `count` dashes.
     Dashes { vertical: bool, heavy: bool, count: u8 },
     /// A solid part of the cell, its edges in eighths of the cell.
@@ -122,6 +134,10 @@ fn lines(code: u32) -> Option<Drawing> {
         0x254d => dashes(false, true, 2),
         0x254e => dashes(true, false, 2),
         0x254f => dashes(true, true, 2),
+        0x256d => Some(Drawing::RoundedCorner(Corner::TopLeft)),
+        0x256e => Some(Drawing::RoundedCorner(Corner::TopRight)),
+        0x256f => Some(Drawing::RoundedCorner(Corner::BottomRight)),
+        0x2570 => Some(Drawing::RoundedCorner(Corner::BottomLeft)),
         _ => {
             let entry = ARMS.get(usize::try_from(code - 0x2500).ok()?)?.as_bytes();
             let weight = |index: usize| match entry.get(index) {
@@ -183,6 +199,7 @@ pub(crate) fn rects(drawing: Drawing, area: Area, light: f32) -> Vec<Rect> {
     let light = light.round().max(1.0);
     match drawing {
         Drawing::Lines(arms) => arm_rects(arms, area, light),
+        Drawing::RoundedCorner(corner) => rounded_corner_rects(corner, area, light),
         Drawing::Dashes { vertical, heavy, count } => dash_rects(vertical, heavy, count, area, light),
         Drawing::Block { left, top, right, bottom } => {
             let x = |eighths: u8| eighth(area.left, area.right, eighths);
@@ -318,6 +335,94 @@ fn arm_rects(arms: Arms, area: Area, light: f32) -> Vec<Rect> {
             } else {
                 solid(from, start, to, stop, 1.0)
             });
+        }
+    }
+    rects
+}
+
+fn rounded_corner_rects(corner: Corner, area: Area, light: f32) -> Vec<Rect> {
+    let half = (light / 2.0).floor();
+    let start_x = ((area.left + area.right) / 2.0).floor() - half;
+    let start_y = ((area.top + area.bottom) / 2.0).floor() - half;
+    let (right, down) = match corner {
+        Corner::TopLeft => (true, true),
+        Corner::TopRight => (false, true),
+        Corner::BottomRight => (false, false),
+        Corner::BottomLeft => (true, false),
+    };
+    let max_rx = (if right {
+        area.right - start_x
+    } else {
+        start_x + light - area.left
+    } - 1.0)
+        .max(0.0);
+    let max_ry = (if down {
+        area.bottom - start_y
+    } else {
+        start_y + light - area.top
+    } - 1.0)
+        .max(0.0);
+    let r = ((area.right - area.left) * 0.5)
+        .floor()
+        .min(((area.bottom - area.top) * 0.5).floor())
+        .min(max_rx)
+        .min(max_ry);
+    if r <= light {
+        let arms = Arms {
+            up: if !down { Weight::Light } else { Weight::None },
+            right: if right { Weight::Light } else { Weight::None },
+            down: if down { Weight::Light } else { Weight::None },
+            left: if !right { Weight::Light } else { Weight::None },
+        };
+        return arm_rects(arms, area, light);
+    }
+
+    let mut rects = Vec::new();
+    // Straight vertical arm meeting the top or bottom edge on the exact
+    // same columns as `│`.
+    if down {
+        rects.push(solid(start_x, start_y + r, start_x + light, area.bottom, 1.0));
+    } else {
+        rects.push(solid(start_x, area.top, start_x + light, start_y + light - r, 1.0));
+    }
+    // Straight horizontal arm meeting the left or right edge on the exact
+    // same rows as `─`.
+    if right {
+        rects.push(solid(start_x + r, start_y, area.right, start_y + light, 1.0));
+    } else {
+        rects.push(solid(area.left, start_y, start_x + light - r, start_y + light, 1.0));
+    }
+    // Quarter-circle arc connecting the two straight arms in whole pixels.
+    let r_out = r;
+    let r_in = (r - light).max(0.0);
+    let steps = r as i32;
+    for i in 0..steps {
+        let dy = r - (i as f32 + 0.5);
+        let dx_out = (r_out * r_out - dy * dy).max(0.0).sqrt().ceil().min(r);
+        let dx_in = if dy < r_in {
+            (r_in * r_in - dy * dy).max(0.0).sqrt().floor()
+        } else {
+            0.0
+        }
+        .min((dx_out - 1.0).max(0.0));
+        let y = if down {
+            start_y + i as f32
+        } else {
+            start_y + light - 1.0 - i as f32
+        };
+        let (x0, x1) = if right {
+            (
+                (start_x + r - dx_out).max(start_x),
+                (start_x + r - dx_in).min(start_x + r),
+            )
+        } else {
+            (
+                (start_x + light - r + dx_in).max(start_x + light - r),
+                (start_x + light - r + dx_out).min(start_x + light),
+            )
+        };
+        if x1 > x0 {
+            rects.push(solid(x0, y, x1, y + 1.0, 1.0));
         }
     }
     rects
@@ -462,6 +567,37 @@ mod tests {
         // Nothing sticks out up or to the left of the corner.
         assert!(!painted(&corner, x - 1.0, y));
         assert!(!painted(&corner, x, y - 1.0));
+    }
+
+    #[test]
+    fn rounded_corners_join_straight_lines_and_leave_sharp_outer_corner_unpainted() {
+        let v = runs_across(&draw('│'), CELL.bottom - 1.0);
+        let h = runs_down(&draw('─'), CELL.left);
+        let (vx, hy) = (v[0].0, h[0].0);
+
+        // ╭ joins right and down, and its outer top-left corner pixel is not painted.
+        let tl = draw('╭');
+        assert_eq!(runs_across(&tl, CELL.bottom - 1.0), v);
+        assert_eq!(runs_down(&tl, CELL.right - 1.0), h);
+        assert!(!painted(&tl, vx, hy));
+
+        // ╮ joins left and down, and its outer top-right corner pixel is not painted.
+        let tr = draw('╮');
+        assert_eq!(runs_across(&tr, CELL.bottom - 1.0), v);
+        assert_eq!(runs_down(&tr, CELL.left), h);
+        assert!(!painted(&tr, vx + LIGHT - 1.0, hy));
+
+        // ╯ joins left and up, and its outer bottom-right corner pixel is not painted.
+        let br = draw('╯');
+        assert_eq!(runs_across(&br, CELL.top), v);
+        assert_eq!(runs_down(&br, CELL.left), h);
+        assert!(!painted(&br, vx + LIGHT - 1.0, hy + LIGHT - 1.0));
+
+        // ╰ joins right and up, and its outer bottom-left corner pixel is not painted.
+        let bl = draw('╰');
+        assert_eq!(runs_across(&bl, CELL.top), v);
+        assert_eq!(runs_down(&bl, CELL.right - 1.0), h);
+        assert!(!painted(&bl, vx, hy + LIGHT - 1.0));
     }
 
     #[test]

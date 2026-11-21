@@ -187,6 +187,7 @@ pub(crate) fn session_header(
     state: &AppState,
     collapsed: bool,
     width: f32,
+    mac: bool,
     look: Look,
 ) -> Div {
     let Some(session) = state
@@ -353,10 +354,29 @@ pub(crate) fn session_header(
                     .flex_shrink_0()
                     .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
                     .accessibility_label("Back")
-                    .tooltip("Back  ⌘[")
+                    .tooltip(format!("Back  {}", crate::keys::label("⌘[", mac)))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         back.send(AppAction::Back, cx);
+                    }),
+            )
+        })
+        .when(!state.forward_trail.is_empty(), |bar| {
+            let forward = ui.clone();
+            bar.child(
+                Button::new("session-forward")
+                    .ghost()
+                    .small()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .p_0()
+                    .flex_shrink_0()
+                    .icon(chrome::icon(IconName::ChevronRight, look.secondary, 14.))
+                    .accessibility_label("Forward")
+                    .tooltip(format!("Forward  {}", crate::keys::label("⌘]", mac)))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        forward.send(AppAction::Forward, cx);
                     }),
             )
         })
@@ -447,10 +467,11 @@ pub(crate) fn session_header(
             // Like `chrome::action`, with the shortcut in a tooltip so the
             // two arrows do not read as duplicates.
             let ui = ui.clone();
+            let expand_key = crate::keys::label("⇧⌘↩", mac);
             let hint: SharedString = if terminal_full {
-                "Return to columns  ⇧⌘↩".into()
+                format!("Return to columns  {expand_key}").into()
             } else {
-                "Expand terminal  ⇧⌘↩".into()
+                format!("Expand terminal  {expand_key}").into()
             };
             let shown = hint.clone();
             div()
